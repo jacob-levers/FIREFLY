@@ -289,9 +289,21 @@ try {
     if is_windows():
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
+    # NOTE: do NOT pass "--" between -EncodedCommand and the positional
+    # args.  powershell.exe is not POSIX getopt: it interprets "--" as
+    # an ambiguous prefix of "-Command" and responds by dumping the
+    # help text for -Command to stdout, then exiting WITHOUT running
+    # our script.  We previously hit that here — the help text included
+    # quoted strings that happened to be valid JSON literals, so
+    # json.loads() returned a `str`, and ev.get(...) below raised
+    # `AttributeError("'str' object has no attribute 'get'")`, which
+    # bubbled up to download_wheel() as "BITS path unavailable" and
+    # forced a urllib fallback on every Windows install.  Anything
+    # after -EncodedCommand <base64> is already forwarded to $args in
+    # the embedded script — no separator required.
     cmd = ["powershell", "-NoProfile", "-NonInteractive",
            "-EncodedCommand", encoded,
-           "--", url, dest_path]
+           url, dest_path]
 
     proc = subprocess.Popen(
         cmd,
@@ -334,6 +346,13 @@ try {
                 ev = _json.loads(line)
             except Exception:
                 # Non-JSON output (warnings etc.) — just log it
+                _log(f"  ps: {line}")
+                continue
+            # Defensive: json.loads happily returns a str/int/list if
+            # PowerShell prints a bare JSON literal (e.g. its own help
+            # text contains quoted strings).  We expect an object —
+            # anything else is treated like the non-JSON branch above.
+            if not isinstance(ev, dict):
                 _log(f"  ps: {line}")
                 continue
             state = ev.get("state", "")
