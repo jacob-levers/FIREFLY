@@ -100,6 +100,17 @@ import firefly_worker
 _run_analysis_in_subprocess = firefly_worker.run_analysis
 _run_batch_in_subprocess    = firefly_worker.run_batch_analysis
 _run_compare_in_subprocess  = firefly_worker.run_comparison
+_run_postproc_in_subprocess = firefly_worker.run_postproc
+
+# ── Tab display names ────────────────────────────────────────────────────────
+# Single source of truth so a rename touches one place, not every
+# tabText(...) == "X" check.  Used by both addTab() calls and the
+# string-comparison sites that drive tab-specific behaviour.
+TAB_IMPORT    = "Import"
+TAB_ANALYSIS  = "Analysis"
+TAB_COMPARE   = "Compare"
+TAB_VISUALISE = "Visualise"
+TAB_REPROCESS = "Re-process"    # was "Post-process"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -180,6 +191,134 @@ class _UpdateCheckThread(QtCore.QThread):
                 self.update_available.emit(tag, html_url)
         except Exception:
             return
+
+
+def _make_cogwheel_icon(*, color: "QtGui.QColor | None" = None,
+                        px: int = 24) -> "QtGui.QIcon":
+    """Procedurally draw a settings cogwheel as a QIcon.
+
+    Builds the gear as a single QPainterPath:
+      • Outer silhouette = 8 teeth, alternating root/tip vertices stepped
+        evenly around the circle so the teeth join the body cleanly with
+        no gap.
+      • A central round hole punched out via the path's even-odd fill rule.
+
+    Drawn to a 2×-DPR pixmap so the gear stays crisp on retina screens.
+    """
+    import math
+    if color is None:
+        color = QtGui.QColor(_THEME["TXT_MUTED"])
+    pm = QtGui.QPixmap(px * 2, px * 2)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+    p.setBrush(color)
+    p.setPen(Qt.PenStyle.NoPen)
+
+    cx = cy = px / 2.0
+    outer_r = px * 0.46          # tooth tip
+    root_r  = px * 0.33          # tooth root / gear-body outer edge
+    hole_r  = px * 0.13          # central hole
+
+    n_teeth = 8
+    # Each tooth occupies 360/n_teeth degrees.  Within that, the tip is
+    # the centre 50% of the angular span; the two flanks transition out
+    # to the root on either side; the gap between teeth sits at the
+    # remaining root span.
+    span = (2 * math.pi) / n_teeth          # angle per tooth+gap
+    tip_half = span * 0.22                  # half-width of tooth tip
+    root_half = span * 0.50                 # half-span at the root
+
+    path = QtGui.QPainterPath()
+    first = True
+    for i in range(n_teeth):
+        a = -math.pi / 2 + i * span         # centre angle (-pi/2 = top)
+        # 4 control angles per tooth — root-left, tip-left, tip-right, root-right
+        pts = [
+            (a - root_half, root_r),
+            (a - tip_half,  outer_r),
+            (a + tip_half,  outer_r),
+            (a + root_half, root_r),
+        ]
+        for ang, r in pts:
+            pt = QtCore.QPointF(cx + r * math.cos(ang),
+                                cy + r * math.sin(ang))
+            if first:
+                path.moveTo(pt); first = False
+            else:
+                path.lineTo(pt)
+    path.closeSubpath()
+
+    # Central hole — added as a second subpath; with the default
+    # OddEvenFill rule that punches it out of the gear.
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    path.addEllipse(QtCore.QPointF(cx, cy), hole_r, hole_r)
+
+    p.drawPath(path)
+    p.end()
+    return QtGui.QIcon(pm)
+
+
+def _make_close_x_icon(*, color: "QtGui.QColor | None" = None,
+                       px: int = 22) -> "QtGui.QIcon":
+    """Procedurally draw a thin close-X as a QIcon.
+
+    Used by the header Quit button.  Qt's `SP_DialogCloseButton` renders
+    as a platform-specific icon that doesn't blend with FIREFLY's
+    chrome on macOS (it's a thick circle-X).  This version matches the
+    cogwheel — same line weight, same colour, centred.
+    """
+    if color is None:
+        color = QtGui.QColor(_THEME["TXT_MUTED"])
+    pm = QtGui.QPixmap(px * 2, px * 2)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+    pen = QtGui.QPen(color)
+    pen.setWidthF(px * 0.13)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    # Diagonals fit within a px×px logical area — we drew to a 2× pixmap
+    # for retina sharpness, but devicePixelRatio=2 means coordinates are
+    # still in logical (`px`-sized) space.
+    pad = px * 0.28
+    p.drawLine(QtCore.QPointF(pad, pad),
+               QtCore.QPointF(px - pad, px - pad))
+    p.drawLine(QtCore.QPointF(px - pad, pad),
+               QtCore.QPointF(pad, px - pad))
+    p.end()
+    return QtGui.QIcon(pm)
+
+
+def _make_napari_container_layout_opaque(container: QtWidgets.QWidget) -> None:
+    """Seal a FIREFLY-owned QWidget that hosts an embedded napari Qt
+    window so napari's internal size hints can never propagate up
+    into FIREFLY's MainWindow layout (which used to grow the whole
+    window every time a file was loaded).
+
+    Mechanism: `QSizePolicy.Ignored` on both axes + `setMinimumSize(0, 0)`
+    on the OUTER container only.  Qt's layout solver then doesn't
+    consult the container's `sizeHint()` when deciding how much room
+    to allocate — it just gives the container whatever the parent's
+    stretch factor says.  Napari fills the container.  Napari's own
+    internal layout (dim slider, layer panel, canvas) is **completely
+    untouched** — we never modify any napari descendant, so the
+    "dim scrubber vanishes" regression from earlier recursive
+    sizeHint hacks can't happen.
+
+    Idempotent — safe to call repeatedly.
+    """
+    if container is None:
+        return
+    try:
+        container.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Ignored)
+        container.setMinimumSize(0, 0)
+    except Exception:
+        pass
 
 
 def _hide_napari_chrome(viewer) -> None:
@@ -1154,6 +1293,64 @@ class _TrackInspector(QtWidgets.QFrame):
         self._hint.hide()
         self._grid_w.show()
 
+    # ── Cluster-mode inspector ───────────────────────────────────────
+    # Visualise tab's interactive DBSCAN cluster map needs to surface
+    # cluster (not track) stats in this same panel.  Kept as a separate
+    # method so each kwarg list stays explicit and self-documenting —
+    # the alternative of taking **kwargs and dispatching by key would
+    # silently swallow typos.
+    def show_cluster(self, *, cluster_id: int,
+                      n_locs: int | None = None,
+                      area_um2: float | None = None,
+                      density_locs_per_um2: float | None = None,
+                      centroid_x_um: float | None = None,
+                      centroid_y_um: float | None = None,
+                      note: str | None = None):
+        while self._grid.count():
+            it = self._grid.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+
+        def _row(r, label, value, *, color=None):
+            lbl = QtWidgets.QLabel(label)
+            lbl.setStyleSheet(
+                f"color: {_THEME['TXT_MUTED']}; font-size: 12px;")
+            val = QtWidgets.QLabel(value)
+            val.setStyleSheet(
+                f"color: {color or _THEME['TXT']}; font-size: 13px; "
+                "font-weight: 600;")
+            val.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            self._grid.addWidget(lbl, r, 0, Qt.AlignmentFlag.AlignLeft)
+            self._grid.addWidget(val, r, 1, Qt.AlignmentFlag.AlignLeft)
+
+        r = 0
+        if cluster_id == -1:
+            _row(r, "Cluster ID", "Noise",
+                 color=_THEME['TXT_MUTED']); r += 1
+            if note:
+                _row(r, "Note", note); r += 1
+        else:
+            _row(r, "Cluster ID", f"#{cluster_id}",
+                 color=_THEME['ACC']); r += 1
+            if n_locs is not None:
+                _row(r, "Localisations", f"{int(n_locs):,}"); r += 1
+            if area_um2 is not None:
+                _row(r, "Area", f"{area_um2:.4f} µm²"); r += 1
+            if density_locs_per_um2 is not None:
+                _row(r, "Density",
+                     f"{density_locs_per_um2:.1f} locs/µm²"); r += 1
+            if centroid_x_um is not None and centroid_y_um is not None:
+                _row(r, "Centroid",
+                     f"({centroid_x_um:.3f}, {centroid_y_um:.3f}) µm")
+                r += 1
+            if note:
+                _row(r, "Note", note); r += 1
+
+        self._hint.hide()
+        self._grid_w.show()
+
 
 class _ResultsPanel(QtWidgets.QFrame):
     """Compact "results" panel shown below the progress bar on each tab.
@@ -1635,6 +1832,11 @@ class _RoiDialog(QtWidgets.QDialog):
         try:
             self._viewer = napari.Viewer(show=False)
             qt_window = self._viewer.window._qt_window
+            # Seal the OUTER container so napari's internal size hints
+            # can't propagate up and grow the parent FIREFLY window.
+            # Napari itself is left completely untouched — its dim
+            # slider / layer panel / canvas all work as designed.
+            _make_napari_container_layout_opaque(self._viewer_container)
             self._viewer_layout.addWidget(qt_window)
             _hide_napari_chrome(self._viewer)
         except Exception as exc:
@@ -1712,6 +1914,137 @@ class _RoiDialog(QtWidgets.QDialog):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ImageJ / palmTRACER ROI file loader
+# ══════════════════════════════════════════════════════════════════════════════
+def _load_imagej_roi_polygons(path: str) -> list:
+    """Read an ImageJ / palmTRACER `.roi` or `.zip` file and return a
+    list of polygon vertex arrays (each (N, 2) in image-pixel coords,
+    [y, x] ordering as napari expects for Shapes layers).
+
+    Lines / points / text ROIs are filtered out — only closed polygons
+    (FreeRoi, Polygon, Rectangle, Oval, Traced) survive.
+
+    Raises whatever roifile raises on parse error.  Returns [] if the
+    file contained nothing polygon-shaped.
+    """
+    import roifile
+    import numpy as np
+    rois = roifile.ImagejRoi.fromfile(path)
+    if not isinstance(rois, list):
+        rois = [rois]
+    polys = []
+    for roi in rois:
+        try:
+            # `.coordinates()` returns an (N, 2) ndarray of (x, y)
+            # pairs in pixel coords.  napari Shapes expect (y, x), so
+            # we swap the columns.
+            coords = roi.coordinates()
+            if coords is None:
+                continue
+            coords = np.asarray(coords, dtype=float)
+            if coords.ndim != 2 or coords.shape[1] != 2 or coords.shape[0] < 3:
+                continue
+            yx = np.column_stack([coords[:, 1], coords[:, 0]])
+            polys.append(yx)
+        except Exception:
+            # Skip any single ROI that fails to parse rather than aborting
+            # the whole file.
+            continue
+    return polys
+
+
+def _load_tif_mask_polygons(path: str,
+                            simplify_tol: float = 0.5) -> list:
+    """Read a raster ROI mask (`.tif` / `.tiff`) and convert it into a
+    list of polygon vertex arrays (each (N, 2) in [y, x] pixel coords,
+    matching what napari Shapes layers expect).
+
+    palmTRACER exports its drawn ROIs as binary / labeled TIFF masks,
+    not as vector ImageJ ROIs — so the standard `.roi` loader can't
+    read them.  We:
+
+      1. Load the image (first plane if it's a stack).
+      2. If the mask has multiple non-zero label values, treat each label
+         as a separate ROI.  Otherwise threshold > 0 → one ROI.
+      3. Pull the outer contour of each connected region with
+         `skimage.measure.find_contours`.
+      4. Light Douglas-Peucker simplification (≤ 0.5 px by default) so
+         the user sees tens of vertices, not thousands of jagged pixel
+         steps — the test still passes through the same Path.contains_points
+         filter, so accuracy isn't affected.
+
+    Returns [] if the file decodes but contains no non-zero pixels.
+    """
+    import numpy as np
+    from skimage import io as _skio
+    from skimage import measure as _skmeasure
+    from skimage.morphology import label as _sklabel
+
+    img = _skio.imread(path)
+    img = np.asarray(img)
+    if img.ndim == 3:
+        # Stack or multi-channel: collapse on the leading axis.  Most
+        # palmTRACER ROI .tif exports are single-plane greyscale, but
+        # some saves end up as (1, H, W) or (H, W, 3) — handle both by
+        # reducing to a 2-D mask via "any non-zero across the extra dim".
+        if img.shape[-1] in (3, 4) and img.shape[0] > 4:
+            img = img[..., 0]
+        else:
+            img = img.max(axis=0)
+    if img.ndim != 2:
+        return []
+
+    polys: list = []
+    unique = np.unique(img)
+    # Treat as labelled image only if there are multiple distinct
+    # non-zero values (more than ~3 different labels).  Otherwise it's
+    # a binary mask — relabel connected components ourselves.
+    nonzero_labels = unique[unique != 0]
+    if nonzero_labels.size >= 3:
+        labels_arr = img.astype(np.int32, copy=False)
+        label_values = nonzero_labels
+    else:
+        binary = img > 0
+        if not binary.any():
+            return []
+        labels_arr = _sklabel(binary, connectivity=2)
+        label_values = np.unique(labels_arr)
+        label_values = label_values[label_values != 0]
+
+    for lv in label_values:
+        region_mask = (labels_arr == lv)
+        # find_contours wants a real-valued image; use the mask cast
+        # to float and find the 0.5 level set — the standard trick
+        # for getting clean integer-aligned region boundaries.
+        contours = _skmeasure.find_contours(
+            region_mask.astype(np.float32), 0.5)
+        for c in contours:
+            if c.shape[0] < 3:
+                continue
+            if simplify_tol > 0:
+                try:
+                    c = _skmeasure.approximate_polygon(c, simplify_tol)
+                except Exception:
+                    pass
+            if c.shape[0] >= 3:
+                polys.append(c.astype(float))   # already (y, x)
+    return polys
+
+
+def _load_any_roi_file(path: str) -> list:
+    """Dispatch ROI loading by file extension.
+
+    Supports the two formats palmTRACER actually writes:
+      • `.roi` / `.zip`  — ImageJ binary ROI (vector polygons)
+      • `.tif` / `.tiff` — raster ROI mask exported by palmTRACER
+    """
+    ext = os.path.splitext(path.lower())[1]
+    if ext in (".tif", ".tiff"):
+        return _load_tif_mask_polygons(path)
+    return _load_imagej_roi_polygons(path)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  EMBEDDED ROI VIEWER — same idea as _RoiDialog but lives in the Import tab
 # ══════════════════════════════════════════════════════════════════════════════
 class _RoiViewer(QtWidgets.QWidget):
@@ -1739,8 +2072,10 @@ class _RoiViewer(QtWidgets.QWidget):
         self._pp_signature = None      # (bg_method, bg_radius) of cached stack
         self._last_mass = None         # mass array from the most-recent locate
         self._roi_mask_layer = None    # auto/manual-threshold overlay layer
+        self._max_proj_layer = None    # static max-projection anatomy layer
         self._roi_mask_params = {"mode": "None", "auto_method": "li",
-                                 "threshold": 0.08, "mask_mode": "mean"}
+                                 "threshold": 0.08, "mask_mode": "mean",
+                                 "bg_sigma": 25.0}
         # When true, _on_layer_removed is a no-op.  Used by set_file
         # while it tears down the previous file's layers — we DON'T want
         # the "user deleted our ROI, recreate it" recovery path to fire
@@ -1815,11 +2150,26 @@ class _RoiViewer(QtWidgets.QWidget):
             "Remove every polygon drawn on the current file's ROI.")
         self._b_clear.clicked.connect(self._on_clear)
         header.addWidget(self._b_clear)
+        # "Load ROI…" — reads an ImageJ / palmTRACER .roi or .zip file
+        # and adds the polygons to the current file's ROI set.  Works
+        # in single-file, batch, and external-CSV modes because the
+        # ROI viewer is shared across all three import flows.
+        self._b_load_roi = QtWidgets.QPushButton("Load ROI…")
+        self._b_load_roi.setToolTip(
+            "Load polygon ROI(s) from an ImageJ / palmTRACER .roi or .zip\n"
+            "file.  Coordinates are interpreted as image pixels (matching\n"
+            "the active file's preview).  Adds to any polygons already drawn.")
+        self._b_load_roi.clicked.connect(self._on_load_roi_file)
+        header.addWidget(self._b_load_roi)
         v.addLayout(header)
 
         self._viewer_container = QtWidgets.QFrame()
         self._viewer_container.setObjectName("results_panel")
-        self._viewer_container.setMinimumHeight(320)
+        # Modest minimum so the Re-process and Import tabs stay
+        # vertical-compressible on small (1366×768 / 1440×900) laptops.
+        # The container expands freely upwards via its parent's stretch
+        # factor when there's room — this just sets a floor.
+        self._viewer_container.setMinimumHeight(200)
         self._viewer_layout = QtWidgets.QVBoxLayout(self._viewer_container)
         self._viewer_layout.setContentsMargins(0, 0, 0, 0)
         # Placeholder until napari is loaded (lazy)
@@ -1845,6 +2195,10 @@ class _RoiViewer(QtWidgets.QWidget):
         try:
             self._viewer = napari.Viewer(show=False)
             qt_window = self._viewer.window._qt_window
+            # Seal the OUTER container so napari's internal size hints
+            # can't propagate up and grow the parent FIREFLY window.
+            # Napari itself is left completely untouched.
+            _make_napari_container_layout_opaque(self._viewer_container)
             self._viewer_layout.removeWidget(self._placeholder)
             self._placeholder.hide()
             self._viewer_layout.addWidget(qt_window)
@@ -1974,6 +2328,7 @@ class _RoiViewer(QtWidgets.QWidget):
         self._pp_signature = None
         self._last_mass = None
         self._roi_mask_layer = None
+        self._max_proj_layer = None
         # Reset the toggle silently so it doesn't fight the new image
         try:
             self._cb_filtered.blockSignals(True)
@@ -1998,6 +2353,27 @@ class _RoiViewer(QtWidgets.QWidget):
             self._image_layer = self._viewer.add_image(
                 stack, name="ROI background", colormap="gray",
                 contrast_limits=(float(lo), float(hi)))
+            # Anatomy layer — max projection across the sampled frames.
+            # Individual frames in sptPALM data are mostly sparse blinks
+            # on noise: hard to see where the cells actually are.  The
+            # max projection reveals the underlying structure (each pixel
+            # = its brightest moment over the sample) so the user knows
+            # where to draw a manual polygon AND can sanity-check the
+            # auto-threshold mask against true anatomy.  Off by default
+            # (eye icon toggles it) so it doesn't surprise users used to
+            # the old single-layer view.
+            try:
+                max_proj = stack.max(axis=0).astype(_np.float32)
+                lo_m, hi_m = _np.percentile(max_proj, [1.0, 99.5])
+                if hi_m <= lo_m:
+                    hi_m = lo_m + 1.0
+                self._max_proj_layer = self._viewer.add_image(
+                    max_proj, name="Max projection",
+                    colormap="inferno",
+                    contrast_limits=(float(lo_m), float(hi_m)),
+                    opacity=0.85, visible=False, blending="additive")
+            except Exception:
+                self._max_proj_layer = None
             initial_shapes = [_np.asarray(poly)
                               for poly in (current_polygons or [])]
             self._shapes_layer = self._viewer.add_shapes(
@@ -2031,6 +2407,85 @@ class _RoiViewer(QtWidgets.QWidget):
             import traceback as _tb
             self._status.setText(
                 f"Couldn't load preview: {exc}\n{_tb.format_exc()}")
+
+    def set_image_array(self, image: "np.ndarray", label: str = "background",
+                        current_polygons: list | None = None) -> None:
+        """Show a pre-computed 2-D image as the ROI background.
+
+        Used by the Post-process tab when the original input file isn't
+        available on disk — we feed it a 2-D histogram of the run's
+        localisations instead, so the user still has an anatomy proxy
+        to draw the ROI on.
+        """
+        import numpy as _np
+        self._flush_current_polygons_if_changed()
+        # Synthetic source path so polygon save/restore keyed off
+        # `_current_file` still works (each loaded run gets its own slot).
+        self._current_file = f"<postproc:{label}>"
+
+        if not self._ensure_viewer():
+            return
+
+        self._suppress_layer_events = True
+        try:
+            try:    self._viewer.layers.clear()
+            except Exception: pass
+        finally:
+            self._suppress_layer_events = False
+        self._image_layer = None
+        self._shapes_layer = None
+        self._points_layer = None
+        self._stack = None
+        self._stack_filtered = None
+        self._stack_preprocessed = None
+        self._pp_signature = None
+        self._last_mass = None
+        self._roi_mask_layer = None
+        self._max_proj_layer = None
+        try:
+            self._cb_filtered.blockSignals(True)
+            self._cb_filtered.setChecked(False)
+            self._cb_filtered.blockSignals(False)
+        except AttributeError:
+            pass
+
+        self._title.setText(f"Preview — {label}")
+        self._status.setText("Rendering background…")
+        try:
+            arr = _np.asarray(image, dtype=_np.float32)
+            if arr.ndim != 2:
+                raise ValueError(f"expected 2-D image, got shape {arr.shape}")
+            lo, hi = _np.percentile(arr, [1.0, 99.5])
+            if hi <= lo:
+                hi = lo + 1.0
+            self._image_layer = self._viewer.add_image(
+                arr, name="ROI background", colormap="inferno",
+                contrast_limits=(float(lo), float(hi)))
+            initial_shapes = [_np.asarray(poly)
+                              for poly in (current_polygons or [])]
+            self._shapes_layer = self._viewer.add_shapes(
+                data=initial_shapes if initial_shapes else None,
+                shape_type="polygon",
+                edge_color="#58a6ff",
+                face_color="rgba(88,166,255,0.18)",
+                edge_width=2,
+                name="ROI",
+            )
+            try:
+                self._shapes_layer.mode = "add_polygon"
+            except Exception:
+                pass
+            try:
+                self._shapes_layer.events.data.connect(self._on_shapes_changed)
+            except Exception:
+                pass
+            self._status.setText(
+                f"{arr.shape[1]} × {arr.shape[0]} px — "
+                "draw polygon(s); right-click or Esc to close each one.")
+        except Exception as exc:
+            import traceback as _tb
+            self._status.setText(
+                f"Couldn't render background: {exc}\n{_tb.format_exc()}")
 
     def current_file(self) -> str:
         return self._current_file
@@ -2077,6 +2532,70 @@ class _RoiViewer(QtWidgets.QWidget):
             pass
         if self._current_file:
             self.polygons_changed.emit(self._current_file, [])
+
+    # ── palmTRACER / ImageJ ROI loader ───────────────────────────────────
+    def _on_load_roi_file(self):
+        """Pick a `.roi` / `.zip` / `.tif` file and append its polygons
+        to the current file's ROI.  No-op when no file is currently loaded.
+
+        palmTRACER writes ROIs in two formats:
+          • `.roi` / `.zip`  — ImageJ binary ROI (vector polygons)
+          • `.tif` / `.tiff` — raster mask of the drawn region
+        We accept both; the dispatch is by file extension.
+        """
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load ImageJ / palmTRACER ROI",
+            "",
+            "All ROI formats (*.roi *.zip *.tif *.tiff);;"
+            "ImageJ ROI (*.roi *.zip);;"
+            "palmTRACER ROI mask (*.tif *.tiff);;"
+            "All files (*)")
+        if not path:
+            return
+        try:
+            new_polys = _load_any_roi_file(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Couldn't load ROI",
+                f"Failed to read {os.path.basename(path)}:\n\n{exc}")
+            return
+        if not new_polys:
+            ext = os.path.splitext(path.lower())[1]
+            if ext in (".tif", ".tiff"):
+                msg = (f"{os.path.basename(path)} decoded but contained "
+                       f"no non-zero pixels — make sure you picked the "
+                       f"ROI mask itself, not the raw movie.")
+            else:
+                msg = (f"{os.path.basename(path)} contained no closed "
+                       f"polygons (only line / point / text ROIs are "
+                       f"unsupported).")
+            QtWidgets.QMessageBox.information(self, "No polygons", msg)
+            return
+        # Append to the existing shapes layer, falling back to creating
+        # one if napari isn't initialised yet.
+        try:
+            if self._shapes_layer is None:
+                if not self._ensure_viewer():
+                    return
+                import napari   # noqa: F401  (ensure import)
+                # If there's no image yet, add the shapes layer empty.
+                self._shapes_layer = self._viewer.add_shapes(
+                    shape_type="polygon",
+                    edge_color="cyan", face_color="transparent",
+                    edge_width=2, name="ROIs")
+            existing = list(self._shapes_layer.data) \
+                if self._shapes_layer.data is not None else []
+            self._shapes_layer.data = existing + new_polys
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "ROI applied with warning",
+                f"Polygons loaded but the napari layer raised: {exc}")
+        if self._current_file:
+            try:
+                polys_out = list(self._shapes_layer.data)
+            except Exception:
+                polys_out = new_polys
+            self.polygons_changed.emit(self._current_file, polys_out)
 
     # ── Detection preview ────────────────────────────────────────────────
     def enable_detection_preview(self, enabled: bool):
@@ -2310,14 +2829,18 @@ class _RoiViewer(QtWidgets.QWidget):
 
     # ── Auto / manual-threshold ROI overlay ──────────────────────────────
     def set_roi_mask_params(self, *, mode: str, auto_method: str,
-                            threshold: float, mask_mode: str):
+                            threshold: float, mask_mode: str,
+                            bg_sigma: float = 25.0):
         """Update + redraw the auto/manual-threshold ROI overlay layer.
         `mode` is "None", "Auto threshold", "Manual threshold" or
-        "Manual polygon"; the overlay is drawn for the first two."""
+        "Manual polygon"; the overlay is drawn for the first two.
+        `bg_sigma` (px) controls the DoG background-suppression scale —
+        see _refresh_roi_mask_overlay for semantics."""
         self._roi_mask_params = {"mode": str(mode),
                                  "auto_method": str(auto_method).lower(),
                                  "threshold": float(threshold),
-                                 "mask_mode": str(mask_mode).lower()}
+                                 "mask_mode": str(mask_mode).lower(),
+                                 "bg_sigma": float(bg_sigma)}
         self._refresh_roi_mask_overlay()
 
     def _refresh_roi_mask_overlay(self):
@@ -2329,31 +2852,66 @@ class _RoiViewer(QtWidgets.QWidget):
             return
         try:
             import numpy as _np
-            from scipy.ndimage import gaussian_filter
-            from skimage.morphology import binary_closing, disk
+            # The actual mask pipeline lives in sptpalm_analysis.
+            # build_roi_mask_advanced — same function the firefly_worker
+            # calls during analysis — so what the user sees in this
+            # preview is what gets applied to the localisations.
+            from sptpalm_analysis import build_roi_mask_advanced
         except Exception:
             return
-        # Build projection (mean or sum) and renormalise to [0,1]
-        proj = (self._stack.sum(axis=0)
-                if self._roi_mask_params["mask_mode"] == "sum"
-                else self._stack.mean(axis=0)).astype(_np.float32)
-        smoothed = gaussian_filter(proj, sigma=5.0)
-        mn, mx = float(smoothed.min()), float(smoothed.max())
-        if mx > mn:
-            smoothed = (smoothed - mn) / (mx - mn)
-        # Pick threshold
+        # Build the projection that will be thresholded.  All four modes
+        # output a float32 image; we normalise to [0,1] at the end so the
+        # threshold slider's [0,1] semantics work the same way for all
+        # of them.
+        #
+        #   mean  — mean intensity per pixel.  Cheap, but autofluorescence
+        #           accumulates with frames the same way real signal does,
+        #           so cell vs background contrast is poor on sptPALM.
+        #   sum   — same shape as mean, kept for backward compatibility.
+        #   max   — brightest value each pixel ever reached.  Strongly
+        #           amplifies sparse-blink signal; this is what makes
+        #           cells unmistakable in a sptPALM max projection.
+        #   blink — per-pixel count of frames where the pixel was
+        #           significantly above its temporal median (median + 3·MAD).
+        #           Most discriminative mode for sptPALM: cells fire
+        #           blinks repeatedly, autofluorescent background is
+        #           steady so its blink-count is ~zero.
+        # ── 1. Build the projection from the cached preview stack ──────
+        mode_proj = self._roi_mask_params.get("mask_mode", "mean")
+        stk = self._stack.astype(_np.float32, copy=False)
+        if mode_proj == "max":
+            proj = stk.max(axis=0)
+        elif mode_proj == "blink":
+            # Robust per-pixel baseline: median + 3*MAD across time.
+            # MAD is cheap and noise-resistant vs std.  We use the
+            # temporal axis only, so output shape stays (Y, X).  This
+            # mode is preview-only — the streaming firefly_worker falls
+            # back to Max because true per-pixel MAD needs a 2-pass.
+            med = _np.median(stk, axis=0)
+            mad = _np.median(_np.abs(stk - med[None]), axis=0) + 1e-6
+            thresh_per_px = med + 3.0 * 1.4826 * mad   # MAD→σ for normal
+            proj = (stk > thresh_per_px[None]).sum(axis=0).astype(_np.float32)
+        elif mode_proj == "sum":
+            proj = stk.sum(axis=0)
+        else:  # "mean" (default)
+            proj = stk.mean(axis=0)
+
+        # ── 2. Threshold (manual or auto) ──────────────────────────────
+        manual_thresh = None
+        method = self._roi_mask_params.get("auto_method", "li")
         if mode == "Manual threshold":
-            t = float(self._roi_mask_params["threshold"])
-        else:
-            t = self._auto_threshold(smoothed,
-                                     self._roi_mask_params["auto_method"])
-            if t is None:
-                t = float(self._roi_mask_params["threshold"])
-        try:
-            mask = binary_closing(smoothed > t, disk(5))
-        except Exception:
-            mask = smoothed > t
-        self._draw_roi_mask_layer(mask, t)
+            manual_thresh = float(self._roi_mask_params["threshold"])
+
+        # ── 3. Delegate to the shared GUI/worker mask pipeline ─────────
+        bg_sigma = float(self._roi_mask_params.get("bg_sigma", 25.0))
+        mask, info = build_roi_mask_advanced(
+            proj,
+            threshold=manual_thresh,
+            threshold_method=method,
+            bg_sigma=bg_sigma,
+            mode_hint=mode_proj if mode_proj in ("max", "blink", "mean", "sum")
+                                else "max")
+        self._draw_roi_mask_layer(mask, info["threshold"])
 
     @staticmethod
     def _auto_threshold(image_norm, method: str):
@@ -2651,6 +3209,152 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PREFERENCES DIALOG
+# ══════════════════════════════════════════════════════════════════════════════
+class _PreferencesDialog(QtWidgets.QDialog):
+    """FIREFLY application-wide settings.
+
+    Sections (left rail):
+      • Appearance       — app theme
+      • Figure defaults  — re-parents the existing figures-widget so all
+                           per-run figure-export knobs live behind one
+                           preferences surface instead of as a top-level tab.
+
+    Opened from the cogwheel in the header bar (and ⌘, on macOS).
+    Settings persist via QSettings — closing the dialog auto-saves.
+    """
+
+    def __init__(self, parent: "MainWindow"):
+        super().__init__(parent)
+        self.setWindowTitle("FIREFLY Preferences")
+        self.setModal(True)
+        self.resize(960, 640)
+        self._main = parent
+
+        h = QtWidgets.QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+
+        # Left rail — section list
+        self._rail = QtWidgets.QListWidget()
+        self._rail.setObjectName("pref_rail")
+        self._rail.setFixedWidth(180)
+        self._rail.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._rail.setSpacing(2)
+        f = self._rail.font(); f.setPointSize(13); self._rail.setFont(f)
+        h.addWidget(self._rail)
+
+        # Right side — stacked pages
+        self._pages = QtWidgets.QStackedWidget()
+        h.addWidget(self._pages, stretch=1)
+
+        # ── Page: Appearance ────────────────────────────────────────────
+        appearance_page = QtWidgets.QWidget()
+        ap = QtWidgets.QVBoxLayout(appearance_page)
+        ap.setContentsMargins(24, 24, 24, 24); ap.setSpacing(14)
+
+        ap.addWidget(self._heading("Appearance"))
+
+        # Theme combo
+        theme_row = QtWidgets.QFormLayout()
+        theme_row.setHorizontalSpacing(12); theme_row.setVerticalSpacing(8)
+        self.c_app_theme = _QuietComboBox()
+        self.c_app_theme.addItems(["Dark", "AMOLED", "Light"])
+        self.c_app_theme.setMaximumWidth(180)
+        try:
+            _saved = QtCore.QSettings("FIREFLY", "sptPALM") \
+                .value("ui/app_theme", "Dark") or "Dark"
+            if str(_saved) in ("Dark", "AMOLED", "Light"):
+                self.c_app_theme.setCurrentText(str(_saved))
+        except Exception:
+            pass
+        self.c_app_theme.setToolTip(
+            "Colour scheme for the FIREFLY GUI itself.\n"
+            "• Dark   — default GitHub-dark\n"
+            "• AMOLED — pure-black backgrounds for OLED displays\n"
+            "• Light  — GitHub-light for daytime use\n\n"
+            "Switching takes effect after restarting the app.")
+        self.c_app_theme.currentTextChanged.connect(
+            self._on_theme_changed)
+        theme_row.addRow("App theme:", self.c_app_theme)
+
+        ap.addLayout(theme_row)
+        ap.addWidget(self._restart_hint(
+            "App-theme changes take effect after restarting FIREFLY."))
+        ap.addStretch(1)
+
+        self._pages.addWidget(appearance_page)
+        self._add_rail_entry("Appearance")
+
+        # ── Page: Figure defaults (re-parent the figures widget) ────────
+        fig_page = QtWidgets.QWidget()
+        fp = QtWidgets.QVBoxLayout(fig_page)
+        fp.setContentsMargins(0, 0, 0, 0); fp.setSpacing(0)
+        self._fig_widget = parent._figures_widget
+        # Re-parent into this dialog — but we restore the parent back to
+        # MainWindow in `done()` so the widget survives multiple open
+        # cycles instead of being destroyed with the dialog.
+        self._fig_widget.setParent(fig_page)
+        fp.addWidget(self._fig_widget)
+        # IMPORTANT: setParent() implicitly hides the widget, and we
+        # also hide it explicitly in done().  Show it on each open so
+        # the second-and-later openings of Preferences aren't blank.
+        self._fig_widget.show()
+        self._pages.addWidget(fig_page)
+        self._add_rail_entry("Figure defaults")
+
+        # Connect rail → stack
+        self._rail.currentRowChanged.connect(self._pages.setCurrentIndex)
+        self._rail.setCurrentRow(0)
+
+    def _heading(self, txt: str) -> QtWidgets.QLabel:
+        lbl = QtWidgets.QLabel(txt)
+        f = lbl.font(); f.setBold(True); f.setPointSize(16); lbl.setFont(f)
+        lbl.setStyleSheet(f"color: {_THEME['TXT']}; padding-bottom: 6px;")
+        return lbl
+
+    def _restart_hint(self, msg: str) -> QtWidgets.QLabel:
+        lbl = QtWidgets.QLabel(msg)
+        lbl.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; font-style: italic;")
+        lbl.setWordWrap(True)
+        return lbl
+
+    def _add_rail_entry(self, name: str) -> None:
+        item = QtWidgets.QListWidgetItem(name)
+        item.setSizeHint(QtCore.QSize(0, 36))
+        self._rail.addItem(item)
+
+    def _on_theme_changed(self, name: str) -> None:
+        try:
+            QtCore.QSettings("FIREFLY", "sptPALM").setValue(
+                "ui/app_theme", str(name))
+            if str(name) != _ACTIVE_THEME_NAME:
+                QtWidgets.QMessageBox.information(
+                    self, "Restart to apply theme",
+                    f"App theme set to {name}.  Restart FIREFLY to see "
+                    f"the change take effect.")
+        except Exception:
+            pass
+
+    def done(self, code: int) -> None:
+        """Detach the borrowed figures-widget before destruction so it
+        survives to be hosted by the next Preferences dialog opening.
+
+        Without this, the figures widget (and every persisted setting
+        widget inside it: c_fig_theme, c_fig_proj_cmap, panel checkboxes,
+        the preview labels…) would be deleted along with this dialog
+        and the next open would crash on access.
+        """
+        try:
+            if getattr(self, "_fig_widget", None) is not None:
+                self._fig_widget.setParent(self._main)
+                self._fig_widget.hide()
+        except Exception:
+            pass
+        super().done(code)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  MAIN WINDOW
 # ══════════════════════════════════════════════════════════════════════════════
 class MainWindow(QtWidgets.QMainWindow):
@@ -2662,14 +3366,32 @@ class MainWindow(QtWidgets.QMainWindow):
     will gain Batch / Compare / Workspace tabs in later phases.
     """
 
-    # Bumped manually when a stored-setting layout changes incompatibly
-    SETTINGS_VERSION = 1
+    # Bumped manually when a stored-setting layout changes incompatibly.
+    # v2: a series of napari-grow bugs caused saved window geometries to
+    #     be much wider than intended; the v2 launch invalidates those.
+    SETTINGS_VERSION = 2
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FIREFLY — Fluorescence Inference & "
                             "Reconstruction Engine")
-        self.resize(1280, 820)
+        # Pick an initial size that fits the user's actual screen.  The
+        # previous unconditional resize(1280, 820) overflowed laptops
+        # whose available width was < 1280, leaving the right edge of
+        # the window past the desktop.  We clamp to availableGeometry()
+        # with a small margin so the title bar + bottom edge stay visible.
+        _scr = QtGui.QGuiApplication.primaryScreen()
+        _avail = _scr.availableGeometry() if _scr is not None else None
+        # Default 1240×760 — small enough to comfortably fit a 1440×900
+        # laptop screen.  Clamped further to the actual available area
+        # so external-monitor or smaller-screen launches don't overflow.
+        _w = max(min(1240, (_avail.width()  - 40) if _avail is not None else 1240), 900)
+        _h = max(min(760,  (_avail.height() - 80) if _avail is not None else 760), 600)
+        self.resize(_w, _h)
+        # No max-size cap on MainWindow — the napari containers are
+        # sealed via `_make_napari_container_layout_opaque` (called in
+        # each `_*_init_viewer`), so napari can't push us wider; the
+        # window itself is freely resizable / maximisable / fullscreen.
 
         # QSettings stores per-user preferences in the OS-native location
         # (~/Library/Preferences on macOS, registry on Windows).  Keyed by
@@ -2747,6 +3469,14 @@ class MainWindow(QtWidgets.QMainWindow):
     # ── UI construction ───────────────────────────────────────────────────
     def _build_ui(self):
         central = QtWidgets.QWidget()
+        # Seal the centralWidget so its natural sizeHint (sum of header
+        # banner + main_stack page contents) can't override the window
+        # size requested via `self.resize(_w, _h)` in `__init__`.  The
+        # window opens at the size we asked for; user can drag freely.
+        central.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Ignored)
+        central.setMinimumSize(0, 0)
         self.setCentralWidget(central)
 
         # Top-level vertical: [header bar] / [stack: landing OR main UI]
@@ -2762,6 +3492,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # disappears for the rest of the session.  Main UI rebuilds the
         # sidebar + tab interface from before.
         self._main_stack = QtWidgets.QStackedWidget()
+        # Seal the central stack so its current page's natural sizeHint
+        # (landing-page hero text, sidebar widths, etc.) can't grow the
+        # MainWindow past the size requested in __init__.  Combined with
+        # the same treatment on the QTabWidget and napari containers,
+        # the FIREFLY window's natural size is determined solely by
+        # `self.resize(_w, _h)`, freely overridable by user drag.
+        self._main_stack.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Ignored)
+        self._main_stack.setMinimumSize(0, 0)
         top.addWidget(self._main_stack, stretch=1)
         self._main_stack.addWidget(self._build_landing_page())
 
@@ -2777,6 +3517,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # regardless of how far the user has scrolled.  380 px is wide
         # enough to fit a [QLineEdit + Browse] row at typical font sizes
         # without the button clipping over the line edit's right edge.
+        # Sidebar is a fixed-width frame containing TWO QStackedWidgets:
+        # the upper one swaps its content per tab (parameters for
+        # Import, filters for Visualise, etc.); the lower one swaps
+        # the pinned bottom button (Start for Import, Re-run for
+        # Re-process, etc.).  Tab → page-index mapping is set in
+        # `_on_tab_changed_swap_sidebar`.
         sidebar = QtWidgets.QFrame()
         sidebar.setFixedWidth(380)
         sidebar.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
@@ -2784,6 +3530,22 @@ class MainWindow(QtWidgets.QMainWindow):
         sb_outer.setContentsMargins(0, 0, 0, 0)
         sb_outer.setSpacing(0)
 
+        # Top header — title swaps per tab so the sidebar self-labels.
+        self._sidebar_title = QtWidgets.QLabel("Analysis Parameters")
+        self._sidebar_title.setStyleSheet(
+            f"color: {_THEME['TXT']}; font-weight: 700; font-size: 13px; "
+            f"padding: 12px 12px 4px 12px;")
+        sb_outer.addWidget(self._sidebar_title)
+
+        self._sidebar_stack = QtWidgets.QStackedWidget()
+        sb_outer.addWidget(self._sidebar_stack, stretch=1)
+
+        # Build the Import page now — the rest are built post-tabs
+        # because they re-parent widgets created by the tab builders
+        # (which run later in __init__).
+        import_page = QtWidgets.QWidget()
+        ip_v = QtWidgets.QVBoxLayout(import_page)
+        ip_v.setContentsMargins(0, 0, 0, 0); ip_v.setSpacing(0)
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(
@@ -2791,49 +3553,71 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll_inner = QtWidgets.QWidget()
         sb_layout = QtWidgets.QVBoxLayout(scroll_inner)
-        sb_layout.setContentsMargins(12, 12, 12, 12)
+        sb_layout.setContentsMargins(12, 0, 12, 12)
         sb_layout.setSpacing(8)
         scroll.setWidget(scroll_inner)
-        sb_outer.addWidget(scroll, stretch=1)
-
-        # Build all parameter sections inside the scrollable area
+        ip_v.addWidget(scroll)
         self._build_sidebar(sb_layout)
-
-        # Mirror each row-widget's tooltip onto its label, so hovering
-        # the SETTING NAME (e.g. "Pixel size (µm)") shows the same
-        # explanation as hovering the spinbox.  Done in one post-build
-        # sweep so individual addRow() calls don't have to remember to
-        # do it themselves.
         self._propagate_form_tooltips(scroll_inner)
+        self._sidebar_stack.addWidget(import_page)   # index 0
 
-        # Pinned Start/Stop button outside the scroll area
-        btn_container = QtWidgets.QWidget()
-        btn_layout    = QtWidgets.QVBoxLayout(btn_container)
-        btn_layout.setContentsMargins(12, 6, 12, 12)
+        # The other 4 sidebar pages are added later by
+        # `_build_remaining_sidebar_pages()` after the tabs are built.
+
+        # Pinned bottom-button area — also a QStackedWidget so each tab
+        # can have its own primary action (or none).
+        self._sidebar_action = QtWidgets.QStackedWidget()
+        sb_outer.addWidget(self._sidebar_action)
+
+        # Page 0 — Import: the Start/Stop button.
+        action_import = QtWidgets.QWidget()
+        ai_v = QtWidgets.QVBoxLayout(action_import)
+        ai_v.setContentsMargins(12, 6, 12, 12)
         self.btn_run = QtWidgets.QPushButton("Start")
         self.btn_run.setObjectName("primary")  # picks up accent-fill QSS rule
         self.btn_run.setMinimumHeight(36)
         f = self.btn_run.font(); f.setBold(True); f.setPointSize(13)
         self.btn_run.setFont(f)
         self.btn_run.clicked.connect(self._on_run_clicked)
-        btn_layout.addWidget(self.btn_run)
-        sb_outer.addWidget(btn_container)
+        ai_v.addWidget(self.btn_run)
+        self._sidebar_action.addWidget(action_import)   # index 0
 
         layout.addWidget(sidebar)
 
         # ── Tabs ──────────────────────────────────────────────────────────
-        # Tab order: Import → Analysis → Compare → Visualise
-        # Import consolidates input/output picking for both single-file
-        # and batch mode (replaces the old sidebar Input/Output section +
-        # the standalone Batch tab).  Analysis is purely status + result
-        # summary.  Compare and Visualise sit at the end.
+        # Tab order:  Run → Compare → Visualise → Re-process
+        # The Run tab merges the old Import + Analysis surfaces: input
+        # mode tiles + path pickers up top, status / progress / results
+        # panel below.  Figures tab has moved into the Preferences
+        # dialog (cogwheel button in the header) — its widgets are
+        # built up-front and re-parented into the dialog at open time.
+        # Tab order: Import → Analysis → Compare → Visualise → Re-process.
+        # Figures has moved into Preferences (cogwheel in the header).
         self.tabs = QtWidgets.QTabWidget()
         self._build_import_tab()
         self._build_analysis_tab()
-        self._build_figures_tab()
+        # Figures widget is built once, parked unattached, and re-parented
+        # into the Preferences dialog when it opens.
+        self._figures_widget = self._build_figures_widget()
         self._build_compare_tab()
         self._build_visualise_tab()
+        # Seal the QTabWidget too — same trick as `_make_napari_container_layout_opaque`.
+        # Without this, the natural sizeHint of the widest tab body
+        # (Import's mode tiles + path-picker rows) pushes the window
+        # past the requested 1240px on first show.  Ignored policy +
+        # zero min size means the tabs consume whatever the parent
+        # layout's stretch=1 gives them and never ask for more.
+        self.tabs.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Ignored)
+        self.tabs.setMinimumSize(0, 0)
         layout.addWidget(self.tabs, stretch=1)
+
+        # Now that all tabs are built and their inline widgets exist,
+        # populate the remaining sidebar pages (which re-parent those
+        # widgets) and wire up the tab-change → sidebar-swap signal.
+        self._build_remaining_sidebar_pages()
+        self.tabs.currentChanged.connect(self._on_tab_changed_swap_sidebar)
 
         # Start on the landing page; main UI activates only after the user
         # picks an action card.
@@ -2917,6 +3701,48 @@ class MainWindow(QtWidgets.QMainWindow):
         right.setStyleSheet("font-size: 12px;")
         h.addWidget(right)
 
+        # Header cogwheel for Preferences.  Hidden initially (the landing
+        # page has its own Settings tile); revealed once the user enters
+        # the main UI via `_enter_main_ui`, where it stays as a permanent
+        # cross-tab shortcut for app-wide settings.  No quit button —
+        # macOS menubar / window-close button / landing-page Quit tile
+        # already cover every exit path.
+        h.addSpacing(10)
+        _ICON_PX = 18           # icon size inside the button
+        _BTN_SIZE = 34          # button bounding box (square)
+
+        self.btn_header_prefs = QtWidgets.QToolButton()
+        self.btn_header_prefs.setObjectName("header_btn")
+        self.btn_header_prefs.setIcon(_make_cogwheel_icon(
+            color=QtGui.QColor(_THEME["TXT_MUTED"]), px=_ICON_PX))
+        self.btn_header_prefs.setIconSize(QtCore.QSize(_ICON_PX, _ICON_PX))
+        self.btn_header_prefs.setFixedSize(_BTN_SIZE, _BTN_SIZE)
+        self.btn_header_prefs.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.btn_header_prefs.setToolTip("Preferences  (⌘,)")
+        self.btn_header_prefs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_header_prefs.setAutoRaise(True)
+        self.btn_header_prefs.setStyleSheet(
+            f"QToolButton#header_btn {{"
+            f"  background: transparent;"
+            f"  border: none;"
+            f"  padding: 0px;"
+            f"  border-radius: 6px;"
+            f"}}"
+            f"QToolButton#header_btn:hover {{"
+            f"  background-color: rgba(255, 255, 255, 0.08);"
+            f"}}"
+            f"QToolButton#header_btn:pressed {{"
+            f"  background-color: rgba(255, 255, 255, 0.14);"
+            f"}}")
+        self.btn_header_prefs.clicked.connect(self._open_preferences)
+        self.btn_header_prefs.hide()      # shown by `_enter_main_ui`
+        h.addWidget(self.btn_header_prefs)
+
+        # ⌘, / Ctrl+,  shortcut for the Preferences dialog
+        _prefs_sc = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+,"), self)
+        _prefs_sc.activated.connect(self._open_preferences)
+
         # Fire off the update check 2 s after startup so it doesn't
         # block the initial paint.
         QtCore.QTimer.singleShot(2000, self._kick_off_update_check)
@@ -2990,9 +3816,23 @@ class MainWindow(QtWidgets.QMainWindow):
         # is clicked.
         self._console_dock.setFloating(False)
         self._console_dock.hide()
+        # Minimum width matters when the dock lands on the right side —
+        # without it, Qt opens a ~40-px-wide strip where no log text
+        # can actually be read.  Tall enough to show 12 lines bottom-docked.
+        # Set on BOTH the inner widget AND the dock itself; Qt's splitter
+        # honours the dock's own minimums, not just the child widget's.
+        self.console_log.setMinimumWidth(360)
+        self.console_log.setMinimumHeight(120)
+        self._console_dock.setMinimumWidth(360)
+        self._console_dock.setMinimumHeight(120)
         # Keep the toggle button in sync when the dock is closed via its
         # own ✕ button
         self._console_dock.visibilityChanged.connect(self._on_console_visibility)
+        # When the user drags the dock to a different edge, give it a
+        # sensible width / height.  Without this the right-docked
+        # console opens as a 1-column strip — the regression the user hit.
+        self._console_dock.dockLocationChanged.connect(
+            self._on_console_dock_moved)
 
     def _toggle_console(self):
         """Show / hide the console dock from the status-bar button."""
@@ -3000,12 +3840,47 @@ class MainWindow(QtWidgets.QMainWindow):
             self._console_dock.hide()
         else:
             self._console_dock.show()
+            # Force a usable size every time the dock is shown.  Qt's
+            # remembered geometry from the previous show() can be a
+            # 1-column strip if the user resized the splitter narrow,
+            # or if the central widget grew between shows.
+            try:
+                area = self.dockWidgetArea(self._console_dock)
+                if area in (Qt.DockWidgetArea.RightDockWidgetArea,
+                            Qt.DockWidgetArea.LeftDockWidgetArea):
+                    self.resizeDocks([self._console_dock], [420],
+                                     Qt.Orientation.Horizontal)
+                else:
+                    self.resizeDocks([self._console_dock], [200],
+                                     Qt.Orientation.Vertical)
+            except Exception:
+                pass
 
     def _on_console_visibility(self, visible: bool):
         """Keep the status-bar toggle button's checked state in sync."""
         try:
             self.btn_show_console.setChecked(visible)
         except AttributeError:
+            pass
+
+    def _on_console_dock_moved(self, area):
+        """Give the console dock a usable size whenever Qt re-docks it.
+
+        Bottom-docked: ~200 px tall so ~12 lines of log are visible.
+        Right-docked:  ~420 px wide so most log lines don't wrap.
+        Without this, Qt's default for a fresh right-dock is a ~40-px
+        strip — the regression the user reported.
+        """
+        try:
+            if area == Qt.DockWidgetArea.RightDockWidgetArea \
+               or area == Qt.DockWidgetArea.LeftDockWidgetArea:
+                self.resizeDocks([self._console_dock], [420],
+                                 Qt.Orientation.Horizontal)
+            elif area == Qt.DockWidgetArea.BottomDockWidgetArea \
+                 or area == Qt.DockWidgetArea.TopDockWidgetArea:
+                self.resizeDocks([self._console_dock], [200],
+                                 Qt.Orientation.Vertical)
+        except Exception:
             pass
 
     # ── Tiny helpers for compact widget construction ──────────────────────
@@ -3142,7 +4017,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "use the disk icon to save the current sidebar as a new one.")
         preset_row.addWidget(self.c_preset, 1)
         self.btn_preset_save = QtWidgets.QToolButton()
-        self.btn_preset_save.setText("Save…")
+        self.btn_preset_save.setText("Save")
         self.btn_preset_save.setToolTip(
             "Save the current sidebar values as a new preset.")
         self.btn_preset_save.clicked.connect(self._on_preset_save)
@@ -3315,6 +4190,56 @@ class MainWindow(QtWidgets.QMainWindow):
             lambda _=None: self._push_detection_preview_params())
         self.s_bg_radius.valueChanged.connect(
             lambda _=None: self._push_detection_preview_params())
+
+        # ── Wavelet backend params ──────────────────────────────────
+        # Only meaningful when Detection backend = "Wavelet (à trous)".
+        # Hidden by default to keep the Detection section compact; we
+        # show them via setRowVisible() when the user picks the wavelet
+        # backend.  Without this, the four extra rows pushed the
+        # sidebar's intrinsic height up enough to squeeze the console
+        # dock at the bottom of the window.
+        self.c_wavelet_family = _QuietComboBox()
+        self.c_wavelet_family.addItems(
+            ["db2", "db4", "sym4", "bior1.3", "coif1"])
+        self.c_wavelet_family.setToolTip(
+            "Wavelet family for the à-trous decomposition.\n"
+            "• db2   — palmTRACER default; sharp localisation.\n"
+            "• db4   — smoother; good for noisier movies.\n"
+            "• sym4 — symmetric Daubechies; less ringing.\n"
+            "• bior1.3 — biorthogonal; symmetric reconstruction.\n"
+            "• coif1 — Coiflet; vanishing moments on both sides.")
+        gl.addRow("Wavelet family", self.c_wavelet_family)
+        self.s_wavelet_levels = self._spin_int(2, 1, 5,
+            tip="Number of detail scales summed before thresholding.\n"
+                "Higher levels capture broader spots but admit more\n"
+                "background.  2 is tuned for the typical 7-px PSF at\n"
+                "0.106 µm/px sampling.")
+        gl.addRow("Wavelet levels", self.s_wavelet_levels)
+        self.s_wavelet_threshold_k = self._spin_dbl(3.0, 0.5, 10.0, 0.1,
+            decimals=2,
+            tip="Detail-map threshold = k · MAD · 1.4826 (robust-σ).\n"
+                "Higher = stricter detection (fewer spots, fewer false\n"
+                "positives).  Default 3.0 matches the palmTRACER preset.")
+        gl.addRow("Wavelet threshold k", self.s_wavelet_threshold_k)
+        self.s_wavelet_min_distance = self._spin_int(3, 1, 20,
+            tip="Minimum separation (px) between accepted peaks.\n"
+                "Prevents the same blink being detected multiple times\n"
+                "at adjacent maxima of the wavelet response.")
+        gl.addRow("Wavelet min distance (px)", self.s_wavelet_min_distance)
+        # Stash the form layout + the four widgets so we can toggle
+        # row visibility from the backend-changed signal.  Kept as
+        # tuple so the order is explicit and self-documenting.
+        self._wavelet_param_widgets = (
+            self.c_wavelet_family,
+            self.s_wavelet_levels,
+            self.s_wavelet_threshold_k,
+            self.s_wavelet_min_distance,
+        )
+        self._wavelet_param_form = gl
+        # Start hidden — they'll show when the backend combo gets
+        # wired up below and selects "wavelet".
+        self._set_wavelet_params_visible(False)
+
         layout.addWidget(sec)
 
         # ── Linking ───────────────────────────────────────────────────────
@@ -3396,7 +4321,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_roi_mode.setToolTip(
             "Restrict analysis to a region of interest in the field of view.\n"
             "• None — analyse the whole image.\n"
-            "• Auto threshold — pick a threshold from the mean projection.\n"
+            "• Auto threshold — pick a threshold from the chosen projection.\n"
             "• Manual threshold — use the value below.\n"
             "• Manual polygon — draw a polygon per file on the Import tab\n"
             "  (Set ROI… buttons).  Files without a saved polygon fall back\n"
@@ -3409,7 +4334,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "low-contrast SMLM data; Otsu for bimodal histograms.")
         gl.addRow("Auto method", self.c_roi_auto_method)
         self.s_roi_threshold = self._spin_dbl(0.08, 0.0, 1.0, 0.005, decimals=3,
-            tip="Manual threshold on the normalised mean projection [0, 1].\n"
+            tip="Manual threshold on the normalised projection [0, 1].\n"
                 "Drag the slider below to sweep — the green mask overlay in\n"
                 "the ROI viewer updates as you move.")
         # Slider companion — linear ×1000 mapping (range 0..1.000, step 0.001).
@@ -3445,12 +4370,72 @@ class MainWindow(QtWidgets.QMainWindow):
         vrt.addWidget(self.sld_roi_threshold)
         gl.addRow("Manual threshold", wrt)
         self.c_roi_mask_mode = _QuietComboBox()
-        self.c_roi_mask_mode.addItems(["Mean", "Sum"])
+        self.c_roi_mask_mode.addItems(["Max", "Blink density", "Mean", "Sum"])
+        self.c_roi_mask_mode.setCurrentText("Max")
         self.c_roi_mask_mode.setToolTip(
-            "Which projection is used to compute the ROI mask.\n"
-            "Mean is appropriate when signal density is uniform; Sum\n"
-            "emphasises bright sparse spots.")
+            "Projection used to compute the ROI threshold mask.\n"
+            "• Max — brightest value each pixel ever reached.  Best default\n"
+            "  for sptPALM: cells light up clearly, background stays dim.\n"
+            "• Blink density — count of frames where each pixel exceeds\n"
+            "  its temporal median + 3·MAD.  Most discriminative: cells\n"
+            "  blink repeatedly, autofluorescent background does not.\n"
+            "• Mean — average intensity per pixel.  Poor on sptPALM data\n"
+            "  because steady autofluorescence outweighs sparse blinks.\n"
+            "• Sum — same shape as Mean, kept for backward compatibility.\n"
+            "NB: the analysis backend currently uses Mean regardless —\n"
+            "this control is for choosing where to draw the ROI mask\n"
+            "in the preview viewer.")
         gl.addRow("Projection for ROI", self.c_roi_mask_mode)
+
+        # Background-suppression scale (DoG σ_bg).  Subtracts a heavily-
+        # blurred copy of the projection from a lightly-blurred copy so
+        # slow autofluorescent gradients fall away before thresholding.
+        # The right value scales with cell size: anything larger than
+        # the cell radius works; anything smaller eats into the cell.
+        self.s_roi_bg_sigma = self._spin_dbl(25.0, 0.0, 100.0, 1.0, decimals=1,
+            tip="Background-suppression scale σ_bg (pixels).\n"
+                "Before thresholding, a heavily-blurred copy of the projection\n"
+                "(this σ) is subtracted from a lightly-blurred copy — slow\n"
+                "autofluorescent illumination falls away, leaving only cell-\n"
+                "scale blink texture.  Pick a value LARGER than the cells\n"
+                "you want to keep:\n"
+                "  • 0    — disable (no background suppression)\n"
+                "  • 15   — small cells / very tight masks\n"
+                "  • 25   — typical mammalian cells (default, ~2.6 µm @ 0.106 µm/px)\n"
+                "  • 40+  — large cells or wide processes\n"
+                "If your cell ROI looks eroded in the middle, raise this.\n"
+                "If background is still bleeding in, lower it.")
+        # Companion slider — 0..100 px, integer steps (drag-to-sweep).
+        self.sld_roi_bg_sigma = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+        self.sld_roi_bg_sigma.setMinimum(0)
+        self.sld_roi_bg_sigma.setMaximum(100)
+        self.sld_roi_bg_sigma.setSingleStep(1)
+        self.sld_roi_bg_sigma.setPageStep(5)
+        self.sld_roi_bg_sigma.setValue(int(round(self.s_roi_bg_sigma.value())))
+        self.sld_roi_bg_sigma.setToolTip(
+            "Drag to sweep background-suppression σ_bg (0–100 px).  Watch\n"
+            "the green mask reshape: too small eats into cells, too large\n"
+            "lets diffuse background back in.")
+        self._roi_bg_sigma_sync_guard = False
+        def _on_bg_sld(v: int):
+            if self._roi_bg_sigma_sync_guard: return
+            self._roi_bg_sigma_sync_guard = True
+            try: self.s_roi_bg_sigma.setValue(float(v))
+            finally: self._roi_bg_sigma_sync_guard = False
+        def _on_bg_spin(v: float):
+            if self._roi_bg_sigma_sync_guard: return
+            self._roi_bg_sigma_sync_guard = True
+            try: self.sld_roi_bg_sigma.setValue(int(round(v)))
+            finally: self._roi_bg_sigma_sync_guard = False
+        self.sld_roi_bg_sigma.valueChanged.connect(_on_bg_sld)
+        self.s_roi_bg_sigma.valueChanged.connect(_on_bg_spin)
+        wbg = QtWidgets.QWidget()
+        vbg = QtWidgets.QVBoxLayout(wbg)
+        vbg.setContentsMargins(0, 0, 0, 0)
+        vbg.setSpacing(4)
+        vbg.addWidget(self.s_roi_bg_sigma)
+        vbg.addWidget(self.sld_roi_bg_sigma)
+        gl.addRow("Background scale σ", wbg)
 
         # Grey out threshold-related controls when the mode doesn't use
         # them, AND show/hide the embedded ROI viewer on the Import tab
@@ -3463,6 +4448,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_roi_threshold.valueChanged.connect(
             lambda _=None: self._push_roi_mask_params())
         self.c_roi_mask_mode.currentTextChanged.connect(
+            lambda _=None: self._push_roi_mask_params())
+        self.s_roi_bg_sigma.valueChanged.connect(
             lambda _=None: self._push_roi_mask_params())
         layout.addWidget(sec)
 
@@ -3510,8 +4497,24 @@ class MainWindow(QtWidgets.QMainWindow):
             "                        macOS/M-chip combinations may hit memory-\n"
             "                        allocator issues at very low minmass.\n"
             "• Torch — NVIDIA CUDA — force NVIDIA GPU.\n"
-            "• Torch — CPU         — force PyTorch on CPU (for benchmarking).")
+            "• Torch — CPU         — force PyTorch on CPU (for benchmarking).\n"
+            "• Wavelet (à trous)   — palmTRACER-style CPU detector.  Slower than\n"
+            "                        the GPU backends but yields a different\n"
+            "                        spot list — useful for cross-validation.")
         gl.addRow("Detection backend", self.c_backend)
+        # Wavelet params are hidden by default; show them only when
+        # the user picks the wavelet backend.
+        def _on_backend_changed(label):
+            try:
+                value = self._backend_value_from_label(str(label))
+            except Exception:
+                value = ""
+            self._set_wavelet_params_visible(value == "wavelet")
+        self.c_backend.currentTextChanged.connect(_on_backend_changed)
+        # Apply once on construction so the rows reflect the initial
+        # selection (Auto / Trackpy / Wavelet …).
+        QtCore.QTimer.singleShot(0, lambda: _on_backend_changed(
+            self.c_backend.currentText()))
         self.s_workers = self._spin_int(N_CPUS, 1, N_CPUS,
             tip="Parallel CPU workers for the trackpy backend's multiprocessing\n"
                 "pool and the MSD fitting thread pool.  Default = all cores.")
@@ -3540,55 +4543,54 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ── Landing page (one-way gateway, not a tab) ─────────────────────────
     def _build_landing_page(self) -> QtWidgets.QWidget:
-        """Full-window welcome screen shown on launch.  Once the user picks
-        an action card, the QStackedWidget swaps to the main sidebar+tabs
-        UI and there's no way back to this page for the rest of the
-        session."""
+        """Full-window welcome screen, Minecraft-menu style.
+
+        Four full-width primary actions stacked vertically (the "Play"
+        block in Minecraft's main menu), then a single row beneath with
+        Settings + Quit (the "Options / Quit Game" pair).  Once the
+        user picks an action, the QStackedWidget swaps to the main
+        sidebar+tabs UI and there's no way back this session.
+        """
         page = QtWidgets.QWidget()
         page.setObjectName("landing_page")
 
-        # Use a horizontal centring wrapper so the content column is capped
-        # at ~860 px wide regardless of window width — keeps the hero text
-        # readable and the cards from stretching to absurd widths.
+        # Horizontal centring so the menu column has a fixed maximum
+        # width regardless of how wide the window is.
         wrap = QtWidgets.QHBoxLayout(page)
-        wrap.setContentsMargins(40, 28, 40, 28)
+        wrap.setContentsMargins(40, 24, 40, 24)
         wrap.addStretch(1)
 
         column = QtWidgets.QWidget()
-        column.setMaximumWidth(860)
+        column.setMaximumWidth(640)
+        column.setMinimumWidth(480)
         outer = QtWidgets.QVBoxLayout(column)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(18)
+        outer.setSpacing(12)
+        outer.addStretch(1)
 
-        # Hero block.  Title uses rich text so we can colour "FIREFLY" in
-        # the accent blue while keeping "Welcome to " in the default text
-        # colour.
+        # Hero: "Welcome to" line above the big FIREFLY logo, with the
+        # tagline underneath.
+        welcome = QtWidgets.QLabel("Welcome to")
+        welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome.setStyleSheet(
+            f"color: {_THEME['TXT_MUTED']}; font-size: 18px; "
+            f"font-weight: 500; letter-spacing: 2px;")
+        outer.addWidget(welcome)
         title = QtWidgets.QLabel(
-            f"Welcome to "
-            f"<span style='color:{_THEME['ACC']};'>FIREFLY</span>")
+            f"<span style='color:{_THEME['ACC']};letter-spacing:6px;'>"
+            f"FIREFLY</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
-            f"color: {_THEME['TXT']}; font-size: 28px; font-weight: 700;")
+            f"color: {_THEME['TXT']}; font-size: 48px; font-weight: 800;")
         outer.addWidget(title)
         sub = QtWidgets.QLabel(
-            "Fluorescence Inference & Reconstruction Engine — Framework "
-            "for Localization Yields.")
+            "Fluorescence Inference & Reconstruction Engine")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; font-size: 13px;")
         outer.addWidget(sub)
-        prompt = QtWidgets.QLabel("What would you like to do?")
-        prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        prompt.setStyleSheet(
-            f"color: {_THEME['TXT']}; font-size: 15px; "
-            "font-weight: 600; padding-top: 8px;")
-        outer.addWidget(prompt)
-
-        # Card grid — 2x2
-        grid = QtWidgets.QGridLayout()
-        grid.setSpacing(14)
-        grid.setContentsMargins(0, 4, 0, 0)
+        outer.addSpacing(20)
 
         def _go(target_tab: str, *, batch: bool | None = None):
             def _fn():
@@ -3601,42 +4603,82 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._enter_main_ui(target_tab)
             return _fn
 
-        tiles = [
-            ("Analyse a sample",
-             "Pick one .czi or .tif and run the full sptPALM pipeline.",
-             "▶", _go("Import", batch=False)),
-            ("Batch a folder",
-             "Process every file in a folder, one after another, with shared settings.",
-             "⊞", _go("Import", batch=True)),
-            ("Compare groups",
-             "Load existing analysis outputs and produce a side-by-side comparison figure.",
-             "⇄", _go("Compare")),
-            ("Visualise tracks",
-             "Open a previous run in an embedded napari viewer to scrub frames and explore tracks.",
-             "◉", _go("Visualise")),
-        ]
-        for i, (ttl, desc, icon, slot) in enumerate(tiles):
-            tile = _ActionTile(ttl, desc, icon_char=icon)
-            tile.clicked.connect(slot)
-            grid.addWidget(tile, i // 2, i % 2)
-        outer.addLayout(grid, stretch=1)
+        def _menu_tile(label: str, description: str, slot, *,
+                       big: bool = True) -> QtWidgets.QFrame:
+            """Build one landing-menu tile styled to match the program's
+            existing `_ModeTile` look — rounded PANEL fill, accent
+            border on hover, centred bold title with a muted subtitle.
 
-        # Footer row — secondary jump-link to Figures
-        footer = QtWidgets.QHBoxLayout()
-        footer.setSpacing(20)
-        footer.addStretch(1)
-        btn = QtWidgets.QPushButton("Customise figures →")
-        btn.setFlat(True)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QPushButton {{ color: {_THEME['ACC']}; "
-            "background: transparent; border: none; padding: 6px 8px; }} "
-            f"QPushButton:hover {{ color: {_THEME['ACC_HOVER']}; "
-            "text-decoration: underline; }}")
-        btn.clicked.connect(lambda _=None: self._enter_main_ui("Figures"))
-        footer.addWidget(btn)
-        footer.addStretch(1)
-        outer.addLayout(footer)
+            `big=True`  for primary actions (taller, larger font).
+            `big=False` for the Settings / Quit row.
+            """
+            tile = QtWidgets.QFrame()
+            tile.setObjectName("mode_tile")  # picks up QSS rules
+            tile.setCursor(Qt.CursorShape.PointingHandCursor)
+            tile.setProperty("checked", False)
+            tile.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                               QtWidgets.QSizePolicy.Policy.Fixed)
+            tile.setMinimumHeight(82 if big else 60)
+
+            v = QtWidgets.QVBoxLayout(tile)
+            v.setContentsMargins(20, 12, 20, 12)
+            v.setSpacing(3)
+            lbl = QtWidgets.QLabel(label)
+            lbl.setObjectName("mode_tile_title")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            f = lbl.font(); f.setBold(True)
+            f.setPointSize(18 if big else 14)
+            lbl.setFont(f)
+            v.addWidget(lbl)
+            if description:
+                desc_lbl = QtWidgets.QLabel(description)
+                desc_lbl.setObjectName("mode_tile_subtitle")
+                desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                desc_lbl.setWordWrap(True)
+                v.addWidget(desc_lbl)
+
+            # mousePressEvent-style click — tile is a QFrame so we wire
+            # the click ourselves rather than relying on QAbstractButton.
+            def _press(_event, _slot=slot):
+                if _event.button() == Qt.MouseButton.LeftButton:
+                    _slot()
+            tile.mousePressEvent = _press   # type: ignore[assignment]
+            return tile
+
+        # ── Primary actions (stacked vertically) ─────────────────────────
+        primary_actions = [
+            ("Analysis",
+             "Pick one .czi or .tif and run the full sptPALM pipeline.",
+             _go(TAB_IMPORT, batch=False)),
+            ("Batch",
+             "Process every file in a folder, one after another, with shared settings.",
+             _go(TAB_IMPORT, batch=True)),
+            ("Compare",
+             "Load previous analysis outputs and produce a side-by-side comparison figure.",
+             _go(TAB_COMPARE)),
+            ("Inspect",
+             "Open a previous run in an embedded napari viewer to scrub frames and explore tracks.",
+             _go(TAB_VISUALISE)),
+        ]
+        for label, desc, slot in primary_actions:
+            outer.addWidget(_menu_tile(label, desc, slot, big=True))
+
+        outer.addSpacing(18)
+
+        # ── Settings + Quit row (side by side) ───────────────────────────
+        bottom_row = QtWidgets.QHBoxLayout()
+        bottom_row.setSpacing(12)
+        bottom_row.addWidget(_menu_tile(
+            "Settings", "",
+            lambda: self._open_preferences(),
+            big=False))
+        bottom_row.addWidget(_menu_tile(
+            "Quit", "",
+            lambda: self.close(),
+            big=False))
+        outer.addLayout(bottom_row)
+
+        outer.addStretch(2)
 
         wrap.addWidget(column, stretch=0)
         wrap.addStretch(1)
@@ -3646,10 +4688,196 @@ class MainWindow(QtWidgets.QMainWindow):
         """Swap the QStackedWidget from landing → main UI and activate the
         named tab.  Called once per session, on action-card click."""
         self._main_stack.setCurrentIndex(1)
+        # Reveal the header cogwheel — it stays hidden on the landing
+        # page (where the Settings tile is the entry point) but becomes
+        # the persistent cross-tab Preferences shortcut from here on.
+        if hasattr(self, "btn_header_prefs"):
+            self.btn_header_prefs.show()
         for i in range(self.tabs.count()):
             if self.tabs.tabText(i) == target_tab:
                 self.tabs.setCurrentIndex(i)
                 return
+
+    # ── Tab-aware sidebar ────────────────────────────────────────────────
+    def _build_remaining_sidebar_pages(self):
+        """Populate sidebar pages 1–4 by re-parenting widgets that the
+        tab-body builders created.  Page 0 (Import) was built in
+        `__init__` already.
+
+        Mapping (must match the tab order set by __init__):
+          1 → Analysis tab     → muted info label, no controls
+          2 → Compare tab      → muted info label, no controls
+          3 → Visualise tab    → Load / Track filters / Cluster sections
+          4 → Re-process tab   → Source-run + ROI helper
+        """
+        muted = f"color: {_THEME['TXT_MUTED']}; padding: 16px;"
+
+        # Page 1 — Analysis (no settings; live progress only).
+        analysis_page = QtWidgets.QWidget()
+        ap_v = QtWidgets.QVBoxLayout(analysis_page)
+        ap_v.setContentsMargins(0, 0, 0, 0)
+        _lbl = QtWidgets.QLabel(
+            "No settings for this tab.\n\nLive analysis progress, "
+            "resource usage, and results appear on the right.")
+        _lbl.setWordWrap(True); _lbl.setStyleSheet(muted)
+        _lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        ap_v.addWidget(_lbl); ap_v.addStretch(1)
+        self._sidebar_stack.addWidget(analysis_page)         # index 1
+
+        # Page 2 — Compare: comparison settings (output folder/name) in
+        # the sidebar; the group cards stay inline in the tab body
+        # because they're full-width drop targets.
+        compare_page = QtWidgets.QWidget()
+        cp_outer = QtWidgets.QVBoxLayout(compare_page)
+        cp_outer.setContentsMargins(0, 0, 0, 0); cp_outer.setSpacing(0)
+        cp_scroll = QtWidgets.QScrollArea()
+        cp_scroll.setWidgetResizable(True)
+        cp_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        cp_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        cp_inner = QtWidgets.QWidget()
+        cp_v = QtWidgets.QVBoxLayout(cp_inner)
+        cp_v.setContentsMargins(12, 0, 12, 12); cp_v.setSpacing(8)
+        sec_cmp = _CollapsibleSection("Comparison settings")
+        sec_cmp.content_layout.addWidget(self._cmp_settings_widget)
+        cp_v.addWidget(sec_cmp)
+        _hint = QtWidgets.QLabel(
+            "Add groups on the right, then click Generate comparison.")
+        _hint.setWordWrap(True)
+        _hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; padding: 4px;")
+        cp_v.addWidget(_hint)
+        cp_v.addStretch(1)
+        cp_scroll.setWidget(cp_inner)
+        cp_outer.addWidget(cp_scroll)
+        self._sidebar_stack.addWidget(compare_page)          # index 2
+
+        # Page 3 — Visualise (re-parents load/filter/DBSCAN widgets).
+        vis_page = QtWidgets.QWidget()
+        vp_outer = QtWidgets.QVBoxLayout(vis_page)
+        vp_outer.setContentsMargins(0, 0, 0, 0); vp_outer.setSpacing(0)
+        vp_scroll = QtWidgets.QScrollArea()
+        vp_scroll.setWidgetResizable(True)
+        vp_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        vp_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        vp_inner = QtWidgets.QWidget()
+        vp_v = QtWidgets.QVBoxLayout(vp_inner)
+        vp_v.setContentsMargins(12, 0, 12, 12); vp_v.setSpacing(8)
+        sec_load = _CollapsibleSection("Load")
+        sec_load.content_layout.addWidget(self._vis_load_widget)
+        vp_v.addWidget(sec_load)
+        sec_filt = _CollapsibleSection("Track filters")
+        sec_filt.content_layout.addWidget(self._vis_filter_widget)
+        vp_v.addWidget(sec_filt)
+        sec_clu  = _CollapsibleSection("Cluster (DBSCAN)")
+        sec_clu.content_layout.addWidget(self._vis_dbscan_widget)
+        vp_v.addWidget(sec_clu)
+        vp_v.addStretch(1)
+        vp_scroll.setWidget(vp_inner)
+        vp_outer.addWidget(vp_scroll)
+        self._sidebar_stack.addWidget(vis_page)              # index 3
+
+        # Page 4 — Re-process (re-parents source picker).
+        pp_page = QtWidgets.QWidget()
+        pp_outer = QtWidgets.QVBoxLayout(pp_page)
+        pp_outer.setContentsMargins(0, 0, 0, 0); pp_outer.setSpacing(0)
+        pp_scroll = QtWidgets.QScrollArea()
+        pp_scroll.setWidgetResizable(True)
+        pp_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        pp_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        pp_inner = QtWidgets.QWidget()
+        pp_v = QtWidgets.QVBoxLayout(pp_inner)
+        pp_v.setContentsMargins(12, 0, 12, 12); pp_v.setSpacing(8)
+        sec_src = _CollapsibleSection("Source run")
+        sec_src.content_layout.addWidget(self._pp_source_widget)
+        pp_v.addWidget(sec_src)
+        # Re-parent the ROI viewer's toolbar controls (Filtered view /
+        # Clear polygons / Load ROI…) out of the viewer's inline
+        # toolbar into the sidebar so the tab body is just the viewer
+        # canvas with no header chrome.
+        sec_roi = _CollapsibleSection("ROI controls")
+        roi_w = QtWidgets.QWidget()
+        roi_v = QtWidgets.QVBoxLayout(roi_w)
+        roi_v.setContentsMargins(0, 0, 0, 0); roi_v.setSpacing(6)
+        _pv = self._postproc_roi_viewer
+        for _btn_attr in ("_cb_filtered", "_b_clear", "_b_load_roi"):
+            _w = getattr(_pv, _btn_attr, None)
+            if _w is not None:
+                roi_v.addWidget(_w)
+        sec_roi.content_layout.addWidget(roi_w)
+        pp_v.addWidget(sec_roi)
+        pp_v.addStretch(1)
+        pp_scroll.setWidget(pp_inner)
+        pp_outer.addWidget(pp_scroll)
+        self._sidebar_stack.addWidget(pp_page)               # index 4
+
+        # ── Bottom-button pages (action stack) ────────────────────────
+        # Page 1 — Analysis: no action (empty placeholder).
+        self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 1
+        # Page 2 — Compare: re-parent the existing Generate button.
+        cmp_act = QtWidgets.QWidget()
+        cmp_av = QtWidgets.QVBoxLayout(cmp_act)
+        cmp_av.setContentsMargins(12, 6, 12, 12)
+        _btn = getattr(self, "btn_cmp_run", None)
+        if _btn is not None:
+            _btn.setMinimumHeight(36)
+            cmp_av.addWidget(_btn)
+        self._sidebar_action.addWidget(cmp_act)               # index 2
+        # Page 3 — Visualise: no action.
+        self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 3
+        # Page 4 — Re-process: the action widget built by the tab.
+        self._sidebar_action.addWidget(self._pp_action_widget)  # index 4
+
+    def _on_tab_changed_swap_sidebar(self, idx: int):
+        """Swap both sidebar stacks (settings + bottom button) to match
+        the active tab, and re-label the sidebar header.
+
+        Tab order is fixed by `__init__`: 0=Import, 1=Analysis,
+        2=Compare, 3=Visualise, 4=Re-process.  Per the user spec the
+        Analysis tab reuses the Import sidebar wholesale (same
+        parameter set + same Start button) — there's no separate page
+        for it; the handler just routes idx=1 → page 0.
+        """
+        # Defensive clamp — Qt may emit currentChanged during shutdown.
+        if idx < 0 or idx >= self.tabs.count():
+            return
+        # Analysis tab piggybacks Import's sidebar.
+        page_idx = 0 if idx == 1 else idx
+        try:
+            self._sidebar_stack.setCurrentIndex(
+                min(page_idx, self._sidebar_stack.count() - 1))
+            self._sidebar_action.setCurrentIndex(
+                min(page_idx, self._sidebar_action.count() - 1))
+        except Exception:
+            return
+        titles = {
+            0: "Analysis Parameters",
+            1: "Analysis Parameters",   # Analysis mirrors Import
+            2: "Comparison",
+            3: "Visualise",
+            4: "Re-process",
+        }
+        try:
+            self._sidebar_title.setText(titles.get(idx, ""))
+        except Exception:
+            pass
+
+    def _open_preferences(self, focus_section: str | None = None):
+        """Open the FIREFLY preferences dialog.  If `focus_section` is
+        provided, the dialog opens with that left-rail row selected."""
+        try:
+            dlg = _PreferencesDialog(self)
+            if focus_section:
+                for i in range(dlg._rail.count()):
+                    if dlg._rail.item(i).text() == focus_section:
+                        dlg._rail.setCurrentRow(i)
+                        break
+            dlg.exec()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Preferences",
+                f"Couldn't open preferences:\n\n{exc}")
 
     def _build_import_tab(self):
         """Import tab — single-source-of-truth for input/output config.
@@ -3906,8 +5134,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._roi_viewer_container = QtWidgets.QFrame()
         # Reserve a min height so the panel doesn't grow from nothing the
         # first time a file is loaded — that resize is what macOS animates
-        # as a "slide".
-        self._roi_viewer_container.setMinimumHeight(280)
+        # as a "slide".  Kept modest so the Import tab stays comfortably
+        # vertical-compressible on small (1366×768 / 1440×900) laptops.
+        self._roi_viewer_container.setMinimumHeight(180)
         rvl = QtWidgets.QVBoxLayout(self._roi_viewer_container)
         rvl.setContentsMargins(0, 8, 0, 0)
         self._roi_viewer = _RoiViewer()
@@ -3919,7 +5148,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # the layout in one step (that triple causes the macOS slide).
         QtCore.QTimer.singleShot(0, lambda: self._roi_viewer._ensure_viewer())
 
-        self.tabs.addTab(tab, "Import")
+        self.tabs.addTab(tab, TAB_IMPORT)
 
     def _on_import_mode_changed(self, mode):
         """Show whichever sub-panel matches the new mode and hide the
@@ -4015,13 +5244,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # Start on the results page (cockpit only shows during runs)
         self._analysis_stack.setCurrentIndex(1)
 
-        self.tabs.addTab(tab, "Analysis")
+        self.tabs.addTab(tab, TAB_ANALYSIS)
 
     # ── Figures tab ───────────────────────────────────────────────────────
-    def _build_figures_tab(self):
-        """Customisation for figure outputs — single-sample (Analysis tab)
-        and comparison (Compare tab) — plus a live preview that updates
-        as the user changes theme / colormap settings."""
+    def _build_figures_widget(self) -> QtWidgets.QWidget:
+        """Customisation for figure outputs — single-sample (Run tab) and
+        comparison (Compare tab) — plus a live preview that updates as
+        the user changes theme / colormap settings.
+
+        Returns the widget so the caller can decide where to host it.
+        Currently hosted inside the Preferences dialog (see
+        `_PreferencesDialog`) instead of as a top-level tab — the
+        figure-render knobs are app-wide defaults, not per-run state.
+        """
         tab = QtWidgets.QWidget()
         outer = QtWidgets.QHBoxLayout(tab)
         outer.setContentsMargins(12, 12, 12, 12)
@@ -4041,13 +5276,18 @@ class MainWindow(QtWidgets.QMainWindow):
         intro.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
         v.addWidget(intro)
 
+        # App theme (Qt UI) has moved to Preferences → Appearance
+        # (cogwheel button in the header).  This widget is concerned
+        # purely with figure-output styling now.
+
         # ── Single-sample figure ──────────────────────────────────────────
         sec, gl = self._make_form_section("Single-sample figure (Analysis tab)")
         self.c_fig_theme = _QuietComboBox()
-        self.c_fig_theme.addItems(["Dark", "Light", "Publication"])
+        self.c_fig_theme.addItems(["Dark", "AMOLED", "Light", "Publication"])
         self.c_fig_theme.setToolTip(
             "Overall colour scheme for figure backgrounds, axes, and text.\n"
             "• Dark         — GitHub-dark (matches the GUI).\n"
+            "• AMOLED       — pure-black backgrounds, matches AMOLED app theme.\n"
             "• Light        — GitHub-light, sans-serif.\n"
             "• Publication  — White background, black axes, serif font.")
         gl.addRow("Theme", self.c_fig_theme)
@@ -4098,7 +5338,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # ── Comparison figure (moved from Compare tab) ────────────────────
         sec, gl = self._make_form_section("Comparison figure (Compare tab)")
         self.c_cmp_theme = _QuietComboBox()
-        self.c_cmp_theme.addItems(["Dark", "Light", "Publication"])
+        self.c_cmp_theme.addItems(["Dark", "AMOLED", "Light", "Publication"])
         self.c_cmp_theme.setToolTip(
             "Theme for the multi-group comparison figure.  Independent\n"
             "from the single-sample theme so you can mix and match.")
@@ -4129,7 +5369,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def _make_preview_label(caption: str) -> QtWidgets.QLabel:
             lbl = QtWidgets.QLabel("Rendering preview…")
-            lbl.setMinimumSize(560, 320)
+            # Shrunk from 560×320 → 400×240 so the Figures tab can fit
+            # on a narrower screen.  The previous floor was forcing the
+            # whole MainWindow to claim a minimum width that exceeded
+            # 13-inch laptop screens, which made fullscreen-not-zoomed
+            # impossible and stopped the console dock from snapping
+            # to the right side.  The preview labels are rendered to
+            # an Ignored-Ignored size policy below so they still scale
+            # to whatever width the user gives the tab.
+            lbl.setMinimumSize(400, 240)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             # Ignored policy in both directions → layout sizes the label
             # from the stretch / minimum hints only, NOT from the pixmap's
@@ -4187,7 +5435,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # First render after construction settles
         QtCore.QTimer.singleShot(80, self._refresh_figures_preview)
 
-        self.tabs.addTab(tab, "Figures")
+        return tab
 
     @staticmethod
     def _figure_theme_palette(theme: str):
@@ -4709,12 +5957,44 @@ class MainWindow(QtWidgets.QMainWindow):
             mode = self.c_roi_mode.currentText()
             method = self.c_roi_auto_method.currentText().lower()  # otsu/li/triangle/mean
             threshold = float(self.s_roi_threshold.value())
-            mask_mode = self.c_roi_mask_mode.currentText().lower()  # mean/sum
+            # Normalise the combo label to the short tokens the viewer
+            # expects: "max", "blink", "mean", or "sum".  "Blink density"
+            # in particular needs to collapse to plain "blink".
+            _mm_raw = self.c_roi_mask_mode.currentText().lower()
+            if _mm_raw.startswith("blink"):
+                mask_mode = "blink"
+            elif _mm_raw.startswith("max"):
+                mask_mode = "max"
+            elif _mm_raw.startswith("sum"):
+                mask_mode = "sum"
+            else:
+                mask_mode = "mean"
+            bg_sigma = float(self.s_roi_bg_sigma.value())
             self._roi_viewer.set_roi_mask_params(
                 mode=mode, auto_method=method,
-                threshold=threshold, mask_mode=mask_mode)
+                threshold=threshold, mask_mode=mask_mode,
+                bg_sigma=bg_sigma)
         except Exception:
             pass
+
+    def _set_wavelet_params_visible(self, visible: bool):
+        """Show / hide the four wavelet-backend param rows in the
+        Detection section.  Called from the backend-combo's
+        currentTextChanged signal so the rows only appear when the
+        wavelet backend is selected — keeps the sidebar compact for
+        the other backends."""
+        form = getattr(self, "_wavelet_param_form", None)
+        widgets = getattr(self, "_wavelet_param_widgets", ()) or ()
+        if form is None or not widgets:
+            return
+        for w in widgets:
+            try:
+                form.setRowVisible(w, bool(visible))
+            except (AttributeError, TypeError):
+                # Qt < 6.4 fallback: hide the widget itself (label
+                # stays but the field-side disappears).
+                try:    w.setVisible(bool(visible))
+                except Exception: pass
 
     def _push_detection_preview_params(self):
         """Forward the current diameter / minmass / bg settings to the
@@ -4951,37 +6231,43 @@ class MainWindow(QtWidgets.QMainWindow):
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(6)
 
-        # ── Comparison settings row ───────────────────────────────────────
-        settings = QtWidgets.QGroupBox("Comparison settings")
-        sg = QtWidgets.QGridLayout(settings)
-        sg.setVerticalSpacing(4)
-        sg.setHorizontalSpacing(8)
+        # ── Comparison settings (re-parented into the Compare sidebar) ──
+        # Output folder + name used to live as a GroupBox above the
+        # group cards; they're now hosted in the left sidebar so the
+        # tab body gives all its room to the group cards.
+        self._cmp_settings_widget = QtWidgets.QWidget()
+        sg = QtWidgets.QVBoxLayout(self._cmp_settings_widget)
+        sg.setContentsMargins(0, 0, 0, 0); sg.setSpacing(6)
 
-        sg.addWidget(QtWidgets.QLabel("Output folder"), 0, 0)
+        sg.addWidget(QtWidgets.QLabel("Output folder"))
+        out_row = QtWidgets.QHBoxLayout()
+        out_row.setContentsMargins(0, 0, 0, 0); out_row.setSpacing(6)
         self.e_cmp_outdir = QtWidgets.QLineEdit()
         self.e_cmp_outdir.setPlaceholderText(
             "Where to save the comparison figure + CSVs + PDF report")
         btn_cmp_out = QtWidgets.QPushButton("Browse")
         btn_cmp_out.clicked.connect(self._on_cmp_browse_outdir)
-        sg.addWidget(self.e_cmp_outdir, 0, 1)
-        sg.addWidget(btn_cmp_out, 0, 2)
+        out_row.addWidget(self.e_cmp_outdir, 1)
+        out_row.addWidget(btn_cmp_out)
+        sg.addLayout(out_row)
 
-        sg.addWidget(QtWidgets.QLabel("Output name"), 1, 0)
+        sg.addSpacing(4)
+        sg.addWidget(QtWidgets.QLabel("Output name"))
         self.e_cmp_stem = QtWidgets.QLineEdit("comparison")
         self.e_cmp_stem.setToolTip(
             "Prefix for the saved files (figure.png, summary.csv, "
             "stats.csv, report.pdf).")
-        sg.addWidget(self.e_cmp_stem, 1, 1, 1, 2)
+        sg.addWidget(self.e_cmp_stem)
 
-        # Pointer to where style settings now live
+        # Pointer to where style settings now live (Preferences → Figure
+        # defaults; the old standalone Figures tab no longer exists).
         style_hint = QtWidgets.QLabel(
             "<i>Figure theme, panel selection and PDF report toggle now "
-            "live on the <b>Figures</b> tab.</i>")
+            "live in <b>Preferences</b> (cogwheel in the header).</i>")
         style_hint.setTextFormat(Qt.TextFormat.RichText)
+        style_hint.setWordWrap(True)
         style_hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
-        sg.addWidget(style_hint, 2, 0, 1, 3)
-
-        v.addWidget(settings)
+        sg.addWidget(style_hint)
 
         # ── Group cards (scrollable) ──────────────────────────────────────
         groups_area_label = QtWidgets.QLabel(
@@ -5031,7 +6317,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for w in (self.cmp_stage_label, self.cmp_progress, self.cmp_results):
             w.hide()
 
-        self.tabs.addTab(tab, "Compare")
+        self.tabs.addTab(tab, TAB_COMPARE)
 
     def _on_cmp_browse_outdir(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -5091,28 +6377,51 @@ class MainWindow(QtWidgets.QMainWindow):
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(6)
 
-        # ── Toolbar row ───────────────────────────────────────────────────
-        toolbar = QtWidgets.QHBoxLayout()
+        # ── Load buttons (re-parented into the Visualise sidebar) ──────
+        # All four load buttons + the auto-load checkbox were originally
+        # an inline toolbar across the top of the tab.  They've moved
+        # into the left-sidebar Visualise page so the tab body can give
+        # all its room to the napari viewer + track inspector.
+        self._vis_load_widget = QtWidgets.QWidget()
+        load_v = QtWidgets.QVBoxLayout(self._vis_load_widget)
+        load_v.setContentsMargins(0, 0, 0, 0)
+        load_v.setSpacing(6)
+
         self.btn_ws_load_stack = QtWidgets.QPushButton("Load image stack…")
         self.btn_ws_load_stack.setToolTip(
             "Open a .czi or .tif file as an Image layer in napari.")
         self.btn_ws_load_stack.clicked.connect(self._ws_on_load_stack)
-        toolbar.addWidget(self.btn_ws_load_stack)
+        load_v.addWidget(self.btn_ws_load_stack)
 
         self.btn_ws_load_tracks = QtWidgets.QPushButton("Load tracks…")
         self.btn_ws_load_tracks.setToolTip(
             "Open a FIREFLY trajectories CSV as a Tracks layer overlay.")
         self.btn_ws_load_tracks.clicked.connect(self._ws_on_load_tracks)
-        toolbar.addWidget(self.btn_ws_load_tracks)
+        load_v.addWidget(self.btn_ws_load_tracks)
 
         self.btn_ws_load_run = QtWidgets.QPushButton("Load analysis run…")
         self.btn_ws_load_run.setToolTip(
             "Pick a FIREFLY run output folder.  Auto-loads the original\n"
             "stack and overlays the trajectories.csv as a Tracks layer.")
         self.btn_ws_load_run.clicked.connect(self._ws_on_load_run)
-        toolbar.addWidget(self.btn_ws_load_run)
+        load_v.addWidget(self.btn_ws_load_run)
 
-        toolbar.addStretch(1)
+        # ── Cluster map ─────────────────────────────────────────────
+        # Loads {stem}_cluster_labels.csv from a FIREFLY run and adds
+        # a colour-coded napari Points layer.  The DBSCAN sliders below
+        # let the user re-cluster on the fly without re-running the
+        # full pipeline.
+        self.btn_ws_load_clusters = QtWidgets.QPushButton("Load cluster map…")
+        self.btn_ws_load_clusters.setToolTip(
+            "Load a FIREFLY run's per-localisation cluster labels and\n"
+            "render them as a coloured Points layer (one colour per\n"
+            "DBSCAN cluster, noise = grey).  Click any point to inspect\n"
+            "its cluster's stats in the Track Inspector.\n"
+            "\n"
+            "The eps and min-samples sliders alongside this button let\n"
+            "you re-cluster the loaded localisations on the fly.")
+        self.btn_ws_load_clusters.clicked.connect(self._ws_on_load_clusters)
+        load_v.addWidget(self.btn_ws_load_clusters)
 
         self.c_ws_auto = QtWidgets.QCheckBox("Auto-load after analysis")
         self.c_ws_auto.setChecked(False)
@@ -5121,19 +6430,18 @@ class MainWindow(QtWidgets.QMainWindow):
             "automatically after a Run-Analysis completes.\n"
             "Off by default — large stacks can use a lot of GPU memory in\n"
             "napari and slow the rest of FIREFLY down.")
-        toolbar.addWidget(self.c_ws_auto)
-        v.addLayout(toolbar)
+        load_v.addWidget(self.c_ws_auto)
 
-        # ── Motion-class filter row ───────────────────────────────────────
-        # Checkboxes let the user hide entire motion classes from the
-        # Tracks overlay.  Useful for cluttered fields — uncheck
-        # "Brownian" to see just the directed/confined tracks, for
-        # example.  Active only once a track CSV is loaded that has an
-        # associated diffusion-summary CSV (motion column).
-        filter_row = QtWidgets.QHBoxLayout()
-        filter_row.setContentsMargins(0, 0, 0, 0)
-        filter_row.setSpacing(8)
-        filter_row.addWidget(QtWidgets.QLabel("Show tracks:"))
+        # ── Motion-class filter (re-parented into the sidebar) ────────────
+        # Checkboxes hide entire motion classes from the Tracks overlay.
+        # Used to be an inline row across the top of the tab body; now
+        # lives in the left sidebar's Visualise page so it doesn't
+        # eat horizontal room from the napari viewer.
+        self._vis_filter_widget = QtWidgets.QWidget()
+        filter_v = QtWidgets.QVBoxLayout(self._vis_filter_widget)
+        filter_v.setContentsMargins(0, 0, 0, 0)
+        filter_v.setSpacing(4)
+        filter_v.addWidget(QtWidgets.QLabel("Show tracks:"))
         self._ws_motion_checks: dict[str, QtWidgets.QCheckBox] = {}
         # Order = visual order; colours match the per-class fill used in
         # the figures so the user gets a consistent palette.
@@ -5150,26 +6458,94 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"QCheckBox::indicator:checked {{ background:{swatch}; "
                 f"border:1px solid {swatch}; }}")
             cb.toggled.connect(self._ws_apply_motion_filter)
-            filter_row.addWidget(cb)
+            filter_v.addWidget(cb)
             self._ws_motion_checks[cls] = cb
 
         # Min-length filter — drop one/two-point detections that
         # clutter the field visually and aren't diffusion-classifiable.
-        filter_row.addSpacing(16)
-        filter_row.addWidget(QtWidgets.QLabel("min length:"))
+        _ml_row = QtWidgets.QHBoxLayout()
+        _ml_row.setContentsMargins(0, 6, 0, 0)
+        _ml_row.addWidget(QtWidgets.QLabel("Min length:"))
         self._ws_min_len = QtWidgets.QSpinBox()
         self._ws_min_len.setRange(1, 1000)
         self._ws_min_len.setValue(1)
         self._ws_min_len.setSuffix(" frames")
         self._ws_min_len.setMaximumWidth(120)
         self._ws_min_len.valueChanged.connect(self._ws_apply_motion_filter)
-        filter_row.addWidget(self._ws_min_len)
+        _ml_row.addWidget(self._ws_min_len, 1)
+        filter_v.addLayout(_ml_row)
 
         self._ws_filter_status = QtWidgets.QLabel("")
         self._ws_filter_status.setStyleSheet("color: #888;")
-        filter_row.addWidget(self._ws_filter_status)
-        filter_row.addStretch(1)
-        v.addLayout(filter_row)
+        self._ws_filter_status.setWordWrap(True)
+        filter_v.addWidget(self._ws_filter_status)
+
+        # ── DBSCAN live-tune controls (re-parented into the sidebar) ──
+        # Sliders adjust eps (nm) and min_samples for the cluster
+        # overlay loaded via "Load cluster map…".  Changes are
+        # debounced (300 ms) so dragging doesn't spam re-clusterings.
+        # Laid out vertically as form rows so it fits the sidebar.
+        self._vis_dbscan_widget = QtWidgets.QWidget()
+        dbscan_form = QtWidgets.QFormLayout(self._vis_dbscan_widget)
+        dbscan_form.setContentsMargins(0, 0, 0, 0)
+        dbscan_form.setHorizontalSpacing(8)
+        dbscan_form.setVerticalSpacing(6)
+
+        # eps slider + value label, side by side under one form row.
+        eps_w = QtWidgets.QWidget()
+        eps_row = QtWidgets.QHBoxLayout(eps_w)
+        eps_row.setContentsMargins(0, 0, 0, 0); eps_row.setSpacing(6)
+        self._ws_eps_slider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
+        self._ws_eps_slider.setRange(5, 500)
+        self._ws_eps_slider.setValue(50)
+        self._ws_eps_slider.setMinimumWidth(80)
+        self._ws_eps_slider.setToolTip(
+            "Maximum distance between two points for them to be considered\n"
+            "neighbours (nm).  Larger values merge nearby clusters; smaller\n"
+            "splits them.  Default 50 nm matches the standard sptPALM preset.")
+        self._ws_eps_value = QtWidgets.QLabel("50 nm")
+        self._ws_eps_value.setMinimumWidth(50)
+        eps_row.addWidget(self._ws_eps_slider, 1)
+        eps_row.addWidget(self._ws_eps_value)
+        dbscan_form.addRow("eps (nm)", eps_w)
+
+        self._ws_minsamp_spin = QtWidgets.QSpinBox()
+        self._ws_minsamp_spin.setRange(2, 200)
+        self._ws_minsamp_spin.setValue(8)
+        self._ws_minsamp_spin.setToolTip(
+            "Minimum number of points within eps to form a dense core.\n"
+            "Higher = fewer, larger, denser clusters.  Default 8.")
+        dbscan_form.addRow("min samples", self._ws_minsamp_spin)
+
+        self._ws_cluster_color_mode = _QuietComboBox()
+        self._ws_cluster_color_mode.addItems(["ID", "Motion"])
+        self._ws_cluster_color_mode.setToolTip(
+            "How to colour the cluster overlay:\n"
+            "• ID     — one colour per DBSCAN cluster (turbo).\n"
+            "• Motion — each loc gets the colour of its track's motion class.\n"
+            "Requires the run to have saved per-loc motion data — re-run "
+            "the analysis if this option appears to have no effect.")
+        self._ws_cluster_color_mode.currentTextChanged.connect(
+            lambda _=None: self._ws_render_cluster_layer())
+        dbscan_form.addRow("Colour by", self._ws_cluster_color_mode)
+
+        self._ws_cluster_status = QtWidgets.QLabel("")
+        self._ws_cluster_status.setStyleSheet("color: #888;")
+        self._ws_cluster_status.setWordWrap(True)
+        dbscan_form.addRow(self._ws_cluster_status)
+
+        # Debounce re-clustering so the slider doesn't fire on every
+        # pixel of drag — coalesce to one re-cluster call per 300 ms.
+        self._ws_dbscan_debounce = QTimer(self)
+        self._ws_dbscan_debounce.setSingleShot(True)
+        self._ws_dbscan_debounce.setInterval(300)
+        self._ws_dbscan_debounce.timeout.connect(self._ws_recluster_now)
+        def _on_eps_changed(v):
+            self._ws_eps_value.setText(f"{int(v)} nm")
+            self._ws_dbscan_debounce.start()
+        self._ws_eps_slider.valueChanged.connect(_on_eps_changed)
+        self._ws_minsamp_spin.valueChanged.connect(
+            lambda _: self._ws_dbscan_debounce.start())
 
         # ── Viewer container ─────────────────────────────────────────────
         # Filled lazily on first tab activation.
@@ -5192,8 +6568,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ws_inspector = _TrackInspector()
         # Per-run state for click→stats lookup
         self._ws_tracks_df: "pd.DataFrame | None" = None
+        # Set of particle IDs currently visible after the motion/length
+        # filter.  `None` means "no filter has run yet — treat full df as
+        # visible".  Used by the click-resolver so clicks can never land
+        # on a hidden track (which would otherwise let the inspector
+        # report e.g. a Confined track even when only Immobile is
+        # checked, because the nearest localisation across the FULL df
+        # might belong to an invisible particle that happens to lie
+        # near where the user clicked).
+        self._ws_visible_pids: "set[int] | None" = None
         self._ws_diff_df:   "pd.DataFrame | None" = None
         self._ws_tracks_layer = None
+        # Cluster-map state.  Populated by _ws_on_load_clusters; the
+        # DBSCAN sliders refresh _ws_cluster_layer via _ws_recluster_now.
+        self._ws_cluster_layer = None
+        self._ws_cluster_xy_um = None       # (N, 2) µm coords used by DBSCAN
+        self._ws_cluster_xy_px = None       # (N, 2) px coords for napari overlay
+        self._ws_cluster_labels = None      # (N,) int cluster IDs (-1 = noise)
+        self._ws_cluster_stats_df = None    # per-cluster summary (n_locs, area…)
+        self._ws_cluster_motion = None      # (N,) per-loc motion class string
+        self._ws_cluster_pixel_size_um = 1.0
 
         split = QtWidgets.QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self._ws_container)
@@ -5203,10 +6597,224 @@ class MainWindow(QtWidgets.QMainWindow):
         split.setSizes([1000, 320])
         v.addWidget(split, stretch=1)
 
-        self.tabs.addTab(tab, "Visualise")
+        self.tabs.addTab(tab, TAB_VISUALISE)
 
         # Lazy-init when the tab is first switched to.
         self.tabs.currentChanged.connect(self._ws_maybe_init)
+
+        # ── Post-Processing tab ──────────────────────────────────────
+        self._init_postproc_tab()
+
+    # ────────────────────────────────────────────────────────────────────
+    #  POST-PROCESSING TAB — change/add ROI on a finished analysis
+    # ────────────────────────────────────────────────────────────────────
+    def _init_postproc_tab(self):
+        """Build the Post-Processing tab body.  Pickers + run button
+        live in the left sidebar's Re-process page (see
+        `_build_sidebar_page_postproc`); the tab body shows only the
+        help label, the embedded ROI viewer, and the run-status label.
+        """
+        tab = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(tab)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(8)
+
+        # ── Source-run picker (re-parented into the sidebar) ────────
+        # The picker widgets exist here so the existing slots
+        # (_postproc_pick_source) keep working untouched, but the
+        # container is held as `self._pp_source_widget` for the
+        # sidebar builder to host.
+        self._pp_source_widget = QtWidgets.QWidget()
+        src_v = QtWidgets.QVBoxLayout(self._pp_source_widget)
+        src_v.setContentsMargins(0, 0, 0, 0); src_v.setSpacing(4)
+        src_v.addWidget(QtWidgets.QLabel("Source run:"))
+        src_row = QtWidgets.QHBoxLayout()
+        src_row.setContentsMargins(0, 0, 0, 0); src_row.setSpacing(6)
+        self.e_postproc_src = QtWidgets.QLineEdit()
+        self.e_postproc_src.setPlaceholderText(
+            "Pick a FIREFLY output folder…")
+        self.e_postproc_src.setReadOnly(True)
+        src_row.addWidget(self.e_postproc_src, stretch=1)
+        btn_pick = QtWidgets.QPushButton("Browse…")
+        btn_pick.clicked.connect(self._postproc_pick_source)
+        src_row.addWidget(btn_pick)
+        src_v.addLayout(src_row)
+
+        # ── Help text (compact — full explanation in the tooltip) ──
+        help_lbl = QtWidgets.QLabel(
+            "Draw or load a new ROI below, then click Re-run with new "
+            "ROI in the sidebar to re-link + re-analyse with the "
+            "filtered localisations. Outputs land in "
+            "<source>_postproc{N}/; the original run is untouched.")
+        help_lbl.setWordWrap(True)
+        help_lbl.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        help_lbl.setToolTip(
+            "Post-processing reloads the original localisations from "
+            "{stem}_localisations.csv, applies the ROI you draw below "
+            "(or load from a palmTRACER .roi / .tif file), and re-runs "
+            "every downstream stage — linking, MSD, JDD, turning angles, "
+            "dwell times, clustering, and figure rendering.")
+        v.addWidget(help_lbl)
+
+        # ── Embedded ROI viewer (reuses the import-tab class) ──────
+        self._postproc_roi_viewer = _RoiViewer()
+        v.addWidget(self._postproc_roi_viewer, stretch=1)
+
+        # ── Run + status (re-parented into the sidebar) ────────────
+        self._pp_action_widget = QtWidgets.QWidget()
+        act_v = QtWidgets.QVBoxLayout(self._pp_action_widget)
+        act_v.setContentsMargins(0, 0, 0, 0); act_v.setSpacing(6)
+        self.btn_postproc_run = QtWidgets.QPushButton(
+            "Re-run with new ROI")
+        self.btn_postproc_run.setObjectName("primary")
+        self.btn_postproc_run.setMinimumHeight(36)
+        _f = self.btn_postproc_run.font(); _f.setBold(True); _f.setPointSize(13)
+        self.btn_postproc_run.setFont(_f)
+        self.btn_postproc_run.setToolTip(
+            "Apply the polygon(s) drawn above to the original "
+            "localisations and re-run the analysis pipeline.  Output "
+            "goes to <source>_postproc{N}/ — the original run is not "
+            "modified.")
+        self.btn_postproc_run.clicked.connect(self._postproc_start)
+        act_v.addWidget(self.btn_postproc_run)
+        self._postproc_status = QtWidgets.QLabel("")
+        self._postproc_status.setStyleSheet(
+            f"color: {_THEME['TXT_MUTED']};")
+        self._postproc_status.setWordWrap(True)
+        act_v.addWidget(self._postproc_status)
+        # Status label ALSO needs to appear in the tab body so the
+        # user sees feedback after clicking.  Add a reference here
+        # so it's reachable; the actual widget lives in the action
+        # container above.
+
+        self.tabs.addTab(tab, TAB_REPROCESS)
+
+    def _postproc_pick_source(self):
+        """Browse for an analysis run folder + auto-load a background
+        image (mean projection) into the ROI viewer."""
+        d = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Pick a FIREFLY run folder",
+            self.e_outdir.text() or os.path.expanduser("~"))
+        if not d:
+            return
+        if not os.path.isdir(os.path.join(d, "firefly_extras")):
+            QtWidgets.QMessageBox.warning(
+                self, "Not a FIREFLY run",
+                f"{os.path.basename(d)!r} doesn't contain a "
+                f"firefly_extras/ subfolder.  Pick a folder that "
+                f"was produced by a FIREFLY analysis.")
+            return
+        self.e_postproc_src.setText(d)
+        # Try to point the embedded ROI viewer at the original input
+        # file so the user has a real image to draw on.
+        try:
+            import json as _json
+            extras = os.path.join(d, "firefly_extras")
+            params_files = [f for f in os.listdir(extras)
+                            if f.endswith("_params.json")]
+            op = {}
+            stem = None
+            if params_files:
+                with open(os.path.join(extras, params_files[0])) as fh:
+                    op = _json.load(fh) or {}
+                stem = op.get("stem") or params_files[0][:-len("_params.json")]
+                input_file = op.get("input_file") or op.get("file")
+                if input_file and os.path.isfile(input_file):
+                    self._postproc_roi_viewer.set_file(input_file)
+                    self._postproc_status.setText(
+                        f"Loaded preview: {os.path.basename(input_file)}")
+                    return
+            # Fallback: render a 2-D histogram of the run's localisations
+            # as background.  Runs produced before `input_file` was
+            # persisted in params.json land here; so do runs whose source
+            # file has since been moved or unmounted.
+            if stem is not None:
+                locs_csv = os.path.join(extras, f"{stem}_localisations.csv")
+                if os.path.isfile(locs_csv):
+                    try:
+                        import pandas as _pd, numpy as _np
+                        df = _pd.read_csv(locs_csv, usecols=["x", "y"])
+                        # Histogram in pixel space — width/height come
+                        # from params.json (the run's recorded image
+                        # dimensions) so the ROI you draw maps 1:1 onto
+                        # what the worker will re-apply.
+                        W = int(op.get("width") or
+                                _np.ceil(df["x"].max()) + 1)
+                        H = int(op.get("height") or
+                                _np.ceil(df["y"].max()) + 1)
+                        hist, _, _ = _np.histogram2d(
+                            df["y"].values, df["x"].values,
+                            bins=(H, W), range=[[0, H], [0, W]])
+                        self._postproc_roi_viewer.set_image_array(
+                            hist.astype(_np.float32),
+                            label=f"{stem} (localisation density)")
+                        self._postproc_status.setText(
+                            f"Original image unavailable — showing "
+                            f"localisation-density heatmap ({len(df):,} locs).")
+                        return
+                    except Exception as exc:
+                        self._postproc_status.setText(
+                            f"Source loaded; localisation fallback failed "
+                            f"({exc}).")
+                        return
+            self._postproc_status.setText(
+                "Source loaded; couldn't find the original image or "
+                "localisations CSV — pick a different run folder.")
+        except Exception as exc:
+            self._postproc_status.setText(
+                f"Source loaded; preview unavailable ({exc}).")
+
+    def _postproc_start(self):
+        """Dispatch the post-process subprocess."""
+        src = self.e_postproc_src.text().strip()
+        if not src:
+            QtWidgets.QMessageBox.warning(
+                self, "No source run",
+                "Pick a FIREFLY run folder first.")
+            return
+        polys = []
+        try:
+            shapes = self._postproc_roi_viewer._shapes_layer
+            if shapes is not None and shapes.data is not None:
+                polys = [list(p.tolist()) for p in shapes.data]
+        except Exception:
+            polys = []
+        if not polys:
+            QtWidgets.QMessageBox.warning(
+                self, "No ROI drawn",
+                "Draw at least one polygon (or load one from a .roi "
+                "file) before re-running.")
+            return
+        params = {
+            "source_folder": src,
+            "new_polygons":  polys,
+            "output_folder": None,    # auto-pick <src>_postproc{N}
+        }
+        # Refuse to start while another worker is running so the UI
+        # status / poll timer don't get confused between subprocesses.
+        if (getattr(self, "_proc", None) is not None
+                and self._proc.is_alive()):
+            QtWidgets.QMessageBox.warning(
+                self, "Worker busy",
+                "Another analysis is already running — wait for it to "
+                "finish (or stop it) before starting a post-process "
+                "run.")
+            return
+        self._is_batch_run = False
+        self._is_compare_run = False
+        self._is_postproc_run = True
+        self._msg_queue    = multiprocessing.Queue(maxsize=2000)
+        self._cancel_event = multiprocessing.Event()
+        self._proc = multiprocessing.Process(
+            target=_run_postproc_in_subprocess,
+            args=(params, self._msg_queue, self._cancel_event),
+            name="FIREFLY-PostProcWorker",
+            daemon=False)
+        self._proc.start()
+        self._poll_timer.start()
+        self._postproc_status.setText("Post-processing run started…")
+        self.statusBar().showMessage(
+            "Running post-processing…", 5000)
 
     def _ws_maybe_init(self, idx: int):
         """If the user just switched to the Workspace tab, try to embed
@@ -5214,7 +6822,7 @@ class MainWindow(QtWidgets.QMainWindow):
         does work."""
         if self._workspace_initialised:
             return
-        if self.tabs.tabText(idx) != "Visualise":
+        if self.tabs.tabText(idx) != TAB_VISUALISE:
             return
         self._workspace_initialised = True   # mark even on failure — don't retry
         self._ws_init_viewer()
@@ -5241,6 +6849,9 @@ class MainWindow(QtWidgets.QMainWindow):
             # that's been stable across napari 0.4.x.
             viewer = napari.Viewer(show=False)
             qt_window = viewer.window._qt_window
+            # Seal the OUTER container so napari's internal size hints
+            # can't propagate up and grow the parent FIREFLY window.
+            _make_napari_container_layout_opaque(self._ws_container)
             # Replace the placeholder with the viewer widget
             self._ws_container_layout.removeWidget(self._ws_placeholder)
             self._ws_placeholder.deleteLater()
@@ -5455,6 +7066,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 # Nothing to show — leave the layer absent and clear
                 # status.  Restoring requires user to re-check classes.
                 self._ws_tracks_layer = None
+                self._ws_visible_pids = set()
                 try:
                     n_total = df["particle"].nunique()
                     self._ws_filter_status.setText(
@@ -5462,7 +7074,44 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception: pass
                 return
 
-            data = sub[["particle", "frame", "y", "x"]].values.astype(float)
+            # Drop single-point "tracks" before passing to napari.
+            # napari's Tracks layer needs ≥ 2 localisations per particle
+            # to render a trail; a single-point particle throws an
+            # IndexError deep inside its draw code and the whole filter
+            # gets aborted with the spectacularly unhelpful
+            # "filter error: list index out of range".  Single-point
+            # tracks are also useless to the inspector (zero
+            # displacement, no D fit, no motion class), so dropping
+            # them is purely upside.
+            try:
+                _counts = sub.groupby("particle").size()
+                _good_pids = _counts[_counts >= 2].index
+                sub = sub[sub["particle"].isin(_good_pids)]
+            except Exception:
+                pass
+            if len(sub) == 0:
+                self._ws_tracks_layer = None
+                self._ws_visible_pids = set()
+                try:
+                    n_total = df["particle"].nunique()
+                    self._ws_filter_status.setText(
+                        f"0 / {n_total:,} tracks visible "
+                        f"(all single-frame)")
+                except Exception: pass
+                return
+
+            # NB: keep particle IDs as int.  Casting the whole array to
+            # float forces napari to coerce track IDs back to ints
+            # internally, which has been a source of IndexErrors when
+            # IDs aren't dense.  Build the data array column-by-column
+            # so we control each dtype.
+            import numpy as _np
+            data = _np.column_stack([
+                sub["particle"].values.astype(_np.int64),
+                sub["frame"].values.astype(_np.float64),
+                sub["y"].values.astype(_np.float64),
+                sub["x"].values.astype(_np.float64),
+            ])
             features = None
             color_by = None
             if motion_map:
@@ -5482,6 +7131,13 @@ class MainWindow(QtWidgets.QMainWindow):
             layer = v.add_tracks(data, **kwargs)
 
             self._ws_tracks_layer = layer
+            # Remember which particles are currently visible so the
+            # click-resolver doesn't return hidden tracks.
+            try:
+                self._ws_visible_pids = set(int(p)
+                    for p in sub["particle"].unique())
+            except Exception:
+                self._ws_visible_pids = None
             self._attach_track_click_handler(layer)
             self._ws_inspector.clear()
 
@@ -5493,7 +7149,15 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception: pass
         except Exception as exc:
             # Filter failures shouldn't tear the GUI down — log + show
-            # a transient status message.
+            # a transient status message.  Also dump the full traceback
+            # to stderr; the status label only has room for the str(exc)
+            # and historically "list index out of range" by itself was
+            # essentially undiagnosable.
+            try:
+                import traceback as _tb, sys as _sys
+                _tb.print_exc(file=_sys.stderr)
+            except Exception:
+                pass
             try:
                 self._ws_filter_status.setText(f"filter error: {exc}")
             except Exception: pass
@@ -5544,22 +7208,48 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._ws_tracks_df is None:
             return None
         import numpy as _np
-        # world_pos comes from napari's Tracks layer; for a 3-D data
-        # array (track_id, t, y, x) the position tuple is (t, y, x).
-        if len(world_pos) < 3:
+        # world_pos comes from napari's Tracks layer.  Shape depends on
+        # what the viewer's current dim layout is:
+        #   * (t, y, x)  — typical case, viewer has a time slider
+        #   * (y, x)     — when only a Tracks layer is loaded with no
+        #                  Image layer to give the viewer 3 dimensions.
+        # We accept both: if there's no time component, search purely
+        # spatially and don't apply the temporal tie-breaker.
+        if len(world_pos) < 2:
             return None
-        t = float(world_pos[0])
+        if len(world_pos) >= 3:
+            t = float(world_pos[0])
+            have_time = True
+        else:
+            t = 0.0
+            have_time = False
         y = float(world_pos[-2])
         x = float(world_pos[-1])
         df = self._ws_tracks_df
+        # Restrict the search to currently-visible particles.  Without
+        # this, a click on a visible Immobile track can resolve to the
+        # nearest localisation in the FULL dataframe — which might
+        # belong to a hidden Confined/Brownian track that happens to
+        # lie near the click, and the inspector then reports the wrong
+        # motion class.  `_ws_visible_pids` is updated by
+        # `_ws_apply_motion_filter` after each successful rebuild.
+        vis = getattr(self, "_ws_visible_pids", None)
+        if vis is not None and len(vis) > 0:
+            mask_vis = df["particle"].isin(vis).values
+            if mask_vis.any():
+                df = df.loc[mask_vis]
         xs = df["x"].values
         ys = df["y"].values
         fs = df["frame"].values
-        # Spatial distance² + a tiny temporal penalty so ties go to
-        # localisations near the current time.  The temporal weight
-        # is in *px²-per-frame²* units — set so ~10 frames away costs
-        # the same as ~1 pixel away.
-        d2 = (xs - x) ** 2 + (ys - y) ** 2 + 0.01 * (fs - t) ** 2
+        if len(xs) == 0:
+            return None
+        # Spatial distance² + an optional small temporal penalty so ties
+        # break toward localisations near the current frame.  The
+        # temporal weight is in *px²-per-frame²* units — set so ~10
+        # frames away costs the same as ~1 pixel away.
+        d2 = (xs - x) ** 2 + (ys - y) ** 2
+        if have_time:
+            d2 = d2 + 0.01 * (fs - t) ** 2
         idx = int(_np.argmin(d2))
         # Tolerance is on the SPATIAL part only — generous (≤ ~16 px)
         # so clicks on the trail line (between vertices) still register.
@@ -5629,10 +7319,337 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._ws_load_run_folder(run_dir)
 
+    # ── Cluster-map loading + live re-cluster ────────────────────────────
+    def _ws_on_load_clusters(self):
+        """Pick a FIREFLY run folder, locate `firefly_extras/{stem}_cluster_
+        labels.csv` (+ optional `_cluster_stats.csv`), and load both into
+        the Visualise tab as a coloured Points layer.  The DBSCAN sliders
+        then re-cluster on this loaded localisation set without touching
+        the original on-disk CSV.
+        """
+        v = self._ws_viewer_or_warn()
+        if v is None:
+            return
+        run_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Pick a FIREFLY run folder containing cluster labels",
+            self.e_outdir.text() or os.path.expanduser("~"))
+        if not run_dir:
+            return
+        extras_dir = os.path.join(run_dir, "firefly_extras")
+        if not os.path.isdir(extras_dir):
+            QtWidgets.QMessageBox.warning(
+                self, "No firefly_extras/",
+                f"{os.path.basename(run_dir)!r} doesn't look like a "
+                f"FIREFLY run folder (no firefly_extras subfolder).")
+            return
+        labels_files = [f for f in os.listdir(extras_dir)
+                        if f.endswith("_cluster_labels.csv")]
+        if not labels_files:
+            QtWidgets.QMessageBox.warning(
+                self, "No cluster labels",
+                "This run doesn't have a *_cluster_labels.csv.  Re-run "
+                "FIREFLY analysis on the source file to generate one — "
+                "older runs only saved per-cluster stats, not per-loc "
+                "labels.")
+            return
+        stem = labels_files[0][:-len("_cluster_labels.csv")]
+        try:
+            import pandas as _pd
+            labels_df = _pd.read_csv(os.path.join(extras_dir,
+                                                  labels_files[0]))
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "Couldn't read cluster labels",
+                f"Reading {labels_files[0]}:\n\n{exc}")
+            return
+        stats_path = os.path.join(extras_dir, f"{stem}_cluster_stats.csv")
+        try:
+            stats_df = (_pd.read_csv(stats_path)
+                        if os.path.isfile(stats_path) else None)
+        except Exception:
+            stats_df = None
+        # Pixel size for converting µm ↔ px for the napari layer; pull
+        # from params.json if present so the points align with any
+        # image stack already loaded in the viewer.
+        px_um = 1.0
+        params_path = os.path.join(extras_dir, f"{stem}_params.json")
+        if os.path.isfile(params_path):
+            try:
+                import json as _json
+                with open(params_path) as fh:
+                    px_um = float(_json.load(fh).get("pixel_size_um", 1.0))
+            except Exception:
+                pass
+        # Cache for live re-clustering and click-inspection.
+        try:
+            import numpy as _np
+            self._ws_cluster_xy_um = _np.column_stack([
+                labels_df["x_um"].to_numpy(dtype=_np.float32),
+                labels_df["y_um"].to_numpy(dtype=_np.float32),
+            ])
+            self._ws_cluster_labels = labels_df["cluster_id"].to_numpy(
+                dtype=_np.int32)
+            # Optional motion column (added after v1.x of FIREFLY).
+            # Falls back to None on older runs so the "Color by motion
+            # class" toggle just no-ops.
+            if "motion" in labels_df.columns:
+                self._ws_cluster_motion = (labels_df["motion"]
+                                            .astype(str).to_numpy())
+            else:
+                self._ws_cluster_motion = None
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "Invalid cluster_labels CSV",
+                f"{labels_files[0]} is missing the expected x_um / "
+                f"y_um / cluster_id columns:\n\n{exc}")
+            return
+        self._ws_cluster_pixel_size_um = px_um if px_um > 0 else 1.0
+        # px coords for the overlay — napari Points expects (y, x).
+        self._ws_cluster_xy_px = _np.column_stack([
+            self._ws_cluster_xy_um[:, 1] / self._ws_cluster_pixel_size_um,
+            self._ws_cluster_xy_um[:, 0] / self._ws_cluster_pixel_size_um,
+        ])
+        self._ws_cluster_stats_df = stats_df
+        self._ws_render_cluster_layer()
+        n_clu = int((self._ws_cluster_labels >= 0).any() and
+                    self._ws_cluster_labels.max() + 1) or 0
+        n_noise = int((self._ws_cluster_labels == -1).sum())
+        self._ws_cluster_status.setText(
+            f"{n_clu:,} clusters  |  {n_noise:,} noise locs  "
+            f"({stem})")
+
+    def _ws_render_cluster_layer(self):
+        """(Re-)create the napari Points layer from the current
+        `_ws_cluster_xy_px` + `_ws_cluster_labels` buffers.  Called on
+        first load AND after every debounced DBSCAN re-cluster."""
+        if self._ws_cluster_xy_px is None:
+            return
+        v = self._ws_viewer_or_warn()
+        if v is None:
+            return
+        import numpy as _np
+        # Drop the old layer if present so colours refresh cleanly.
+        if self._ws_cluster_layer is not None:
+            try:
+                v.layers.remove(self._ws_cluster_layer)
+            except Exception:
+                pass
+            self._ws_cluster_layer = None
+        ids = self._ws_cluster_labels.astype(_np.int32)
+        # Decide colouring mode.  When the user picks "Motion" but no
+        # per-loc motion column is available (older runs), fall back to
+        # ID silently — the dropdown stays on the user's choice but the
+        # recolour does the safe thing.  Accepts the legacy long names
+        # "Cluster ID" / "Motion class" too in case any persisted state
+        # restores them.
+        mode_text = "ID"
+        try:
+            mode_text = str(self._ws_cluster_color_mode.currentText())
+        except Exception:
+            pass
+        mode = "Motion" if mode_text.startswith("Motion") else "ID"
+        if mode == "Motion" and self._ws_cluster_motion is None:
+            mode = "ID"
+
+        # Per-class colours match the existing tracks-overlay legend
+        # so the user gets a consistent visual language.
+        _MOTION_COLORS = {
+            "Immobile":  (0.50, 0.50, 0.50, 0.85),
+            "Confined":  (0.12, 0.47, 0.71, 0.85),
+            "Brownian":  (0.17, 0.63, 0.17, 0.85),
+            "Directed":  (0.84, 0.15, 0.16, 0.85),
+            "Unknown":   (0.73, 0.73, 0.73, 0.85),
+            "Unmatched": (0.30, 0.30, 0.30, 0.55),
+        }
+
+        try:
+            if mode == "Motion":
+                # Build the colour array directly — napari's categorical
+                # face_color only works for numeric properties.
+                colors = _np.array([
+                    _MOTION_COLORS.get(str(m), _MOTION_COLORS["Unknown"])
+                    for m in self._ws_cluster_motion
+                ], dtype=float)
+                layer = v.add_points(
+                    self._ws_cluster_xy_px,
+                    properties={"cluster_id": ids,
+                                "motion":     self._ws_cluster_motion},
+                    face_color=colors,
+                    edge_color="transparent",
+                    size=3, opacity=0.85,
+                    name="DBSCAN clusters")
+            else:
+                layer = v.add_points(
+                    self._ws_cluster_xy_px,
+                    properties={"cluster_id": ids},
+                    face_color="cluster_id",
+                    face_colormap="turbo",
+                    edge_color="transparent",
+                    size=3, opacity=0.85,
+                    name="DBSCAN clusters")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Cluster overlay failed",
+                f"napari refused to render the Points layer:\n\n{exc}")
+            return
+        # In Cluster-ID mode dim noise points (cluster_id == -1) to grey.
+        # In Motion-class mode that's already handled by the colour map
+        # above (Unmatched → grey).
+        if mode == "ID":
+            try:
+                colors = _np.asarray(layer.face_color, dtype=float).copy()
+                mask = ids == -1
+                if colors.shape[0] == ids.shape[0]:
+                    colors[mask] = [0.30, 0.30, 0.30, 0.55]
+                    layer.face_color = colors
+            except Exception:
+                pass
+        self._ws_cluster_layer = layer
+        # Click handler — populates the side panel with cluster stats.
+        try:
+            @layer.mouse_drag_callbacks.append
+            def _on_cluster_click(_layer, event):
+                if event.type != "mouse_press":
+                    return
+                try:
+                    cid = self._ws_nearest_cluster_id(event.position)
+                except Exception:
+                    cid = None
+                if cid is None:
+                    return
+                self._ws_show_cluster_in_inspector(int(cid))
+        except Exception:
+            pass
+
+    def _ws_nearest_cluster_id(self, world_pos):
+        """Find the cluster_id of the loaded point nearest to a napari
+        click position.  Mirrors the existing track-click resolver:
+        accepts (y, x) or (t, y, x) world positions.
+        """
+        if self._ws_cluster_xy_px is None or self._ws_cluster_labels is None:
+            return None
+        if len(world_pos) < 2:
+            return None
+        import numpy as _np
+        # napari Points layer is 2D (Y, X) — only the last two coords matter.
+        y = float(world_pos[-2]); x = float(world_pos[-1])
+        ys = self._ws_cluster_xy_px[:, 0]
+        xs = self._ws_cluster_xy_px[:, 1]
+        if ys.size == 0:
+            return None
+        d2 = (xs - x) ** 2 + (ys - y) ** 2
+        idx = int(_np.argmin(d2))
+        # Tolerance: only register clicks within ~6 px of a point.
+        if d2[idx] > 36.0:
+            return None
+        return int(self._ws_cluster_labels[idx])
+
+    def _ws_show_cluster_in_inspector(self, cluster_id: int):
+        """Render the picked cluster's stats in the side Inspector
+        panel via its dedicated `show_cluster` method.  Falls back to
+        a "Noise" mode for cluster_id == -1."""
+        if cluster_id == -1:
+            try:
+                self._ws_inspector.show_cluster(
+                    cluster_id=-1,
+                    note="Noise point — not assigned to any cluster.")
+            except Exception:
+                pass
+            return
+        kw = {"cluster_id": cluster_id}
+        df = self._ws_cluster_stats_df
+        if df is not None and "cluster_id" in df.columns:
+            try:
+                row = df[df["cluster_id"] == cluster_id]
+                if len(row):
+                    r = row.iloc[0]
+                    for k in ("n_locs", "area_um2",
+                              "density_locs_per_um2",
+                              "centroid_x_um", "centroid_y_um"):
+                        if k in r.index:
+                            kw[k] = float(r[k])
+            except Exception:
+                pass
+        # Dominant motion class within the cluster, if motion data
+        # is available.  Surfaced as a free-form note so the inspector
+        # template doesn't need a new field.
+        try:
+            if self._ws_cluster_motion is not None:
+                import numpy as _np
+                from collections import Counter
+                mask = self._ws_cluster_labels == cluster_id
+                motions = self._ws_cluster_motion[mask]
+                if motions.size:
+                    counts = Counter(motions.tolist())
+                    total = sum(counts.values())
+                    top, top_n = counts.most_common(1)[0]
+                    frac = 100.0 * top_n / max(1, total)
+                    # Build a sorted "all classes" breakdown for context.
+                    breakdown = ", ".join(
+                        f"{cls} {100.0 * n / total:.0f}%"
+                        for cls, n in counts.most_common())
+                    kw["note"] = (
+                        f"Dominant motion: {top} ({frac:.0f}%)  ·  "
+                        f"breakdown: {breakdown}")
+        except Exception:
+            pass
+        try:
+            self._ws_inspector.show_cluster(**kw)
+        except Exception:
+            pass
+
+    def _ws_recluster_now(self):
+        """Re-run DBSCAN on the loaded localisations with the slider's
+        eps + min_samples, then refresh the napari layer."""
+        if self._ws_cluster_xy_um is None:
+            return
+        try:
+            from sptpalm_analysis import compute_clusters
+        except Exception:
+            return
+        import numpy as _np, pandas as _pd
+        eps_nm = float(self._ws_eps_slider.value())
+        min_samples = int(self._ws_minsamp_spin.value())
+        # compute_clusters expects a locs DataFrame in pixel coords
+        # plus the pixel-size scaling.  We have µm directly, so feed
+        # them as if pixel_size_um=1.0.
+        locs = _pd.DataFrame({
+            "x": self._ws_cluster_xy_um[:, 0],
+            "y": self._ws_cluster_xy_um[:, 1],
+            "frame": _np.zeros(len(self._ws_cluster_xy_um), dtype=_np.int32),
+        })
+        try:
+            labels, stats_df, _, _ = compute_clusters(
+                locs, pixel_size_um=1.0,
+                eps_um=eps_nm / 1000.0,
+                min_samples=min_samples)
+        except Exception as exc:
+            self._ws_cluster_status.setText(f"re-cluster failed: {exc}")
+            return
+        self._ws_cluster_labels = _np.asarray(labels, dtype=_np.int32)
+        self._ws_cluster_stats_df = stats_df
+        self._ws_render_cluster_layer()
+        n_clu = int(self._ws_cluster_labels.max() + 1) if (
+            self._ws_cluster_labels.size and
+            (self._ws_cluster_labels >= 0).any()) else 0
+        n_noise = int((self._ws_cluster_labels == -1).sum())
+        self._ws_cluster_status.setText(
+            f"{n_clu:,} clusters  |  {n_noise:,} noise locs  "
+            f"(eps={eps_nm:.0f} nm, min={min_samples})")
+
     def _ws_load_run_folder(self, run_dir: str):
         """Load a complete FIREFLY analysis run:  finds the stack via the
         params.json (if present) and the matching trajectories.csv from
-        firefly_extras/."""
+        firefly_extras/.
+
+        If the picked folder isn't itself a run folder but instead
+        CONTAINS run folders (e.g. a `batch_results/` parent or any
+        folder housing several analyses), descend into it and either
+        auto-load the single run found, or pop a chooser if there are
+        many.  This is the common confusion the user hit when picking
+        "Region's of Interest" — which holds the individual analyses
+        but isn't itself one.
+        """
         v = self._ws_viewer_or_warn()
         if v is None:
             return
@@ -5640,8 +7657,46 @@ class MainWindow(QtWidgets.QMainWindow):
             import json
             extras_dir = os.path.join(run_dir, "firefly_extras")
             if not os.path.isdir(extras_dir):
+                # Try treating run_dir as a PARENT of run folders.
+                children = []
+                try:
+                    for name in sorted(os.listdir(run_dir)):
+                        child_path = os.path.join(run_dir, name)
+                        if not os.path.isdir(child_path):
+                            continue
+                        if os.path.isdir(os.path.join(
+                                child_path, "firefly_extras")):
+                            children.append(child_path)
+                except Exception:
+                    children = []
+                if len(children) == 1:
+                    # Unambiguous — just descend.
+                    self._ws_load_run_folder(children[0])
+                    return
+                if len(children) > 1:
+                    # Multiple runs → ask which one.
+                    names = [os.path.basename(p) for p in children]
+                    pick, ok = QtWidgets.QInputDialog.getItem(
+                        self,
+                        "Pick a run",
+                        f"{os.path.basename(run_dir)!r} contains "
+                        f"{len(children)} analysis runs.  "
+                        f"Which one would you like to load?",
+                        names, 0, False)
+                    if not ok:
+                        return
+                    try:
+                        chosen = children[names.index(pick)]
+                    except ValueError:
+                        return
+                    self._ws_load_run_folder(chosen)
+                    return
+                # Otherwise fall through with a clearer error.
                 raise FileNotFoundError(
-                    f"No firefly_extras/ subfolder in {run_dir}")
+                    f"No firefly_extras/ subfolder in {run_dir}, and "
+                    f"no run subfolders were found inside it either.  "
+                    f"Pick an individual analysis folder (one that "
+                    f"contains a firefly_extras/ subfolder).")
             # Find the params.json (any *_params.json)
             params_files = [f for f in os.listdir(extras_dir)
                             if f.endswith("_params.json")]
@@ -5698,7 +7753,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._workspace_initialised:
             # Force the lazy init now
             for i in range(self.tabs.count()):
-                if self.tabs.tabText(i) == "Visualise":
+                if self.tabs.tabText(i) == TAB_VISUALISE:
                     self._workspace_initialised = True
                     self._ws_init_viewer()
                     break
@@ -5771,6 +7826,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("analysis/roi_auto_method", self.c_roi_auto_method, "combo"),
             ("analysis/roi_threshold",   self.s_roi_threshold,   "spin",  float),
             ("analysis/roi_mask_mode",   self.c_roi_mask_mode,   "combo"),
+            ("analysis/roi_bg_sigma",    self.s_roi_bg_sigma,    "spin",  float),
 
             # ── Drift correction ──────────────────────────────────────────
             ("analysis/drift_correct",   self.c_drift_correct,   "check", _bool_cast),
@@ -5806,6 +7862,20 @@ class MainWindow(QtWidgets.QMainWindow):
         """Restore the user's saved selections.  Best-effort — silently
         ignores any malformed values rather than failing the launch."""
         s = self._settings
+        # SETTINGS_VERSION bump invalidates any saved window geometry —
+        # earlier napari-grow regressions persisted oversized windows
+        # to QSettings, and restoring them on launch defeats the new
+        # sealed-container fix.  Clear the stale key so the explicit
+        # `self.resize(_w, _h)` from __init__ wins on first v2 launch.
+        try:
+            stored_ver = int(s.value("settings/version", 0) or 0)
+        except Exception:
+            stored_ver = 0
+        if stored_ver < self.SETTINGS_VERSION:
+            try:
+                s.remove("window/geometry")
+            except Exception:
+                pass
         try:
             geom = s.value("window/geometry")
             if geom is not None:
@@ -6031,13 +8101,41 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+        # 0b. POSIX belt-and-braces: arm a kernel-level SIGALRM with the
+        # default disposition (terminate).  The threading.Timer above
+        # needs the GIL to run its Python callback, so if a C extension
+        # (Vispy/Metal layer release on macOS is a known offender) holds
+        # the GIL through its teardown, the Timer thread can't fire
+        # os._exit().  SIGALRM with SIG_DFL is handled entirely by the
+        # kernel — no Python code, no GIL — so the process dies even
+        # when CPython is wedged inside a non-GIL-releasing C call.
+        # Windows has no SIGALRM; the try/except just no-ops there and
+        # the threading.Timer fallback covers it.
+        try:
+            import signal as _sig
+            _sig.signal(_sig.SIGALRM, _sig.SIG_DFL)
+            _sig.alarm(3)
+        except Exception:
+            pass
+
         # 1. Persist settings BEFORE anything that could fail.
         try:    self._save_settings()
         except Exception: pass
 
-        # 2. Stop the message-poll QTimer so it can't fire during teardown.
-        try:    self._poll_timer.stop()
-        except Exception: pass
+        # 2. Stop all QTimers so none of them can fire during teardown.
+        # Relying on Qt parent-cleanup is racy — an in-flight singleShot
+        # callback after the C++ object is dealloc'd raises "wrapped C/C++
+        # object has been deleted" warnings (or in some Qt builds, crashes).
+        for _tname in (
+            "_poll_timer", "_elapsed_timer", "_repaint_timer",
+            "_figpreview_timer", "_detect_debounce",
+            "_roi_autoload_timer", "_ws_dbscan_debounce",
+        ):
+            _t = getattr(self, _tname, None)
+            if _t is None:
+                continue
+            try: _t.stop()
+            except Exception: pass
 
         # 3. Cancel + terminate the analysis subprocess.
         try:
@@ -6148,6 +8246,7 @@ class MainWindow(QtWidgets.QMainWindow):
         "Torch — Apple MPS":  "torch-mps",
         "Torch — NVIDIA CUDA": "torch-cuda",
         "Torch — CPU":        "torch-cpu",
+        "Wavelet (à trous)":  "wavelet",
     }
     _BACKEND_VALUE_TO_LABEL = {v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()}
 
@@ -6366,6 +8465,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "roi_auto_method":   self.c_roi_auto_method.currentText(),
             "roi_threshold":     float(self.s_roi_threshold.value()),
             "roi_mask_mode":     self.c_roi_mask_mode.currentText(),
+            "roi_bg_sigma":      float(self.s_roi_bg_sigma.value()),
             # Per-file polygon ROI lookup.  If this file has a saved
             # polygon, it's sent regardless of the ROI-mode setting and
             # the worker treats it as if mode were "polygon".  Files
@@ -6380,6 +8480,12 @@ class MainWindow(QtWidgets.QMainWindow):
                                     self.c_backend.currentText()),
             "workers":           int(self.s_workers.value()),
             "chunk_size":        int(self.s_chunk_size.value()),
+            # Wavelet-backend params — ignored by trackpy / torch
+            # backends, consumed by WaveletBackend when active.
+            "wavelet":              self.c_wavelet_family.currentText(),
+            "wavelet_levels":       int(self.s_wavelet_levels.value()),
+            "wavelet_threshold_k":  float(self.s_wavelet_threshold_k.value()),
+            "wavelet_min_distance": int(self.s_wavelet_min_distance.value()),
             # ── Figures-tab knobs (single-sample figure output) ───────────
             "fig_theme":         self.c_fig_theme.currentText(),
             "fig_proj_cmap":     self.c_fig_proj_cmap.currentText(),
@@ -6512,7 +8618,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 "analysis/roi_mode":        "Auto threshold",
                 "analysis/roi_auto_method": "Li",
                 "analysis/roi_threshold":   0.08,
-                "analysis/roi_mask_mode":   "Mean",
+                "analysis/roi_mask_mode":   "Max",
+                "analysis/roi_bg_sigma":    25.0,
                 # Drift correction — segment length tuned for ~10k frames
                 "analysis/drift_correct":   True,
                 "analysis/drift_segment":   500,
@@ -6551,7 +8658,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 "analysis/roi_mode":        "Manual polygon",
                 "analysis/roi_auto_method": "Li",
                 "analysis/roi_threshold":   0.10,
-                "analysis/roi_mask_mode":   "Mean",
+                "analysis/roi_mask_mode":   "Max",
+                "analysis/roi_bg_sigma":    25.0,
                 # Drift correction
                 "analysis/drift_correct":   True,
                 "analysis/drift_segment":   400,
@@ -6764,7 +8872,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._start_compare_run()
             return
         active_tab_label = self.tabs.tabText(self.tabs.currentIndex())
-        if active_tab_label.startswith("Compare"):
+        if active_tab_label.startswith(TAB_COMPARE):
             self._start_compare_run()
         elif getattr(self, "r_mode_csv", None) and self.r_mode_csv.isChecked():
             self._start_csv_run()
@@ -6789,10 +8897,10 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(
                 self, "No CSV",
                 "Pick a localisations CSV on the Import tab first.")
-            self._switch_to_tab("Import")
+            self._switch_to_tab(TAB_IMPORT)
             return
         out_dir = self.e_csv_outdir.text().strip() or os.path.dirname(csv_path)
-        self._switch_to_tab("Analysis")
+        self._switch_to_tab(TAB_ANALYSIS)
         self._start_elapsed_timer()
 
         # Build params the same way as a normal run, then override the
@@ -6852,14 +8960,14 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(
                 self, "No file",
                 "Pick an input file on the Import tab first.")
-            self._switch_to_tab("Import")
+            self._switch_to_tab(TAB_IMPORT)
             return
         # Pre-flight backend validation — catches "user picked CUDA on
         # a CPU-only torch" before we waste minutes on frame loading.
         if not self._validate_selected_backend():
             return
         # Auto-switch to the Analysis tab so the user sees progress
-        self._switch_to_tab("Analysis")
+        self._switch_to_tab(TAB_ANALYSIS)
         self._start_elapsed_timer()
 
         params = self._build_params_for_file(
@@ -6924,11 +9032,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 self, "No files",
                 "On the Import tab, switch to Batch mode and pick a "
                 "folder + at least one file.")
-            self._switch_to_tab("Import")
+            self._switch_to_tab(TAB_IMPORT)
             return
         if not self._validate_selected_backend():
             return
-        self._switch_to_tab("Analysis")
+        self._switch_to_tab(TAB_ANALYSIS)
         self._start_elapsed_timer()
 
         # Batch outputs go to <input_folder>/batch_results/<stem>/  — same
@@ -7858,6 +9966,15 @@ class MainWindow(QtWidgets.QMainWindow):
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
+        # Preferences — macOS automatically promotes this into the
+        # application menu (FIREFLY → Preferences…) via PreferencesRole.
+        act_prefs = QtGui.QAction("Preferences…", self)
+        act_prefs.setMenuRole(QtGui.QAction.MenuRole.PreferencesRole)
+        act_prefs.setShortcut(QtGui.QKeySequence("Ctrl+,"))
+        act_prefs.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        act_prefs.triggered.connect(self._open_preferences)
+        file_menu.addAction(act_prefs)
+
         # Belt-and-braces backup — a standalone QShortcut at the same
         # application-wide context.  If something downstream resets
         # the action's shortcut (some napari versions reach into the
@@ -7977,22 +10094,88 @@ def _qt_message_handler(mode, context, message):
 # the QSS template via .format() so they're a single source of truth for
 # both stylesheet and any programmatic widget colouring (matplotlib
 # canvas backgrounds, error messages, etc.).
-_THEME = {
-    "BG":          "#0d1117",   # main window background
-    "PANEL":       "#161b22",   # cards, group boxes, log boxes
-    "PANEL_ALT":   "#1c2128",   # alternating rows / subtle differentiation
-    "BORDER":      "#30363d",   # borders, separators
-    "BORDER_HI":   "#484f58",   # focused / hovered borders
-    "TXT":         "#e6edf3",   # primary text
-    "TXT_MUTED":   "#8b949e",   # secondary text (placeholder, labels-of-labels)
-    "ACC":         "#58a6ff",   # primary accent (blue)
-    "ACC_HOVER":   "#79c0ff",
-    "ACC_PRESSED": "#388bfd",
-    "ACC_FG":      "#0d1117",   # text on top of an accent fill
-    "DANGER":      "#f85149",
-    "SUCCESS":     "#56d364",
-    "WARN":        "#f78166",
+#
+# The supported themes are stored in `_THEMES` (dict-of-dicts).  The
+# active theme `_THEME` is selected at app start from QSettings — see
+# `_pick_startup_theme()` below.  Switching themes requires restarting
+# the app (most widgets read `_THEME[...]` at construction time, so a
+# live switch would only repaint a fraction of the UI).
+_THEMES = {
+    "Dark": {
+        "BG":          "#0d1117",
+        "PANEL":       "#161b22",
+        "PANEL_ALT":   "#1c2128",
+        "BORDER":      "#30363d",
+        "BORDER_HI":   "#484f58",
+        "TXT":         "#e6edf3",
+        "TXT_MUTED":   "#8b949e",
+        "ACC":         "#58a6ff",
+        "ACC_HOVER":   "#79c0ff",
+        "ACC_PRESSED": "#388bfd",
+        "ACC_FG":      "#0d1117",
+        "DANGER":      "#f85149",
+        "SUCCESS":     "#56d364",
+        "WARN":        "#f78166",
+    },
+    # AMOLED — identical to Dark but with pure-black main BG (#000000)
+    # so OLED displays power down individual pixels.  PANEL stays a
+    # near-black so cards still read as cards against the BG.
+    "AMOLED": {
+        "BG":          "#000000",
+        "PANEL":       "#0a0a0a",
+        "PANEL_ALT":   "#141414",
+        "BORDER":      "#30363d",
+        "BORDER_HI":   "#484f58",
+        "TXT":         "#e6edf3",
+        "TXT_MUTED":   "#8b949e",
+        "ACC":         "#58a6ff",
+        "ACC_HOVER":   "#79c0ff",
+        "ACC_PRESSED": "#388bfd",
+        "ACC_FG":      "#000000",
+        "DANGER":      "#f85149",
+        "SUCCESS":     "#56d364",
+        "WARN":        "#f78166",
+    },
+    # Light — high-contrast for daytime use.  Mirrors the matplotlib
+    # Light figure theme (`_theme_palette("Light")` in sptpalm_analysis.py).
+    "Light": {
+        "BG":          "#ffffff",
+        "PANEL":       "#f6f8fa",
+        "PANEL_ALT":   "#eaeef2",
+        "BORDER":      "#d0d7de",
+        "BORDER_HI":   "#afb8c1",
+        "TXT":         "#24292f",
+        "TXT_MUTED":   "#57606a",
+        "ACC":         "#0969da",
+        "ACC_HOVER":   "#218bff",
+        "ACC_PRESSED": "#0550ae",
+        "ACC_FG":      "#ffffff",
+        "DANGER":      "#cf222e",
+        "SUCCESS":     "#1f883d",
+        "WARN":        "#9a6700",
+    },
 }
+
+
+def _pick_startup_theme() -> str:
+    """Read the user's chosen app theme from QSettings (the same key
+    the Figures-tab dropdown writes to), defaulting to "Dark".  Used
+    once at module-load time to select which palette `_THEME` points
+    at for the lifetime of this process — see the AMOLED-theme block
+    docstring above for why a live-switch isn't currently supported.
+    """
+    try:
+        s = QtCore.QSettings("FIREFLY", "sptPALM")
+        name = str(s.value("ui/app_theme", "Dark") or "Dark")
+        if name in _THEMES:
+            return name
+    except Exception:
+        pass
+    return "Dark"
+
+
+_ACTIVE_THEME_NAME = _pick_startup_theme()
+_THEME = dict(_THEMES[_ACTIVE_THEME_NAME])   # mutable copy for hot-patching
 
 _FIREFLY_QSS = """
 /* ── Base ────────────────────────────────────────────────────────────────── */
@@ -8031,14 +10214,21 @@ QGroupBox {{
     background-color: {PANEL};
     border:           1px solid {BORDER};
     border-radius:    6px;
-    margin-top:       12px;
-    padding:          8px 8px 6px 8px;
+    /* Big top margin so the title sits cleanly above the rounded
+       top border instead of colliding with its top-left corner curve. */
+    margin-top:       18px;
+    padding:          10px 8px 6px 8px;
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding:           0 6px;
+    /* Negative top lifts the title baseline above the border line so
+       descenders ("g" in "Single file" etc.) don't intersect the
+       rounded corner.  Horizontal padding hides the border behind
+       the title's background swatch on either side of the text. */
+    top:               -2px;
+    padding:           0 8px;
     margin-left:       8px;
     color:             {TXT_MUTED};
     font-weight:       600;
@@ -8180,9 +10370,24 @@ QComboBox QAbstractItemView {{
 /* ── Tabs ────────────────────────────────────────────────────────────────── */
 QTabWidget::pane {{
     background-color: {BG};
-    border:           1px solid {BORDER};
-    border-radius:    6px;
-    top:              -1px;
+    /* Pane carries side + bottom border only — the top border is provided
+       by the tab bar's own bottom-edge hairline, so the selected tab's
+       bottom edge can sit flush against the pane without a misaligned
+       corner-radius seam where the curve meets the tab's straight bottom. */
+    border:                 1px solid {BORDER};
+    border-top:             none;
+    border-bottom-left-radius:  6px;
+    border-bottom-right-radius: 6px;
+    border-top-left-radius:     0px;
+    border-top-right-radius:    0px;
+    top:                   -1px;
+}}
+
+/* Hairline under the tab bar — replaces what was the pane's top border.
+   Drawn as a 1px solid bottom of the tab-bar element so it can be
+   covered cleanly by the selected tab via a negative bottom margin. */
+QTabBar {{
+    border-bottom: 1px solid {BORDER};
 }}
 
 QTabBar::tab {{
@@ -8204,7 +10409,11 @@ QTabBar::tab:selected {{
     color:            {TXT};
     background-color: {BG};
     border:           1px solid {BORDER};
-    border-bottom:    1px solid {BG};   /* hide bottom border of selected tab */
+    border-bottom:    1px solid {BG};
+    /* Pull 1 px down so the tab's bottom edge overlaps (covers) the
+       hairline on QTabBar, killing the gap that used to show where
+       the selected tab met the pane's rounded corner. */
+    margin-bottom:    -1px;
     font-weight:      600;
 }}
 
@@ -8473,6 +10682,7 @@ QMenu::item:selected {{
     color:            {ACC_FG};
 }}
 """.format(**_THEME)
+
 
 
 def _apply_firefly_theme(app: QtWidgets.QApplication):

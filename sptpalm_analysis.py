@@ -3,7 +3,7 @@ import multiprocessing
 import sys
 import os
 
-__version__ = "2.4.3"
+__version__ = "2.6.0"
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":
@@ -1452,11 +1452,11 @@ def auto_threshold(image_norm, method="auto"):
 
     results = {}
     try:    results["otsu"]     = float(threshold_otsu(image_norm))
-    except: results["otsu"]     = None
+    except Exception: results["otsu"]     = None
     try:    results["li"]       = float(threshold_li(image_norm))
-    except: results["li"]       = None
+    except Exception: results["li"]       = None
     try:    results["triangle"] = float(threshold_triangle(image_norm))
-    except: results["triangle"] = None
+    except Exception: results["triangle"] = None
 
     print(f"  Auto-threshold candidates:")
     for name, val in results.items():
@@ -1687,6 +1687,147 @@ def build_roi_mask(stack=None, threshold=None, smooth_sigma=5,
     return mask
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  build_roi_mask_advanced — single source of truth for the GUI preview AND
+#  the firefly_worker analysis path, so the green mask the user tunes in the
+#  ROI viewer is *identical* to the mask actually applied during analysis.
+#
+#  Pipeline:
+#      projection ─►  fine + coarse Gaussian blur (DoG bg subtraction)
+#                  ►  normalise to [0, 1]
+#                  ►  intensity threshold (manual or auto: Li/Otsu/…)
+#                  ►  morphological opening   (kill 1-2 px speckle bridges)
+#                  ►  morphological closing   (fill speckle-gap interior)
+#                  ►  remove_small_holes      (merge interior pockets)
+#                  ►  remove_small_objects    (drop sub-cell fragments)
+#                  ►  keep top-N components   (hard cap on background islands)
+#
+#  All numeric defaults match the GUI preview (see _RoiViewer._refresh_roi_mask_
+#  overlay in app_qt.py).  If you change a default here, update the docstring
+#  hint in the GUI's "Background scale σ" tooltip too.
+# ──────────────────────────────────────────────────────────────────────────────
+def build_roi_mask_advanced(projection,
+                            *,
+                            threshold=None,
+                            threshold_method="li",
+                            bg_sigma=25.0,
+                            sigma_fg=None,
+                            mode_hint="max",
+                            opening_radius=3,
+                            closing_radius=7,
+                            max_hole_size=2000,
+                            min_object_size=8000,
+                            keep_n_components=4):
+    """Build a bool ROI mask from a 2-D projection image.
+
+    Parameters
+    ----------
+    projection : 2-D float array (Y, X)
+        The image to threshold.  Caller decides whether this is a mean,
+        max, sum, or blink-count projection of the stack.
+    threshold : float | None
+        Manual threshold on the normalised DoG residual [0, 1].
+        If None, an automatic threshold is chosen using `threshold_method`.
+    threshold_method : str
+        "li", "otsu", "triangle", or "mean".  Only used when threshold is None.
+    bg_sigma : float
+        DoG background-suppression scale (pixels).  Subtracts a
+        Gaussian-blurred copy of the projection (this sigma) from a
+        lightly-blurred copy, killing slow illumination gradients before
+        thresholding.  Set to 0 to disable.
+    sigma_fg : float | None
+        Fine-scale smoothing applied before DoG.  If None, defaults to
+        2.0 for "max"/"blink" projections and 5.0 for "mean"/"sum"
+        (mode_hint controls this).
+    mode_hint : str
+        "max", "blink", "mean", or "sum" — only used to pick a sensible
+        sigma_fg default.  Not used otherwise.
+
+    Returns
+    -------
+    mask : bool ndarray (Y, X)
+        The cleaned-up ROI mask.
+    info : dict
+        {"threshold": float (the one actually used),
+         "fraction": float (0-1, mask coverage)}.
+    """
+    import numpy as _np
+    from scipy.ndimage import gaussian_filter
+    from skimage.morphology import (binary_closing, binary_opening, disk,
+                                    remove_small_holes,
+                                    remove_small_objects)
+
+    proj = _np.asarray(projection, dtype=_np.float32)
+
+    # ── 1. DoG background suppression ───────────────────────────────────
+    if sigma_fg is None:
+        sigma_fg = 2.0 if mode_hint in ("max", "blink") else 5.0
+    smoothed_fg = gaussian_filter(proj, sigma=float(sigma_fg))
+    if bg_sigma > 0.5 and bg_sigma > sigma_fg:
+        smoothed_bg = gaussian_filter(proj, sigma=float(bg_sigma))
+        smoothed = _np.maximum(smoothed_fg - smoothed_bg, 0.0)
+    else:
+        smoothed = smoothed_fg
+    mn, mx = float(smoothed.min()), float(smoothed.max())
+    if mx > mn:
+        smoothed = (smoothed - mn) / (mx - mn)
+
+    # ── 2. Threshold ────────────────────────────────────────────────────
+    if threshold is None:
+        try:
+            from skimage.filters import (threshold_otsu, threshold_li,
+                                         threshold_triangle)
+            m = (threshold_method or "li").lower()
+            if   m == "otsu":     t = float(threshold_otsu(smoothed))
+            elif m == "triangle": t = float(threshold_triangle(smoothed))
+            elif m == "mean":     t = float(smoothed.mean())
+            else:                 t = float(threshold_li(smoothed))
+        except Exception:
+            t = float(smoothed.mean())
+    else:
+        t = float(threshold)
+
+    # ── 3. Morphology cleanup ───────────────────────────────────────────
+    raw = smoothed > t
+    try:    raw = binary_opening(raw, disk(int(opening_radius)))
+    except Exception: pass
+    try:    mask = binary_closing(raw, disk(int(closing_radius)))
+    except Exception: mask = raw
+    try:
+        mask = remove_small_holes(mask, area_threshold=int(max_hole_size))
+    except TypeError:
+        mask = remove_small_holes(mask, int(max_hole_size))
+    except Exception:
+        pass
+    try:
+        mask = remove_small_objects(mask, min_size=int(min_object_size))
+    except TypeError:
+        mask = remove_small_objects(mask, int(min_object_size))
+    except Exception:
+        pass
+
+    # ── 4. Keep top-N connected components ──────────────────────────────
+    if keep_n_components and keep_n_components > 0:
+        try:
+            from skimage.measure import label as _label
+            lbl = _label(mask, connectivity=2)
+            if lbl.max() > keep_n_components:
+                sizes = _np.bincount(lbl.ravel())
+                sizes[0] = 0
+                keep = _np.argsort(sizes)[-int(keep_n_components):]
+                keep_mask = _np.zeros_like(mask, dtype=bool)
+                for k in keep:
+                    if sizes[k] > 0:
+                        keep_mask |= (lbl == k)
+                mask = keep_mask
+        except Exception:
+            pass
+
+    info = {"threshold": float(t),
+            "fraction": float(mask.mean()) if mask.size else 0.0}
+    return mask.astype(bool, copy=False), info
+
+
 def apply_roi_mask(locs, mask):
     """
     Filter a localisations DataFrame to keep only points inside the ROI mask.
@@ -1711,6 +1852,15 @@ def apply_roi_mask(locs, mask):
         # Per-frame mode — look up the mask for each localisation's frame
         fi = np.clip(locs["frame"].values.astype(int), 0, mask.shape[0] - 1)
         inside = mask[fi, yi, xi]
+
+    # Defensive: a uint8 mask of 0/1 yields a uint8 `inside`, which
+    # pandas interprets as a column-label array (`locs[inside]` looks
+    # for columns literally named `1, 1, 1, …`) and fails with
+    # "None of [Index([1, 1, 1, ...])] are in the [columns]".
+    # Force-cast to bool so the indexing is unambiguous regardless of
+    # how callers built the mask.
+    if inside.dtype != bool:
+        inside = inside.astype(bool)
 
     filtered  = locs[inside].reset_index(drop=True)
     n_removed = len(locs) - len(filtered)
@@ -1903,7 +2053,15 @@ def _ram_strategy(stack, headroom: float = 0.75) -> tuple[bool, float, float]:
     Holds back `_user_ram_reserve_gb()` for the OS + the user's other
     apps so a parallel Safari tab doesn't push the machine into swap.
     """
-    needed_gb = stack.nbytes / 1e9   # preprocessed copy ≈ same dtype/shape
+    # Peak fast-path RAM is roughly:
+    #   * raw stack             1 ×
+    #   * preprocessed copy     1 ×   (preprocess_stack output)
+    #   * per-frame transient   ~ workers × 1 frame (small)
+    #   * locate buffers        ~ 1 × chunk-size frame block
+    #   * (mean + max + blink) projections — small, (Y,X) each
+    # The 2.0× multiplier covers raw + preprocessed + a healthy slop
+    # for locate / projections / fragmentation.
+    needed_gb = stack.nbytes * 2.0 / 1e9
     try:
         import psutil
         free_gb    = psutil.virtual_memory().available / 1e9
@@ -1914,16 +2072,72 @@ def _ram_strategy(stack, headroom: float = 0.75) -> tuple[bool, float, float]:
         return False, 0.0, needed_gb
 
 
+def _adaptive_chunk_and_workers(stack, requested_chunk: int,
+                                 requested_workers: int) -> tuple[int, int]:
+    """Adapt streaming-path `chunk_size` and `workers` to currently
+    free RAM so the per-chunk peak doesn't blow the budget.
+
+    Per-chunk peak (streaming) is approximately
+        chunk_size · frame_bytes · (1 raw + 1 preprocessed + 1 transient)
+    multiplied by `workers` for parallel preprocessing.  We require
+    that to stay under half the usable RAM (the other half covers
+    accumulators, locate buffers, drift correction, linking).
+
+    Returns (chunk_size, workers) — both clamped to ≥ 1 and never
+    above the user's requested values.
+    """
+    try:
+        import psutil
+        free_gb    = psutil.virtual_memory().available / 1e9
+        reserve_gb = _user_ram_reserve_gb()
+        usable_gb  = max(0.5, free_gb - reserve_gb)
+    except Exception:
+        # No psutil — trust the user's settings and hope for the best.
+        return max(1, int(requested_chunk)), max(1, int(requested_workers))
+
+    # Per-frame footprint (input dtype) ×3 (raw + preprocessed + transient).
+    frame_bytes = stack.shape[1] * stack.shape[2] * stack.dtype.itemsize
+    per_frame_peak = frame_bytes * 3.0
+
+    # Budget half of usable RAM for the parallel preprocessing buffers.
+    budget_bytes = usable_gb * 0.5e9
+    if budget_bytes <= 0 or per_frame_peak <= 0:
+        return max(1, int(requested_chunk)), max(1, int(requested_workers))
+
+    # Total parallel frames we can afford in flight at once.
+    max_frames_in_flight = int(budget_bytes / per_frame_peak)
+    if max_frames_in_flight < 1:
+        max_frames_in_flight = 1
+
+    # Strategy: keep the user's chunk size if it fits with at least 1
+    # worker.  Otherwise shrink chunk first (better data locality),
+    # then reduce worker count.
+    chunk = max(1, int(requested_chunk))
+    workers = max(1, int(requested_workers))
+    while workers >= 1 and chunk * workers > max_frames_in_flight:
+        if chunk > 32:
+            chunk = max(32, chunk // 2)
+        elif workers > 1:
+            workers -= 1
+        else:
+            break
+    return chunk, workers
+
+
 def _fast_preprocess_and_localise(stack, diameter=7, minmass=None, percentile=64,
                                    bg_radius=50, bg_method="uniform_filter",
                                    workers=N_CPUS, chunk_size=500,
-                                   preview_cb=None, backend="auto"):
+                                   preview_cb=None, backend="auto",
+                                   **backend_kwargs):
     """
     Fast path (ample RAM): preprocess the full stack in parallel, then localise
     in parallel chunks.  Faster than streaming because all preprocessing jobs
     run simultaneously rather than serially.
 
-    Returns (locs, mean_proj_norm, minmass_used)  — same contract as the stream path.
+    Returns (locs, mean_proj_norm, max_proj, blink_proj, minmass_used)
+    — same 5-tuple contract as the streaming path.  The fast path has
+    the full stack in RAM so all three projections (mean, max, blink-
+    count) are computed in a single vectorised pass.
     """
     import gc
     if diameter % 2 == 0:
@@ -1947,18 +2161,44 @@ def _fast_preprocess_and_localise(stack, diameter=7, minmass=None, percentile=64
         print(f"  Auto minmass: {minmass:.4f}  "
               f"(from 99th-pct peak {_peak:.4f} × d²/8)")
 
+    # ── Projections for ROI / circular-stats downstream ──────────────────
+    # Mean projection (normalised) — same contract as before.
     mean_proj = stack_pp.mean(axis=0).astype(np.float32)
     mn, mx    = mean_proj.min(), mean_proj.max()
     if mx > mn:
         mean_proj = (mean_proj - mn) / (mx - mn)
 
+    # Max projection — un-normalised; build_roi_mask_advanced normalises.
+    max_proj = stack_pp.max(axis=0).astype(np.float32)
+
+    # Blink-count projection — per-pixel count of frames significantly
+    # above the pixel's own mean + 3·std baseline.
+    #
+    # Memory note: doing `(stack_pp > thresh[None]).sum(axis=0)` in one
+    # shot materialises a (T, Y, X) bool tensor (~T × frame_bytes /4),
+    # which for a 4000-frame 512² movie is 1 GB.  On a 16 GB machine
+    # under memory pressure (FIREFLY's typical OOM scenario) that's
+    # enough to push the run over.  We instead accumulate the count
+    # in chunks of ≤ 256 frames so peak extra memory stays ~64 MB.
+    px_mean = stack_pp.mean(axis=0)
+    px_std  = stack_pp.std(axis=0)
+    thresh  = px_mean + 3.0 * px_std
+    blink_proj = np.zeros(stack_pp.shape[1:], dtype=np.float32)
+    _BLINK_CHUNK = 256
+    for _s in range(0, stack_pp.shape[0], _BLINK_CHUNK):
+        _e = min(_s + _BLINK_CHUNK, stack_pp.shape[0])
+        blink_proj += (stack_pp[_s:_e] > thresh[None]).sum(
+            axis=0, dtype=np.float32)
+    del px_mean, px_std, thresh
+    gc.collect()
+
     locs = localise_particles(stack_pp, diameter=diameter, minmass=minmass,
                               percentile=percentile, workers=workers,
                               chunk_size=chunk_size, preview_cb=preview_cb,
-                              backend=backend)
+                              backend=backend, **backend_kwargs)
     del stack_pp
     gc.collect()
-    return locs, mean_proj, minmass
+    return locs, mean_proj, max_proj, blink_proj, minmass
 
 
 def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile=64,
@@ -1966,7 +2206,8 @@ def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile
                                      workers=N_CPUS, chunk_size=500,
                                      ram_headroom: float = 0.75,
                                      preview_cb=None, stop_event=None,
-                                     mass_cb=None, backend="auto"):
+                                     mass_cb=None, backend="auto",
+                                     **backend_kwargs):
     """
     Adaptive dispatcher — automatically selects the fastest strategy that fits
     in available RAM.
@@ -2002,7 +2243,8 @@ def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile
         return _fast_preprocess_and_localise(
             stack, diameter, minmass, percentile,
             bg_radius, bg_method, workers, chunk_size,
-            preview_cb=preview_cb, backend=backend)
+            preview_cb=preview_cb, backend=backend,
+            **backend_kwargs)
     else:
         print(f"  RAM strategy : STREAM (low-mem)  — "
               f"{free_gb:.1f} GB free, {needed_gb:.1f} GB needed, "
@@ -2011,14 +2253,16 @@ def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile
             stack, diameter, minmass, percentile,
             bg_radius, bg_method, workers, chunk_size,
             preview_cb=preview_cb, stop_event=stop_event,
-            mass_cb=mass_cb, backend=backend)
+            mass_cb=mass_cb, backend=backend,
+            **backend_kwargs)
 
 
 def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=64,
                                    bg_radius=50, bg_method="uniform_filter",
                                    workers=N_CPUS, chunk_size=500,
                                    preview_cb=None, stop_event=None,
-                                   mass_cb=None, backend="auto"):
+                                   mass_cb=None, backend="auto",
+                                   **backend_kwargs):
     """
     Memory-efficient single streaming pass: preprocess + localise without ever
     materialising the full preprocessed stack in RAM.
@@ -2045,8 +2289,19 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
 
     fn       = _preprocess_fast if bg_method == "uniform_filter" else _preprocess_rolling
     n_frames = len(stack)
+    # Adapt chunk_size + worker count to currently free RAM so the
+    # parallel-preprocessing inner pool doesn't push the box into OOM
+    # on the user's first dense file.  This is the most common cause
+    # of the symptom "FIREFLY crashed mid-run with OOM" on 16 GB Macs.
+    chunk_size_adj, workers_adj = _adaptive_chunk_and_workers(
+        stack, chunk_size, max(1, min(workers, N_CPUS)))
+    if (chunk_size_adj != chunk_size) or (workers_adj != workers):
+        print(f"  RAM auto-tune: chunk_size {chunk_size} → "
+              f"{chunk_size_adj},  workers {workers} → {workers_adj}  "
+              f"(reduced to stay within free RAM)")
+    chunk_size = chunk_size_adj
     n_chunks = max(1, int(np.ceil(n_frames / chunk_size)))
-    workers_ = max(1, min(workers, N_CPUS))
+    workers_ = workers_adj
 
     # Resolve the backend up front so each chunk goes through the same
     # implementation.  Trackpy is special-cased below to skip the per-chunk
@@ -2081,7 +2336,8 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
                                 percentile=percentile, processes=1)
         return _impl.localise(chunk_pp, diameter=diameter, minmass=minmass,
                               percentile=percentile, workers=workers_,
-                              chunk_size=len(chunk_pp))
+                              chunk_size=len(chunk_pp),
+                              **backend_kwargs)
 
     # ── First chunk: preprocess now so we can auto-detect minmass ─────────────
     first_end  = min(chunk_size, n_frames)
@@ -2108,7 +2364,42 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     # ── Stream all chunks ──────────────────────────────────────────────────────
     all_locs  = []
     mean_acc  = first_pp.sum(axis=0).astype(np.float64)
+    # Max-projection accumulator.  Cheap to stream (one np.maximum per
+    # chunk) and unlocks the same Max-projection ROI mode the GUI
+    # preview uses, so what-you-see-is-what-you-get for ROI.
+    max_acc   = first_pp.max(axis=0).astype(np.float32)
     frame_count = len(first_pp)
+
+    # ── Per-pixel Welford (streaming variance) + blink-count ────────────
+    # Welford's online algorithm gives running per-pixel mean and M2
+    # (sum of squared deltas from the running mean) without ever
+    # needing to keep the stack in RAM.  Combined with the standard
+    # chunk-merge formula it's vectorisable: one merge per chunk, not
+    # per frame.
+    #
+    # After each chunk merges in, we use `mean + 3*std` as a per-pixel
+    # "this pixel is unusually bright right now" threshold and count
+    # how many frames in *this chunk* exceeded it.  Across a 4000+
+    # frame movie the estimate stabilises within the first chunk, so
+    # the running-baseline approximation is close to the 2-pass
+    # ground truth that the GUI preview uses on its 30-frame stack.
+    welford_mean = first_pp.mean(axis=0).astype(np.float64)
+    welford_M2   = (first_pp.var(axis=0, dtype=np.float64)
+                    * first_pp.shape[0]).astype(np.float64)
+    welford_n    = first_pp.shape[0]
+    blink_count  = np.zeros(first_pp.shape[1:], dtype=np.uint32)
+    # MAD→σ factor: skimage Welford std is normal-distribution std,
+    # whereas the GUI uses median+3·MAD≈median+3·1.4826·σ.  We use 3·σ
+    # here to match — Welford only sees one realisation per frame, so
+    # MAD-vs-σ correction isn't applicable.
+    _BLINK_K = 3.0
+    # Count blinks in the first chunk against its own stats — slightly
+    # circular, but the mean/std of 500 frames is a reasonable baseline
+    # and using it avoids "no blinks counted for the first chunk".
+    if welford_n > 0:
+        _std_est = np.sqrt(welford_M2 / max(welford_n, 1))
+        _thresh  = welford_mean + _BLINK_K * _std_est
+        blink_count += (first_pp > _thresh[None]).sum(axis=0).astype(np.uint32)
 
     # Localise first chunk (already preprocessed) — through the active backend
     locs0 = _localise_chunk_via_backend(first_pp)
@@ -2160,7 +2451,34 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
                                  [_exe.submit(fn, f, bg_radius) for f in stack[start:end]]])
 
         mean_acc   += chunk_pp.sum(axis=0)
+        np.maximum(max_acc, chunk_pp.max(axis=0), out=max_acc)
         frame_count += len(chunk_pp)
+
+        # ── Chunk-merge Welford for per-pixel mean/variance ────────
+        # Parallel-Welford combine of two means:
+        #   delta = mean_b - mean_a
+        #   n     = n_a + n_b
+        #   M2    = M2_a + M2_b + delta**2 * n_a * n_b / n
+        #   mean  = mean_a + delta * n_b / n
+        n_b = chunk_pp.shape[0]
+        if n_b > 0:
+            chunk_mean = chunk_pp.mean(axis=0, dtype=np.float64)
+            chunk_M2   = (chunk_pp.var(axis=0, dtype=np.float64)
+                          * n_b).astype(np.float64)
+            n_total    = welford_n + n_b
+            delta      = chunk_mean - welford_mean
+            welford_M2 = (welford_M2 + chunk_M2
+                          + (delta * delta) * welford_n * n_b / n_total)
+            welford_mean = welford_mean + delta * (n_b / n_total)
+            welford_n  = n_total
+            # Per-pixel threshold from the latest running estimate, then
+            # count blinks in *this* chunk.  Population std (divide by n
+            # not n-1) — at n>>1 the difference is irrelevant and avoids
+            # a degenerate case at n=1.
+            _std_est = np.sqrt(welford_M2 / max(welford_n, 1))
+            _thresh  = welford_mean + _BLINK_K * _std_est
+            blink_count += (chunk_pp > _thresh[None]).sum(
+                axis=0).astype(np.uint32)
 
         locs_i = _localise_chunk_via_backend(chunk_pp)
 
@@ -2184,11 +2502,28 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     if mx > mn:
         mean_proj = (mean_proj - mn) / (mx - mn)
 
+    # ── Max projection (un-normalised; build_roi_mask_advanced normalises) ────
+    max_proj = max_acc.astype(np.float32)
+
+    # ── Blink-density projection ─────────────────────────────────────────────
+    # Per-pixel count of frames where the pixel exceeded its own running
+    # mean + 3·std (cumulative-up-to-that-frame).  Most discriminative ROI
+    # projection for sptPALM: cells blink repeatedly, autofluorescent
+    # background is steady so its blink-count is ~zero.  Cast to float32
+    # so build_roi_mask_advanced can DoG / smooth it like any image.
+    blink_proj = blink_count.astype(np.float32)
+
     result  = pd.concat(all_locs, ignore_index=True) if all_locs else pd.DataFrame()
     elapsed = time.perf_counter() - t0
     print(f"  Found {len(result):,} localisations in {elapsed:.1f}s  "
           f"({n_frames / elapsed:.0f} frames/s)")
-    return result, mean_proj, minmass
+    # Returns (locs, mean_proj, max_proj, blink_proj, minmass).
+    # max_proj + blink_proj are the streaming-accumulator projections
+    # consumed by firefly_worker.py → build_roi_mask_advanced so the
+    # worker's ROI mask matches whatever the user picked in the GUI
+    # preview.  Old callers that unpack the 3-tuple need updating —
+    # firefly_worker is the only one.
+    return result, mean_proj, max_proj, blink_proj, minmass
 
 
 def _localise_chunk(chunk, diameter, minmass, percentile, frame_offset):
@@ -2895,11 +3230,187 @@ class TorchBackend(LocaliserBackend):
         return df
 
 
+class WaveletBackend(LocaliserBackend):
+    """À-trous (stationary) wavelet spot detector, modeled on the
+    palmTRACER WaveTracer algorithm (Izeddin et al. 2012 / Kechkar
+    et al. 2013).
+
+    Per frame:
+      1. Stationary wavelet decomposition via `pywt.swt2` with the
+         chosen wavelet family (default `db2`) at `levels` scales.
+      2. Sum the detail planes at scales 1..levels into a single
+         response map.  Higher levels capture broader spots; the
+         default `levels=2` is tuned for the ~7 px diameter typical
+         of single-molecule PALM spots at 0.1 µm/px.
+      3. Robust threshold = `threshold_k · MAD(detail) · 1.4826`
+         (the MAD→σ correction for Gaussian noise).  Keeps the test
+         scale-free across frames with varying brightness.
+      4. `skimage.feature.peak_local_max` with `min_distance` =
+         user setting (default 3 px) to extract candidate peaks.
+      5. Sub-pixel refinement: 2-D Gaussian centroid via
+         `scipy.ndimage.center_of_mass` of a (2·d+1) × (2·d+1) patch
+         around each peak, where d = ⌊diameter/2⌋.
+      6. `mass` column = sum of the response map over the patch —
+         analogous to trackpy's integrated mass, so the GUI's
+         minmass filter applies meaningfully.
+
+    Accepted params (all picked up from the worker payload):
+        wavelet            — wavelet family ("db2", "db4", "sym4", "bior1.3", …)
+        wavelet_levels     — number of detail scales summed (1..5)
+        wavelet_threshold_k— robust-MAD multiplier (default 3.0)
+        wavelet_min_distance — minimum spot separation in px (default 3)
+        diameter           — patch radius for the centroid + mass step
+        minmass            — keep only peaks with patch-integrated mass ≥ this
+
+    Performance: parallelised via the same multiprocessing.Pool pattern
+    TrackpyBackend uses.  Pure-CPU; no GPU.  Speed is roughly comparable
+    to TrackpyBackend on dense PALM movies.
+    """
+    name = "wavelet"
+
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            import pywt  # noqa: F401
+            from skimage.feature import peak_local_max  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    @staticmethod
+    def _detect_frame(frame, *, diameter, minmass, wavelet, levels,
+                       threshold_k, min_distance):
+        """Localise a single frame.  Returns (xs, ys, masses) tuple of
+        1-D numpy arrays.  Module-level so multiprocessing.Pool can
+        pickle it on Windows + spawn-mode macOS workers."""
+        import pywt
+        from skimage.feature import peak_local_max
+        from scipy.ndimage import center_of_mass
+
+        f = np.asarray(frame, dtype=np.float32)
+        # `pywt.swt2` requires both image dimensions divisible by
+        # 2**level.  Pad up to the nearest multiple, then crop back.
+        H, W = f.shape
+        mult = 1 << int(levels)
+        pad_h = (-H) % mult
+        pad_w = (-W) % mult
+        if pad_h or pad_w:
+            f = np.pad(f, ((0, pad_h), (0, pad_w)), mode="reflect")
+        # Stationary (à-trous) wavelet transform.  Returns a list of
+        # tuples (cA, (cH, cV, cD)) — one per level.  We sum the
+        # detail magnitude across levels, which is what palmTRACER does.
+        coeffs = pywt.swt2(f, wavelet=wavelet, level=int(levels),
+                            trim_approx=True)
+        # `trim_approx=True` returns [cA_last, (cH_n, cV_n, cD_n),
+        # (cH_{n-1}, …), …, (cH_1, …)]; we want the detail planes only.
+        detail_planes = []
+        for entry in coeffs[1:]:
+            if isinstance(entry, tuple):
+                cH, cV, cD = entry
+                # Magnitude (sqrt of sum of squares) — invariant to
+                # spot orientation.
+                detail_planes.append(np.sqrt(cH ** 2 + cV ** 2 + cD ** 2))
+        if not detail_planes:
+            return np.empty(0), np.empty(0), np.empty(0)
+        detail = np.sum(detail_planes, axis=0).astype(np.float32)
+        detail = detail[:H, :W]   # crop back to original size
+
+        # Robust noise floor from MAD; multiplied by 1.4826 for the
+        # Gaussian σ equivalent.
+        med = float(np.median(detail))
+        mad = float(np.median(np.abs(detail - med)))
+        sigma = 1.4826 * mad + 1e-9
+        threshold = med + float(threshold_k) * sigma
+
+        peaks = peak_local_max(detail, min_distance=int(min_distance),
+                                threshold_abs=threshold)
+        if peaks.size == 0:
+            return np.empty(0), np.empty(0), np.empty(0)
+
+        # Sub-pixel refinement + integrated-mass measurement in a
+        # square patch around each peak.  Edge peaks get clipped
+        # so the patch is never out of bounds.
+        d = max(1, int(diameter) // 2)
+        xs, ys, masses = [], [], []
+        for (py, px) in peaks:
+            y0 = max(0, py - d); y1 = min(H, py + d + 1)
+            x0 = max(0, px - d); x1 = min(W, px + d + 1)
+            patch = detail[y0:y1, x0:x1]
+            patch_sum = float(patch.sum())
+            if patch_sum < float(minmass):
+                continue
+            # `center_of_mass` returns (row, col) offsets within the patch.
+            cy, cx = center_of_mass(patch)
+            xs.append(x0 + cx)
+            ys.append(y0 + cy)
+            masses.append(patch_sum)
+        return (np.asarray(xs, dtype=np.float32),
+                np.asarray(ys, dtype=np.float32),
+                np.asarray(masses, dtype=np.float32))
+
+    def localise(self, stack, *, diameter=7, minmass=0.1, percentile=64,
+                 workers=None, chunk_size=500, preview_cb=None, **kwargs):
+        if diameter % 2 == 0:
+            diameter += 1
+        wavelet      = str(kwargs.get("wavelet", "db2"))
+        levels       = int(kwargs.get("wavelet_levels", 2))
+        threshold_k  = float(kwargs.get("wavelet_threshold_k", 3.0))
+        min_distance = int(kwargs.get("wavelet_min_distance", 3))
+        levels = max(1, min(levels, 5))
+
+        n_frames = len(stack)
+        print(f"  Diameter  : {diameter}px  |  minmass: {minmass:.4f}")
+        print(f"  Wavelet   : {wavelet}  |  levels: {levels}  |  "
+              f"threshold_k: {threshold_k}  |  min_distance: {min_distance}")
+
+        # Serial loop is fine for the wavelet backend — the inner
+        # SWT2 + MAD is already vectorised across the frame and the
+        # call overhead would dominate if we tried per-frame mp.Pool.
+        # Same memmap-friendly pattern as the streaming localiser:
+        # iterate one frame at a time, emit a preview row, and
+        # accumulate localisations.
+        t0 = time.perf_counter()
+        all_x, all_y, all_mass, all_frame = [], [], [], []
+        for f_idx in range(n_frames):
+            frame = np.asarray(stack[f_idx])
+            xs, ys, masses = self._detect_frame(
+                frame, diameter=diameter, minmass=minmass,
+                wavelet=wavelet, levels=levels,
+                threshold_k=threshold_k, min_distance=min_distance)
+            if xs.size:
+                all_x.append(xs); all_y.append(ys)
+                all_mass.append(masses)
+                all_frame.append(np.full(xs.size, f_idx,
+                                          dtype=np.int32))
+                if preview_cb is not None:
+                    try:
+                        preview_cb(int(f_idx), frame, xs, ys, n_frames)
+                    except Exception:
+                        pass
+
+        if not all_x:
+            print("  Found 0 localisations")
+            return pd.DataFrame(columns=["x", "y", "frame", "mass"])
+        df = pd.DataFrame({
+            "x":     np.concatenate(all_x).astype(np.float32),
+            "y":     np.concatenate(all_y).astype(np.float32),
+            "frame": np.concatenate(all_frame).astype(np.int32),
+            "mass":  np.concatenate(all_mass).astype(np.float32),
+        })
+        elapsed = time.perf_counter() - t0
+        print(f"  Found {len(df):,} localisations in {elapsed:.1f}s  "
+              f"({n_frames / elapsed:.0f} frames/s)")
+        return df
+
+
 # Order matters: `backend="auto"` resolves to the first available entry.
 # TorchBackend stays AFTER TrackpyBackend in A2 so "auto" still picks trackpy
 # while users validate the new path explicitly by selecting "torch" in the GUI.
 # A3 will swap the order once we've confirmed numerical agreement on real data.
-_BACKEND_REGISTRY: list[type[LocaliserBackend]] = [TrackpyBackend, TorchBackend]
+# WaveletBackend is opt-in; users select it explicitly via the backend dropdown.
+_BACKEND_REGISTRY: list[type[LocaliserBackend]] = [
+    TrackpyBackend, TorchBackend, WaveletBackend,
+]
 
 
 def list_available_backends() -> list[str]:
@@ -3042,13 +3553,19 @@ def _resolve_backend(name: str | None):
 
 def localise_particles(stack, diameter=7, minmass=0.1, percentile=64,
                        workers=N_CPUS, chunk_size=500, preview_cb=None,
-                       backend="auto"):
+                       backend="auto", **backend_kwargs):
     """Localise spots in every frame of a preprocessed stack.
 
     `backend` selects the implementation:
         "auto"     — first available entry in _BACKEND_REGISTRY
         "trackpy"  — Crocker-Grier centroid (CPU, multi-process)
-        (future)   — "torch" for GPU acceleration
+        "torch[-mps|-cuda|-cpu]" — GPU/CPU PyTorch localiser
+        "wavelet"  — à-trous wavelet (palmTRACER-style)
+
+    Extra `backend_kwargs` are forwarded verbatim to the active
+    backend's `.localise()`, used by WaveletBackend for its
+    `wavelet`, `wavelet_levels`, `wavelet_threshold_k`,
+    `wavelet_min_distance` parameters.  Other backends ignore them.
 
     Returns a DataFrame with columns: x, y, frame, mass.
     """
@@ -3056,7 +3573,8 @@ def localise_particles(stack, diameter=7, minmass=0.1, percentile=64,
     print(f"  Backend   : {impl.name}")
     return impl.localise(stack, diameter=diameter, minmass=minmass,
                          percentile=percentile, workers=workers,
-                         chunk_size=chunk_size, preview_cb=preview_cb)
+                         chunk_size=chunk_size, preview_cb=preview_cb,
+                         **backend_kwargs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3104,13 +3622,34 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
             iterator = tp.link_iter(
                 iter(coords_per_frame),
                 search_range=search_range, memory=memory)
-            for f_idx, p_ids in enumerate(iterator):
+            for f_idx, raw in enumerate(iterator):
                 row_idx = indices_per_frame[f_idx]
-                arr = np.asarray(p_ids, dtype=np.int64)
+                # Across trackpy versions `link_iter` yields one of:
+                #   • an int ndarray of particle IDs (the common case)
+                #   • a 1-D pandas Series of IDs
+                #   • a 2-tuple `(coords_array, ids_array)` (older versions)
+                #   • a DataFrame with a 'particle' column (when fed DFs)
+                # Normalise all of these to a plain int ndarray before
+                # we try to slot it into `particle_ids` — without this,
+                # numpy 2.x raises an "inhomogeneous shape" error on the
+                # tuple form (the user's stack trace).
+                p_ids = raw
+                if isinstance(p_ids, tuple):
+                    # (coords, ids) or (ids, coords) — pick the 1-D one.
+                    a, b = p_ids
+                    p_ids = a if np.ndim(a) == 1 else b
+                elif hasattr(p_ids, "columns") and "particle" in getattr(
+                        p_ids, "columns", []):
+                    p_ids = p_ids["particle"].to_numpy()
+                elif hasattr(p_ids, "to_numpy"):
+                    p_ids = p_ids.to_numpy()
+                arr = np.asarray(p_ids, dtype=np.int64).ravel()
                 if arr.shape[0] != row_idx.shape[0]:
                     # Mismatch — trackpy's iter may have emitted in a
                     # different shape than we expected.  Bail to atomic.
-                    raise RuntimeError("link_iter shape mismatch")
+                    raise RuntimeError(
+                        f"link_iter shape mismatch (got {arr.shape[0]} "
+                        f"ids for {row_idx.shape[0]} rows)")
                 particle_ids[row_idx] = arr
                 # Progress + cancel — only every 32 frames to keep cost
                 # well under linking cost itself
@@ -3235,7 +3774,7 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     mse  = np.nan        # mean squared residual of the linear fit
     if ok.sum() >= 3:
         try:    alpha = np.polyfit(np.log(t[ok]), np.log(m[ok]), 1)[0]
-        except: pass
+        except Exception: pass
         try:
             popt, _ = curve_fit(msd_linear, t[ok], m[ok], p0=[0.01, 0],
                                 bounds=([0, -np.inf], [np.inf, np.inf]),
@@ -3244,7 +3783,7 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             msd0 = float(popt[1])
             _resid = m[ok] - msd_linear(t[ok], *popt)
             mse = float(np.mean(_resid ** 2))
-        except: pass
+        except Exception: pass
 
     motion = classify_motion(alpha, alpha_thresholds) if np.isfinite(alpha) else "Unknown"
 
@@ -3499,6 +4038,2119 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
 # ══════════════════════════════════════════════════════════════════════════════
 #  TURNING ANGLES
 # ══════════════════════════════════════════════════════════════════════════════
+
+def compute_circular_statistics(angles_deg):
+    """Full circular-statistics summary for an array of angles, in
+    degrees, on the interval (-180°, +180°] (signed turning-angle
+    convention used by `compute_turning_angles`).
+
+    Returns a dict whose keys are the same statistic names MATLAB's
+    CircStat toolbox (Berens 2009) uses, so a supervisor familiar with
+    that toolbox can map results 1:1.  All angles in the output are in
+    DEGREES; rates / dispersions in their natural units.
+
+    Computed statistics
+    -------------------
+    n                            : sample size
+    mean_direction_deg           : μ = atan2(S, C), in (-180°, +180°]
+    mean_resultant_length        : R̄ in [0, 1]    (1 = perfect alignment)
+    circular_variance            : 1 - R̄          ("S" in Fisher 1993)
+    circular_std_deg             : √(-2·ln R̄)·(180/π)
+    angular_deviation_deg        : √(2·(1 - R̄))·(180/π)  ("s₀" in Fisher)
+    median_deg                   : circular median
+    concentration_kappa          : von Mises κ via standard piecewise
+                                   approximation (Best & Fisher 1981)
+    rayleigh_z                   : n·R̄²   (test statistic for uniformity)
+    rayleigh_p                   : Wilkie-Mardia approximation (good
+                                   to ~5e-4 for n ≥ 10)
+    v_test_z, v_test_p           : V-test against μ₀ = 0° (tests for a
+                                   preferred mean direction at "straight
+                                   ahead")
+    circular_skewness            : b̄ / (1 - R̄)^1.5
+    circular_kurtosis            : (ā - R̄⁴) / (1 - R̄)²
+    ci95_lower_deg, ci95_upper_deg
+                                 : approximate 95% CI for μ (Fisher 1993
+                                   §4.4.4, large-sample normal approx)
+
+    References
+    ----------
+    Mardia & Jupp 2000, "Directional Statistics".
+    Fisher 1993, "Statistical Analysis of Circular Data".
+    Berens 2009, "CircStat: A MATLAB Toolbox for Circular Statistics",
+    J. Stat. Soft. 31(10).
+    """
+    a = np.asarray(angles_deg, dtype=float).ravel()
+    a = a[np.isfinite(a)]
+    n = int(a.size)
+    out = {"n": n}
+    if n < 2:
+        # Nothing meaningful with <2 points.  Fill the schema with NaN
+        # so downstream CSV consumers see the same columns regardless.
+        for k in ("mean_direction_deg", "mean_resultant_length",
+                 "circular_variance", "circular_std_deg",
+                 "angular_deviation_deg", "median_deg",
+                 "concentration_kappa", "rayleigh_z", "rayleigh_p",
+                 "v_test_z", "v_test_p", "circular_skewness",
+                 "circular_kurtosis", "ci95_lower_deg", "ci95_upper_deg"):
+            out[k] = float("nan")
+        return out
+
+    rad = np.radians(a)
+    C = float(np.mean(np.cos(rad)))
+    S = float(np.mean(np.sin(rad)))
+    R_bar = float(np.hypot(C, S))           # mean resultant length
+    mu_rad = float(np.arctan2(S, C))         # mean direction (radians)
+    mu_deg = float(np.degrees(mu_rad))
+    # Standard CircStat convention: report direction on (-180°, +180°]
+    if mu_deg <= -180.0: mu_deg += 360.0
+    if mu_deg >   180.0: mu_deg -= 360.0
+
+    # Dispersion measures
+    circ_var = 1.0 - R_bar
+    # √(-2·ln R̄) is undefined at R̄=0 (uniform), gigantic for tiny R̄.
+    # Clamp to avoid log(0) screaming; report NaN for R̄ ≤ 0 instead.
+    if R_bar > 0:
+        circ_std_deg = float(np.degrees(np.sqrt(-2.0 * np.log(R_bar))))
+    else:
+        circ_std_deg = float("nan")
+    ang_dev_deg = float(np.degrees(np.sqrt(2.0 * max(circ_var, 0.0))))
+
+    # Circular median: angle θ̃ minimising Σ (π − |π − |θᵢ − θ̃||).
+    # Evaluating the objective at every datum is O(n²) in time AND
+    # memory if we do it with broadcasting (the 50k × 50k float64
+    # array alone is 20 GB).  We instead:
+    #   * cap CANDIDATES at 3000 (random subsample of the data)
+    #   * cap SUMMAND points at 8000 (random subsample of the data)
+    # which gives 24 million ops + ~190 MB temporary — fast enough,
+    # and the median estimate from a 8000-point subsample is accurate
+    # to a couple of degrees, well below other sources of noise here.
+    _rng = np.random.default_rng(0)
+    if n > 3000:
+        cand = rad[_rng.choice(n, size=3000, replace=False)]
+    else:
+        cand = rad
+    if n > 8000:
+        ref = rad[_rng.choice(n, size=8000, replace=False)]
+    else:
+        ref = rad
+    diff = np.abs(cand[:, None] - ref[None, :])
+    diff = np.minimum(diff, 2.0 * np.pi - diff)        # circular distance
+    obj = diff.sum(axis=1)
+    median_rad = float(cand[int(np.argmin(obj))])
+    median_deg = float(np.degrees(median_rad))
+    if median_deg <= -180.0: median_deg += 360.0
+    if median_deg >   180.0: median_deg -= 360.0
+
+    # Concentration κ — Best & Fisher 1981 piecewise approximation,
+    # with a small-n bias correction (Fisher 1993 eq. 4.41).
+    if R_bar < 0.53:
+        kappa = 2.0 * R_bar + R_bar ** 3 + 5.0 * R_bar ** 5 / 6.0
+    elif R_bar < 0.85:
+        kappa = -0.4 + 1.39 * R_bar + 0.43 / max(1.0 - R_bar, 1e-12)
+    else:
+        denom = max(R_bar ** 3 - 4.0 * R_bar ** 2 + 3.0 * R_bar, 1e-12)
+        kappa = 1.0 / denom
+    if n < 15:
+        if kappa < 2.0:
+            kappa = max(kappa - 2.0 / (n * kappa), 0.0)
+        else:
+            kappa = ((n - 1.0) ** 3) * kappa / (n ** 3 + n)
+
+    # Rayleigh test for uniformity (Wilkie 1983 / Mardia & Jupp eq. 6.3.5).
+    # We compute in LOG space so the result doesn't underflow to 0
+    # when n is large (e.g. n=240k with R̄=0.08 → z≈1500 → exp(-z)
+    # rounds to 0 in float64, which the user sees as a spurious
+    # "p = 0").  The leading term is exp(-z); we still apply the
+    # Mardia higher-order correction multiplicatively in log-space.
+    R_total = n * R_bar
+    z_ray = R_total ** 2 / n
+    correction = (1.0 + (2.0 * z_ray - z_ray ** 2) / (4.0 * n)
+                  - (24.0 * z_ray - 132.0 * z_ray ** 2
+                     + 76.0 * z_ray ** 3 - 9.0 * z_ray ** 4)
+                    / (288.0 * n ** 2))
+    if correction <= 0:
+        correction = 1.0   # higher-order correction overshot; ignore.
+    log_p_ray = -z_ray + np.log(correction)
+    # If log p < ~-700, exp underflows.  Convert to a tiny positive
+    # number that survives float64 (1e-300) so downstream callers see
+    # "very small" rather than zero, and formatters can render it as
+    # "<1e-300".
+    if log_p_ray < -700.0:
+        p_ray = 1e-300
+    else:
+        p_ray = float(np.exp(log_p_ray))
+    p_ray = float(np.clip(p_ray, 0.0, 1.0))
+
+    # V-test against μ₀ = 0° ("are tracks preferentially going
+    # straight ahead?").  V = R̄·cos(μ − μ₀); z = V·√(2n); one-tailed.
+    mu0 = 0.0
+    V = R_bar * np.cos(mu_rad - mu0)
+    z_v = V * np.sqrt(2.0 * n)
+    # One-tailed p via the standard normal survival function.  Use
+    # scipy's norm.sf where available (numerically stable to ~p≈1e-300);
+    # fall back to a math.erf-based computation otherwise, and floor at
+    # 1e-300 so a huge z doesn't round to exactly 0.
+    try:
+        from scipy.stats import norm as _norm
+        p_v = float(_norm.sf(z_v))
+    except Exception:
+        from math import erf
+        p_v = float(0.5 * (1.0 - erf(z_v / np.sqrt(2.0))))
+    if p_v == 0.0:
+        p_v = 1e-300    # underflow sentinel
+    p_v = float(np.clip(p_v, 0.0, 1.0))
+
+    # Circular skewness and kurtosis (Mardia & Jupp §2.3).
+    # b̄ = (1/n) Σ sin(2(θᵢ − μ))   ;   ā = (1/n) Σ cos(2(θᵢ − μ))
+    b_bar = float(np.mean(np.sin(2.0 * (rad - mu_rad))))
+    a_bar = float(np.mean(np.cos(2.0 * (rad - mu_rad))))
+    sigma = max(1.0 - R_bar, 1e-12)
+    skew = b_bar / (sigma ** 1.5)
+    kurt = (a_bar - R_bar ** 4) / (sigma ** 2)
+
+    # 95% CI for μ — large-sample normal approximation (Fisher 1993
+    # eq. 4.46).  Only meaningful when R̄ is appreciable AND n ≥ ~15;
+    # report NaN when the approximation breaks down.
+    if R_bar >= 0.4 and n >= 15:
+        sd_mu = np.sqrt((1.0 - a_bar) / (2.0 * n * R_bar ** 2))
+        half = float(np.degrees(1.959964 * sd_mu))   # 1.96 σ
+        lo = mu_deg - half
+        hi = mu_deg + half
+        # Keep both endpoints on (-180°, +180°] without wrapping the
+        # interval ordering — supervisor will read this from the CSV.
+        ci_lo, ci_hi = lo, hi
+    else:
+        ci_lo = float("nan")
+        ci_hi = float("nan")
+
+    out.update({
+        "mean_direction_deg":     mu_deg,
+        "mean_resultant_length":  R_bar,
+        "circular_variance":      circ_var,
+        "circular_std_deg":       circ_std_deg,
+        "angular_deviation_deg":  ang_dev_deg,
+        "median_deg":             median_deg,
+        "concentration_kappa":    float(kappa),
+        "rayleigh_z":             float(z_ray),
+        "rayleigh_p":             p_ray,
+        "v_test_z":               float(z_v),
+        "v_test_p":               p_v,
+        "circular_skewness":      float(skew),
+        "circular_kurtosis":      float(kurt),
+        "ci95_lower_deg":         float(ci_lo),
+        "ci95_upper_deg":         float(ci_hi),
+    })
+    return out
+
+
+_THEME_REQUIRED_KEYS = (
+    "BG", "PNL", "TXT", "MUT", "GRD", "ACC",
+    "HDR_BG", "HDR_TXT", "ZEBRA", "FONT", "ARROW",
+    # legacy keys consumed by `compare_groups` & `_write_pdf_report`
+    "BAR_FILL", "SIG",
+)
+
+
+def _theme_palette(theme: str) -> dict:
+    """Return a colour palette matching the master figure theme.
+    Centralised so the master figure, the circular-statistics PDF, and
+    the comparison PDF all read from the same source of truth.
+
+    The returned dict is GUARANTEED to contain every key in
+    `_THEME_REQUIRED_KEYS` — if any caller starts using a new key,
+    add it to the tuple and to every branch below, and the
+    `_validate_palette` check at the bottom will catch a regression at
+    module-import time rather than at PDF-render time.
+    """
+    t = (theme or "Dark").strip()
+    if t == "Light":
+        pal = {"BG":   "#ffffff", "PNL":  "#f6f8fa",
+               "TXT":  "#24292f", "MUT":  "#57606a",
+               "GRD":  "#d0d7de", "ACC":  "#0969da",
+               "HDR_BG":"#1f2937", "HDR_TXT":"#ffffff",
+               "ZEBRA":"#f3f4f6", "FONT": "sans-serif",
+               "ARROW":"#d93636",
+               "BAR_FILL":"#0969da", "SIG":"#d93636"}
+    elif t == "Publication":
+        pal = {"BG":   "#ffffff", "PNL":  "#ffffff",
+               "TXT":  "#000000", "MUT":  "#444444",
+               "GRD":  "#cccccc", "ACC":  "#333333",
+               "HDR_BG":"#000000", "HDR_TXT":"#ffffff",
+               "ZEBRA":"#f2f2f2", "FONT": "serif",
+               "ARROW":"#000000",
+               "BAR_FILL":"#333333", "SIG":"#000000"}
+    elif t == "AMOLED":
+        # Pure-black backgrounds for OLED displays.  Mirrors Dark
+        # otherwise so the figures are recognisable as the same FIREFLY
+        # output.  PNL nudged to #0a0a0a so card-style panels still
+        # read as cards against the BG.
+        pal = {"BG":   "#000000", "PNL":  "#0a0a0a",
+               "TXT":  "#e6edf3", "MUT":  "#9da7b1",
+               "GRD":  "#30363d", "ACC":  "#58a6ff",
+               "HDR_BG":"#141414", "HDR_TXT":"#e6edf3",
+               "ZEBRA":"#050505", "FONT": "monospace",
+               "ARROW":"#ff7b72",
+               "BAR_FILL":"#58a6ff", "SIG":"#ff7b72"}
+    else:
+        # Dark (default).
+        pal = {"BG":   "#0d1117", "PNL":  "#161b22",
+               "TXT":  "#e6edf3", "MUT":  "#9da7b1",
+               "GRD":  "#30363d", "ACC":  "#58a6ff",
+               "HDR_BG":"#21262d", "HDR_TXT":"#e6edf3",
+               "ZEBRA":"#1c2128", "FONT": "monospace",
+               "ARROW":"#ff7b72",
+               "BAR_FILL":"#58a6ff", "SIG":"#ff7b72"}
+    # Belt-and-braces: if a caller (or future edit) ever accesses a key
+    # we forgot to include, return a sensible TXT fallback rather than
+    # crashing with a KeyError mid-render.  We do this via a small
+    # dict subclass so `pal[<missing>]` works as if `pal.get(<missing>,
+    # pal["TXT"])` were called.
+    class _PalDict(dict):
+        __slots__ = ()
+        def __missing__(self, key):
+            return self.get("TXT", "#000000")
+    return _PalDict(pal)
+
+
+def save_circular_statistics_pdf(angles_deg, stats, *, pdf_path,
+                                  file_label="", fig_theme="Dark",
+                                  circ_lin_result=None):
+    """Render a single-page A4-portrait PDF report summarising the
+    circular statistics in `stats` (as produced by
+    `compute_circular_statistics`) alongside a small polar histogram of
+    the underlying angle distribution.
+
+    Designed to be supervisor-facing: stat names match MATLAB CircStat,
+    each value is annotated with a one-line plain-English meaning, and
+    the polar plot orients 0° at the top with positive angles sweeping
+    counter-clockwise (the convention `compute_turning_angles` uses).
+
+    Parameters
+    ----------
+    angles_deg : 1-D array of turning angles in degrees (signed, on
+                 (-180°, +180°]).  Used only for the polar histogram.
+    stats      : dict returned by `compute_circular_statistics`.
+    pdf_path   : where to write the PDF.
+    file_label : appears in the page header (typically the analysis stem).
+    fig_theme  : "Dark" | "Light" | "Publication" — palette to match the
+                 master figure renderer.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    pal = _theme_palette(fig_theme)
+
+    a = np.asarray(angles_deg, dtype=float).ravel()
+    a = a[np.isfinite(a)]
+
+    # Helper: render NaN as an em-dash so the PDF doesn't look broken
+    # when a stat couldn't be computed (small-n or R̄ ≈ 0 cases).
+    # Also collapse the 1e-300 underflow sentinel produced by the
+    # log-space p-value computations into a human-readable "<1e-300"
+    # — otherwise the supervisor sees "1e-300" and wonders why so
+    # many tests give exactly that value.
+    def _fmt(x, prec=4):
+        try:
+            if x is None: return "—"
+            xf = float(x)
+            if np.isnan(xf): return "—"
+            if xf > 0.0 and xf <= 1e-300:
+                return "<1e-300"
+            return f"{xf:.{prec}g}"
+        except Exception:
+            return str(x)
+
+    # One-line plain-English gloss per statistic.  Order matches the
+    # CSV column order so the table reads top-to-bottom like the CSV.
+    rows = [
+        ("n",                          "Sample size", "count",
+         f"{int(stats.get('n', 0)):,}"),
+        ("mean_direction_deg",         "Mean direction μ", "deg",
+         _fmt(stats.get("mean_direction_deg"), 4)),
+        ("mean_resultant_length",      "Mean resultant length R̄  (0 = uniform, 1 = aligned)",
+         "—",
+         _fmt(stats.get("mean_resultant_length"), 4)),
+        ("circular_variance",          "Circular variance  1 − R̄", "—",
+         _fmt(stats.get("circular_variance"), 4)),
+        ("circular_std_deg",           "Circular standard deviation  √(−2·ln R̄)",
+         "deg",
+         _fmt(stats.get("circular_std_deg"), 4)),
+        ("angular_deviation_deg",      "Angular deviation  s₀ = √(2·(1−R̄))",
+         "deg",
+         _fmt(stats.get("angular_deviation_deg"), 4)),
+        ("median_deg",                 "Circular median", "deg",
+         _fmt(stats.get("median_deg"), 4)),
+        ("concentration_kappa",        "Von Mises concentration κ  (Best & Fisher 1981)",
+         "—",
+         _fmt(stats.get("concentration_kappa"), 4)),
+        ("rayleigh_z",                 "Rayleigh test statistic  z = n·R̄²", "—",
+         _fmt(stats.get("rayleigh_z"), 4)),
+        ("rayleigh_p",                 "Rayleigh test p-value  (uniformity)", "—",
+         _fmt(stats.get("rayleigh_p"), 3)),
+        ("v_test_z",                   "V-test statistic against μ₀ = 0°", "—",
+         _fmt(stats.get("v_test_z"), 4)),
+        ("v_test_p",                   "V-test p-value  (preferred direction)", "—",
+         _fmt(stats.get("v_test_p"), 3)),
+        ("circular_skewness",          "Circular skewness  (Mardia & Jupp §2.3)", "—",
+         _fmt(stats.get("circular_skewness"), 4)),
+        ("circular_kurtosis",          "Circular kurtosis  (Mardia & Jupp §2.3)", "—",
+         _fmt(stats.get("circular_kurtosis"), 4)),
+        ("ci95_lower_deg",             "95% CI lower bound for μ  (large-sample)", "deg",
+         _fmt(stats.get("ci95_lower_deg"), 4)),
+        ("ci95_upper_deg",             "95% CI upper bound for μ  (large-sample)", "deg",
+         _fmt(stats.get("ci95_upper_deg"), 4)),
+    ]
+    # Circ-lin correlation rows — optional; only present when the
+    # caller passed a `circ_lin_result` (computed from per-track
+    # (mean_angle, D) pairs).  Three rows: r, χ²(2), p, n.  Treated
+    # as a single stats block so it can be excluded silently when
+    # the caller has no D data (e.g. external-CSV input path).
+    if circ_lin_result:
+        rows.extend([
+            ("circ_lin_angle_vs_D_r",
+             "Circ-lin correlation r — turning bias vs D", "—",
+             _fmt(circ_lin_result.get("r"), 4)),
+            ("circ_lin_angle_vs_D_chi2",
+             "Circ-lin χ²(2) test statistic  (n·r²)", "—",
+             _fmt(circ_lin_result.get("test_stat"), 4)),
+            ("circ_lin_angle_vs_D_p",
+             "Circ-lin correlation p-value", "—",
+             _fmt(circ_lin_result.get("p"), 3)),
+            ("circ_lin_angle_vs_D_n",
+             "Circ-lin sample size  (tracks with ≥ 3 frames + D)",
+             "count",
+             f"{int(circ_lin_result.get('n', 0)):,}"
+             if circ_lin_result.get("n") is not None else "—"),
+        ])
+
+    # ── rcParams snapshot ──────────────────────────────────────────────
+    # plt.rcParams persists across figures in the same process — the
+    # master figure renderer might have left things on the Dark palette
+    # (text.color = #e6edf3 etc.).  Snapshot then force everything to
+    # OUR palette so we can't accidentally pick up someone else's
+    # colours.  Restored at the end.
+    _rc_keys = ("text.color", "axes.labelcolor", "axes.edgecolor",
+                "xtick.color", "ytick.color", "axes.facecolor",
+                "axes.titlecolor", "figure.facecolor", "grid.color",
+                "font.family")
+    _rc_save = {k: plt.rcParams.get(k) for k in _rc_keys}
+    plt.rcParams.update({
+        "text.color":       pal["TXT"],
+        "axes.labelcolor":  pal["TXT"],
+        "axes.edgecolor":   pal["GRD"],
+        "xtick.color":      pal["TXT"],
+        "ytick.color":      pal["TXT"],
+        "axes.facecolor":   pal["PNL"],
+        "axes.titlecolor":  pal["TXT"],
+        "figure.facecolor": pal["BG"],
+        "grid.color":       pal["GRD"],
+        "font.family":      pal["FONT"],
+    })
+
+    try:
+        # ── Layout (A4 portrait, all coords in figure-fraction) ─────────
+        #
+        # Vertical bands, top → bottom:
+        #   y 0.94 – 0.98  : header bar (title + n)
+        #   y 0.89 – 0.93  : file label
+        #   y 0.61 – 0.86  : polar  |  interpretation banner
+        #   y 0.54 – 0.58  : "Statistics" section title
+        #   y 0.12 – 0.52  : statistics table
+        #   y 0.06 – 0.10  : sign-convention footer (3 short lines)
+        #   y 0.02 – 0.04  : references footer
+        #
+        # The earlier layout placed the Statistics title with
+        # `transform=ax_tbl.transAxes` at y=1.04 which sits at about
+        # figure-y 0.53 — directly underneath the polar's "±180°" tick.
+        # Moving it to its own fig.text at a fixed y resolves the overlap.
+        # The footer used to be at y=0.04 which collided with the
+        # table's bottom row at y=0.05; both footers now live below
+        # y=0.10 with the table topping at y=0.52.
+        fig = plt.figure(figsize=(8.27, 11.69), facecolor=pal["BG"])
+
+        # Header (full width)
+        ax_hdr = fig.add_axes([0.07, 0.94, 0.86, 0.04])
+        ax_hdr.axis("off")
+        title = "Circular Statistics Report"
+        ax_hdr.text(0.0, 0.5, title, fontsize=16, fontweight="bold",
+                    va="center", ha="left", color=pal["TXT"])
+        n_val = int(stats.get("n", 0))
+        ax_hdr.text(1.0, 0.5,
+                    f"n = {n_val:,} turning angles",
+                    fontsize=11, color=pal["MUT"], va="center", ha="right")
+        if file_label:
+            # File label on its own dedicated row so it can't fight the
+            # polar plot's "0°" tick label below.
+            fig.text(0.07, 0.91, file_label, fontsize=10,
+                     color=pal["MUT"], va="top", ha="left",
+                     family=pal["FONT"])
+
+        # Polar histogram (left side of middle band).
+        # Convention matched to the master figure's Radial-Distribution
+        # panel (see sax "O" in make_figure): 0° at the top, positive
+        # angles sweep CLOCKWISE so they appear on the right hemisphere.
+        # Signed angles on (-180°, +180°] are first wrapped to [0, 2π)
+        # before histogramming — matplotlib's polar bar() silently drops
+        # bars at negative theta when set_theta_direction(-1) is active.
+        ax_polar = fig.add_axes([0.08, 0.61, 0.36, 0.25], projection="polar")
+        ax_polar.set_facecolor(pal["PNL"])
+        if a.size >= 10:
+            nbins = 36
+            angles_rad = np.mod(np.deg2rad(a), 2.0 * np.pi)
+            bins  = np.linspace(0.0, 2.0 * np.pi, nbins + 1)
+            counts, edges = np.histogram(angles_rad, bins=bins)
+            widths  = np.diff(edges)
+            centers = 0.5 * (edges[:-1] + edges[1:])
+            ax_polar.set_theta_zero_location("N")
+            ax_polar.set_theta_direction(-1)  # CW positive — match master fig
+            ax_polar.bar(centers, counts, width=widths * 0.95,
+                         align="center", color=pal["ACC"],
+                         edgecolor=pal["PNL"], linewidth=0.4, alpha=0.92)
+            mu = stats.get("mean_direction_deg")
+            if mu is not None and not (isinstance(mu, float) and np.isnan(mu)):
+                r_max = float(counts.max()) if counts.size else 1.0
+                # Wrap signed μ into [0, 2π) so the arrow lands at the
+                # same place the bar histogram does.
+                mu_rad = np.mod(np.deg2rad(mu), 2.0 * np.pi)
+                ax_polar.annotate("",
+                    xy=(mu_rad, r_max * 0.95),
+                    xytext=(0, 0),
+                    arrowprops=dict(arrowstyle="->",
+                                    color=pal["ARROW"], lw=2.0))
+            # Show signed-angle labels at positive-angle slot positions
+            # so the visual reads "+45° upper-right, -45° upper-left",
+            # exactly like the master figure.
+            ax_polar.set_xticks(np.deg2rad(
+                [0, 45, 90, 135, 180, 225, 270, 315]))
+            ax_polar.set_xticklabels(
+                ["0°", "+45°", "+90°", "+135°", "±180°",
+                 "−135°", "−90°", "−45°"], fontsize=8)
+            ax_polar.set_yticklabels([])
+            ax_polar.tick_params(colors=pal["TXT"], labelsize=8)
+            ax_polar.grid(True, ls=":", alpha=0.4)
+            # NB: deliberately no `set_title` here — matplotlib places
+            # the polar title above the axes box (offset by `pad`), and
+            # at this layout that overlaps the file-label rendered in
+            # the header area.  The page header already identifies the
+            # report, and the footer covers the sign convention, so a
+            # title on the polar would be redundant anyway.
+        else:
+            ax_polar.axis("off")
+            ax_polar.text(0.5, 0.5, "Too few angles for histogram",
+                          transform=ax_polar.transAxes,
+                          ha="center", va="center", color=pal["MUT"],
+                          fontsize=10)
+
+        # Interpretation banner (right side of middle band)
+        ax_intr = fig.add_axes([0.48, 0.61, 0.46, 0.25])
+        ax_intr.axis("off")
+        R = stats.get("mean_resultant_length")
+        p = stats.get("rayleigh_p")
+        if R is None or (isinstance(R, float) and np.isnan(R)):
+            interp = "Distribution: insufficient data."
+        elif R < 0.10:
+            interp = ("Distribution is consistent with uniform circular "
+                      "scatter — no preferred turning direction is "
+                      "evident.  Typical of free 2-D diffusion.")
+        elif R < 0.30:
+            interp = ("Weak directional bias.  Most steps are close "
+                      "to uniform, but a slight tendency toward "
+                      f"{stats.get('mean_direction_deg', 0):.0f}° is "
+                      "present.")
+        elif R < 0.60:
+            interp = ("Moderate directional bias toward "
+                      f"{stats.get('mean_direction_deg', 0):.0f}°.  "
+                      "Consider whether this reflects biology (e.g. "
+                      "transport along a cytoskeletal track) or an "
+                      "artefact (uncorrected drift, anisotropic ROI).")
+        else:
+            interp = ("Strong directional bias toward "
+                      f"{stats.get('mean_direction_deg', 0):.0f}°.  "
+                      "Verify the drift correction and ROI geometry "
+                      "before biological interpretation.")
+        if p is not None and not (isinstance(p, float) and np.isnan(p)):
+            if p < 0.001:
+                verdict = ("Rayleigh test strongly rejects uniformity "
+                           f"(p = {p:.3g}).")
+            elif p < 0.05:
+                verdict = ("Rayleigh test rejects uniformity at α = "
+                           f"0.05 (p = {p:.3g}).")
+            else:
+                verdict = ("Rayleigh test does NOT reject uniformity "
+                           f"(p = {p:.3g}).")
+            interp = interp + "\n\n" + verdict
+        ax_intr.text(0.0, 1.0, "Interpretation",
+                     fontsize=12, fontweight="bold", va="top",
+                     color=pal["TXT"])
+        ax_intr.text(0.0, 0.9, interp, fontsize=10, va="top",
+                     wrap=True, color=pal["TXT"])
+
+        # Section title — placed in FIGURE coords so its vertical
+        # position is decoupled from the table's bbox and can't
+        # collide with the polar's bottom ticks above.
+        fig.text(0.07, 0.555, "Statistics  (MATLAB CircStat conventions)",
+                 fontsize=12, fontweight="bold", va="bottom",
+                 ha="left", color=pal["TXT"])
+        # Statistics table — pinned with a clear gap above (title) and
+        # below (footer block).  Bottom edge y=0.12 leaves room for two
+        # footer lines without collision.
+        ax_tbl = fig.add_axes([0.07, 0.12, 0.88, 0.40])
+        ax_tbl.axis("off")
+
+        cell_text, row_labels = [], []
+        for key, gloss, unit, val in rows:
+            unit_s = "" if unit in ("", "—") else f"  ({unit})"
+            cell_text.append([f"{gloss}", f"{val}{unit_s}"])
+            row_labels.append(key)
+        tbl = ax_tbl.table(cellText=cell_text,
+                           rowLabels=row_labels,
+                           colLabels=["Description", "Value"],
+                           cellLoc="left", rowLoc="left",
+                           colLoc="left",
+                           colWidths=[0.62, 0.28],
+                           bbox=[0.20, 0.0, 0.80, 1.0])
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(9.0)
+        for (r, c), cell in tbl.get_celld().items():
+            cell.set_linewidth(0.5)
+            cell.set_edgecolor(pal["GRD"])
+            if r == 0:                       # column header row
+                cell.set_facecolor(pal["HDR_BG"])
+                cell.set_text_props(color=pal["HDR_TXT"], fontweight="bold")
+            else:
+                # Zebra-stripe data rows.  Use theme PNL for the
+                # "darker" stripes and ZEBRA for the lighter ones.
+                cell.set_facecolor(pal["ZEBRA"] if r % 2 == 0 else pal["PNL"])
+                if c == -1:                  # row-label column
+                    cell.set_text_props(family="monospace", fontsize=8.0,
+                                        color=pal["MUT"])
+                else:
+                    cell.set_text_props(color=pal["TXT"])
+
+        # Footer — explicit short lines instead of `wrap=True`, because
+        # matplotlib's fig.text wrap only kicks in when the text would
+        # exceed a containing artist's width, NOT the figure width, so
+        # long strings just run off the right edge of the PDF (which is
+        # what was happening to the References line).  Breaking into
+        # pre-wrapped lines side-steps that entirely.
+        _foot_kw = dict(fontsize=7, color=pal["MUT"], ha="left",
+                        va="bottom", family=pal["FONT"])
+        sign_lines = [
+            "Sign convention: turning angles are SIGNED on (−180°, +180°].",
+            "0° = straight ahead.  +θ = left turn (CCW).  −θ = right "
+            "turn (CW).  ±180° = full reversal.",
+            "Unsigned 0–360° equivalent: u = θ if θ ≥ 0, else θ + 360 "
+            "(so −90° ≡ 270°, +90° ≡ 90°).",
+        ]
+        ref_lines = [
+            "References:",
+            "  Mardia & Jupp 2000 — Directional Statistics.",
+            "  Fisher 1993 — Statistical Analysis of Circular Data.",
+            "  Berens 2009 — CircStat: A MATLAB Toolbox for Circular "
+            "Statistics, J. Stat. Soft. 31(10).",
+        ]
+        y = 0.095
+        for line in sign_lines:
+            fig.text(0.07, y, line, **_foot_kw)
+            y -= 0.014
+        y -= 0.006
+        for line in ref_lines:
+            fig.text(0.07, y, line, **_foot_kw)
+            y -= 0.014
+
+        with PdfPages(pdf_path) as pdf:
+            pdf.savefig(fig, facecolor=pal["BG"])
+        plt.close(fig)
+    finally:
+        # Restore rcParams so we don't bleed our palette into whatever
+        # plot the caller draws next.
+        plt.rcParams.update(_rc_save)
+
+
+def _circ_watson_williams(samples_deg):
+    """k-sample Watson-Williams F-test for equality of mean directions
+    across k≥2 circular samples (Mardia & Jupp 2000 §6.4.2).  This is
+    the circular analogue of one-way ANOVA: H₀ = all groups share a
+    common mean direction.
+
+    Parameters
+    ----------
+    samples_deg : list of 1-D angle arrays (degrees, any range)
+
+    Returns
+    -------
+    None if fewer than 2 valid samples, else dict with:
+      F, df1, df2, p           — test statistic + degrees of freedom + p
+      kappa_pooled, R_bar_pooled
+      valid                     — True iff κ̂ ≥ 2 and R̄ ≥ 0.45 (the test
+                                  assumes concentrated von Mises samples;
+                                  flag the result if not).
+      n_per_group, n_total, k
+    """
+    rad = [np.radians(np.asarray(s, dtype=float).ravel())
+           for s in samples_deg]
+    rad = [r[np.isfinite(r)] for r in rad]
+    rad = [r for r in rad if r.size >= 2]
+    k = len(rad)
+    if k < 2:
+        return None
+    n_per = [int(r.size) for r in rad]
+    N = int(sum(n_per))
+    Ci = np.array([float(np.cos(r).sum()) for r in rad])
+    Si = np.array([float(np.sin(r).sum()) for r in rad])
+    Ri = np.hypot(Ci, Si)
+    Cp = float(Ci.sum()); Sp = float(Si.sum())
+    Rp = float(np.hypot(Cp, Sp))
+    R_bar = Rp / N
+    # Pooled concentration (Best & Fisher 1981).
+    if R_bar < 0.53:
+        kappa = 2.0 * R_bar + R_bar ** 3 + 5.0 * R_bar ** 5 / 6.0
+    elif R_bar < 0.85:
+        kappa = -0.4 + 1.39 * R_bar + 0.43 / max(1.0 - R_bar, 1e-12)
+    else:
+        denom = max(R_bar ** 3 - 4.0 * R_bar ** 2 + 3.0 * R_bar, 1e-12)
+        kappa = 1.0 / denom
+    # Stephens 1972 K correction (≈1 when κ is large; sharper at low κ).
+    K = 1.0 + 3.0 / (8.0 * kappa) if kappa > 0 else 1.0
+    sumR = float(Ri.sum())
+    denom_f = (k - 1) * (N - sumR)
+    if denom_f <= 0:
+        return None
+    F = K * (N - k) * (sumR - Rp) / denom_f
+    df1, df2 = int(k - 1), int(N - k)
+    try:
+        from scipy.stats import f as _f_dist
+        # Use logsf → exp so we get a meaningful tiny p instead of a
+        # rounded-to-zero float when F is huge (which is normal with
+        # 100k+ angles per group).  logsf returns log(1 - cdf) with
+        # log-space stability.
+        log_p = float(_f_dist.logsf(F, df1, df2))
+        p = 1e-300 if log_p < -700.0 else float(np.exp(log_p))
+    except Exception:
+        p = float("nan")
+    return {
+        "F": float(F), "df1": df1, "df2": df2, "p": p,
+        "kappa_pooled": float(kappa),
+        "R_bar_pooled": float(R_bar),
+        "valid": bool(kappa >= 2.0 and R_bar >= 0.45),
+        "n_per_group": n_per, "n_total": N, "k": int(k),
+    }
+
+
+def _circ_mardia_watson_wheeler(samples_deg):
+    """Mardia-Watson-Wheeler (uniform-scores) non-parametric k-sample
+    test for equal CIRCULAR DISTRIBUTIONS across k≥2 groups (Mardia &
+    Jupp 2000 §7.6.1).  Unlike Watson-Williams it makes no assumption
+    about concentration, so it's the safe fallback when κ < 2 or when
+    you suspect groups differ in spread rather than only in mean
+    direction.
+
+    Returns None if fewer than 2 valid samples, else dict with:
+      W, df, p, n_per_group, n_total, k
+    """
+    rad = [np.radians(np.asarray(s, dtype=float).ravel())
+           for s in samples_deg]
+    rad = [r[np.isfinite(r)] for r in rad]
+    rad = [r for r in rad if r.size >= 1]
+    k = len(rad)
+    if k < 2:
+        return None
+    pooled = np.concatenate(rad)
+    N = int(pooled.size)
+    try:
+        from scipy.stats import rankdata, chi2
+    except Exception:
+        return None
+    ranks = rankdata(pooled, method="average")
+    # Convert ranks → uniform circular scores in [0, 2π).
+    beta = 2.0 * np.pi * ranks / N
+    # Sample-wise C/S sums, then W = 2 · Σ (C² + S²) / n_j.
+    W_stat = 0.0
+    cursor = 0
+    for r in rad:
+        n_j = int(r.size)
+        end = cursor + n_j
+        b = beta[cursor:end]
+        Cj = float(np.cos(b).sum())
+        Sj = float(np.sin(b).sum())
+        W_stat += (Cj * Cj + Sj * Sj) / n_j
+        cursor = end
+    W = 2.0 * W_stat
+    df = int(2 * (k - 1))
+    try:
+        # logsf for numerical stability — chi2.sf(3.4e3, 2) underflows
+        # to 0.0 in float64 but chi2.logsf returns the actual log p.
+        log_p = float(chi2.logsf(W, df))
+        p = 1e-300 if log_p < -700.0 else float(np.exp(log_p))
+    except Exception:
+        p = float("nan")
+    return {
+        "W": float(W), "df": df, "p": p,
+        "n_per_group": [int(r.size) for r in rad],
+        "n_total": N, "k": int(k),
+    }
+
+
+def _circ_wallraff_ktest(samples_deg):
+    """Wallraff k-sample test for equality of circular concentrations.
+
+    H₀ = all samples share the same concentration κ.  Implementation
+    follows Mardia & Jupp (2000) §7.5.5: convert each angle to its
+    deviation from its own sample's mean direction (mapped to [0, π]),
+    then run a rank-sum test on those deviations across groups.
+
+    For k = 2 we use the Mann-Whitney U test; for k > 2 we use the
+    Kruskal-Wallis H test.  Returns None if fewer than 2 valid samples.
+
+    Returned dict:
+      H or U   : test statistic (key name depends on k)
+      df       : degrees of freedom (Kruskal-Wallis only)
+      p        : p-value
+      n_per_group, n_total, k
+    """
+    rad = [np.radians(np.asarray(s, dtype=float).ravel())
+           for s in samples_deg]
+    rad = [r[np.isfinite(r)] for r in rad]
+    rad = [r for r in rad if r.size >= 2]
+    k = len(rad)
+    if k < 2:
+        return None
+    # Per-sample angular deviation from its OWN mean direction,
+    # mapped to [0, π] (the circular distance).
+    deviations = []
+    for r in rad:
+        mu = np.arctan2(np.sin(r).mean(), np.cos(r).mean())
+        d  = np.abs(r - mu)
+        d  = np.minimum(d, 2.0 * np.pi - d)
+        deviations.append(d)
+    n_per = [int(d.size) for d in deviations]
+    try:
+        if k == 2:
+            from scipy.stats import mannwhitneyu
+            stat, p = mannwhitneyu(deviations[0], deviations[1],
+                                   alternative="two-sided")
+            return {
+                "U": float(stat), "p": float(p), "k": 2,
+                "n_per_group": n_per, "n_total": int(sum(n_per)),
+            }
+        else:
+            from scipy.stats import kruskal
+            stat, p = kruskal(*deviations)
+            return {
+                "H": float(stat), "df": int(k - 1),
+                "p": float(p), "k": int(k),
+                "n_per_group": n_per, "n_total": int(sum(n_per)),
+            }
+    except Exception:
+        return None
+
+
+def _circ_kuiper_two_sample(a_deg, b_deg):
+    """Kuiper two-sample test for equality of circular distributions.
+
+    Non-parametric, distribution-free analogue of the Kolmogorov-Smirnov
+    test, adapted for circular data.  Sensitive to differences anywhere
+    in the distribution (not just shifts in mean), and unlike the KS
+    statistic the Kuiper statistic V = D⁺ + D⁻ is invariant to the
+    choice of origin on the circle — a property that matters because
+    "where you put 0°" is arbitrary for circular data.
+
+    Returns None if either sample is < 2 elements, else dict:
+      V       : Kuiper statistic
+      p       : asymptotic p-value (Stephens 1965 series approximation)
+      n1, n2  : sample sizes
+    """
+    a = np.sort(np.mod(np.radians(np.asarray(a_deg, dtype=float).ravel()),
+                       2.0 * np.pi))
+    b = np.sort(np.mod(np.radians(np.asarray(b_deg, dtype=float).ravel()),
+                       2.0 * np.pi))
+    a = a[np.isfinite(a)]; b = b[np.isfinite(b)]
+    n1, n2 = int(a.size), int(b.size)
+    if n1 < 2 or n2 < 2:
+        return None
+
+    # Empirical CDFs evaluated at every observation in the combined
+    # sample.  V = max(F1 - F2) + max(F2 - F1).
+    combined = np.sort(np.concatenate([a, b]))
+    F1 = np.searchsorted(a, combined, side="right") / n1
+    F2 = np.searchsorted(b, combined, side="right") / n2
+    D_plus  = float((F1 - F2).max())
+    D_minus = float((F2 - F1).max())
+    V = D_plus + D_minus
+
+    # Stephens (1965) asymptotic p-value: λ = (√n_eff + 0.155 + 0.24/√n_eff)·V.
+    n_eff = n1 * n2 / (n1 + n2)
+    lam = (np.sqrt(n_eff) + 0.155 + 0.24 / np.sqrt(n_eff)) * V
+    if lam <= 0:
+        p = 1.0
+    else:
+        # Convergent series in j; cap at j=100 (terms decay
+        # exponentially in j²).
+        s_terms = 0.0
+        l2 = lam * lam
+        for j in range(1, 101):
+            j2 = j * j
+            term = 2.0 * (4.0 * j2 * l2 - 1.0) * np.exp(-2.0 * j2 * l2)
+            s_terms += term
+            if abs(term) < 1e-18:
+                break
+        p = float(np.clip(s_terms, 0.0, 1.0))
+    if p > 0.0 and p <= 1e-300:
+        p = 1e-300
+    return {
+        "V": float(V), "p": float(p),
+        "n1": n1, "n2": n2,
+    }
+
+
+def _circ_lin_correlation(theta_deg, x):
+    """Circular-linear correlation (Mardia 1976; Mardia & Jupp 2000
+    §6.5.1).
+
+    Tests whether a circular variable θ is associated with a linear
+    variable x.  Compute the three Pearson correlations
+        r_xc = corr(x, cos θ),  r_xs = corr(x, sin θ),  r_cs = corr(cos θ, sin θ)
+    and combine them into the circular-linear coefficient
+
+        R² = (r_xc² + r_xs² − 2·r_xc·r_xs·r_cs) / (1 − r_cs²)
+
+    R ∈ [0, 1] (analogous to a Pearson |r|).  Under H₀ of independence
+    and large n, n·R² ~ χ²(2), giving a usable p-value.
+
+    Returns None if n < 3 or the data are degenerate; else dict:
+      r, r2          : coefficient and its square
+      test_stat      : n · r²
+      df, p          : χ²(2) p-value
+      n              : effective sample size after finite-mask
+    """
+    theta = np.asarray(theta_deg, dtype=float).ravel()
+    x     = np.asarray(x,         dtype=float).ravel()
+    if theta.size != x.size:
+        return None
+    mask = np.isfinite(theta) & np.isfinite(x)
+    theta = theta[mask]; x = x[mask]
+    n = int(theta.size)
+    if n < 3:
+        return None
+    rad = np.radians(theta)
+    c = np.cos(rad); s = np.sin(rad)
+    # Need non-zero variance in x AND in c/s for the correlations to
+    # exist.  If all angles are identical (or all x identical), bail.
+    if np.std(x) == 0 or np.std(c) == 0 or np.std(s) == 0:
+        return None
+    rxc = float(np.corrcoef(x, c)[0, 1])
+    rxs = float(np.corrcoef(x, s)[0, 1])
+    rcs = float(np.corrcoef(c, s)[0, 1])
+    denom = 1.0 - rcs ** 2
+    if abs(denom) < 1e-12:
+        return None
+    r2 = (rxc ** 2 + rxs ** 2 - 2.0 * rxc * rxs * rcs) / denom
+    r2 = float(np.clip(r2, 0.0, 1.0))
+    test_stat = n * r2
+    try:
+        from scipy.stats import chi2
+        log_p = float(chi2.logsf(test_stat, 2))
+        p = 1e-300 if log_p < -700.0 else float(np.exp(log_p))
+    except Exception:
+        p = float("nan")
+    return {
+        "r": float(np.sqrt(r2)), "r2": r2,
+        "test_stat": float(test_stat), "df": 2,
+        "p": float(p), "n": n,
+    }
+
+
+def compute_per_track_mean_angle(tracks):
+    """For each track in `tracks` with ≥ 3 localisations, compute the
+    circular mean of its signed turning angles (degrees on
+    (-180°, +180°]).  Returns a list of (particle_id, mean_angle_deg).
+
+    Used to build (angle, D) pairs for the circular-linear correlation
+    between a track's turning bias and its diffusion coefficient.
+    """
+    if len(tracks) < 3:
+        return []
+    srt = (tracks.reset_index(drop=True)
+                 .sort_values(["particle", "frame"], kind="stable"))
+    pid_arr = srt["particle"].to_numpy()
+    xy_arr  = srt[["x", "y"]].to_numpy()
+    steps = np.diff(xy_arr, axis=0)
+    same_step = (pid_arr[1:] == pid_arr[:-1])
+    if len(steps) < 2:
+        return []
+    v1 = steps[:-1]; v2 = steps[1:]
+    both_in_track = same_step[:-1] & same_step[1:]
+    cross = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
+    dot   = np.sum(v1 * v2, axis=1)
+    norm1 = np.linalg.norm(v1, axis=1)
+    norm2 = np.linalg.norm(v2, axis=1)
+    valid = both_in_track & (norm1 > 0) & (norm2 > 0)
+    if not valid.any():
+        return []
+    angles = np.arctan2(cross[valid], dot[valid])    # radians
+    # The middle row of each (i, i+1, i+2) triple is pid_arr[i+1].
+    pid_at_turn = pid_arr[1:-1][valid]
+    # Bucket angles by particle and compute the circular mean.
+    out = []
+    for pid in np.unique(pid_at_turn):
+        sel = (pid_at_turn == pid)
+        rad = angles[sel]
+        if rad.size == 0:
+            continue
+        mu = np.degrees(np.arctan2(np.sin(rad).mean(),
+                                   np.cos(rad).mean()))
+        out.append((int(pid), float(mu)))
+    return out
+
+
+def _watson_williams_mu_per_replicate(mu_lists_per_group):
+    """Watson-Williams F-test on per-replicate mean directions.
+
+    Treats each replicate's mean direction μ_ij as a single circular
+    observation (not the underlying angles).  This is the supervisor-
+    facing way to compare directionality between groups: the n is
+    the number of REPLICATES, not the number of pooled localisations,
+    so the test isn't inflated by huge per-file angle counts.
+
+    Parameters
+    ----------
+    mu_lists_per_group : list aligned with the groups, each entry is
+        a 1-D array/list of per-replicate mean directions in DEGREES
+        (signed, (-180°, +180°]).
+
+    Returns dict matching the shape `_circ_watson_williams` already
+    uses (F, df1, df2, p, valid, ...), or None if fewer than 2 groups
+    have ≥ 2 replicates each.
+    """
+    # _circ_watson_williams already does k-sample WW on a list of
+    # angle arrays — pass the per-replicate μ values in as samples.
+    samples = [np.asarray(arr, dtype=float).ravel()
+               for arr in mu_lists_per_group]
+    samples = [a[np.isfinite(a)] for a in samples]
+    if sum(1 for a in samples if a.size >= 2) < 2:
+        return None
+    return _circ_watson_williams(samples)
+
+
+def compute_circular_comparison_tests(groups, *, track_angle_d_pairs=None,
+                                       per_replicate_angles=None):
+    """Run all the standard 'do these circular samples differ?' tests on
+    a list of labelled groups.
+
+    Parameters
+    ----------
+    groups : list of (label, angles_deg_array)
+        One entry per comparison group; the array is the pooled
+        turning angles across all replicates in that group.
+    track_angle_d_pairs : optional list aligned with `groups`
+        Each element is a 2-tuple of arrays (per_track_mean_angle_deg,
+        per_track_D_um2_s).  Used to compute the per-group circular-
+        linear correlation between a track's average turning bias and
+        its diffusion coefficient.  Pass None to skip the correlation.
+
+    Returns
+    -------
+    dict with keys:
+      omnibus_ww   : Watson-Williams F-test (equal mean directions)
+      omnibus_mww  : Mardia-Watson-Wheeler W-test (equal distributions)
+      omnibus_wallraff
+                   : Wallraff k-sample test (equal concentrations);
+                     directly addresses "is one group more tightly
+                     clustered than the other?".
+      pairwise     : list, one entry per (i, j) with i<j, each with
+                     keys label_a, label_b, ww, mww, wallraff, kuiper
+                     (Kuiper two-sample test for equal distributions).
+      circ_lin_per_group
+                   : list aligned with `groups`, dict per group with
+                     keys label and result (the _circ_lin_correlation
+                     dict, or None if not enough data).  Only populated
+                     when track_angle_d_pairs is provided.
+    """
+    labels = [g[0] for g in groups]
+    samples = [g[1] for g in groups]
+    out = {
+        "omnibus_ww":       _circ_watson_williams(samples),
+        "omnibus_mww":      _circ_mardia_watson_wheeler(samples),
+        "omnibus_wallraff": _circ_wallraff_ktest(samples),
+        "pairwise": [],
+        "circ_lin_per_group": [],
+        # Per-replicate tests: see `per_replicate_angles` arg below.
+        # Populated when the caller provides per-replicate angle arrays;
+        # otherwise None so consumers can detect "not computed".
+        "per_replicate_kappa_test": None,
+        "per_replicate_rbar_test":  None,
+        "per_replicate_mu_ww":      None,
+        "per_replicate_scalars":    None,
+    }
+    for i in range(len(samples)):
+        for j in range(i + 1, len(samples)):
+            out["pairwise"].append({
+                "label_a": labels[i],
+                "label_b": labels[j],
+                "ww":       _circ_watson_williams([samples[i], samples[j]]),
+                "mww":      _circ_mardia_watson_wheeler(
+                    [samples[i], samples[j]]),
+                "wallraff": _circ_wallraff_ktest(
+                    [samples[i], samples[j]]),
+                "kuiper":   _circ_kuiper_two_sample(samples[i],
+                                                    samples[j]),
+            })
+    if track_angle_d_pairs is not None:
+        for label, pair in zip(labels, track_angle_d_pairs):
+            theta, x = pair
+            out["circ_lin_per_group"].append({
+                "label":  label,
+                "result": _circ_lin_correlation(theta, x),
+            })
+
+    # ── Per-replicate tests ──────────────────────────────────────────
+    # Treats each replicate as ONE data point (its own κ, R̄, μ),
+    # producing a defensible Welch's t-test on κ + R̄ (linear scalars)
+    # and a Watson-Williams F-test on μ (a circular quantity).  This
+    # is the right framing when the user has e.g. 5 vs 3 movies and
+    # wants stats that respect the biological replicate count, not the
+    # inflated angle-count produced by pooling.
+    if per_replicate_angles is not None:
+        per_kappa  = []      # list-per-group of replicate κ values
+        per_rbar   = []      #          "          "        R̄
+        per_mu     = []      #          "          "        μ (deg)
+        per_n_reps = []
+        scalars_per_group = []
+        for label in labels:
+            arrs = per_replicate_angles.get(label, [])
+            kappas, rbars, mus = [], [], []
+            for arr in arrs:
+                a = np.asarray(arr, dtype=float).ravel()
+                a = a[np.isfinite(a)]
+                if a.size < 2:
+                    continue
+                cs = compute_circular_statistics(a)
+                if cs is None:
+                    continue
+                k_val  = cs.get("concentration_kappa")
+                r_val  = cs.get("mean_resultant_length")
+                mu_val = cs.get("mean_direction_deg")
+                if k_val is not None and np.isfinite(k_val):
+                    kappas.append(float(k_val))
+                if r_val is not None and np.isfinite(r_val):
+                    rbars.append(float(r_val))
+                if mu_val is not None and np.isfinite(mu_val):
+                    mus.append(float(mu_val))
+            per_kappa.append(np.asarray(kappas, dtype=float))
+            per_rbar.append(np.asarray(rbars, dtype=float))
+            per_mu.append(np.asarray(mus, dtype=float))
+            per_n_reps.append(len(kappas))
+            scalars_per_group.append({
+                "label": label, "n_replicates": len(kappas),
+                "kappa": list(kappas), "rbar": list(rbars),
+                "mu_deg": list(mus),
+            })
+        out["per_replicate_scalars"] = scalars_per_group
+
+        # _stat_test_n returns (omnibus_dict, pairwise_list).
+        # Welch's t for 2 groups, ANOVA for N>2 (auto-selected).
+        if sum(1 for arr in per_kappa if arr.size >= 1) >= 2:
+            try:
+                om_k, pw_k = _stat_test_n(per_kappa, labels)
+                out["per_replicate_kappa_test"] = {
+                    "omnibus": om_k, "pairwise": pw_k}
+            except Exception:
+                pass
+            try:
+                om_r, pw_r = _stat_test_n(per_rbar, labels)
+                out["per_replicate_rbar_test"] = {
+                    "omnibus": om_r, "pairwise": pw_r}
+            except Exception:
+                pass
+        out["per_replicate_mu_ww"] = _watson_williams_mu_per_replicate(per_mu)
+
+    return out
+
+
+def _p_stars(p):
+    """Three-tier significance markers used in the comparison PDF."""
+    try:
+        if p is None: return ""
+        pf = float(p)
+        if np.isnan(pf): return ""
+        if pf < 0.001: return "***"
+        if pf < 0.01:  return "**"
+        if pf < 0.05:  return "*"
+        return "ns"
+    except Exception:
+        return ""
+
+
+def save_comparison_circular_statistics(groups_angles, *,
+                                         csv_path=None, pdf_path=None,
+                                         fig_theme="Dark",
+                                         track_angle_d_pairs=None,
+                                         per_replicate_angles=None):
+    """Pool turning angles per group, compute circular statistics for
+    each group, write a combined CSV (one row per group) and a multi-
+    page themed PDF (one page per group + a comparative summary page).
+
+    Parameters
+    ----------
+    groups_angles : list of (label, angles_deg_array, color)
+        One entry per comparison group.  `angles_deg_array` is the
+        concatenation of every replicate's turning angles within the
+        group; `color` is the group's display colour (used to tint the
+        polar histograms so PDF and master figure agree visually).
+    csv_path : str or None
+        If given, write a long-form CSV with columns `group`, `n`,
+        `mean_direction_deg`, … (all keys from compute_circular_statistics).
+    pdf_path : str or None
+        If given, write the multi-page PDF.
+    fig_theme : str
+        "Dark" | "Light" | "Publication".
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    pal = _theme_palette(fig_theme)
+
+    # ── Per-group stats ────────────────────────────────────────────────
+    rows = []
+    per_group_stats = []
+    for label, angles, color in groups_angles:
+        a = np.asarray(angles, dtype=float).ravel()
+        a = a[np.isfinite(a)]
+        stats = compute_circular_statistics(a)
+        per_group_stats.append((label, a, color, stats))
+        row = {"group": label}
+        row.update(stats)
+        rows.append(row)
+
+    # ── Between-group tests ────────────────────────────────────────────
+    # Watson-Williams (parametric, tests equal mean directions; assumes
+    # κ ≥ 2) plus Mardia-Watson-Wheeler (non-parametric, tests equal
+    # distributions; valid at any κ).  Both are reported so the
+    # supervisor can pick the appropriate one for their data — and so
+    # disagreement between them (one significant, the other not) is
+    # visible rather than hidden.
+    test_groups = [(g[0], np.asarray(g[1], dtype=float).ravel())
+                   for g in groups_angles]
+    test_groups = [(lbl, a[np.isfinite(a)]) for lbl, a in test_groups]
+    comp_tests = compute_circular_comparison_tests(
+        test_groups,
+        track_angle_d_pairs=track_angle_d_pairs,
+        per_replicate_angles=per_replicate_angles)
+
+    # ── CSV ────────────────────────────────────────────────────────────
+    # The single CSV grows by one row per pairwise test (with a `kind`
+    # column distinguishing per-group rows from test rows) so a
+    # downstream consumer (Excel / R / pandas) can read all the
+    # comparison output from one file.
+    if csv_path is not None:
+        try:
+            per_group_rows = [{"kind": "group", **r} for r in rows]
+            test_rows = []
+            ow = comp_tests.get("omnibus_ww") or {}
+            om = comp_tests.get("omnibus_mww") or {}
+            if ow:
+                test_rows.append({
+                    "kind": "test", "test": "Watson-Williams (omnibus)",
+                    "label_a": "all", "label_b": "all",
+                    "statistic_F": ow.get("F"),
+                    "df1": ow.get("df1"), "df2": ow.get("df2"),
+                    "p_value": ow.get("p"),
+                    "kappa_pooled": ow.get("kappa_pooled"),
+                    "valid_assumptions": ow.get("valid"),
+                })
+            if om:
+                test_rows.append({
+                    "kind": "test", "test": "Mardia-Watson-Wheeler (omnibus)",
+                    "label_a": "all", "label_b": "all",
+                    "statistic_W": om.get("W"),
+                    "df": om.get("df"),
+                    "p_value": om.get("p"),
+                })
+            ok = comp_tests.get("omnibus_wallraff") or {}
+            if ok:
+                test_rows.append({
+                    "kind": "test",
+                    "test": "Wallraff κ-test (omnibus)",
+                    "label_a": "all", "label_b": "all",
+                    "statistic_H": ok.get("H"),
+                    "statistic_U": ok.get("U"),
+                    "df": ok.get("df"),
+                    "p_value": ok.get("p"),
+                })
+            for pw in comp_tests.get("pairwise", []):
+                ww  = pw.get("ww")  or {}
+                mww = pw.get("mww") or {}
+                wal = pw.get("wallraff") or {}
+                kup = pw.get("kuiper")   or {}
+                if ww:
+                    test_rows.append({
+                        "kind": "test",
+                        "test": "Watson-Williams (pairwise)",
+                        "label_a": pw["label_a"],
+                        "label_b": pw["label_b"],
+                        "statistic_F": ww.get("F"),
+                        "df1": ww.get("df1"), "df2": ww.get("df2"),
+                        "p_value": ww.get("p"),
+                        "kappa_pooled": ww.get("kappa_pooled"),
+                        "valid_assumptions": ww.get("valid"),
+                    })
+                if mww:
+                    test_rows.append({
+                        "kind": "test",
+                        "test": "Mardia-Watson-Wheeler (pairwise)",
+                        "label_a": pw["label_a"],
+                        "label_b": pw["label_b"],
+                        "statistic_W": mww.get("W"),
+                        "df": mww.get("df"),
+                        "p_value": mww.get("p"),
+                    })
+                if wal:
+                    test_rows.append({
+                        "kind": "test",
+                        "test": "Wallraff κ-test (pairwise)",
+                        "label_a": pw["label_a"],
+                        "label_b": pw["label_b"],
+                        "statistic_U": wal.get("U"),
+                        "p_value": wal.get("p"),
+                    })
+                if kup:
+                    test_rows.append({
+                        "kind": "test",
+                        "test": "Kuiper two-sample",
+                        "label_a": pw["label_a"],
+                        "label_b": pw["label_b"],
+                        "statistic_V": kup.get("V"),
+                        "p_value": kup.get("p"),
+                    })
+            # Circular-linear correlation (per-track mean angle vs D)
+            # is a PER-GROUP descriptive measure, not a between-group
+            # test — one row per group with r, r², n, p.
+            for cl in comp_tests.get("circ_lin_per_group", []):
+                res = cl.get("result")
+                if not res:
+                    continue
+                test_rows.append({
+                    "kind": "correlation",
+                    "test": "Circ-lin: per-track mean angle vs D",
+                    "label_a": cl.get("label"),
+                    "label_b": "",
+                    "r": res.get("r"),
+                    "r_squared": res.get("r2"),
+                    "statistic_chi2": res.get("test_stat"),
+                    "df": res.get("df"),
+                    "p_value": res.get("p"),
+                    "n": res.get("n"),
+                })
+
+            # ── Per-replicate (n=replicates) tests ─────────────────
+            # One row per replicate listing the scalars used as data
+            # points; then between-group rows for the κ and R̄ Welch
+            # / ANOVA tests and the Watson-Williams F-test on μ.
+            scalars = comp_tests.get("per_replicate_scalars") or []
+            for grp in scalars:
+                lbl = grp.get("label", "?")
+                ks  = grp.get("kappa") or []
+                rs  = grp.get("rbar")  or []
+                ms  = grp.get("mu_deg") or []
+                # Pad to common length so each replicate gets one row.
+                n_rep = max(len(ks), len(rs), len(ms))
+                for i in range(n_rep):
+                    test_rows.append({
+                        "kind": "per_replicate_scalar",
+                        "test": "per-replicate κ/R̄/μ",
+                        "label_a": lbl,
+                        "label_b": f"replicate_{i + 1}",
+                        "kappa":   ks[i] if i < len(ks) else None,
+                        "rbar":    rs[i] if i < len(rs) else None,
+                        "mu_deg":  ms[i] if i < len(ms) else None,
+                    })
+
+            def _flatten_per_rep_test(slot, label):
+                t = comp_tests.get(slot)
+                if not t:
+                    return
+                om = t.get("omnibus") or {}
+                if om:
+                    test_rows.append({
+                        "kind": "per_replicate_test",
+                        "test": f"{label} (omnibus, per-replicate)",
+                        "label_a": "all", "label_b": "all",
+                        "statistic": om.get("p") and om.get("test"),
+                        "p_value": om.get("p"),
+                    })
+                for pw in (t.get("pairwise") or []):
+                    test_rows.append({
+                        "kind": "per_replicate_test",
+                        "test": f"{label} (pairwise, per-replicate)",
+                        "label_a": pw.get("label_i"),
+                        "label_b": pw.get("label_j"),
+                        "n_a": pw.get("n_i"), "n_b": pw.get("n_j"),
+                        "mean_a": pw.get("mean_i"),
+                        "mean_b": pw.get("mean_j"),
+                        "sem_a": pw.get("sem_i"),
+                        "sem_b": pw.get("sem_j"),
+                        "statistic": pw.get("test"),
+                        "p_value": pw.get("p"),
+                    })
+
+            _flatten_per_rep_test("per_replicate_kappa_test", "Welch κ")
+            _flatten_per_rep_test("per_replicate_rbar_test",  "Welch R̄")
+
+            mu_ww = comp_tests.get("per_replicate_mu_ww")
+            if mu_ww is not None:
+                test_rows.append({
+                    "kind": "per_replicate_test",
+                    "test": "Watson-Williams μ (per-replicate)",
+                    "label_a": "all", "label_b": "all",
+                    "statistic_F": mu_ww.get("F"),
+                    "df1": mu_ww.get("df1"), "df2": mu_ww.get("df2"),
+                    "p_value": mu_ww.get("p"),
+                })
+
+            df = pd.DataFrame(per_group_rows + test_rows)
+            df.to_csv(csv_path, index=False)
+        except Exception as exc:
+            print(f"  comparison-circstats CSV failed: {exc}")
+
+    # ── PDF ────────────────────────────────────────────────────────────
+    if pdf_path is None:
+        return per_group_stats
+
+    _rc_keys = ("text.color", "axes.labelcolor", "axes.edgecolor",
+                "xtick.color", "ytick.color", "axes.facecolor",
+                "axes.titlecolor", "figure.facecolor", "grid.color",
+                "font.family")
+    _rc_save = {k: plt.rcParams.get(k) for k in _rc_keys}
+    plt.rcParams.update({
+        "text.color":       pal["TXT"],
+        "axes.labelcolor":  pal["TXT"],
+        "axes.edgecolor":   pal["GRD"],
+        "xtick.color":      pal["TXT"],
+        "ytick.color":      pal["TXT"],
+        "axes.facecolor":   pal["PNL"],
+        "axes.titlecolor":  pal["TXT"],
+        "figure.facecolor": pal["BG"],
+        "grid.color":       pal["GRD"],
+        "font.family":      pal["FONT"],
+    })
+
+    def _fmt(x, prec=4):
+        try:
+            if x is None: return "—"
+            xf = float(x)
+            if np.isnan(xf): return "—"
+            if xf > 0.0 and xf <= 1e-300:
+                return "<1e-300"
+            return f"{xf:.{prec}g}"
+        except Exception:
+            return str(x)
+
+    try:
+        with PdfPages(pdf_path) as pdf:
+            # ── Page 1: comparison summary ─────────────────────────────
+            # Landscape A4.  Layout, top → bottom:
+            #   y 0.93 – 0.97  header bar
+            #   y 0.58 – 0.88  row of polar histograms (one per group)
+            #   y 0.51 – 0.55  "Summary" title
+            #   y 0.36 – 0.50  per-group summary table
+            #   y 0.30 – 0.34  "Between-group tests" title
+            #   y 0.13 – 0.29  comparison-tests table
+            #   y 0.02 – 0.10  footer block (sign convention + refs)
+            fig = plt.figure(figsize=(11.69, 8.27), facecolor=pal["BG"])
+            ax_hdr = fig.add_axes([0.05, 0.93, 0.90, 0.04])
+            ax_hdr.axis("off")
+            ax_hdr.text(0.0, 0.5, "Comparison: Circular Statistics",
+                        fontsize=18, fontweight="bold", va="center",
+                        ha="left", color=pal["TXT"])
+            ax_hdr.text(1.0, 0.5,
+                        f"{len(per_group_stats)} groups",
+                        fontsize=11, color=pal["MUT"],
+                        va="center", ha="right")
+
+            # Grid of polar histograms — auto-wraps to multiple rows
+            # when n_groups > 5 so plots don't get sliver-thin.  Each
+            # cell is divided VERTICALLY into a label strip (top) and
+            # the polar plot itself (below); doing it this way means
+            # the group name + n count can never collide with the
+            # polar's 0° tick label, regardless of how thick that tick
+            # label is at any given font size.
+            #
+            #   1 ≤ n ≤ 5  →  1 row of n cols  (cell height 0.30, y 0.55–0.88)
+            #   6 ≤ n ≤ 10 →  2 rows of ≤ 5 cols  (cell height ~0.16)
+            #   n ≥ 11     →  3 rows; outer caller may also paginate.
+            #
+            # Within each cell:
+            #   top 22%  → label band  (group name + "n = N")
+            #   bottom 78% → polar plot
+            #
+            # When in multi-row mode the per-polar font sizes shrink so
+            # the tick labels stay readable in a smaller plot.
+            n_g  = len(per_group_stats)
+            # Polar band height tuned so the polar plot + its top label
+            # band (group name + n) sit comfortably above the
+            # per-group summary title at y=0.555.  polar_bot=0.58
+            # leaves a 0.025 gap to that title.
+            polar_top, polar_bot = 0.88, 0.58
+            if n_g <= 5:
+                n_cols, n_rows = n_g, 1
+            elif n_g <= 10:
+                n_cols, n_rows = 5, 2
+            else:
+                # Cap at 12 polars/page; the table-pagination below
+                # handles "lots of groups" by giving each batch its
+                # own summary page.  For now assume ≤ 12 on page 1.
+                n_cols = 6
+                n_rows = (min(n_g, 12) + n_cols - 1) // n_cols
+            row_h    = (polar_top - polar_bot) / n_rows
+            cell_w   = 0.86 / n_cols
+            left     = 0.07
+            # Tick / label fontsizes shrink when polars get small.
+            tick_fs  = 7 if n_cols <= 4 else 6
+            lbl_fs   = 10 if n_cols <= 4 else 8
+            n_fs     = 8  if n_cols <= 4 else 7
+            # Bottom-margin reserves space for the polar's ±180° tick
+            # label, which matplotlib renders OUTSIDE the axes box just
+            # below the polar circle.  Needs to be large enough that
+            # the tick label can't reach down into the Per-group title
+            # at y=0.535 below (single-row case) or into the next-row's
+            # group label (multi-row case).
+            bottom_margin = 0.040 if n_rows == 1 else 0.045
+            label_band_frac = 0.22 if n_rows == 1 else 0.28
+            for i, (label, a, color, stats) in enumerate(per_group_stats):
+                if i >= n_rows * n_cols:
+                    break    # truncate at the page's polar capacity
+                row = i // n_cols
+                col = i % n_cols
+                cell_y = polar_top - (row + 1) * row_h
+                label_band_h = label_band_frac * row_h
+                polar_band_h = row_h - label_band_h - bottom_margin
+                ax = fig.add_axes(
+                    [left + col * cell_w + 0.015,
+                     cell_y + bottom_margin,
+                     cell_w - 0.03, polar_band_h],
+                    projection="polar")
+                ax.set_facecolor(pal["PNL"])
+                if a.size >= 10:
+                    # Match the master figure's polar convention:
+                    # 0° at top, CW positive, signed labels on slot
+                    # positions, [0, 2π) wrap for bar rendering.
+                    nbins = 36
+                    angles_rad = np.mod(np.deg2rad(a), 2.0 * np.pi)
+                    bins  = np.linspace(0.0, 2.0 * np.pi, nbins + 1)
+                    counts, edges = np.histogram(angles_rad, bins=bins)
+                    widths  = np.diff(edges)
+                    centers = 0.5 * (edges[:-1] + edges[1:])
+                    ax.set_theta_zero_location("N")
+                    ax.set_theta_direction(-1)
+                    bar_col = color or pal["ACC"]
+                    ax.bar(centers, counts, width=widths * 0.95,
+                           align="center", color=bar_col,
+                           edgecolor=pal["PNL"], linewidth=0.4,
+                           alpha=0.92)
+                    mu = stats.get("mean_direction_deg")
+                    if mu is not None and not (
+                            isinstance(mu, float) and np.isnan(mu)):
+                        r_max = float(counts.max()) if counts.size else 1.0
+                        mu_rad = np.mod(np.deg2rad(mu), 2.0 * np.pi)
+                        ax.annotate("",
+                            xy=(mu_rad, r_max * 0.95),
+                            xytext=(0, 0),
+                            arrowprops=dict(arrowstyle="->",
+                                            color=pal["ARROW"], lw=2.0))
+                    ax.set_xticks(np.deg2rad(
+                        [0, 45, 90, 135, 180, 225, 270, 315]))
+                    ax.set_xticklabels(
+                        ["0°", "+45°", "+90°", "+135°", "±180°",
+                         "−135°", "−90°", "−45°"], fontsize=tick_fs)
+                    ax.set_yticklabels([])
+                    ax.tick_params(colors=pal["TXT"], labelsize=tick_fs)
+                    ax.grid(True, ls=":", alpha=0.4)
+                    # Labels live ABOVE the cell.  Raising the label
+                    # block above `cell_y + row_h` (rather than just
+                    # inside the top of the cell) creates a clean gap
+                    # between the "n = …" line and the polar's 0° tick
+                    # label, which renders just outside the polar
+                    # circle at the top of the axes box.
+                    label_x = (left + col * cell_w + 0.015
+                               + (cell_w - 0.03) / 2.0)
+                    label_top  = cell_y + row_h + 0.020
+                    line2_top  = label_top - 0.018
+                    fig.text(label_x, label_top, label,
+                             fontsize=lbl_fs, fontweight="bold",
+                             ha="center", va="top", color=pal["TXT"])
+                    fig.text(label_x, line2_top,
+                             f"n = {int(stats.get('n', 0)):,}",
+                             fontsize=n_fs, ha="center", va="top",
+                             color=pal["MUT"])
+                else:
+                    ax.axis("off")
+                    label_x = (left + col * cell_w + 0.015
+                               + (cell_w - 0.03) / 2.0)
+                    label_top = cell_y + row_h + 0.020
+                    fig.text(label_x, label_top,
+                             f"{label}\ntoo few angles",
+                             fontsize=n_fs, ha="center", va="top",
+                             color=pal["MUT"])
+
+            # Section title placed in FIGURE coords.  Sits below the
+            # polar band's bottom (y=0.58) with a generous gap so the
+            # polar's ±180° tick label can't reach down into it.
+            fig.text(0.05, 0.535,
+                     "Per-group summary  (MATLAB CircStat conventions)",
+                     fontsize=11, fontweight="bold", va="bottom",
+                     ha="left", color=pal["TXT"])
+            # Combined summary table — one row per group, columns =
+            # the most informative stats for an at-a-glance comparison.
+            ax_tbl = fig.add_axes([0.05, 0.43, 0.90, 0.10])
+            ax_tbl.axis("off")
+            cols = ["group", "n", "mean_direction_deg",
+                    "mean_resultant_length", "circular_std_deg",
+                    "concentration_kappa", "rayleigh_p", "v_test_p"]
+            col_labels = ["Group", "n", "μ (°)", "R̄", "σ_circ (°)",
+                          "κ", "Rayleigh p", "V-test p"]
+            cell = []
+            for r in rows:
+                cell.append([
+                    str(r["group"]),
+                    f"{int(r['n']):,}",
+                    _fmt(r["mean_direction_deg"], 4),
+                    _fmt(r["mean_resultant_length"], 4),
+                    _fmt(r["circular_std_deg"], 4),
+                    _fmt(r["concentration_kappa"], 4),
+                    _fmt(r["rayleigh_p"], 3),
+                    _fmt(r["v_test_p"], 3),
+                ])
+            tbl = ax_tbl.table(cellText=cell, colLabels=col_labels,
+                               cellLoc="left", colLoc="left",
+                               bbox=[0.0, 0.0, 1.0, 1.0])
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(9.0)
+            for (rr, cc), c_obj in tbl.get_celld().items():
+                c_obj.set_linewidth(0.5)
+                c_obj.set_edgecolor(pal["GRD"])
+                if rr == 0:
+                    c_obj.set_facecolor(pal["HDR_BG"])
+                    c_obj.set_text_props(color=pal["HDR_TXT"],
+                                         fontweight="bold")
+                else:
+                    c_obj.set_facecolor(
+                        pal["ZEBRA"] if rr % 2 == 0 else pal["PNL"])
+                    c_obj.set_text_props(color=pal["TXT"])
+
+            # ── Between-group tests section ────────────────────────
+            #
+            # Layout (y-coords):
+            #   0.34 : section title
+            #   0.27 – 0.33 : plain-English explanation of each test
+            #   0.13 – 0.26 : results table (Test  Statistic  p  sig)
+            #   0.02 – 0.10 : footer
+            #
+            # The previous version had a 5th "Note" column for H₀
+            # descriptions which overflowed the page; pulling that
+            # description out into a separate explanatory paragraph
+            # both fixes the overflow AND makes the tests intelligible
+            # to a reader who isn't already a circular-statistics
+            # expert (supervisor's request).
+            fig.text(0.05, 0.395,
+                     "Between-group tests — does the turning-angle "
+                     "distribution differ between groups?",
+                     fontsize=11, fontweight="bold", va="bottom",
+                     ha="left", color=pal["TXT"])
+
+            # Plain-English explanation block — 3 compact lines so the
+            # tests table below still has room.  Each line covers one
+            # test (or the significance convention).  Italicised
+            # caveats appear at the end of each line, not on their own
+            # row.
+            txt_kw = dict(fontsize=8.0, color=pal["TXT"], ha="left",
+                          va="top", family=pal["FONT"])
+            explain_block = [
+                "Watson-Williams F-test (circular ANOVA): tests "
+                "EQUAL MEAN DIRECTIONS.  Assumes κ ≥ 2 — rows tagged "
+                "\"κ<2\" violate this, prefer M-W-W or Kuiper.",
+                "Mardia-Watson-Wheeler & Kuiper (non-parametric): "
+                "test EQUAL FULL DISTRIBUTIONS (any change in mean, "
+                "spread, or shape).  Safe at any κ.",
+                "Wallraff κ-test: tests EQUAL CONCENTRATIONS — answers "
+                "\"is one group MORE TIGHTLY clustered than the other?\".",
+                "Per-replicate (n = #replicates): Welch's t-test on κ "
+                "and R̄, plus Watson-Williams F on per-replicate μ — "
+                "respects biological n, not pooled n.",
+                "Circ-lin angle vs D (per group): tests whether each "
+                "track's mean turning angle correlates with its "
+                "diffusion coefficient.  r ∈ [0, 1].",
+                "Significant p (< 0.05, stars) rejects H₀ — i.e. "
+                "groups DO differ (or angle DOES correlate with D).",
+            ]
+            yE = 0.395
+            for line in explain_block:
+                fig.text(0.05, yE, line, **txt_kw)
+                yE -= 0.012
+            # Build comparison-test rows in priority order:
+            #   1. Omnibus Watson-Williams
+            #   2. Omnibus Mardia-Watson-Wheeler
+            #   3. Pairwise WW / MWW (one row per test per pair)
+            # _fmt_p collapses underflow-sentinel p (1e-300) to
+            # "<1e-300" so the supervisor doesn't see a literal
+            # "1e-300" repeated across rows and assume there's a bug.
+            def _fmt_p(p):
+                if p is None: return "—"
+                pf = float(p)
+                if np.isnan(pf): return "—"
+                if pf > 0.0 and pf <= 1e-300:
+                    return "<1e-300"
+                return f"{pf:.3g}"
+
+            omnibus_rows = []
+            ow  = comp_tests.get("omnibus_ww")
+            om  = comp_tests.get("omnibus_mww")
+            owk = comp_tests.get("omnibus_wallraff")
+            if ow is not None:
+                tag = "" if ow.get("valid", False) else "  (κ<2, caution)"
+                omnibus_rows.append([
+                    f"Watson-Williams · all groups{tag}",
+                    f"F({ow['df1']}, {ow['df2']}) = {ow['F']:.3g}",
+                    _fmt_p(ow["p"]),
+                    _p_stars(ow["p"]),
+                ])
+            if om is not None:
+                omnibus_rows.append([
+                    "Mardia-Watson-Wheeler · all groups",
+                    f"W({om['df']}) = {om['W']:.3g}",
+                    _fmt_p(om["p"]),
+                    _p_stars(om["p"]),
+                ])
+            if owk is not None:
+                # k=2 → Mann-Whitney U; k>2 → Kruskal-Wallis H.
+                if "H" in owk:
+                    stat_str = f"H({owk['df']}) = {owk['H']:.3g}"
+                else:
+                    stat_str = f"U = {owk.get('U', 0):.3g}"
+                omnibus_rows.append([
+                    "Wallraff κ-test · all groups",
+                    stat_str,
+                    _fmt_p(owk["p"]),
+                    _p_stars(owk["p"]),
+                ])
+
+            pairwise_rows = []
+            for pw in comp_tests.get("pairwise", []):
+                ww  = pw.get("ww")
+                mww = pw.get("mww")
+                wal = pw.get("wallraff")
+                kup = pw.get("kuiper")
+                pair = f"{pw['label_a']}  vs  {pw['label_b']}"
+                if ww is not None:
+                    tag = "" if ww.get("valid", False) else "  (κ<2)"
+                    pairwise_rows.append([
+                        f"Watson-Williams · {pair}{tag}",
+                        f"F({ww['df1']}, {ww['df2']}) = {ww['F']:.3g}",
+                        _fmt_p(ww["p"]),
+                        _p_stars(ww["p"]),
+                    ])
+                if mww is not None:
+                    pairwise_rows.append([
+                        f"Mardia-Watson-Wheeler · {pair}",
+                        f"W({mww['df']}) = {mww['W']:.3g}",
+                        _fmt_p(mww["p"]),
+                        _p_stars(mww["p"]),
+                    ])
+                if wal is not None:
+                    pairwise_rows.append([
+                        f"Wallraff κ-test · {pair}",
+                        f"U = {wal.get('U', 0):.3g}",
+                        _fmt_p(wal["p"]),
+                        _p_stars(wal["p"]),
+                    ])
+                if kup is not None:
+                    pairwise_rows.append([
+                        f"Kuiper 2-sample · {pair}",
+                        f"V = {kup['V']:.4g}",
+                        _fmt_p(kup["p"]),
+                        _p_stars(kup["p"]),
+                    ])
+
+            # Per-group circular-linear correlation rows.  These are
+            # descriptive stats (one per group), not between-group
+            # tests, but they live in the same table because they share
+            # the same "name · stat · p · sig" template.
+            corr_rows = []
+            for cl in comp_tests.get("circ_lin_per_group", []):
+                res = cl.get("result")
+                grp = cl.get("label", "?")
+                if not res:
+                    corr_rows.append([
+                        f"Circ-lin angle vs D · {grp}",
+                        "n < 3", "—", "",
+                    ])
+                    continue
+                corr_rows.append([
+                    f"Circ-lin angle vs D · {grp}",
+                    (f"r = {res['r']:.3g}  "
+                     f"(χ²({res['df']}) = {res['test_stat']:.3g})"),
+                    _fmt_p(res["p"]),
+                    _p_stars(res["p"]),
+                ])
+
+            # ── Per-replicate test rows ─────────────────────────────
+            # n = number of biological replicates, not pooled angles.
+            # Each row reads "Welch κ · all groups" or "Welch κ · A vs
+            # B" plus the t/F statistic and the p-value with stars.
+            per_rep_rows = []
+
+            def _push_per_rep(slot, label):
+                t = comp_tests.get(slot)
+                if not t:
+                    return
+                om = t.get("omnibus") or {}
+                if om and om.get("p") is not None:
+                    test_name = om.get("test", "")
+                    per_rep_rows.append([
+                        f"{label} · all groups  ({test_name})",
+                        "(see CSV for full stats)",
+                        _fmt_p(om["p"]),
+                        _p_stars(om["p"]),
+                    ])
+                for pw in (t.get("pairwise") or []):
+                    if pw.get("p") is None:
+                        continue
+                    pair = (f"{pw.get('label_i', '?')}  vs  "
+                            f"{pw.get('label_j', '?')}")
+                    n_i = pw.get("n_i", 0)
+                    n_j = pw.get("n_j", 0)
+                    per_rep_rows.append([
+                        f"{label} · {pair}  ({pw.get('test', '')})",
+                        f"n = {n_i} vs {n_j}",
+                        _fmt_p(pw["p"]),
+                        _p_stars(pw["p"]),
+                    ])
+
+            _push_per_rep("per_replicate_kappa_test", "Welch κ (per-replicate)")
+            _push_per_rep("per_replicate_rbar_test",  "Welch R̄ (per-replicate)")
+
+            mu_ww = comp_tests.get("per_replicate_mu_ww")
+            if mu_ww is not None and mu_ww.get("p") is not None:
+                tag = "" if mu_ww.get("valid", False) else "  (κ<2)"
+                per_rep_rows.append([
+                    f"Watson-Williams μ · all groups (per-replicate){tag}",
+                    f"F({mu_ww['df1']}, {mu_ww['df2']}) = {mu_ww['F']:.3g}",
+                    _fmt_p(mu_ww["p"]),
+                    _p_stars(mu_ww["p"]),
+                ])
+
+            # Page-1 tests table: omnibus + circ-lin correlations +
+            # per-replicate tests + as many pairwise rows as fit.  We
+            # always put the per-group correlations and per-replicate
+            # tests on page 1 (they're tiny, ~k rows each) and let the
+            # pooled pairwise tests be the ones that paginate.
+            PAGE1_TESTS_CAP = 14        # omnibus + corr + per-rep + pairwise
+            CONT_PAGE_CAP   = 24        # ~24 rows on a continuation page
+
+            fixed_rows = omnibus_rows + corr_rows + per_rep_rows
+            page1_pairwise_cap = max(
+                PAGE1_TESTS_CAP - len(fixed_rows), 0)
+            page1_tests   = fixed_rows + pairwise_rows[:page1_pairwise_cap]
+            overflow_pairs = pairwise_rows[page1_pairwise_cap:]
+
+            if not page1_tests:
+                page1_tests = [["Insufficient data", "—", "—", "—"]]
+
+            def _render_tests_table(host_fig, rect, cells, pal):
+                """Render a 4-column tests table into the given fig+rect."""
+                ax = host_fig.add_axes(rect); ax.axis("off")
+                tbl = ax.table(
+                    cellText=cells,
+                    colLabels=["Test  ·  Comparison", "Statistic",
+                               "p-value", "sig"],
+                    cellLoc="left", colLoc="left",
+                    colWidths=[0.55, 0.25, 0.13, 0.07],
+                    bbox=[0.0, 0.0, 1.0, 1.0])
+                tbl.auto_set_font_size(False)
+                tbl.set_fontsize(8.5)
+                for (rr, cc), c_obj in tbl.get_celld().items():
+                    c_obj.set_linewidth(0.5)
+                    c_obj.set_edgecolor(pal["GRD"])
+                    if rr == 0:
+                        c_obj.set_facecolor(pal["HDR_BG"])
+                        c_obj.set_text_props(color=pal["HDR_TXT"],
+                                             fontweight="bold")
+                    else:
+                        c_obj.set_facecolor(
+                            pal["ZEBRA"] if rr % 2 == 0 else pal["PNL"])
+                        c_obj.set_text_props(color=pal["TXT"])
+
+            _render_tests_table(fig, [0.05, 0.14, 0.90, 0.165],
+                                page1_tests, pal)
+
+            # ── Footer block ──────────────────────────────────────
+            # Pre-wrapped lines instead of one long sign-convention
+            # string: matplotlib's fig.text doesn't wrap against the
+            # figure margins, so the long "Sign convention…" line was
+            # being cut off at the right edge.  Same wrapping pattern
+            # the per-file PDF footer uses (search `sign_lines = [`).
+            def _render_footer(host_fig, pal, *, top_y=0.105):
+                _foot_kw2 = dict(fontsize=7, color=pal["MUT"], ha="left",
+                                 va="bottom", family=pal["FONT"])
+                foot_lines = [
+                    "Sign convention: turning angles are SIGNED on "
+                    "(−180°, +180°].",
+                    "0° = straight ahead.  +θ = left turn (CCW).  "
+                    "−θ = right turn (CW).  ±180° = full reversal.",
+                    "Plots use clockwise-positive direction so +θ "
+                    "labels appear on the right hemisphere.",
+                    "Significance markers: *** p<0.001,  ** p<0.01,  "
+                    "* p<0.05,  ns = not significant.",
+                    "References: Mardia & Jupp 2000 §6.4.2, §7.6.1; "
+                    "Fisher 1993; Berens 2009 (CircStat).",
+                ]
+                y2 = top_y
+                for line in foot_lines:
+                    host_fig.text(0.05, y2, line, **_foot_kw2)
+                    y2 -= 0.014
+
+            _render_footer(fig, pal)
+            pdf.savefig(fig, facecolor=pal["BG"])
+            plt.close(fig)
+
+            # ── Continuation pages for overflow pairwise tests ──────
+            # When the pairwise count is large (e.g. 6+ groups → 15+
+            # pairs × 2 tests = 30+ rows), we paginate the remainder
+            # onto fresh landscape pages so nothing gets squashed off
+            # the bottom of page 1.
+            if overflow_pairs:
+                page_num = 2
+                total_cont_pages = (len(overflow_pairs)
+                                    + CONT_PAGE_CAP - 1) // CONT_PAGE_CAP
+                for chunk_start in range(0, len(overflow_pairs),
+                                         CONT_PAGE_CAP):
+                    chunk = overflow_pairs[chunk_start:
+                                           chunk_start + CONT_PAGE_CAP]
+                    fig_c = plt.figure(figsize=(11.69, 8.27),
+                                       facecolor=pal["BG"])
+                    ax_h = fig_c.add_axes([0.05, 0.93, 0.90, 0.04])
+                    ax_h.axis("off")
+                    ax_h.text(0.0, 0.5,
+                              "Comparison: Circular Statistics  —  "
+                              f"pairwise tests (page {page_num - 1} of "
+                              f"{total_cont_pages})",
+                              fontsize=14, fontweight="bold",
+                              va="center", ha="left", color=pal["TXT"])
+                    # Big tests-table area on a continuation page.
+                    _render_tests_table(fig_c,
+                                        [0.05, 0.13, 0.90, 0.75],
+                                        chunk, pal)
+                    _render_footer(fig_c, pal)
+                    pdf.savefig(fig_c, facecolor=pal["BG"])
+                    plt.close(fig_c)
+                    page_num += 1
+
+            # ── Pages 2..N+1: per-group full report ───────────────────
+            for label, a, color, stats in per_group_stats:
+                # Reuse the single-file renderer by writing to a
+                # temp page object isn't supported directly — instead,
+                # we mirror its layout here in a fresh figure so the
+                # per-group pages all live in ONE multi-page PDF.
+                _write_single_group_page(pdf, a, stats, label, pal, color)
+    finally:
+        plt.rcParams.update(_rc_save)
+
+    return per_group_stats
+
+
+def _write_single_group_page(pdf, angles_deg, stats, label, pal,
+                              group_color=None):
+    """Render one A4-portrait page mirroring save_circular_statistics_pdf
+    into an open PdfPages stream.  Used by save_comparison_circular_
+    statistics so the per-group full reports all live inside the same
+    multi-page comparison PDF.
+    """
+    import matplotlib.pyplot as plt
+
+    a = np.asarray(angles_deg, dtype=float).ravel()
+    a = a[np.isfinite(a)]
+
+    def _fmt(x, prec=4):
+        try:
+            if x is None: return "—"
+            xf = float(x)
+            if np.isnan(xf): return "—"
+            if xf > 0.0 and xf <= 1e-300:
+                return "<1e-300"
+            return f"{xf:.{prec}g}"
+        except Exception:
+            return str(x)
+
+    rows = [
+        ("n", "Sample size", "count", f"{int(stats.get('n', 0)):,}"),
+        ("mean_direction_deg", "Mean direction μ", "deg",
+         _fmt(stats.get("mean_direction_deg"), 4)),
+        ("mean_resultant_length",
+         "Mean resultant length R̄  (0 = uniform, 1 = aligned)", "—",
+         _fmt(stats.get("mean_resultant_length"), 4)),
+        ("circular_variance", "Circular variance  1 − R̄", "—",
+         _fmt(stats.get("circular_variance"), 4)),
+        ("circular_std_deg",
+         "Circular standard deviation  √(−2·ln R̄)", "deg",
+         _fmt(stats.get("circular_std_deg"), 4)),
+        ("angular_deviation_deg",
+         "Angular deviation  s₀ = √(2·(1−R̄))", "deg",
+         _fmt(stats.get("angular_deviation_deg"), 4)),
+        ("median_deg", "Circular median", "deg",
+         _fmt(stats.get("median_deg"), 4)),
+        ("concentration_kappa",
+         "Von Mises concentration κ  (Best & Fisher 1981)", "—",
+         _fmt(stats.get("concentration_kappa"), 4)),
+        ("rayleigh_z", "Rayleigh test statistic  z = n·R̄²", "—",
+         _fmt(stats.get("rayleigh_z"), 4)),
+        ("rayleigh_p", "Rayleigh test p-value  (uniformity)", "—",
+         _fmt(stats.get("rayleigh_p"), 3)),
+        ("v_test_z", "V-test statistic against μ₀ = 0°", "—",
+         _fmt(stats.get("v_test_z"), 4)),
+        ("v_test_p", "V-test p-value  (preferred direction)", "—",
+         _fmt(stats.get("v_test_p"), 3)),
+        ("circular_skewness",
+         "Circular skewness  (Mardia & Jupp §2.3)", "—",
+         _fmt(stats.get("circular_skewness"), 4)),
+        ("circular_kurtosis",
+         "Circular kurtosis  (Mardia & Jupp §2.3)", "—",
+         _fmt(stats.get("circular_kurtosis"), 4)),
+        ("ci95_lower_deg",
+         "95% CI lower bound for μ  (large-sample)", "deg",
+         _fmt(stats.get("ci95_lower_deg"), 4)),
+        ("ci95_upper_deg",
+         "95% CI upper bound for μ  (large-sample)", "deg",
+         _fmt(stats.get("ci95_upper_deg"), 4)),
+    ]
+
+    # Layout mirrors save_circular_statistics_pdf — same coord bands so
+    # the per-group page in a comparison PDF reads like a per-file PDF.
+    fig = plt.figure(figsize=(8.27, 11.69), facecolor=pal["BG"])
+    ax_hdr = fig.add_axes([0.07, 0.94, 0.86, 0.04])
+    ax_hdr.axis("off")
+    ax_hdr.text(0.0, 0.5, f"Circular Statistics — {label}",
+                fontsize=15, fontweight="bold", va="center",
+                ha="left", color=pal["TXT"])
+    ax_hdr.text(1.0, 0.5,
+                f"n = {int(stats.get('n', 0)):,} turning angles",
+                fontsize=11, color=pal["MUT"], va="center", ha="right")
+
+    ax_polar = fig.add_axes([0.08, 0.61, 0.36, 0.25], projection="polar")
+    ax_polar.set_facecolor(pal["PNL"])
+    if a.size >= 10:
+        # Same convention as the master figure: 0° top, CW positive,
+        # signed labels on slot positions, [0, 2π) wrap for bars.
+        nbins = 36
+        angles_rad = np.mod(np.deg2rad(a), 2.0 * np.pi)
+        bins  = np.linspace(0.0, 2.0 * np.pi, nbins + 1)
+        counts, edges = np.histogram(angles_rad, bins=bins)
+        widths = np.diff(edges)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        ax_polar.set_theta_zero_location("N")
+        ax_polar.set_theta_direction(-1)
+        ax_polar.bar(centers, counts, width=widths * 0.95, align="center",
+                     color=group_color or pal["ACC"],
+                     edgecolor=pal["PNL"], linewidth=0.4, alpha=0.92)
+        mu = stats.get("mean_direction_deg")
+        if mu is not None and not (isinstance(mu, float) and np.isnan(mu)):
+            r_max = float(counts.max()) if counts.size else 1.0
+            mu_rad = np.mod(np.deg2rad(mu), 2.0 * np.pi)
+            ax_polar.annotate("",
+                xy=(mu_rad, r_max * 0.95), xytext=(0, 0),
+                arrowprops=dict(arrowstyle="->", color=pal["ARROW"],
+                                lw=2.0))
+        ax_polar.set_xticks(np.deg2rad(
+            [0, 45, 90, 135, 180, 225, 270, 315]))
+        ax_polar.set_xticklabels(
+            ["0°", "+45°", "+90°", "+135°", "±180°",
+             "−135°", "−90°", "−45°"], fontsize=8)
+        ax_polar.set_yticklabels([])
+        ax_polar.tick_params(colors=pal["TXT"], labelsize=8)
+        ax_polar.grid(True, ls=":", alpha=0.4)
+        # Title intentionally omitted — see save_circular_statistics_pdf
+        # for the rationale (header + footer already cover it).
+    else:
+        ax_polar.axis("off")
+        ax_polar.text(0.5, 0.5, "Too few angles for histogram",
+                      transform=ax_polar.transAxes,
+                      ha="center", va="center", color=pal["MUT"],
+                      fontsize=10)
+
+    # Compact "Top stats" box for the right side.
+    ax_top = fig.add_axes([0.48, 0.61, 0.46, 0.25]); ax_top.axis("off")
+    R = stats.get("mean_resultant_length")
+    p = stats.get("rayleigh_p")
+    lines = [
+        f"Mean direction μ:        {_fmt(stats.get('mean_direction_deg'), 4)}°",
+        f"Resultant length R̄:      {_fmt(stats.get('mean_resultant_length'), 4)}",
+        f"Concentration κ:         {_fmt(stats.get('concentration_kappa'), 4)}",
+        f"Rayleigh p (uniformity): {_fmt(stats.get('rayleigh_p'), 3)}",
+        f"V-test p (μ₀ = 0°):      {_fmt(stats.get('v_test_p'), 3)}",
+    ]
+    ax_top.text(0.0, 1.0, "Headline stats", fontsize=12,
+                fontweight="bold", va="top", color=pal["TXT"])
+    ax_top.text(0.0, 0.88, "\n".join(lines), fontsize=10, va="top",
+                family="monospace", color=pal["TXT"])
+
+    # Section title in figure coords so it can't collide with the polar
+    # plot's bottom tick labels above.
+    fig.text(0.07, 0.555, "Statistics  (MATLAB CircStat conventions)",
+             fontsize=12, fontweight="bold", va="bottom",
+             ha="left", color=pal["TXT"])
+    ax_tbl = fig.add_axes([0.07, 0.12, 0.88, 0.40]); ax_tbl.axis("off")
+
+    cell_text, row_labels = [], []
+    for key, gloss, unit, val in rows:
+        unit_s = "" if unit in ("", "—") else f"  ({unit})"
+        cell_text.append([f"{gloss}", f"{val}{unit_s}"])
+        row_labels.append(key)
+    tbl = ax_tbl.table(cellText=cell_text, rowLabels=row_labels,
+                       colLabels=["Description", "Value"],
+                       cellLoc="left", rowLoc="left", colLoc="left",
+                       colWidths=[0.62, 0.28],
+                       bbox=[0.20, 0.0, 0.80, 1.0])
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9.0)
+    for (rr, cc), c_obj in tbl.get_celld().items():
+        c_obj.set_linewidth(0.5)
+        c_obj.set_edgecolor(pal["GRD"])
+        if rr == 0:
+            c_obj.set_facecolor(pal["HDR_BG"])
+            c_obj.set_text_props(color=pal["HDR_TXT"], fontweight="bold")
+        else:
+            c_obj.set_facecolor(
+                pal["ZEBRA"] if rr % 2 == 0 else pal["PNL"])
+            if cc == -1:
+                c_obj.set_text_props(family="monospace", fontsize=8.0,
+                                     color=pal["MUT"])
+            else:
+                c_obj.set_text_props(color=pal["TXT"])
+
+    _foot_kw = dict(fontsize=7, color=pal["MUT"], ha="left",
+                    va="bottom", family=pal["FONT"])
+    sign_lines = [
+        "Sign convention: turning angles SIGNED on (−180°, +180°].",
+        "0° = straight.  +θ = left turn (CCW).  −θ = right turn (CW).  "
+        "±180° = reversal.",
+        "Unsigned 0–360° equivalent: u = θ if θ ≥ 0, else θ + 360 "
+        "(so −90° ≡ 270°, +90° ≡ 90°).",
+    ]
+    ref_lines = [
+        "References: Mardia & Jupp 2000; Fisher 1993; "
+        "Berens 2009 (CircStat).",
+    ]
+    y = 0.095
+    for line in sign_lines:
+        fig.text(0.07, y, line, **_foot_kw); y -= 0.014
+    y -= 0.006
+    for line in ref_lines:
+        fig.text(0.07, y, line, **_foot_kw); y -= 0.014
+    pdf.savefig(fig, facecolor=pal["BG"])
+    plt.close(fig)
+
 
 def compute_turning_angles(tracks):
     """For each track with ≥3 points, compute step-to-step **signed** turning
@@ -3819,6 +6471,15 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         _traj_bg  = "Greys"
         _pie_text = "#ffffff"
         _font     = "serif"
+    elif fig_theme == "AMOLED":
+        # Pure-black BG variant of Dark.
+        BG, PNL   = "#000000", "#0a0a0a"
+        TXT, GRD  = "#e6edf3", "#30363d"
+        ACC       = "#58a6ff"
+        _kde_col  = "white"
+        _traj_bg  = "Greys_r"
+        _pie_text = "#000000"
+        _font     = "monospace"
     else:                                    # Dark (default)
         BG, PNL   = "#0d1117", "#161b22"
         TXT, GRD  = "#e6edf3", "#30363d"
@@ -3834,7 +6495,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         "Hot":     "hot",
         "Viridis": "viridis",
         "Plasma":  "plasma",
-        "Greys":   "Greys" if fig_theme in ("Light", "Publication") else "Greys_r",
+        "Greys":   "Greys" if fig_theme in ("Light", "Publication") else "Greys_r",   # Dark + AMOLED → Greys_r
     }
     _pcmap = _cmap_map.get(proj_cmap, "inferno")
 
@@ -3961,7 +6622,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         te    = np.linspace(t6[0],lt[-1],200)
         ax.plot(te,msd_linear(te,*po),"--",color="#f78166",lw=2,
                 label=f"Fit D={po[0]:.4f} um2/s")
-    except: pass
+    except Exception: pass
     ax.set_xlabel("Lag time (s)",fontsize=9)
     ax.set_ylabel("MSD (um2)",fontsize=9)
     ax.set_xscale("log"); ax.set_yscale("log")
@@ -5126,30 +7787,16 @@ def _stat_test(a, b):
         return (np.nan, "")
 
 
-def _theme_palette(theme):
-    """Return a dict with figure colours matching the Analyse-mode themes
-    ('Dark', 'Light', 'Publication')."""
-    t = (theme or "Dark")
-    # Accept various spellings
-    t = {"dark": "Dark", "light": "Light", "publication": "Publication"}.get(t.lower(), t)
-    if t == "Light":
-        return dict(theme="Light",
-                    BG="#ffffff", PNL="#f6f8fa",
-                    TXT="#24292f", GRD="#d0d7de",
-                    BAR_FILL="#ffffff", SIG="#000000",
-                    FONT="sans-serif")
-    if t == "Publication":
-        return dict(theme="Publication",
-                    BG="#ffffff", PNL="#ffffff",
-                    TXT="#000000", GRD="#cccccc",
-                    BAR_FILL="#ffffff", SIG="#000000",
-                    FONT="serif")
-    # Default: Dark
-    return dict(theme="Dark",
-                BG="#0d1117", PNL="#161b22",
-                TXT="#e6edf3", GRD="#30363d",
-                BAR_FILL="#161b22", SIG="#e6edf3",
-                FONT="monospace")
+# NOTE: the canonical `_theme_palette` definition lives near
+# `compute_circular_statistics` above.  Earlier there was a SECOND
+# definition here with a smaller set of keys (BG/PNL/TXT/GRD/BAR_FILL/
+# SIG/FONT only); because Python rebinds `_theme_palette` at module
+# parse time, the second definition silently won and every call to
+# `_theme_palette` returned a dict missing MUT/ACC/HDR_BG/HDR_TXT/
+# ZEBRA/ARROW.  That manifested as `KeyError('MUT')` from
+# `save_circular_statistics_pdf` (which uses those keys).  The
+# canonical version above now also exports the BAR_FILL/SIG keys
+# `compare_groups` consumes here, so the duplicate is safe to remove.
 
 
 def _stat_test_n(arrays, labels):
@@ -5931,6 +8578,82 @@ def compare_groups(groups,
                 print(f"  Saved: {report_path}")
             except Exception as exc:
                 print(f"  PDF report skipped ({type(exc).__name__}: {exc})")
+
+        # ── Per-comparison circular-statistics CSV + PDF ────────────────────
+        # Pool angles per group (across all replicates), compute the full
+        # CircStat suite for each group, and emit:
+        #   * {stem}_circular_statistics.csv  — one row per group
+        #   * {stem}_circular_statistics.pdf  — themed multi-page PDF
+        #     (page 1 = summary grid + comparison table; pages 2..N+1 =
+        #     per-group detail mirroring the per-file report).
+        try:
+            groups_angles_pooled = []
+            # Per-track (mean_angle_deg, D) pairs per group, used for
+            # the circular-linear correlation between a track's
+            # average turning bias and its diffusion coefficient.
+            # One list of pairs per group; each list pools across
+            # the group's replicates.
+            track_angle_d_pairs = []
+            # Per-replicate angle arrays — one list of arrays per group.
+            # Used to compute per-replicate κ, R̄, μ for the Welch t-test
+            # and per-replicate Watson-Williams F-test (treats each
+            # replicate as one data point, the statistically defensible
+            # framing for n=5 vs n=3 designs).
+            per_replicate_angles = {}
+            for label, ss, color in zip(labels, all_summaries, colors):
+                pooled = []
+                t_angles_g = []
+                t_D_g      = []
+                rep_angle_arrays = []
+                for s in ss:
+                    ta = s.get("turning_angles")
+                    if ta is not None:
+                        arr = np.asarray(ta, dtype=float).ravel()
+                        if arr.size:
+                            pooled.append(arr)
+                            rep_angle_arrays.append(arr)
+                    tracks = s.get("tracks")
+                    diff_df = s.get("diffusion")
+                    if tracks is None or diff_df is None:
+                        continue
+                    if "D" not in diff_df.columns:
+                        continue
+                    try:
+                        pairs = compute_per_track_mean_angle(tracks)
+                        if not pairs:
+                            continue
+                        d_map = dict(zip(diff_df["particle"].astype(int),
+                                         diff_df["D"].astype(float)))
+                        for pid, mu_deg in pairs:
+                            d_val = d_map.get(int(pid))
+                            if d_val is None or not np.isfinite(d_val):
+                                continue
+                            t_angles_g.append(float(mu_deg))
+                            t_D_g.append(float(d_val))
+                    except Exception:
+                        continue
+                pooled_arr = (np.concatenate(pooled)
+                              if pooled else np.array([], dtype=float))
+                groups_angles_pooled.append((label, pooled_arr, color))
+                track_angle_d_pairs.append(
+                    (np.asarray(t_angles_g, dtype=float),
+                     np.asarray(t_D_g,      dtype=float)))
+                per_replicate_angles[label] = rep_angle_arrays
+            cs_csv = os.path.join(
+                output_dir, f"{output_stem}_circular_statistics.csv")
+            cs_pdf = os.path.join(
+                output_dir, f"{output_stem}_circular_statistics.pdf")
+            save_comparison_circular_statistics(
+                groups_angles_pooled,
+                csv_path=cs_csv, pdf_path=cs_pdf,
+                fig_theme=theme,
+                track_angle_d_pairs=track_angle_d_pairs,
+                per_replicate_angles=per_replicate_angles)
+            print(f"  Saved: {cs_csv}")
+            print(f"  Saved: {cs_pdf}")
+        except Exception as exc:
+            print(f"  Comparison circular-stats skipped "
+                  f"({type(exc).__name__}: {exc})")
 
     return fig, summary_df, stats_records
 

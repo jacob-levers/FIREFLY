@@ -270,10 +270,108 @@ def _start_memory_watchdog(cancel_event, msg_queue,
     return stop
 
 
+def _start_disk_watchdog(out_dir, cancel_event, msg_queue,
+                          critical_mb: float = 200.0,
+                          warn_mb: float = 1024.0,
+                          poll_s: float = 2.0):
+    """Background daemon that aborts the run if free disk space on the
+    OUTPUT volume drops dangerously low.
+
+    Thresholds (in MB of free space on the volume holding `out_dir`):
+      * `warn_mb`     — log a warning the first time we cross it
+      * `critical_mb` — set `cancel_event` so the pipeline raises
+                        `_Cancelled` at its next stop-check
+
+    This catches the common ENOSPC-mid-analysis case where a multi-GB
+    movie load + intermediate memmap + 200k-row CSV outputs slowly
+    consume the drive.  Without it, a single failed `to_csv` torpedoes
+    a 5-minute run at the very last save step.
+
+    Returns the `stop` Event to .set() in a finally block, or None if
+    psutil/shutil checks aren't available on this platform.
+    """
+    import threading, shutil
+    stop = threading.Event()
+    target = os.path.dirname(os.path.abspath(out_dir)) or out_dir
+
+    def _free_mb():
+        try:
+            return shutil.disk_usage(target).free / 1e6
+        except Exception:
+            return None
+
+    # If we can't measure, don't try to enforce.
+    if _free_mb() is None:
+        return None
+
+    def _watch():
+        warned = False
+        while not stop.wait(poll_s):
+            free_mb = _free_mb()
+            if free_mb is None:
+                continue
+            if free_mb < critical_mb:
+                if cancel_event is not None and not cancel_event.is_set():
+                    cancel_event.set()
+                    try:
+                        msg_queue.put_nowait(("log",
+                            f"\n  ⚠ CRITICAL: only {free_mb:.0f} MB "
+                            f"free on output disk — aborting before "
+                            f"a save fails and corrupts the output "
+                            f"folder.  Free up space or change the "
+                            f"output folder and re-run."))
+                    except Exception: pass
+                return
+            if not warned and free_mb < warn_mb:
+                try:
+                    msg_queue.put_nowait(("log",
+                        f"  ⚠ Disk space low on output volume: "
+                        f"{free_mb:.0f} MB free (warn < "
+                        f"{warn_mb:.0f} MB / abort < {critical_mb:.0f} "
+                        f"MB).  Outputs may fail to save."))
+                except Exception: pass
+                warned = True
+
+    t = threading.Thread(target=_watch, daemon=True,
+                          name="FIREFLY-DiskWatchdog")
+    t.start()
+    return stop
+
+
 class _NoTracks(Exception):
     """Raised inside _run_one_analysis when linking produces 0 trajectories.
     The wrapper catches this and emits a sensible 'done' (single-file) or
     'file_done' (batch) payload — no crash report."""
+
+
+def _make_loc_histogram_proj(locs_df, p: dict):
+    """Build a 2-D localisation-density image for use as the figure's
+    Max-Projection background when no real image stack is available.
+
+    Used by the external_csv path (which post-processing dispatches to).
+    Without this, `proj_sample` defaulted to zeros((1, 256, 256)) — a black
+    square that ALSO miscalibrated the trajectory panels' axis limits
+    when the real data extent was larger than 256 px.
+
+    Returns shape (1, H, W) so the downstream `make_figure` code which
+    expects a 3-D stack still works unchanged.
+    """
+    import numpy as _np
+    try:
+        xs = _np.asarray(locs_df["x"], dtype=float)
+        ys = _np.asarray(locs_df["y"], dtype=float)
+        if xs.size == 0 or ys.size == 0:
+            return _np.zeros((1, 256, 256), dtype=_np.float32)
+        # Prefer the run's recorded image size when present (so axes match
+        # the original image exactly), otherwise size to the data extent.
+        W = int(p.get("width")  or _np.ceil(xs.max()) + 1)
+        H = int(p.get("height") or _np.ceil(ys.max()) + 1)
+        W = max(W, 32); H = max(H, 32)
+        hist, _, _ = _np.histogram2d(
+            ys, xs, bins=(H, W), range=[[0, H], [0, W]])
+        return hist.astype(_np.float32)[None, :, :]
+    except Exception:
+        return _np.zeros((1, 256, 256), dtype=_np.float32)
 
 
 def _run_one_analysis(params: dict, msg_queue, cancel_event,
@@ -291,6 +389,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     from sptpalm_analysis import (
         load_file, preprocess_and_localise_adaptive, link_trajectories,
         compute_msd_and_fit, compute_jdd, compute_turning_angles,
+        compute_circular_statistics, save_circular_statistics_pdf,
+        compute_per_track_mean_angle, _circ_lin_correlation,
         compute_mobile_fraction_over_time, compute_clusters,
         compute_dwell_times, compute_mss, correct_drift,
         make_figure, save_palmtracer_csvs, apply_roi_mask, _Cancelled,
@@ -315,6 +415,33 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     extras_dir = os.path.join(out_dir, "firefly_extras")
     for d in (fig_dir, data_dir, extras_dir):
         os.makedirs(d, exist_ok=True)
+
+    # ── Pre-flight disk-space check ────────────────────────────────────────
+    # A 200k-localisation run produces ~50 MB of CSVs, plus PDFs / PNGs /
+    # the optional ROI mask npy.  500 MB free is plenty; below that we
+    # WARN; below 100 MB we hard-fail before doing any work so the user
+    # doesn't lose 5 minutes of analysis to a save that was always
+    # going to fail.  The disk watchdog above continues monitoring
+    # during the run for accumulating writes.
+    try:
+        import shutil
+        free_mb = shutil.disk_usage(out_dir).free / 1e6
+        if free_mb < 100.0:
+            raise RuntimeError(
+                f"Only {free_mb:.0f} MB free on the output disk — "
+                f"refusing to start (analysis outputs need at least "
+                f"~100 MB).  Free up space, or pick a different "
+                f"output folder, and re-run.")
+        if free_mb < 500.0:
+            _log(f"  ⚠ Disk space low: {free_mb:.0f} MB free on "
+                 f"output volume.  The run will continue but later "
+                 f"saves may fail if more files accumulate.")
+    except RuntimeError:
+        raise
+    except Exception:
+        # If shutil.disk_usage isn't supported (rare), proceed and
+        # let the watchdog catch problems.
+        pass
 
     # Route disk-backed memmap stacks next to the output dir by default
     # (typically on the user's data drive, which has more headroom than
@@ -392,9 +519,9 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             except Exception as exc:
                 _log(f"  WARN: background image failed to load — "
                      f"figure projection panel will be blank.  ({exc})")
-                proj_sample = _np.zeros((1, 256, 256), dtype=_np.float32)
+                proj_sample = _make_loc_histogram_proj(locs_extern, p)
         else:
-            proj_sample = _np.zeros((1, 256, 256), dtype=_np.float32)
+            proj_sample = _make_loc_histogram_proj(locs_extern, p)
 
     # ── Localisation ──────────────────────────────────────────────────────
     _log(f"\n── Localisation ──────────────────")
@@ -510,9 +637,25 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         except Exception:
             pass
 
+    # Default projections to None so the ROI block can detect the
+    # external_csv path (where we have no stack to project) and bail
+    # out cleanly with a warning instead of NameError.
+    mean_proj  = None
+    max_proj   = None
+    blink_proj = None
     if not external_csv:
         try:
-            locs, mean_proj, _mm = preprocess_and_localise_adaptive(
+            # Wavelet backend params: only consumed when backend=="wavelet"
+            # (trackpy / torch ignore the extra kwargs).  Pulled from the
+            # GUI payload with sensible defaults so older payloads still
+            # work without a backwards-incompat error.
+            wavelet_kwargs = {
+                "wavelet":              p.get("wavelet", "db2"),
+                "wavelet_levels":       int(p.get("wavelet_levels", 2)),
+                "wavelet_threshold_k":  float(p.get("wavelet_threshold_k", 3.0)),
+                "wavelet_min_distance": int(p.get("wavelet_min_distance", 3)),
+            }
+            locs, mean_proj, max_proj, blink_proj, _mm = preprocess_and_localise_adaptive(
                 stack,
                 diameter=int(p["diameter"]),
                 minmass=minmass_arg,
@@ -523,7 +666,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 stop_event=cancel_event,
                 mass_cb=_mass_cb,
                 preview_cb=_preview_cb,
-                backend=p["backend"])
+                backend=p["backend"],
+                **wavelet_kwargs)
         finally:
             # Stop the preview pump and let it drain whatever's left
             _preview_stop.set()
@@ -569,7 +713,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     if roi_mode != "none" and len(locs) > 0:
         _log(f"\n── ROI mask ───────────────────────")
         try:
-            from sptpalm_analysis import auto_threshold
+            from sptpalm_analysis import build_roi_mask_advanced
             roi_mask = None
 
             if roi_mode == "polygon":
@@ -581,18 +725,23 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 if not vertices:
                     _log("  WARN: roi_mode is 'polygon' but no vertices "
                          "were provided.  Skipping ROI.")
+                elif mean_proj is None:
+                    _log("  WARN: roi_mode is 'polygon' but no stack was "
+                         "loaded (external CSV?).  Skipping ROI.")
                 else:
                     try:
                         from skimage.draw import polygon2mask
                         polys = vertices if isinstance(vertices[0][0],
                                                        (list, tuple)) \
                                           else [vertices]
-                        # If multiple polygons, OR their masks together
                         h, w = mean_proj.shape
-                        roi_mask = _np.zeros((h, w), dtype=_np.uint8)
+                        # NB: keep this `bool`, not `uint8` — see
+                        # apply_roi_mask for why uint8 breaks pandas
+                        # row indexing.
+                        roi_mask = _np.zeros((h, w), dtype=bool)
                         for poly in polys:
                             m = polygon2mask((h, w), _np.asarray(poly))
-                            roi_mask |= m.astype(_np.uint8)
+                            roi_mask |= m.astype(bool)
                         n_polys = len(polys)
                         _log(f"  User polygon ROI: {n_polys} shape(s), "
                              f"{100.0 * roi_mask.mean():.1f}% of frame")
@@ -600,21 +749,163 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                         _log(f"  WARN: polygon ROI failed — {poly_exc}.")
                         roi_mask = None
 
-            if roi_mask is None:
+            if roi_mask is None and mean_proj is not None:
+                # Shared GUI/worker ROI pipeline — DoG background
+                # subtraction + morphology + top-N components.
+                # Whatever the user tunes in the ROI preview viewer is
+                # what gets applied here, byte-for-byte identical.
+                mask_mode = str(p.get("roi_mask_mode", "Max")).strip().lower()
+                if mask_mode.startswith("blink"):
+                    # Streaming Welford-based per-pixel mean+std baseline
+                    # gives us a real blink-density map in a single
+                    # pass over the stack (see preprocess_and_localise_
+                    # adaptive in sptpalm_analysis.py).  Approximation
+                    # only in that the threshold per pixel evolves as
+                    # the estimate stabilises — for 4000+ frame movies
+                    # the early-chunk transient is negligible.
+                    if blink_proj is not None:
+                        proj = blink_proj
+                        mode_hint = "blink"
+                    else:
+                        _log("  NOTE: Blink-density not available "
+                             "(no stack loaded?) — falling back to Max.")
+                        proj = max_proj
+                        mode_hint = "max"
+                elif mask_mode.startswith("max"):
+                    proj = max_proj
+                    mode_hint = "max"
+                elif mask_mode.startswith("sum"):
+                    # Sum is just mean × frame_count up to a scale that
+                    # normalisation removes, so route it to mean_proj.
+                    proj = mean_proj
+                    mode_hint = "sum"
+                else:  # "mean" (default for legacy presets)
+                    proj = mean_proj
+                    mode_hint = "mean"
+
+                if proj is None:
+                    proj = mean_proj  # final safety net
+
                 if roi_mode == "auto":
                     method = (p.get("roi_auto_method") or "Li").lower()
-                    thresh, _, _ = auto_threshold(mean_proj, method=method)
+                    manual_thresh = None
                 else:  # manual threshold
-                    thresh = float(p.get("roi_threshold", 0.08))
-                roi_mask = (mean_proj > thresh).astype(_np.uint8)
-                _log(f"  Threshold = {thresh:.4f}  |  "
-                     f"{100.0 * roi_mask.mean():.1f}% of frame")
+                    method = "li"
+                    manual_thresh = float(p.get("roi_threshold", 0.08))
+                bg_sigma = float(p.get("roi_bg_sigma", 25.0))
+                roi_mask, info = build_roi_mask_advanced(
+                    proj,
+                    threshold=manual_thresh,
+                    threshold_method=method,
+                    bg_sigma=bg_sigma,
+                    mode_hint=mode_hint)
+                _log(f"  Projection={mode_hint}, σ_bg={bg_sigma:.1f}, "
+                     f"threshold={info['threshold']:.4f}  |  "
+                     f"{100.0 * info['fraction']:.1f}% of frame")
 
-            n_before = len(locs)
-            locs = apply_roi_mask(locs, roi_mask)
-            _log(f"  Locs after ROI : {len(locs):,}  "
-                 f"(dropped {n_before - len(locs):,})")
+            if roi_mask is None:
+                _log("  WARN: could not build a ROI mask.  "
+                     "Continuing without ROI.")
+            else:
+                n_before = len(locs)
+                locs = apply_roi_mask(locs, roi_mask)
+                _log(f"  Locs after ROI : {len(locs):,}  "
+                     f"(dropped {n_before - len(locs):,})")
+
+                # ── Persist the exact mask that was applied ──────────
+                # Two artefacts:
+                #   * {stem}_roi_mask.npy   — raw bool array, for any
+                #     downstream re-analysis that wants pixel-perfect
+                #     reproducibility.
+                #   * {stem}_roi_mask.png   — overlay of projection +
+                #     mask outline + translucent fill, so a human
+                #     looking at the run folder can see at a glance
+                #     which pixels were kept and which excluded.
+                # Both live in firefly_extras/ (raw) and figures/ (PNG)
+                # to match the existing output-folder convention.
+                try:
+                    os.makedirs(extras_dir, exist_ok=True)
+                    _np.save(
+                        os.path.join(extras_dir, f"{stem}_roi_mask.npy"),
+                        roi_mask.astype(bool, copy=False))
+                except Exception as save_exc:
+                    _log(f"  NOTE: could not save roi_mask.npy "
+                         f"({save_exc}).")
+
+                # Pick a projection background for the PNG — prefer the
+                # same one used to BUILD the mask, falling back through
+                # max → mean.  If we get here, at least one is non-None.
+                try:
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as _plt
+                    if mode_hint == "blink" and blink_proj is not None:
+                        bg = blink_proj
+                        bg_label = "Blink density"
+                    elif mode_hint == "max" and max_proj is not None:
+                        bg = max_proj
+                        bg_label = "Max projection"
+                    elif mean_proj is not None:
+                        bg = mean_proj
+                        bg_label = "Mean projection"
+                    elif max_proj is not None:
+                        bg = max_proj
+                        bg_label = "Max projection"
+                    else:
+                        bg = None
+                        bg_label = ""
+
+                    if bg is not None:
+                        os.makedirs(fig_dir, exist_ok=True)
+                        fig, ax = _plt.subplots(figsize=(6, 6),
+                                                facecolor="#0d1117")
+                        ax.set_facecolor("#0d1117")
+                        lo, hi = _np.percentile(bg, [1.0, 99.5])
+                        if hi <= lo:
+                            hi = lo + 1.0
+                        ax.imshow(bg, cmap="inferno",
+                                  vmin=float(lo), vmax=float(hi),
+                                  interpolation="nearest")
+                        # Translucent green fill + sharper green outline
+                        ax.imshow(
+                            _np.ma.masked_where(~roi_mask, roi_mask),
+                            cmap="Greens", alpha=0.30,
+                            interpolation="nearest")
+                        ax.contour(roi_mask.astype(float), levels=[0.5],
+                                   colors=["#39ff14"], linewidths=1.4)
+                        if roi_mode == "polygon":
+                            title = (
+                                f"ROI applied — {bg_label}  |  "
+                                f"polygon, "
+                                f"{100.0 * float(roi_mask.mean()):.1f}% "
+                                f"of frame"
+                            )
+                        else:
+                            # bg_sigma + info are only set in the
+                            # threshold branch above.  We KNOW we're in
+                            # that branch here (roi_mode != "polygon").
+                            title = (
+                                f"ROI applied — {bg_label}  |  "
+                                f"projection={mode_hint}, "
+                                f"σ_bg={bg_sigma:.0f}, "
+                                f"t={info['threshold']:.3f}, "
+                                f"{100.0 * info['fraction']:.1f}% of frame"
+                            )
+                        ax.set_title(title, color="#e6edf3", fontsize=9)
+                        ax.set_xticks([]); ax.set_yticks([])
+                        for sp in ax.spines.values():
+                            sp.set_edgecolor("#30363d")
+                        fig.tight_layout()
+                        fig.savefig(
+                            os.path.join(fig_dir, f"{stem}_roi_mask.png"),
+                            dpi=150, facecolor=fig.get_facecolor())
+                        _plt.close(fig)
+                except Exception as save_exc:
+                    _log(f"  NOTE: could not save roi_mask.png "
+                         f"({save_exc}).")
         except Exception as roi_exc:
+            import traceback as _tb, sys as _sys
+            _tb.print_exc(file=_sys.stderr)
             _log(f"  WARN: ROI mask failed — {roi_exc}.  Continuing without ROI.")
 
     # ── Drift correction (optional) ───────────────────────────────────────
@@ -780,12 +1071,54 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     except Exception as exc:
         _log(f"  WARN: PALM-Tracer export failed: {exc}\n{traceback.format_exc()}")
 
-    locs.to_csv(os.path.join(extras_dir, f"{stem}_localisations.csv"),
-                index=False)
-    tracks.to_csv(os.path.join(extras_dir, f"{stem}_trajectories.csv"),
-                  index=False)
-    diff_df.to_csv(os.path.join(extras_dir, f"{stem}_diffusion_summary.csv"),
-                   index=False)
+    # Core CSV outputs.  Each one is wrapped in its own try/except so a
+    # single disk-write failure (commonly ENOSPC mid-batch on a near-
+    # full drive) doesn't tear the whole run down at the very last
+    # moment.  Without this, a 5-minute analysis that produced 224k
+    # localisations got lost because the disk filled up between
+    # localising and writing.
+    extras_saved = []
+    def _safe_to_csv(df_obj, path, label):
+        """Atomically write df_obj to `path`; log + clean up on
+        ENOSPC, OSError, PermissionError etc.  Returns True on success.
+
+        Writes to `<path>.tmp` first, then `os.replace()` — so a
+        partially-written file from a mid-write failure (e.g. disk full)
+        never appears at the final path, and downstream loaders can't
+        be tricked into accepting a truncated CSV.
+        """
+        tmp = path + ".tmp"
+        try:
+            df_obj.to_csv(tmp, index=False)
+            os.replace(tmp, path)
+            extras_saved.append(label)
+            return True
+        except OSError as exc:
+            _log(f"  WARN: {label} save failed: {exc}")
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            return False
+        except Exception as exc:
+            _log(f"  WARN: {label} save failed: {exc}")
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            return False
+
+    _safe_to_csv(locs,
+                 os.path.join(extras_dir, f"{stem}_localisations.csv"),
+                 "locs")
+    _safe_to_csv(tracks,
+                 os.path.join(extras_dir, f"{stem}_trajectories.csv"),
+                 "trajectories")
+    _safe_to_csv(diff_df,
+                 os.path.join(extras_dir, f"{stem}_diffusion_summary.csv"),
+                 "diffusion summary")
 
     # ── Additional per-experiment artifacts ────────────────────────────────
     # The Compare tab reads these by name to plot JDD / dwell-time CDF /
@@ -793,7 +1126,6 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # panels.  Previously they were computed for the single-sample figure
     # but never persisted, so a FIREFLY run dropped silently out of the
     # corresponding Compare-tab panels.
-    extras_saved = ["locs", "trajectories", "diffusion summary"]
     try:
         # compute_msd_and_fit returns the ensemble curve as a Series
         # indexed by lag frame, NOT a DataFrame.  Compare expects a
@@ -842,6 +1174,107 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 os.path.join(extras_dir, f"{stem}_turning_angles.csv"),
                 index=False)
             extras_saved.append("turning angles")
+            # Circular-statistics report — same keys as the MATLAB
+            # CircStat toolbox a supervisor will already know how to
+            # read.  Two columns: `statistic, value`.  All angle
+            # statistics in degrees; rates/dispersions in their natural
+            # units (R̄ is dimensionless on [0,1], κ is dimensionless,
+            # etc.).  Saved alongside the raw turning-angles CSV so
+            # downstream code can join them on filename stem.
+            try:
+                cs = compute_circular_statistics(ta)
+
+                # Circular-linear correlation: per-track mean turning
+                # angle vs that track's diffusion coefficient D.
+                # Computed only when we have both tracks (with ≥ 3
+                # frames each) AND a diff_df with a D column.  Tells
+                # the user "do tracks with stronger turning bias also
+                # have different diffusion behaviour?".
+                circ_lin = None
+                try:
+                    if (tracks is not None and len(tracks) >= 3
+                            and diff_df is not None
+                            and "D" in diff_df.columns):
+                        pairs = compute_per_track_mean_angle(tracks)
+                        if pairs:
+                            d_map = dict(zip(
+                                diff_df["particle"].astype(int),
+                                diff_df["D"].astype(float)))
+                            ang_list, d_list = [], []
+                            for pid, mu_deg in pairs:
+                                d_val = d_map.get(int(pid))
+                                if d_val is None or not _np.isfinite(d_val):
+                                    continue
+                                ang_list.append(float(mu_deg))
+                                d_list.append(float(d_val))
+                            if len(ang_list) >= 3:
+                                circ_lin = _circ_lin_correlation(
+                                    ang_list, d_list)
+                except Exception as cl_exc:
+                    _log(f"  NOTE: circ-lin correlation skipped "
+                         f"({cl_exc}).")
+                    circ_lin = None
+
+                # Build the CSV: base stats followed by circ-lin rows
+                # (if available).  The CSV stays a 2-column file —
+                # supervisors can search for "circ_lin_" rows.
+                cs_items = list(cs.items())
+                if circ_lin is not None:
+                    cs_items.extend([
+                        ("circ_lin_angle_vs_D_r",
+                         circ_lin.get("r")),
+                        ("circ_lin_angle_vs_D_r_squared",
+                         circ_lin.get("r2")),
+                        ("circ_lin_angle_vs_D_chi2",
+                         circ_lin.get("test_stat")),
+                        ("circ_lin_angle_vs_D_df",
+                         circ_lin.get("df")),
+                        ("circ_lin_angle_vs_D_p",
+                         circ_lin.get("p")),
+                        ("circ_lin_angle_vs_D_n",
+                         circ_lin.get("n")),
+                    ])
+                cs_df = _pd.DataFrame(
+                    cs_items, columns=["statistic", "value"])
+                cs_df.to_csv(
+                    os.path.join(extras_dir,
+                                 f"{stem}_circular_statistics.csv"),
+                    index=False)
+                extras_saved.append("circular statistics")
+                # Echo the key numbers into the run log so they show up
+                # in the live console without the user having to crack
+                # open the CSV.
+                _log(
+                    "  Circular stats : "
+                    f"n={cs['n']:,}  μ={cs['mean_direction_deg']:.2f}°  "
+                    f"R̄={cs['mean_resultant_length']:.3f}  "
+                    f"κ={cs['concentration_kappa']:.2f}  "
+                    f"Rayleigh p={cs['rayleigh_p']:.3g}")
+                if circ_lin is not None:
+                    _log(
+                        "  Circ-lin r (angle vs D): "
+                        f"r={circ_lin['r']:.4f}  "
+                        f"χ²({circ_lin['df']})={circ_lin['test_stat']:.3g}  "
+                        f"p={circ_lin['p']:.3g}  "
+                        f"n={circ_lin['n']:,} tracks")
+                # Supervisor-facing PDF: single A4 page with the polar
+                # histogram, plain-English interpretation, and the
+                # CircStat-named statistics table (now including the
+                # circ-lin correlation block if we computed one).
+                try:
+                    os.makedirs(fig_dir, exist_ok=True)
+                    save_circular_statistics_pdf(
+                        ta, cs,
+                        pdf_path=os.path.join(
+                            fig_dir, f"{stem}_circular_statistics.pdf"),
+                        file_label=stem,
+                        fig_theme=p.get("fig_theme", "Dark"),
+                        circ_lin_result=circ_lin)
+                    extras_saved.append("circular stats PDF")
+                except Exception as pdf_exc:
+                    _log(f"  WARN: circular-stats PDF failed: {pdf_exc}")
+            except Exception as cs_exc:
+                _log(f"  WARN: circular-stats save failed: {cs_exc}")
     except Exception as exc:
         _log(f"  WARN: turning-angles save failed: {exc}")
     try:
@@ -860,6 +1293,86 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             extras_saved.append("cluster stats")
     except Exception as exc:
         _log(f"  WARN: cluster-stats save failed: {exc}")
+    # Per-loc cluster labels: needed by the Visualise-tab interactive
+    # cluster map (colours each localisation by its cluster_id, with -1
+    # = noise).  cluster_xy is the µm-coordinate array compute_clusters
+    # used internally, aligned with cluster_labels.
+    #
+    # We ALSO attach per-loc motion class (Immobile/Confined/Brownian/
+    # Directed/Unknown) so the Visualise tab can colour clusters by
+    # their dominant motion class — the user's natural follow-up
+    # question after "what is each cluster?".  Locs that didn't end
+    # up in any track (filtered out by min_track_len) are tagged
+    # "Unmatched" and rendered as noise downstream.
+    try:
+        if (cluster_labels is not None and cluster_xy is not None
+                and len(cluster_labels) == len(cluster_xy)):
+            import pandas as _pd
+            # Build the per-loc motion class array.  `tracks` rows are a
+            # subset of the post-link locs (some dropped by min_len),
+            # and within tracks each row has a `particle` ID we can
+            # join against `diff_df` for the motion column.
+            motion_per_loc = ["Unmatched"] * len(cluster_labels)
+            try:
+                if (tracks is not None and len(tracks) > 0
+                        and diff_df is not None
+                        and "motion" in diff_df.columns):
+                    # particle → motion mapping
+                    motion_map = dict(zip(
+                        diff_df["particle"].astype(int),
+                        diff_df["motion"].astype(str)))
+                    # Build a quick (frame, x_rounded, y_rounded) → motion
+                    # lookup so we can match track rows to original locs.
+                    # Rounding to 4 dp handles float32 round-trip noise
+                    # without falsely merging spatially-distinct locs.
+                    key_to_motion = {}
+                    for f_, x_, y_, p_ in zip(
+                            tracks["frame"].to_numpy(),
+                            tracks["x"].to_numpy(),
+                            tracks["y"].to_numpy(),
+                            tracks["particle"].to_numpy()):
+                        key = (int(f_), round(float(x_), 4),
+                               round(float(y_), 4))
+                        m_ = motion_map.get(int(p_), "Unknown")
+                        key_to_motion[key] = m_
+                    # locs columns at this point: x, y, frame, mass.
+                    loc_xy_um = cluster_xy  # already in µm
+                    # locs.x / locs.y are in PIXELS — convert to µm to
+                    # match the keys we built (tracks is also in pixels
+                    # though; let's match in pixel space directly).
+                    if (len(locs) == len(cluster_labels)
+                            and "frame" in locs.columns
+                            and "x" in locs.columns
+                            and "y" in locs.columns):
+                        for i, (f_, x_, y_) in enumerate(zip(
+                                locs["frame"].to_numpy(),
+                                locs["x"].to_numpy(),
+                                locs["y"].to_numpy())):
+                            key = (int(f_), round(float(x_), 4),
+                                   round(float(y_), 4))
+                            m_ = key_to_motion.get(key)
+                            if m_:
+                                motion_per_loc[i] = m_
+            except Exception as exc_join:
+                _log(f"  NOTE: cluster ↔ motion join skipped "
+                     f"({exc_join}) — saving cluster_labels without "
+                     f"motion column.")
+            _pd.DataFrame({
+                "loc_index": _np.arange(len(cluster_labels),
+                                         dtype=_np.int64),
+                "x_um":      _np.asarray(cluster_xy[:, 0],
+                                          dtype=_np.float32),
+                "y_um":      _np.asarray(cluster_xy[:, 1],
+                                          dtype=_np.float32),
+                "cluster_id": _np.asarray(cluster_labels,
+                                           dtype=_np.int32),
+                "motion":    motion_per_loc,
+            }).to_csv(
+                os.path.join(extras_dir, f"{stem}_cluster_labels.csv"),
+                index=False)
+            extras_saved.append("cluster labels")
+    except Exception as exc:
+        _log(f"  WARN: cluster-labels save failed: {exc}")
     # Per-run params — Compare relies on this for per-folder pixel size /
     # frame interval, etc.  Matches the schema written by the
     # PALM-Tracer summary loader.
@@ -877,6 +1390,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "width":            int(stack_w),
                 "height":           int(stack_h),
                 "source":           "firefly",
+                # Path to the original input file/folder — Post-process
+                # tab uses this to reload a background image.  Stored as
+                # absolute path so the source location survives folder moves.
+                "input_file":       os.path.abspath(p.get("file", "")) if p.get("file") else None,
             }, _fp, indent=2)
         extras_saved.append("params")
     except Exception as exc:
@@ -1086,6 +1603,17 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     # below the critical threshold, preventing the OS-level OOM /
     # kernel freeze that we saw previously.
     _wd_stop = _start_memory_watchdog(cancel_event, msg_queue)
+    # Disk watchdog — aborts cleanly if free space on the output
+    # volume drops below 200 MB.  Catches the ENOSPC-mid-save case
+    # where 5 minutes of analysis is lost when a single CSV write
+    # fails at the very end.
+    _disk_stop = None
+    try:
+        _out_dir = (params.get("out_dir")
+                    or os.path.dirname(os.path.abspath(params["file"])))
+        _disk_stop = _start_disk_watchdog(_out_dir, cancel_event, msg_queue)
+    except Exception:
+        pass
 
     try:
         _log("── Worker subprocess started ──")
@@ -1105,6 +1633,199 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
+        if _disk_stop is not None:
+            _disk_stop.set()
+        try: sys.stdout.flush()
+        except Exception: pass
+        try: sys.stderr.flush()
+        except Exception: pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ENTRY POINT — POST-PROCESS  (re-apply ROI to an existing run)
+# ══════════════════════════════════════════════════════════════════════════════
+def run_postproc(params: dict, msg_queue, cancel_event):
+    """Re-run a previously-completed FIREFLY analysis with a NEW ROI.
+
+    Reloads the original `_localisations.csv` (= pre-ROI locs) from
+    `source_folder/firefly_extras/`, applies the new polygon(s),
+    writes the filtered locs to a temp CSV, then dispatches the
+    existing `_run_one_analysis` in `external_csv` mode so the rest
+    of the pipeline (link → MSD → JDD → turning angles → dwell times
+    → clusters → figure → all CSVs) runs against the new loc set.
+
+    `params` is a dict with:
+        source_folder : str  — the analysis run to re-process
+        new_polygons  : list of (N, 2) [y, x] arrays in pixel coords
+        output_folder : str | None  — where to write outputs.  Defaults
+                        to `<source_folder>_postproc1` (auto-increments
+                        the suffix if that path already exists).
+    """
+    sys.stdout = QueueLogStream(msg_queue)
+    sys.stderr = QueueLogStream(msg_queue)
+    def _log(msg: str):  msg_queue.put(("log", msg))
+    def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
+
+    _wd_stop = _start_memory_watchdog(cancel_event, msg_queue)
+    _disk_stop = None
+    try:
+        _src = params.get("source_folder")
+        if _src:
+            _disk_stop = _start_disk_watchdog(_src, cancel_event, msg_queue)
+    except Exception:
+        pass
+
+    try:
+        _log("── Post-process worker started ──")
+        _prog(0, "Reading previous run…")
+        src = params.get("source_folder")
+        if not src or not os.path.isdir(src):
+            raise FileNotFoundError(
+                f"source_folder not a directory: {src!r}")
+        extras_dir = os.path.join(src, "firefly_extras")
+        if not os.path.isdir(extras_dir):
+            raise FileNotFoundError(
+                f"No firefly_extras/ inside {src!r}")
+        # Find the run's stem from any *_params.json or *_locs CSV.
+        params_files = [f for f in os.listdir(extras_dir)
+                        if f.endswith("_params.json")]
+        loc_files = [f for f in os.listdir(extras_dir)
+                     if f.endswith("_localisations.csv")]
+        if not loc_files:
+            raise FileNotFoundError(
+                f"Couldn't find *_localisations.csv in {extras_dir!r} — "
+                f"older runs may not have saved it.  Re-run the original "
+                f"analysis to regenerate it before post-processing.")
+        stem = loc_files[0][:-len("_localisations.csv")]
+        _log(f"  Source : {src}")
+        _log(f"  Stem   : {stem}")
+
+        # Read original params so we can copy detection/link/MSD etc.
+        # settings into the new run.
+        import json as _json
+        orig_params = {}
+        if params_files:
+            try:
+                with open(os.path.join(
+                        extras_dir, params_files[0])) as fh:
+                    orig_params = _json.load(fh) or {}
+            except Exception as exc:
+                _log(f"  WARN: couldn't read original params.json ({exc})"
+                     f" — falling back to FIREFLY defaults for missing keys.")
+
+        # Decide output folder: <source>_postproc{N}, auto-incrementing.
+        out_dir = params.get("output_folder")
+        if not out_dir:
+            base = src.rstrip(os.sep)
+            n = 1
+            while os.path.isdir(f"{base}_postproc{n}"):
+                n += 1
+            out_dir = f"{base}_postproc{n}"
+        os.makedirs(out_dir, exist_ok=True)
+        _log(f"  Output : {out_dir}")
+
+        # Load the pre-ROI localisations.
+        import pandas as _pd, numpy as _np
+        locs_csv = os.path.join(extras_dir, f"{stem}_localisations.csv")
+        locs = _pd.read_csv(locs_csv)
+        n_before = len(locs)
+        _log(f"  Loaded {n_before:,} localisations from "
+             f"{stem}_localisations.csv")
+
+        # Build the bool ROI mask from the supplied polygons.
+        polys = params.get("new_polygons") or []
+        if not polys:
+            raise ValueError(
+                "No ROI polygons supplied — post-processing needs at "
+                "least one polygon to filter the localisations.")
+
+        # Apply ROI directly in xy space using a Path containment test
+        # (no need to build a raster mask, which would require the
+        # original image dimensions and pixel scale).
+        from matplotlib.path import Path as _MplPath
+        xs = locs["x"].to_numpy(dtype=float)
+        ys = locs["y"].to_numpy(dtype=float)
+        pts = _np.column_stack([xs, ys])
+        keep_mask = _np.zeros(len(locs), dtype=bool)
+        for poly in polys:
+            arr = _np.asarray(poly, dtype=float)
+            if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] < 3:
+                continue
+            # Polygons come in [y, x] from the napari Shapes layer;
+            # swap to [x, y] for the matplotlib Path test.
+            path = _MplPath(_np.column_stack([arr[:, 1], arr[:, 0]]))
+            keep_mask |= path.contains_points(pts)
+        locs_new = locs.loc[keep_mask].reset_index(drop=True)
+        n_after = len(locs_new)
+        _log(f"  ROI applied: kept {n_after:,} / {n_before:,} "
+             f"({100.0 * n_after / max(1, n_before):.1f}%)")
+        if n_after == 0:
+            raise RuntimeError(
+                "New ROI excluded ALL localisations — nothing to "
+                "analyse.  Draw a larger / better-placed polygon.")
+
+        # Persist the filtered locs as a temp CSV and dispatch the
+        # existing external-CSV pipeline at the new output folder.
+        tmp_csv = os.path.join(out_dir, f"{stem}_postproc_input.csv")
+        locs_new.to_csv(tmp_csv, index=False)
+
+        # Build the derived params for _run_one_analysis.  Copy any
+        # original analysis knobs (search_range, memory, MSD lags etc.)
+        # so the post-processed result is comparable to the original
+        # apart from the ROI change.
+        new_p = dict(orig_params)
+        # If the original input image is still on disk, feed it through as
+        # the background so the figure's Max Projection + trajectory panels
+        # plot against a real image instead of a 256×256 black square.
+        _orig_input = orig_params.get("input_file") or ""
+        _bg_path = _orig_input if (_orig_input and os.path.isfile(_orig_input)) else ""
+        new_p.update({
+            "file":           tmp_csv,
+            "source":         "external_csv",
+            "csv_preset":     "auto",   # FIREFLY's own loc columns autodetect
+            "out_dir":        out_dir,
+            "channel":        0,
+            "bg_image_path":  _bg_path,
+            # ROI is already applied — tell downstream to skip it.
+            "roi_mode":       "none",
+            "roi_polygon":    None,
+        })
+        # Sensible defaults if orig_params was missing any key.
+        new_p.setdefault("pixel_size",   0.106)
+        new_p.setdefault("frame_interval", 0.03)
+        new_p.setdefault("diameter",     7)
+        new_p.setdefault("minmass",      1.0)
+        new_p.setdefault("auto_minmass", False)
+        new_p.setdefault("search_range", 5)
+        new_p.setdefault("memory",       3)
+        new_p.setdefault("min_track_len", 5)
+        new_p.setdefault("max_track_len", None)
+        new_p.setdefault("max_lagtime",  20)
+        new_p.setdefault("n_fit",        5)
+        new_p.setdefault("workers",      max(1, os.cpu_count() or 1))
+        new_p.setdefault("chunk_size",   500)
+
+        _log("── Re-running downstream stages with new ROI ──")
+        payload = _run_one_analysis(new_p, msg_queue, cancel_event,
+                                    _log, _prog)
+        # Surface the source + new output paths in the done payload so
+        # the GUI can offer to "Open the post-processed run".
+        payload["source_folder"] = src
+        payload["postproc_output"] = out_dir
+        msg_queue.put(("done", payload))
+    except _NoTracks as nt:
+        msg_queue.put(("done", nt.args[0]))
+    except BaseException as exc:
+        if type(exc).__name__ in ("_Cancelled", "_Stopped"):
+            msg_queue.put(("log", "\n── Stopped by user ──"))
+            msg_queue.put(("stopped", None))
+        else:
+            msg_queue.put(("error", traceback.format_exc()))
+    finally:
+        if _wd_stop is not None:
+            _wd_stop.set()
+        if _disk_stop is not None:
+            _disk_stop.set()
         try: sys.stdout.flush()
         except Exception: pass
         try: sys.stderr.flush()
@@ -1144,6 +1865,14 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
     # DataFrames simultaneously + re-derive MSD/JDD/dwell/turning
     # angles for each, easily blowing the budget on 16 GB machines.
     _wd_stop = _start_memory_watchdog(cancel_event, msg_queue)
+    _disk_stop = None
+    try:
+        _cmp_out = comparison_params.get("output_dir")
+        if _cmp_out:
+            _disk_stop = _start_disk_watchdog(
+                _cmp_out, cancel_event, msg_queue)
+    except Exception:
+        pass
 
     try:
         _log("── Compare worker subprocess started ──")
@@ -1214,6 +1943,8 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
+        if _disk_stop is not None:
+            _disk_stop.set()
         try: sys.stdout.flush()
         except Exception: pass
         try: sys.stderr.flush()
@@ -1256,6 +1987,18 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     mem_abort = _th.Event()
     _wd_stop = _start_memory_watchdog(
         cancel_event, msg_queue, mem_abort_event=mem_abort)
+    # Disk watchdog — same idea but for free space on the output disk.
+    # Critical for batch mode where cumulative outputs (CSVs, PDFs,
+    # PNGs per file) can fill a near-full data drive midway through.
+    _disk_stop = None
+    try:
+        _first_out = (params_list[0].get("out_dir")
+                      or os.path.dirname(
+                          os.path.abspath(params_list[0]["file"])))
+        _disk_stop = _start_disk_watchdog(
+            _first_out, cancel_event, msg_queue)
+    except Exception:
+        pass
 
     try:
         n = len(params_list)
@@ -1382,6 +2125,30 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     from sptpalm_analysis import cleanup_temp_stack_paths
                     cleanup_temp_stack_paths()
                 except Exception: pass
+                # Free torch's MPS / CUDA caches between files.  PyTorch
+                # holds onto allocated GPU memory in its cache after the
+                # last tensor is freed; on Apple Silicon that cache can
+                # easily reach several GB and is counted against the
+                # unified RAM budget.  Clearing here gives the next file
+                # a clean slate and prevents the slow growth that causes
+                # OOM ~3-5 files into a batch.
+                try:
+                    import torch as _torch
+                    if (hasattr(_torch, "mps")
+                            and _torch.backends.mps.is_available()
+                            and hasattr(_torch.mps, "empty_cache")):
+                        _torch.mps.empty_cache()
+                    if _torch.cuda.is_available():
+                        _torch.cuda.synchronize()
+                        _torch.cuda.empty_cache()
+                except Exception: pass
+                # Log post-file free RAM so the user can see whether
+                # things are creeping toward the watchdog floor.
+                try:
+                    import psutil as _ps
+                    free_gb_post = _ps.virtual_memory().available / 1e9
+                    _log(f"  Post-file free RAM: {free_gb_post:.2f} GB")
+                except Exception: pass
 
         # All done
         n_ok   = sum(1 for r in results if r.get("ok"))
@@ -1401,6 +2168,8 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
+        if _disk_stop is not None:
+            _disk_stop.set()
         try: sys.stdout.flush()
         except Exception: pass
         try: sys.stderr.flush()
