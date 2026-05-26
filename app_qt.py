@@ -3136,8 +3136,11 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
                  parent=None):
         super().__init__(parent)
         if not label:
-            label = ["Pre", "Post", "Group C", "Group D",
-                     "Group E", "Group F"][min(index, 5)]
+            # Default labels are just "Group N" — the previous
+            # "Pre"/"Post" defaults assumed a paired-condition
+            # workflow that's only one of several use cases.
+            # Users rename to whatever's meaningful for their study.
+            label = f"Group {index + 1}"
         if not color:
             color = self._DEFAULT_COLORS[index % len(self._DEFAULT_COLORS)]
         self._color = color
@@ -4431,7 +4434,8 @@ class MainWindow(QtWidgets.QMainWindow):
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.c_roi_mode = _QuietComboBox()
         self.c_roi_mode.addItems(
-            ["None", "Auto threshold", "Manual threshold", "Manual polygon"])
+            ["None", "Auto threshold", "Manual threshold",
+             "Manual polygon", "From sister TIFF"])
         self.c_roi_mode.setCurrentText("Auto threshold")
         self.c_roi_mode.setToolTip(
             "Restrict analysis to a region of interest in the field of view.\n"
@@ -4440,7 +4444,13 @@ class MainWindow(QtWidgets.QMainWindow):
             "• Manual threshold — use the value below.\n"
             "• Manual polygon — draw a polygon per file on the Import tab\n"
             "  (Set ROI… buttons).  Files without a saved polygon fall back\n"
-            "  to the global Auto-threshold behaviour.")
+            "  to the global Auto-threshold behaviour.\n"
+            "• From sister TIFF — use a microscope-exported ROI image\n"
+            "  saved next to the data as `<base><suffix>.tif`.  Suffix\n"
+            "  defaults to `_green` (palmTRACER / Zeiss convention).\n"
+            "  Auto-thresholded with Li if it's a fluorescence channel,\n"
+            "  or non-zero pixels if it's a binary segmentation mask.\n"
+            "  Multi-frame ROIs are max-projected.")
         gl.addRow("Mode", self.c_roi_mode)
         self.c_roi_auto_method = _QuietComboBox()
         self.c_roi_auto_method.addItems(["Li", "Otsu", "Triangle", "Mean"])
@@ -6441,7 +6451,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         sg.addSpacing(4)
         sg.addWidget(QtWidgets.QLabel("Output name"))
-        self.e_cmp_stem = QtWidgets.QLineEdit("comparison")
+        self.e_cmp_stem = QtWidgets.QLineEdit("Comparison")
         self.e_cmp_stem.setToolTip(
             "Prefix for the saved files (figure.png, summary.csv, "
             "stats.csv, report.pdf).")
@@ -8785,6 +8795,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Auto threshold":    "auto",
             "Manual threshold":  "manual",
             "Manual polygon":    "polygon",
+            "From sister TIFF":  "sister",
         }
         max_tl = int(self.s_max_track_len.value())
         return {
@@ -8822,6 +8833,12 @@ class MainWindow(QtWidgets.QMainWindow):
             "roi_threshold":     float(self.s_roi_threshold.value()),
             "roi_mask_mode":     self.c_roi_mask_mode.currentText(),
             "roi_bg_sigma":      float(self.s_roi_bg_sigma.value()),
+            # Sister-TIFF ROI — passed through whether or not the
+            # explicit "From sister TIFF" mode is picked, so the worker
+            # can auto-detect a `<base>_green.tif` next to the data and
+            # prefer it over the intensity-based ROI when present.
+            "roi_sister_suffix":      "_green",
+            "roi_sister_autodetect":  True,
             # Per-file polygon ROI lookup.  If this file has a saved
             # polygon, it's sent regardless of the ROI-mode setting and
             # the worker treats it as if mode were "polygon".  Files
