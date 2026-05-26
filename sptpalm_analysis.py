@@ -3026,10 +3026,31 @@ class TorchBackend(LocaliserBackend):
         n_frames = len(stack)
         n_chunks = max(1, int(np.ceil(n_frames / chunk_size)))
 
+        # CPU torch is single-threaded by default in this codebase because
+        # the module-level `OMP_NUM_THREADS=1` cap (added in ba20dd0 to
+        # prevent a Windows trackpy MP deadlock) propagates into ATen's
+        # OpenMP pool.  Explicitly re-expand torch's intra-op threads
+        # back to N_CPUS when running on CPU — without this, torch-cpu
+        # crawls at ~11 fr/s on a 6-core box (380 s for 4 k frames)
+        # instead of utilising all cores like the trackpy backend does
+        # via threadpoolctl.  GPU devices ignore these settings.
+        if dev_str == "cpu":
+            try:    torch.set_num_threads(int(N_CPUS))
+            except Exception: pass
+            try:    torch.set_num_interop_threads(int(N_CPUS))
+            except (RuntimeError, Exception):
+                # set_num_interop_threads errors if any parallel work has
+                # already been dispatched on this interpreter — harmless,
+                # the first-call thread count is what counts.
+                pass
+
         print(f"  Device    : {dev_str}")
         print(f"  Diameter  : {diameter}px  |  minmass: {minmass:.4f}  "
               f"|  percentile: {percentile}")
         print(f"  Chunks    : {n_chunks} × ~{chunk_size} frames")
+        if dev_str == "cpu":
+            try:    print(f"  Torch threads : {torch.get_num_threads()}")
+            except Exception: pass
 
         t0 = time.perf_counter()
         all_locs: list[dict] = []
@@ -3046,6 +3067,22 @@ class TorchBackend(LocaliserBackend):
         # is computed too, kept for reference but no longer used since we
         # switched to weighted batched LSQ for better noise behaviour.)
         _M, _M_pinv = self._build_gaussian_design_matrix(dy_grid, dx_grid)
+
+        # Enter the BLAS thread-pool expansion BEFORE the chunk loop and
+        # exit it after — same trick the trackpy path uses to claw back
+        # cores from the `OMP_NUM_THREADS=1` module-level cap.  We use
+        # the controller's explicit __enter__ / __exit__ so we don't
+        # have to re-indent the (huge) loop body inside a `with`.
+        # `torch.set_num_threads` above already biased ATen, but
+        # OpenBLAS / MKL still honour OMP — the matmul / lstsq inside
+        # `_gaussian_lstsq_refine` is the dominant cost and reads from
+        # the BLAS pool.
+        _blas_ctx = (
+            _threadpool_limits(limits=int(N_CPUS)) if dev_str == "cpu" else None
+        )
+        if _blas_ctx is not None:
+            try:    _blas_ctx.__enter__()
+            except Exception: _blas_ctx = None
 
         for chunk_idx, chunk_start in enumerate(range(0, n_frames, chunk_size)):
             chunk_end = min(chunk_start + chunk_size, n_frames)
@@ -3192,6 +3229,13 @@ class TorchBackend(LocaliserBackend):
                     torch.cuda.empty_cache()
                 except Exception:
                     pass
+
+        # Release the BLAS thread-pool expansion (matched __enter__ above).
+        # Outside this scope the global OMP=1 cap reasserts itself so the
+        # downstream linker / preview pump don't get oversubscribed.
+        if _blas_ctx is not None:
+            try:    _blas_ctx.__exit__(None, None, None)
+            except Exception: pass
 
         # Drop the cached on-device tensors (design matrix, index grids) and
         # force a full GPU drain before returning.  Otherwise the next

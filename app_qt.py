@@ -4046,11 +4046,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_sidebar(self, layout: QtWidgets.QVBoxLayout):
         """Build the full B1.1 parameter panel — every knob from the Tk
-        sidebar grouped into collapsible QGroupBox sections."""
-        title = QtWidgets.QLabel("Analysis Parameters")
-        f = title.font(); f.setBold(True); f.setPointSize(11); title.setFont(f)
-        layout.addWidget(title)
+        sidebar grouped into collapsible QGroupBox sections.
 
+        The "Analysis Parameters" header lives on the OUTER sidebar
+        frame (`self._sidebar_title`, set per-tab in _build_sidebar
+        scaffolding) — don't re-add it here or it duplicates.
+        """
         # ── Presets ───────────────────────────────────────────────────────
         # Quick switcher for labelled parameter bundles.  Selecting a
         # preset applies its widget snapshot to the rest of the sidebar.
@@ -10082,6 +10083,21 @@ class MainWindow(QtWidgets.QMainWindow):
                             # Unknown total — show MB downloaded
                             pct = 0
                         mb = done / (1024 * 1024)
+                        # BITS sits in Connecting/Transferring with
+                        # done=0,total=0 emitting heartbeats every 500
+                        # ms.  Emitting "Downloading… 0 MB" with that
+                        # is misleading — it freezes the heartbeat
+                        # (which the GUI switches off as soon as it
+                        # sees "MB" in a label) and the user assumes
+                        # the app is hung.  Until BITS has actually
+                        # moved any bytes, keep the label as a status
+                        # message that does NOT contain "MB" so the
+                        # elapsed-time heartbeat keeps ticking.
+                        if done <= 0:
+                            label = ("Waiting for transfer to start "
+                                     "(handshake / proxy)…")
+                            self.progress.emit(0, label)
+                            return
                         if total > 0:
                             tot_mb = total / (1024 * 1024)
                             label = (f"Downloading torch-CUDA wheel… "
@@ -10156,10 +10172,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def _on_progress(pct, label):
             try:
-                # Anything that mentions MB or files is real download/
-                # extract progress — switch off the elapsed-time
-                # heartbeat and let the worker drive the label.
-                if ("MB" in label) or ("files" in label):
+                # Switch off the elapsed-time heartbeat only when REAL
+                # bytes / files are showing up.  Previous logic keyed
+                # off the literal substring "MB" — but BITS likes to
+                # emit "Downloading… 0 MB" with no actual transfer
+                # happening, which killed the heartbeat and gave the
+                # appearance of a freeze.  Match a positive number
+                # before "MB" / "files" instead.
+                import re as _re
+                _has_real = bool(
+                    _re.search(r"\b([1-9]\d*)(?:\.\d+)?\s*(?:MB|files)\b",
+                               label)
+                    or _re.search(r"(?:\bfiles\b).*?\b([1-9]\d*)\b", label)
+                    or pct > 0
+                )
+                if _has_real:
                     self._cuda_in_real_progress = True
                 else:
                     # Still in connecting / fallback-tag-trying phase
