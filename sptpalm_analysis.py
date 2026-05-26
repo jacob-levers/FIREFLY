@@ -2704,6 +2704,56 @@ class LocaliserBackend:
         raise NotImplementedError
 
 
+def _emit_trackpy_chunk_preview(preview_cb, chunk_or_stack,
+                                  frame_range, chunk_locs_df, n_frames):
+    """Emit one preview_cb call per frame in a completed Trackpy chunk.
+
+    `chunk_or_stack` is either the chunk's own (T, Y, X) array
+    (non-memmap MP / sequential path) OR the parent's full memmap-
+    backed stack (memmap-MP path).  Either way we slice
+    `[frame_range[0]:frame_range[1]]` to get the chunk's frames.
+
+    `chunk_locs_df` is a DataFrame with columns x, y, frame; we group
+    spots by their global frame index and forward each (frame, spots)
+    pair to preview_cb.  The GUI's pump throttles to ~60 Hz and drops
+    older frames if the queue fills, so blasting every frame is fine.
+
+    Failures here must never break the analysis — wrap everything in
+    a top-level try/except that swallows.
+    """
+    if preview_cb is None:
+        return
+    try:
+        start, end = int(frame_range[0]), int(frame_range[1])
+        # chunk_or_stack[start:end] is the (T, Y, X) view we hand to
+        # preview_cb one frame at a time.  np.asarray makes the memmap
+        # path concrete (the GUI's preview thread expects a real array,
+        # not a memmap view it has to keep alive after we return).
+        sub = np.asarray(chunk_or_stack[start:end], dtype=np.float32)
+    except Exception:
+        return
+    if sub.size == 0:
+        return
+    # Bucket spots by their global frame index so each preview_cb call
+    # hands the GUI just the detections for that frame.
+    spots_by_frame: dict = {}
+    try:
+        if chunk_locs_df is not None and len(chunk_locs_df) > 0:
+            for _f, _sub in chunk_locs_df.groupby("frame"):
+                spots_by_frame[int(_f)] = (
+                    _sub["x"].values, _sub["y"].values)
+    except Exception:
+        spots_by_frame = {}
+    for local_i in range(len(sub)):
+        global_i = start + local_i
+        sxy = spots_by_frame.get(global_i, ([], []))
+        try:
+            preview_cb(global_i, sub[local_i],
+                       sxy[0], sxy[1], n_frames)
+        except Exception:
+            pass
+
+
 class TrackpyBackend(LocaliserBackend):
     """CPU localiser using trackpy's Crocker-Grier centroid detection.
 
@@ -2756,6 +2806,29 @@ class TrackpyBackend(LocaliserBackend):
         chunk_results = [None] * n_chunks
         use_mp_ok = False
 
+        # Skip the multiprocessing.Pool path entirely for small jobs.
+        # MP spawn on Windows costs ~10-30 s up front (PyInstaller
+        # _MEIPASS re-import + pickle round-trip for the worker args),
+        # which dominates the wall-clock budget when there are only a
+        # handful of chunks.  Below the threshold, the BLAS-threaded
+        # single-process path is strictly faster overall AND starts
+        # producing per-chunk progress + previews immediately.
+        # Threshold of 6 is conservative — on a 6-core box that's
+        # exactly the break-even.  Override with FIREFLY_FORCE_MP=1
+        # if you're benchmarking and want MP regardless.
+        small_job = (n_chunks <= 6 and
+                     os.environ.get("FIREFLY_FORCE_MP") != "1")
+        if small_job:
+            print(f"  Small job ({n_chunks} chunks) — using "
+                  f"BLAS-threaded single-process path "
+                  f"(skips ~10-30 s MP spawn cost; "
+                  f"set FIREFLY_FORCE_MP=1 to override)")
+            # use_mp_ok stays False → falls through to the sequential
+            # BLAS-pool branch below.  Skip the whole `try` block.
+            try_mp = False
+        else:
+            try_mp = True
+
         # Fast-path: if `stack` is a disk-backed memmap, ship just the
         # file path + slice indices to workers instead of pickling the
         # chunk arrays.  At 16+ GB stacks the pickle round-trip costs
@@ -2775,6 +2848,10 @@ class TrackpyBackend(LocaliserBackend):
                 stack_is_memmap = False
 
         try:
+            if not try_mp:
+                # Force-skip the MP path entirely — caller decided the
+                # spawn cost isn't worth it for this job size.
+                raise RuntimeError("small-job: MP path skipped by policy")
             ctx = multiprocessing.get_context("spawn")
             if stack_is_memmap:
                 print(f"  Parallelism : multiprocessing.Pool × {n_workers} "
@@ -2782,6 +2859,21 @@ class TrackpyBackend(LocaliserBackend):
             else:
                 print(f"  Parallelism : multiprocessing.Pool × {n_workers} (spawn — true multi-core)")
             print(f"  Spawning workers (one-time ~10-30s; chunks then process truly in parallel)...")
+            # Spawn-time heartbeat — Windows + PyInstaller can take 20+ s
+            # to bring up the pool, during which nothing else prints.
+            # Run a background thread that emits an elapsed-time line
+            # every 3 s so the user knows we're not deadlocked.
+            import threading as _threading
+            _spawn_done = _threading.Event()
+            _spawn_t0   = time.monotonic()
+            def _spawn_heartbeat():
+                while not _spawn_done.wait(3.0):
+                    elapsed = time.monotonic() - _spawn_t0
+                    print(f"  … still spawning workers ({elapsed:.0f}s)",
+                          flush=True)
+            _hb = _threading.Thread(target=_spawn_heartbeat, daemon=True,
+                                     name="trackpy-spawn-heartbeat")
+            _hb.start()
 
             if stack_is_memmap:
                 # Build a list of (start, end) slice indices that
@@ -2796,29 +2888,82 @@ class TrackpyBackend(LocaliserBackend):
                             diameter, minmass, percentile, start)
                            for i, (start, end) in enumerate(slice_ranges)]
                 with ctx.Pool(processes=n_workers) as pool:
+                    _spawn_announced = False
                     for idx, result in _tqdm(
                             pool.imap_unordered(_localise_chunk_mmap_mp, mp_args),
                             total=n_chunks, desc="  Localising", unit="chunk", ncols=70):
+                        if not _spawn_announced:
+                            _spawn_done.set()  # stop the heartbeat thread
+                            print(f"  ✓ workers ready after "
+                                  f"{time.monotonic() - _spawn_t0:.1f}s")
+                            _spawn_announced = True
                         chunk_results[idx] = result
+                        # Per-chunk live-preview emission.  The MP+memmap
+                        # path doesn't hand the parent a frame buffer
+                        # (workers re-mmap into their own address spaces),
+                        # but the parent's `stack` is the SAME memmap, so
+                        # we can read one representative frame straight
+                        # out of it without re-decoding the TIFF.  Without
+                        # this, the FAST RAM strategy on Trackpy left the
+                        # detection-view blank for the whole localisation
+                        # stretch (the STREAM path's _emit_chunk_previews
+                        # was covering for it on Mac, hence the platform-
+                        # specific user-visible regression).
+                        _emit_trackpy_chunk_preview(
+                            preview_cb, stack, slice_ranges[idx], result,
+                            n_frames)
             else:
                 mp_args = [(i, c, diameter, minmass, percentile, o)
                            for i, (c, o) in enumerate(chunk_pairs)]
                 with ctx.Pool(processes=n_workers) as pool:
+                    _spawn_announced = False
                     for idx, result in _tqdm(
                             pool.imap_unordered(_localise_chunk_mp, mp_args),
                             total=n_chunks, desc="  Localising", unit="chunk", ncols=70):
+                        if not _spawn_announced:
+                            _spawn_done.set()  # stop the heartbeat thread
+                            print(f"  ✓ workers ready after "
+                                  f"{time.monotonic() - _spawn_t0:.1f}s")
+                            _spawn_announced = True
                         chunk_results[idx] = result
+                        # Non-memmap MP path — the parent kept the chunk
+                        # array in chunk_pairs[idx][0] so we can pass it
+                        # straight through.  Same rationale as the memmap
+                        # branch above.
+                        _chunk_arr, _chunk_offset = chunk_pairs[idx]
+                        _emit_trackpy_chunk_preview(
+                            preview_cb, _chunk_arr,
+                            (_chunk_offset, _chunk_offset + len(_chunk_arr)),
+                            result, n_frames)
             use_mp_ok = True
         except Exception as exc:
-            print(f"  multiprocessing failed ({type(exc).__name__}: {exc})")
-            print(f"  Falling back to BLAS-pool parallelism (slower, single-process)")
+            # Always release the heartbeat thread, even on error.
+            try:    _spawn_done.set()
+            except Exception: pass
+            msg = str(exc)
+            if "small-job" in msg:
+                # Expected — we deliberately raised to skip MP.
+                pass
+            else:
+                print(f"  multiprocessing failed ({type(exc).__name__}: {exc})")
+                print(f"  Falling back to BLAS-pool parallelism (slower, single-process)")
 
         if not use_mp_ok:
             with _threadpool_limits(limits=N_CPUS):
-                chunk_results = [_localise_chunk(chunk, diameter, minmass, percentile, offset)
-                                 for chunk, offset in _tqdm(chunk_pairs, total=n_chunks,
-                                                            desc="  Localising", unit="chunk",
-                                                            ncols=70)]
+                chunk_results = []
+                for idx, (chunk, offset) in enumerate(_tqdm(
+                        chunk_pairs, total=n_chunks,
+                        desc="  Localising", unit="chunk", ncols=70)):
+                    result = _localise_chunk(chunk, diameter, minmass,
+                                              percentile, offset)
+                    chunk_results.append(result)
+                    # Sequential fallback also needs to emit previews —
+                    # it's the slowest path of the three, so the user
+                    # most needs to see it making progress.
+                    _emit_trackpy_chunk_preview(
+                        preview_cb, chunk,
+                        (offset, offset + len(chunk)),
+                        result, n_frames)
 
         valid = [df for df in chunk_results if df is not None and len(df) > 0]
         result = pd.concat(valid, ignore_index=True) if valid else pd.DataFrame()
