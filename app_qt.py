@@ -5746,21 +5746,43 @@ class MainWindow(QtWidgets.QMainWindow):
     # ── Batch helpers (Import-tab batch sub-panel) ───────────────────────
     @staticmethod
     def _looks_like_input_file(name: str) -> bool:
+        # macOS writes AppleDouble metadata sidecars next to every file
+        # when copied to a non-HFS volume; they start with `._` and have
+        # the same extension as the original.  These aren't real TIFFs
+        # and crash the loader if we try to open them.  Drop them here
+        # before the batch tree even sees them.
+        if name.startswith("._"):
+            return False
         n = name.lower()
         return n.endswith(".czi") or n.endswith(".tif") or n.endswith(".tiff")
 
     @staticmethod
     def _series_key(filename: str) -> str:
-        """Return the series key — filename stem with any trailing '(N)'
-        stripped.  Zeiss splits long recordings across files named like
-        `experiment.tif`, `experiment(1).tif`, `experiment(2).tif`, …
-        all of which belong to the same continuous time series and are
-        joined by the loader.  This function maps each of those back to
-        the common stem ('experiment'), so the batch UI can group them.
+        """Return the series key — the common stem across all sibling
+        files of a single acquisition.  Strips:
+
+          * Trailing `(N)`              — ImageJ split-TIFFs
+          * Trailing `-fileNNN`         — palmTRACER split-TIFFs
+
+        so e.g. `expt.tif`, `expt(1).tif`, `expt-file002.tif` all map to
+        the same key `expt`, letting the batch UI collapse them into one
+        series row.
+
+        Underscore-suffix sister files like `expt_green.tif` (palmTRACER's
+        ROI image) are NOT stripped here — they keep their own key and
+        are filtered out at a later pass in `_batch_rescan` so we don't
+        accidentally hide files that just happen to end in `_green` /
+        `_red` etc. with no real series companion.
         """
         import re as _re
         stem = os.path.splitext(filename)[0]
-        return _re.sub(r"\(\d+\)\s*$", "", stem).rstrip()
+        # palmTRACER first — its `-fileNNN` always sits at the end, no
+        # extra whitespace between it and the dot.
+        stem = _re.sub(r"-file\d+$", "", stem, flags=_re.IGNORECASE)
+        # ImageJ split-TIFF `(N)` — may have trailing whitespace before
+        # the dot, hence the `\s*` allowance.
+        stem = _re.sub(r"\(\d+\)\s*$", "", stem).rstrip()
+        return stem
 
     def _on_batch_pick_folder(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -5824,9 +5846,42 @@ class MainWindow(QtWidgets.QMainWindow):
             key = self._series_key(name)
             self._batch_series_map.setdefault(key, []).append((name, full))
 
+        # Phase 1b — drop ROI/channel sister files (palmTRACER's
+        # `<base>_green.tif`, `<base>_red.tif`, etc.).  These have
+        # their own series key of the form `<base>_<word>` — drop
+        # them only when an unsuffixed `<base>` series also exists,
+        # so a legitimate standalone `MyExperiment_green.tif` with
+        # no companion stays put.
+        import re as _re
+        existing_keys = set(self._batch_series_map.keys())
+        roi_keys_to_drop = []
+        for key in list(self._batch_series_map.keys()):
+            m = _re.match(r"^(.+)_[^_]+$", key)
+            if m and m.group(1) in existing_keys:
+                roi_keys_to_drop.append(key)
+        for k in roi_keys_to_drop:
+            self._batch_series_map.pop(k, None)
+
+        # Natural-sort key for sibling files within a series.  Must
+        # match `sptpalm_analysis._tif_series_nat_key` exactly — the
+        # tree's display order is the same order the loader will
+        # concatenate frames in, so lab members can verify the run
+        # at a glance.  Bare `<root>.tif` first (key=-1), then
+        # `-fileNNN` / `(N)` in numeric order.
+        def _nat_key(name_full_pair):
+            name = name_full_pair[0]
+            ext  = os.path.splitext(name)[1]
+            m_pt = _re.search(r"-file(\d+)" + _re.escape(ext) + r"$",
+                              name, _re.IGNORECASE)
+            if m_pt: return int(m_pt.group(1))
+            m_ij = _re.search(r"\((\d+)\)" + _re.escape(ext) + r"$",
+                              name, _re.IGNORECASE)
+            if m_ij: return int(m_ij.group(1))
+            return -1
+
         # Phase 2 — build the tree.
         for key in sorted(self._batch_series_map.keys()):
-            sisters = sorted(self._batch_series_map[key])
+            sisters = sorted(self._batch_series_map[key], key=_nat_key)
             primary_name, primary_full = sisters[0]
             for nm, pth in sisters:
                 if os.path.splitext(nm)[0] == key:

@@ -711,36 +711,93 @@ def _parse_ome_metadata(tif):
 
 
 def _find_tif_series(path):
-    """Find split TIFF files like name.tif, name(1).tif, name(2).tif"""
+    """Find split TIFF files belonging to the same acquisition.
+
+    Two naming conventions are handled:
+
+    1. The legacy / generic split-TIFF style produced by ImageJ and
+       similar tools:
+           name.tif, name(1).tif, name(2).tif, …
+
+    2. palmTRACER's multi-file export:
+           <base>.tif, <base>-file002.tif, <base>-file003.tif, …
+       palmTRACER also drops sibling files like `<base>_green.tif`
+       (the ROI / channel image) into the same folder.  Those are
+       NOT part of the time series — any sibling whose name matches
+       `<base>_<word>.tif` is dropped from the series.  The leading
+       file may itself be `<base>-file001.tif` if palmTRACER chose to
+       always-number; both `<base>.tif` and `<base>-file001.tif` are
+       treated as the leading frame batch.
+
+    The user can pick ANY file from a palmTRACER series and we still
+    detect the whole thing — `-file003.tif` resolves to the same
+    `<base>` root as `-file001.tif` or the bare `<base>.tif`.
+
+    Returns the sorted file list (frame-order), or `[path]` if no
+    siblings were detected.  `_green.tif` and other underscore-suffix
+    sister files are always excluded.
+    """
     import glob, re
     directory = os.path.dirname(path) or "."
     basename  = os.path.splitext(os.path.basename(path))[0]
     ext       = os.path.splitext(path)[1].lower()  # .tif or .tiff
 
-    # Strip any trailing "(N)" so we get the root name
-    root = re.sub(r"\(\d+\)$", "", basename).rstrip()
+    # ── Step 1: figure out the series ROOT ────────────────────────────
+    # palmTRACER:  <root>-fileNNN  →  strip the suffix.
+    # ImageJ:      <root>(N)       →  strip the suffix.
+    # If neither suffix is present, basename IS the root.
+    pt_match = re.match(r"^(?P<root>.+?)-file\d+$", basename, re.IGNORECASE)
+    if pt_match:
+        root = pt_match.group("root")
+    else:
+        root = re.sub(r"\(\d+\)$", "", basename).rstrip()
 
-    # Collect all matching files
+    # ── Step 2: collect every candidate sibling starting with the root ──
     pattern  = os.path.join(directory, glob.escape(root) + "*" + ext)
     candidates = sorted(glob.glob(pattern))
 
-    # Keep only: root.tif and root(N).tif
+    # ── Step 3: filter to ONLY the time-series members ─────────────────
+    # Accept either form of suffix on `root`:
+    #   <root><ext>                  — the bare leading file
+    #   <root>(\d+)<ext>             — ImageJ split-TIFF "(N)"
+    #   <root>-fileNNN<ext>          — palmTRACER split-TIFF
+    # Reject `<root>_<word>.tif` outright — palmTRACER's `_green.tif`
+    # ROI sibling and any other `_suffix` sister files (channel maps,
+    # masks, projections) are NOT part of the acquisition.
     series_re = re.compile(
-        r"^" + re.escape(root) + r"(\(\d+\))?" + re.escape(ext) + r"$", re.IGNORECASE)
-    series = [f for f in candidates
-              if series_re.match(os.path.basename(f))]
+        r"^" + re.escape(root)
+        + r"(?:\(\d+\)|-file\d+)?"
+        + re.escape(ext) + r"$",
+        re.IGNORECASE)
+    reject_re = re.compile(
+        r"^" + re.escape(root) + r"_[^.]+" + re.escape(ext) + r"$",
+        re.IGNORECASE)
+    series = []
+    rejected_underscore = []
+    for f in candidates:
+        name = os.path.basename(f)
+        if reject_re.match(name):
+            rejected_underscore.append(name)
+            continue
+        if series_re.match(name):
+            series.append(f)
 
-    # Natural sort so (1) < (2) < (10)
-    def _nat_key(s):
-        m = re.search(r"\((\d+)\)" + re.escape(ext) + r"$", s, re.IGNORECASE)
-        return int(m.group(1)) if m else -1
-
-    series.sort(key=_nat_key)
+    # ── Step 4: natural sort so file-numbered chunks line up in time ──
+    # Single shared key with `load_tif`'s explicit-files path so the
+    # two code paths can't disagree on order.  Bare <root>.tif sorts
+    # first (key=-1), then -fileNNN / (N) by numeric value.
+    series.sort(key=_tif_series_nat_key)
 
     if len(series) > 1:
         print(f"  Multi-file TIF series detected ({len(series)} files):")
         for f in series:
             print(f"    {os.path.basename(f)}")
+        if rejected_underscore:
+            print(f"  (excluded {len(rejected_underscore)} sibling "
+                  f"file(s) matching `{root}_*{ext}` — typically "
+                  f"palmTRACER's ROI/channel images):")
+            for n in rejected_underscore:
+                print(f"    skip: {n}")
     return series if series else [path]
 
 def _load_single_tif(path, stop_event=None):
@@ -929,6 +986,33 @@ def _probe_tif_shape_and_count(path: str):
     return n, (int(H), int(W))
 
 
+def _tif_series_nat_key(filepath):
+    """Sort key for sibling TIFFs of a single acquisition.
+
+    Returns -1 for the bare `<root>.tif` (always frame 0) and the
+    integer suffix for `<root>(N).tif` / `<root>-fileNNN.tif` chunks,
+    so the natural sort yields chronological frame order regardless of
+    whether the input came in alphabetical order from os.listdir().
+
+    Critical because basename-alphabetical sorting puts `-fileNNN`
+    (0x2D) before `.` (0x2E), which would silently mis-order
+    palmTRACER series — bare `Post.tif` ends up AFTER `Post-fileNNN`
+    chunks, corrupting every frame index downstream.
+    """
+    import re as _re
+    name = os.path.basename(filepath)
+    ext  = os.path.splitext(name)[1]
+    m_pt = _re.search(r"-file(\d+)" + _re.escape(ext) + r"$",
+                       name, _re.IGNORECASE)
+    if m_pt:
+        return int(m_pt.group(1))
+    m_ij = _re.search(r"\((\d+)\)" + _re.escape(ext) + r"$",
+                       name, _re.IGNORECASE)
+    if m_ij:
+        return int(m_ij.group(1))
+    return -1   # bare <root>.tif sorts first
+
+
 def load_tif(path, stop_event=None, files=None):
     """Load `path` and (when present) its sibling files into one stack.
 
@@ -938,18 +1022,25 @@ def load_tif(path, stop_event=None, files=None):
     indices line up with the user's expectation.
     """
     if files:
-        # De-dup and sort by the same key the auto-discovery uses so the
-        # frame order doesn't depend on how the GUI sent the list.
+        # De-dup and sort by the same NATURAL key the auto-discovery
+        # uses — bare <root>.tif first (key=-1), then -fileNNN / (N)
+        # in numeric order.  Basename-alphabetical was wrong: `-`
+        # (0x2D) sorts before `.` (0x2E), so `Post.tif` ended up
+        # AFTER `Post-file002.tif` and every later frame index was
+        # off by ~chunk_size.
         seen = set()
         series = []
-        for f in sorted(files, key=lambda p: os.path.basename(p)):
+        for f in sorted(files, key=_tif_series_nat_key):
             if f in seen or not os.path.isfile(f):
                 continue
             seen.add(f); series.append(f)
         if not series:
             series = [path]
-        print(f"  TIF series override: {len(series)} files",
+        print(f"  TIF series override: {len(series)} files "
+              f"(natural-sorted, bare <root>.tif first)",
               flush=True)
+        for _f in series:
+            print(f"    {os.path.basename(_f)}", flush=True)
     else:
         series = _find_tif_series(path)
 
@@ -3201,6 +3292,46 @@ class TorchBackend(LocaliserBackend):
                 "frame": frame_abs.detach().cpu().numpy(),
                 "mass":  mass.detach().cpu().numpy(),
             })
+
+            # ── Live preview emission ─────────────────────────────────
+            # Historically the TorchBackend accepted `preview_cb` but
+            # never called it — so on the Windows torch-cpu path the
+            # detection view sat blank for the entire localisation
+            # stage.  Now we emit one preview per frame in the chunk,
+            # with the spots that landed in that frame overlaid; the
+            # GUI's pump thread throttles to 60 Hz and drops older
+            # frames if the queue fills, so over-emission is harmless.
+            #
+            # Done on CPU AFTER the GPU tensors have already been
+            # materialised into `all_locs` — `t_np` and the coords
+            # arrays are cheap reads from the existing CPU buffers.
+            if preview_cb is not None and len(chunk_np) > 0:
+                try:
+                    import numpy as _np
+                    t_np      = t_ix.detach().cpu().numpy().astype(_np.int64)
+                    x_sub_np  = x_sub.detach().cpu().numpy()
+                    y_sub_np  = y_sub.detach().cpu().numpy()
+                    # Group spots by their frame index within the chunk
+                    # so each preview_cb call hands the GUI just the
+                    # detections for that frame.  Using a dict-of-lists
+                    # is O(N) and avoids re-scanning per frame.
+                    spots_by_frame: dict = {}
+                    for _i, _f in enumerate(t_np):
+                        bucket = spots_by_frame.setdefault(int(_f), [[], []])
+                        bucket[0].append(float(x_sub_np[_i]))
+                        bucket[1].append(float(y_sub_np[_i]))
+                    chunk_len = int(chunk_np.shape[0])
+                    for local_i in range(chunk_len):
+                        global_i = chunk_start + local_i
+                        sxy = spots_by_frame.get(local_i, ([], []))
+                        try:
+                            preview_cb(global_i, chunk_np[local_i],
+                                       sxy[0], sxy[1], n_frames)
+                        except Exception:
+                            pass
+                except Exception:
+                    # Preview emission must never break the analysis.
+                    pass
 
             # Free chunk allocations promptly.  PyTorch's reference-counting
             # releases the Python handles, but on MPS the underlying device
