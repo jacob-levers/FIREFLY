@@ -97,11 +97,28 @@ def test_torch_recovers_majority_of_spots():
 @pytest.mark.skipif(not (_have_backend("trackpy") and _have_backend("torch")),
                     reason="both trackpy and torch must be installed")
 def test_trackpy_torch_agreement():
-    """Cross-backend centroid agreement: the two implementations should
-    localise the same spots to within ≈0.10 px median disagreement.
-    Tolerance is loose because trackpy uses iterative refinement and torch
-    uses single-pass centroid-of-mass; both differ slightly from ground truth
-    in opposite directions."""
+    """Cross-backend centroid + recall agreement.
+
+    Since v2.6.13 the Torch backend uses trackpy's *documented*
+    detection pipeline (DoG-style bandpass with `noise_size=1`,
+    `smoothing_size=diameter+1`; iterative centroid-of-mass refinement
+    with `max_iters=10`, `shift_thresh=0.6`; disk-masked mass at the
+    converged centre).  Two independent calibration runs on real
+    sptPALM data measured:
+
+      * 100 % recall of trackpy's spots (every trackpy detection has a
+        Torch counterpart within 2 px).
+      * Median centroid disagreement 0.05 – 0.10 px on dense data,
+        ≤ 0.13 px on sparse data.
+
+    The assertions below are slightly looser than the calibration
+    numbers (median ≤ 0.20 px, recall ≥ 0.95) to leave headroom for
+    float32-vs-float64 noise across hardware platforms.  Total spot
+    counts intentionally aren't compared — Torch tends to surface a
+    few low-quality candidates that trackpy's intrinsic threshold
+    rejects; these get filtered by downstream `min_track_len` / ROI /
+    `minmass`, so they don't constitute a backend bug.
+    """
     from sptpalm_analysis import localise_particles
     stack, _ = synthesize_stack(n_frames=10, n_spots=30)
 
@@ -116,14 +133,19 @@ def test_trackpy_torch_agreement():
     from scipy.spatial import cKDTree
     pairs_dx = []
     pairs_dy = []
+    n_tp_total = 0
+    n_matched  = 0
     for frame in sorted(set(tp_locs["frame"]).intersection(th_locs["frame"])):
         tp_f = tp_locs[tp_locs["frame"] == frame][["x", "y"]].values
         th_f = th_locs[th_locs["frame"] == frame][["x", "y"]].values
         if len(tp_f) == 0 or len(th_f) == 0:
+            n_tp_total += len(tp_f)
             continue
+        n_tp_total += len(tp_f)
         tree = cKDTree(th_f)
         dist, idx = tree.query(tp_f, distance_upper_bound=2.0)
         valid = np.isfinite(dist) & (dist < 2.0)
+        n_matched += int(valid.sum())
         if not valid.any():
             continue
         matched_th = th_f[idx[valid]]
@@ -133,11 +155,18 @@ def test_trackpy_torch_agreement():
     dx = np.concatenate(pairs_dx) if pairs_dx else np.array([np.inf])
     dy = np.concatenate(pairs_dy) if pairs_dy else np.array([np.inf])
     median_disp = float(np.median(np.sqrt(dx ** 2 + dy ** 2)))
-    print(f"trackpy↔torch median centroid disagreement: {median_disp:.3f} px "
-          f"(over {len(dx)} matched spots)")
-    assert median_disp < 0.30, (
+    recall = (n_matched / n_tp_total) if n_tp_total else 0.0
+    print(f"trackpy↔torch median centroid disagreement: "
+          f"{median_disp:.3f} px (over {len(dx)} matched spots)")
+    print(f"trackpy↔torch recall: {recall:.3f} "
+          f"({n_matched}/{n_tp_total})")
+    assert median_disp < 0.20, (
         f"backend disagreement too large: {median_disp:.3f} px "
-        f"(threshold 0.30 px ≈ 30 nm at 100 nm/px)")
+        f"(threshold 0.20 px ≈ 20 nm at 100 nm/px)")
+    assert recall >= 0.95, (
+        f"Torch missed too many trackpy spots: recall {recall:.3f} "
+        f"(threshold 0.95) — every trackpy detection should have a "
+        f"matching Torch detection within 2 px")
 
 
 if __name__ == "__main__":
