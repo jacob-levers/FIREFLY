@@ -42,11 +42,14 @@ jobs:
         # bundled binary always reports the exact version it shipped
         # under, so the in-app update checker doesn't nag users who
         # already have the latest release.
+        # UTF-8 explicit because the source file contains non-ASCII
+        # comment characters that crash Python's default cp1252 on
+        # Windows runners (the macOS runner defaults to UTF-8 anyway).
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
           echo "Stamping __version__ = ${TAG}"
-          python -c "import re, pathlib; p = pathlib.Path('sptpalm_analysis.py'); t = p.read_text(); t = re.sub(r'^__version__ = \".*\"', f'__version__ = \"${TAG}\"', t, count=1, flags=re.M); p.write_text(t)"
+          python -c "import re, pathlib; p = pathlib.Path('sptpalm_analysis.py'); t = p.read_text(encoding='utf-8'); t = re.sub(r'^__version__ = \".*\"', f'__version__ = \"${TAG}\"', t, count=1, flags=re.M); p.write_text(t, encoding='utf-8')"
           grep '^__version__' sptpalm_analysis.py
 
       - name: Build .app
@@ -119,19 +122,23 @@ jobs:
         # in-app update checker doesn't keep nagging users who have
         # the latest release.  pwsh-flavoured because the Windows
         # runner doesn't ship bash by default.
+        #
+        # UTF-8 explicit because the source file contains non-ASCII
+        # box-drawing characters (in the release-checklist comment
+        # above `__version__`).  Without `encoding="utf-8"` the
+        # Windows runner uses cp1252 by default and crashes with
+        # UnicodeDecodeError on `0x90` etc., silently shipping a
+        # binary stamped with the PREVIOUS version.
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
           Write-Host "Stamping __version__ = $tag"
-          $py = @"
-          import re, pathlib
-          p = pathlib.Path('sptpalm_analysis.py')
-          t = p.read_text()
-          t = re.sub(r'^__version__ = ".*"', f'__version__ = "$tag"', t, count=1, flags=re.M)
-          p.write_text(t)
-          "@
-          $py | python -
+          # Pass the tag via env var so PowerShell-vs-Python variable
+          # escaping doesn't get tangled.
+          $env:FIREFLY_BUILD_TAG = $tag
+          python -c "import os, re, pathlib; tag = os.environ['FIREFLY_BUILD_TAG']; p = pathlib.Path('sptpalm_analysis.py'); t = p.read_text(encoding='utf-8'); t = re.sub(r'^__version__ = \".*\"', f'__version__ = \"{tag}\"', t, count=1, flags=re.M); p.write_text(t, encoding='utf-8')"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Version stamp failed"; exit 1 }
           Select-String -Path sptpalm_analysis.py -Pattern '^__version__'
 
       - name: Build exe (onefile)
