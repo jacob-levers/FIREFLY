@@ -3407,10 +3407,41 @@ class TorchBackend(LocaliserBackend):
     #   refine_max_iters    = trackpy's `max_iterations` (default 10).
     #   refine_shift_thresh = trackpy's `shift_thresh` (default 0.6 px) —
     #                         offsets above this trigger an integer recentre.
+    # mass scale:
+    #   _TP_MASS_SCALE = multiplier applied to Torch's mass column so it
+    #     lives on the same numerical scale as Trackpy's mass column.
+    #     Both backends compute mass as "sum of bandpassed intensity
+    #     over a disk mask of radius diameter/2", but the bandpass
+    #     implementations differ at the float-precision level (Torch
+    #     uses float32 separable conv; Trackpy uses scipy.ndimage on
+    #     float64) and the two return mass values on slightly different
+    #     scales.  Without this scaling, the GUI's `minmass` slider
+    #     would mean different things to the two backends — e.g.
+    #     minmass=1.35 keeps ~3.2 k spots in Trackpy but ~4.9 k spots
+    #     in Torch on the same stack.
+    #
+    #     Empirically (from `tools/calibrate_torch_vs_trackpy.py
+    #     --match-spot-count` on two real sptPALM stacks):
+    #       Calibration.tif (dense):   matched threshold = 2.216 at
+    #                                  user minmass = 1.35  ⇒ ratio 1.642
+    #       Calibration2.tif (sparse): matched threshold = 2.356 at
+    #                                  user minmass = 1.35  ⇒ ratio 1.745
+    #
+    #     For the same spot count, Torch needs a HIGHER threshold than
+    #     Trackpy → Torch's mass values are LARGER than Trackpy's.  To
+    #     bring Torch's masses down onto Trackpy's scale we MULTIPLY by
+    #     the reciprocal of the average ratio ≈ 1/1.7 ≈ 0.588.  This
+    #     puts the GUI's `minmass` slider on a unified scale: 1.35 in
+    #     either backend keeps roughly the same population of spots.
+    #
+    #     Re-derive by running `--match-spot-count` on a few
+    #     representative datasets, averaging the matched / user minmass
+    #     ratios, and setting `_TP_MASS_SCALE = 1 / mean_ratio`.
     _TP_NOISE_SIZE             = 1.0
     _TP_SMOOTHING_SIZE_OFFSET  = 1     # smoothing_size = diameter + offset
     _TP_REFINE_MAX_ITERS       = 10
     _TP_REFINE_SHIFT_THRESH    = 0.6
+    _TP_MASS_SCALE             = 0.588   # = 1 / 1.70  (Trackpy-scale)
 
     @staticmethod
     def _trackpy_bandpass(x, diameter, device, dtype):
@@ -3575,6 +3606,12 @@ class TorchBackend(LocaliserBackend):
         ts = t_ix[:, None, None].expand_as(ys)
         final_patches = signal[ts, 0, ys, xs] * mask
         final_mass = final_patches.sum(dim=(1, 2))
+
+        # Rescale onto Trackpy's mass scale so the GUI's `minmass`
+        # slider means the same thing across both backends.  See
+        # the `_TP_MASS_SCALE` docstring on TorchBackend for the
+        # derivation and why this is multiplicative (not additive).
+        final_mass = final_mass * float(TorchBackend._TP_MASS_SCALE)
 
         return dy_sub, dx_sub, cur_y, cur_x, final_mass
 
