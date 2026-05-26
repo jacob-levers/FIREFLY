@@ -1148,31 +1148,71 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     _drain_gpu()
 
     # ── Linking ───────────────────────────────────────────────────────────
-    _log(f"\n── Linking ───────────────────────")
-    _log(f"  Linking {len(locs):,} localisations — single-threaded, "
-         f"may take several minutes at high density")
-    if len(locs) > 100_000:
-        _log(f"  NOTE: very high spot density ({len(locs):,} locs). "
-             f"Consider raising minmass to reduce false positives.")
-    _prog(50, f"Linking {len(locs):,} localisations…")
+    # Fast path: the input already carries a `particle` column (e.g.
+    # TrackMate CSV imported via load_external_locs with the TRACK_ID
+    # mapping turned on).  In that case there's nothing to link —
+    # we just rename the existing IDs to dense 0..N-1 integers and
+    # honour the min/max track-length filter.  Everything downstream
+    # then runs against TrackMate's tracks instead of FIREFLY's
+    # re-linked tracks, which is the supported way to get
+    # "TrackMate detection + linking, FIREFLY analytics".
+    if "particle" in locs.columns:
+        _log(f"\n── Linking (skipped — pre-linked input) ─────────")
+        _log(f"  Input CSV already has TRACK_ID — using upstream "
+             f"linker's tracks directly.")
+        _prog(50, "Using pre-linked tracks from CSV…")
+        import pandas as _pd
+        # Densify particle IDs to 0..N-1 so downstream code that
+        # assumes integer-indexable particles (some clustering /
+        # MSD paths) doesn't choke on TrackMate's wide ID space.
+        _id_map = {old: new for new, old in enumerate(
+            sorted(locs["particle"].unique()))}
+        tracks = locs.copy()
+        tracks["particle"] = tracks["particle"].map(_id_map).astype("int64")
+        # Apply min/max track-length filter the same way the real
+        # linker would — keeps stats comparable across paths.
+        _min_len = int(p.get("min_track_len", 0) or 0)
+        _max_len = p.get("max_track_len") or 0
+        try:    _max_len = int(_max_len)
+        except Exception: _max_len = 0
+        if _min_len > 0 or _max_len > 0:
+            _counts = tracks.groupby("particle").size()
+            _keep = _counts.index[(_counts >= max(1, _min_len)) &
+                                   ((_counts <= _max_len)
+                                    if _max_len > 0 else True)]
+            n_before = int(tracks["particle"].nunique())
+            tracks = tracks[tracks["particle"].isin(_keep)].reset_index(
+                drop=True)
+            n_after = int(tracks["particle"].nunique())
+            _log(f"  Track-length filter ({_min_len}–"
+                 f"{'∞' if _max_len == 0 else _max_len} frames): "
+                 f"{n_after:,} / {n_before:,} tracks kept")
+    else:
+        _log(f"\n── Linking ───────────────────────")
+        _log(f"  Linking {len(locs):,} localisations — single-threaded, "
+             f"may take several minutes at high density")
+        if len(locs) > 100_000:
+            _log(f"  NOTE: very high spot density ({len(locs):,} locs). "
+                 f"Consider raising minmass to reduce false positives.")
+        _prog(50, f"Linking {len(locs):,} localisations…")
 
-    # Map linker [0, 1] progress onto the overall progress bar's 50–65%
-    # range so the user sees genuine per-frame motion instead of a
-    # multi-minute black box.
-    def _link_progress(frac: float):
-        try:    pct = 50 + int(frac * 15)
-        except Exception: pct = 50
-        _prog(pct, f"Linking… {frac*100:.0f} %")
+        # Map linker [0, 1] progress onto the overall progress bar's 50–65%
+        # range so the user sees genuine per-frame motion instead of a
+        # multi-minute black box.
+        def _link_progress(frac: float):
+            try:    pct = 50 + int(frac * 15)
+            except Exception: pct = 50
+            _prog(pct, f"Linking… {frac*100:.0f} %")
 
-    tracks = link_trajectories(
-        locs,
-        search_range=int(p["search_range"]),
-        memory=int(p["memory"]),
-        min_len=int(p["min_track_len"]),
-        max_len=p.get("max_track_len"),
-        linker=str(p.get("linker", "trackpy")),
-        progress_cb=_link_progress,
-        stop_event=cancel_event)
+        tracks = link_trajectories(
+            locs,
+            search_range=int(p["search_range"]),
+            memory=int(p["memory"]),
+            min_len=int(p["min_track_len"]),
+            max_len=p.get("max_track_len"),
+            linker=str(p.get("linker", "trackpy")),
+            progress_cb=_link_progress,
+            stop_event=cancel_event)
     n_tracks_found = tracks['particle'].nunique() if len(tracks) else 0
     _log(f"  → {n_tracks_found:,} trajectories")
     _check_stop()
