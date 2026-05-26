@@ -3175,6 +3175,20 @@ class TorchBackend(LocaliserBackend):
             try:    _blas_ctx.__enter__()
             except Exception: _blas_ctx = None
 
+        # Per-chunk timing so the live log shows progress.  Historically
+        # the Torch chunk loop emitted nothing between the up-front
+        # `Chunks: N × ~M frames` line and the final "Found … in …s"
+        # — on Windows torch-cpu where a chunk takes ~30 s, the
+        # console looked frozen for the entire localisation stretch
+        # even though the analysis was running fine.  Print one line
+        # per chunk with elapsed time + spot count so the user can
+        # see steady forward motion.
+        chunk_t0_outer = time.perf_counter()
+        last_chunk_end_t = chunk_t0_outer
+        print(f"  Starting localisation: {n_chunks} chunks of "
+              f"~{chunk_size} frames each "
+              f"(progress logged per-chunk below)", flush=True)
+
         for chunk_idx, chunk_start in enumerate(range(0, n_frames, chunk_size)):
             chunk_end = min(chunk_start + chunk_size, n_frames)
             chunk_np  = np.asarray(stack[chunk_start:chunk_end], dtype=np.float32)
@@ -3208,6 +3222,12 @@ class TorchBackend(LocaliserBackend):
             # nonzero → (N, 4) columns: (t, c, y, x)
             coords = is_max.nonzero(as_tuple=False)
             if coords.numel() == 0:
+                _ct = time.perf_counter()
+                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                      f"(frames {chunk_start}–{chunk_end-1}): 0 spots "
+                      f"in {_ct - last_chunk_end_t:.1f}s "
+                      f"(no maxima above threshold)", flush=True)
+                last_chunk_end_t = _ct
                 continue
 
             # Drop maxima too close to the edge to extract a full patch
@@ -3217,6 +3237,12 @@ class TorchBackend(LocaliserBackend):
             )
             coords = coords[edge_ok]
             if coords.numel() == 0:
+                _ct = time.perf_counter()
+                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                      f"(frames {chunk_start}–{chunk_end-1}): 0 spots "
+                      f"in {_ct - last_chunk_end_t:.1f}s "
+                      f"(all maxima edge-rejected)", flush=True)
+                last_chunk_end_t = _ct
                 continue
 
             t_ix = coords[:, 0]
@@ -3234,6 +3260,12 @@ class TorchBackend(LocaliserBackend):
             mass = patches.sum(dim=(1, 2))
             keep = mass >= minmass
             if keep.sum() == 0:
+                _ct = time.perf_counter()
+                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                      f"(frames {chunk_start}–{chunk_end-1}): 0 spots "
+                      f"in {_ct - last_chunk_end_t:.1f}s "
+                      f"(all below minmass={minmass:.2f})", flush=True)
+                last_chunk_end_t = _ct
                 continue
             patches = patches[keep]
             t_ix    = t_ix[keep]
@@ -3332,6 +3364,24 @@ class TorchBackend(LocaliserBackend):
                 except Exception:
                     # Preview emission must never break the analysis.
                     pass
+
+            # Per-chunk progress log — success path.  Includes spot
+            # count + wall-clock time for the chunk so the user can
+            # spot if any one chunk takes much longer than the rest
+            # (memory pressure forcing a swap, for example).
+            try:
+                _ct = time.perf_counter()
+                _n_spots = int(mass.numel())
+                _avg_fps = (chunk_end - chunk_start) / max(1e-3,
+                                                              _ct - last_chunk_end_t)
+                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                      f"(frames {chunk_start}–{chunk_end-1}): "
+                      f"{_n_spots:,} spots in "
+                      f"{_ct - last_chunk_end_t:.1f}s "
+                      f"({_avg_fps:.0f} fr/s)", flush=True)
+                last_chunk_end_t = _ct
+            except Exception:
+                pass
 
             # Free chunk allocations promptly.  PyTorch's reference-counting
             # releases the Python handles, but on MPS the underlying device
