@@ -42,26 +42,73 @@ jobs:
         # bundled binary always reports the exact version it shipped
         # under, so the in-app update checker doesn't nag users who
         # already have the latest release.
-        # UTF-8 explicit because the source file contains non-ASCII
-        # comment characters that crash Python's default cp1252 on
-        # Windows runners (the macOS runner defaults to UTF-8 anyway).
+        # Script is written to a temp .py file rather than passed via
+        # `python -c "…"` — keeps the regex out of shell escaping land
+        # and matches the Windows job's structure exactly so the two
+        # paths can't drift.
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
           echo "Stamping __version__ = ${TAG}"
-          python -c "import re, pathlib; p = pathlib.Path('sptpalm_analysis.py'); t = p.read_text(encoding='utf-8'); t = re.sub(r'^__version__ = \".*\"', f'__version__ = \"${TAG}\"', t, count=1, flags=re.M); p.write_text(t, encoding='utf-8')"
+          export FIREFLY_BUILD_TAG="${TAG}"
+          cat > stamp_version.py <<'PYEOF'
+          import os, re, pathlib
+          tag = os.environ['FIREFLY_BUILD_TAG']
+          p = pathlib.Path('sptpalm_analysis.py')
+          t = p.read_text(encoding='utf-8')
+          t = re.sub(r'^__version__ = ".*"',
+                     f'__version__ = "{tag}"',
+                     t, count=1, flags=re.M)
+          p.write_text(t, encoding='utf-8')
+          PYEOF
+          python stamp_version.py
+          rm stamp_version.py
           grep '^__version__' sptpalm_analysis.py
 
       - name: Build .app
         run: pyinstaller sptpalm.spec --noconfirm --clean
 
       - name: Create DMG
+        # hdiutil intermittently returns "Resource busy" on GitHub's
+        # macOS runners — Spotlight (mds_stores) and fseventsd index
+        # the freshly-extracted .app bundle in the background, holding
+        # an FS handle that prevents the create-disk-image step from
+        # locking the source folder.  Two-pronged fix:
+        #   1. Detach any leftover FIREFLY volume from a prior run
+        #      that didn't clean itself up.
+        #   2. Retry the create with exponential backoff so we ride
+        #      out the indexer's window without failing the build.
         run: |
-          hdiutil create \
-            -volname "FIREFLY" \
-            -srcfolder "dist/FIREFLY.app" \
-            -ov -format UDZO \
-            "dist/FIREFLY-macOS.dmg"
+          # Best-effort: unmount any stale FIREFLY volume left over
+          # from a previous run on the same runner image.
+          for vol in /Volumes/FIREFLY*; do
+            if [ -d "$vol" ]; then
+              echo "Detaching stale volume: $vol"
+              hdiutil detach "$vol" -force || true
+            fi
+          done
+          # Wait briefly so Spotlight finishes indexing the bundle
+          # PyInstaller just dropped.
+          sleep 5
+          # Retry loop — 4 attempts, 5/10/20 s backoff.
+          for attempt in 1 2 3 4; do
+            echo "hdiutil create attempt $attempt …"
+            if hdiutil create \
+                -volname "FIREFLY" \
+                -srcfolder "dist/FIREFLY.app" \
+                -ov -format UDZO \
+                "dist/FIREFLY-macOS.dmg"; then
+              echo "DMG created on attempt $attempt"
+              break
+            fi
+            if [ $attempt -eq 4 ]; then
+              echo "DMG creation failed after 4 attempts"
+              exit 1
+            fi
+            backoff=$((attempt * 5))
+            echo "  → 'Resource busy' or similar; sleeping ${backoff}s before retry"
+            sleep $backoff
+          done
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -120,25 +167,40 @@ jobs:
         # Same idea as the macOS job — stamp the build with the git
         # tag so the bundled binary reports its real version and the
         # in-app update checker doesn't keep nagging users who have
-        # the latest release.  pwsh-flavoured because the Windows
-        # runner doesn't ship bash by default.
+        # the latest release.
         #
-        # UTF-8 explicit because the source file contains non-ASCII
-        # box-drawing characters (in the release-checklist comment
-        # above `__version__`).  Without `encoding="utf-8"` the
-        # Windows runner uses cp1252 by default and crashes with
-        # UnicodeDecodeError on `0x90` etc., silently shipping a
-        # binary stamped with the PREVIOUS version.
+        # The Python script is written to a TEMP .py file rather than
+        # being inlined into the run-script — earlier attempts at
+        # `python -c "…\".*\"…"` ran into PowerShell parsing the
+        # escaped quotes before Python ever saw the source.  Reading
+        # from a real file dodges every layer of shell escaping.
+        #
+        # UTF-8 explicit because the source contains non-ASCII box-
+        # drawing characters in the release-checklist comment block
+        # above `__version__` — Windows' default cp1252 chokes on
+        # them otherwise.
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
           Write-Host "Stamping __version__ = $tag"
-          # Pass the tag via env var so PowerShell-vs-Python variable
-          # escaping doesn't get tangled.
           $env:FIREFLY_BUILD_TAG = $tag
-          python -c "import os, re, pathlib; tag = os.environ['FIREFLY_BUILD_TAG']; p = pathlib.Path('sptpalm_analysis.py'); t = p.read_text(encoding='utf-8'); t = re.sub(r'^__version__ = \".*\"', f'__version__ = \"{tag}\"', t, count=1, flags=re.M); p.write_text(t, encoding='utf-8')"
+          # Heredoc-equivalent: ConvertFrom-StringData would mangle
+          # the Python source.  Just use a plain Set-Content with a
+          # multi-line literal, then run the file.
+          @'
+          import os, re, pathlib
+          tag = os.environ['FIREFLY_BUILD_TAG']
+          p = pathlib.Path('sptpalm_analysis.py')
+          t = p.read_text(encoding='utf-8')
+          t = re.sub(r'^__version__ = ".*"',
+                     f'__version__ = "{tag}"',
+                     t, count=1, flags=re.M)
+          p.write_text(t, encoding='utf-8')
+          '@ | Set-Content -Encoding UTF8 -Path stamp_version.py
+          python stamp_version.py
           if ($LASTEXITCODE -ne 0) { Write-Error "Version stamp failed"; exit 1 }
+          Remove-Item stamp_version.py
           Select-String -Path sptpalm_analysis.py -Pattern '^__version__'
 
       - name: Build exe (onefile)
