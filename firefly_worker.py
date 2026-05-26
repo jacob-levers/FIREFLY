@@ -447,7 +447,19 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
 
     fpath = p["file"]
     stem  = os.path.splitext(os.path.basename(fpath))[0]
-    out_dir    = p.get("out_dir") or os.path.dirname(os.path.abspath(fpath))
+    # Wrap every run's artifacts inside a per-stem subfolder so the user's
+    # chosen output directory stays tidy when batch-processing multiple
+    # files (and so the per-run files are obviously grouped together
+    # rather than scattered across figures/, data/, firefly_extras/, plus
+    # a loose run_manifest.json sitting at the top level).
+    # The caller can opt out by passing `wrap_in_stem_folder=False` — used
+    # by the Post-process path which appends `_postproc{N}` to the raw
+    # source folder and doesn't want to nest again.
+    raw_out_dir = p.get("out_dir") or os.path.dirname(os.path.abspath(fpath))
+    if bool(p.get("wrap_in_stem_folder", True)):
+        out_dir = os.path.join(raw_out_dir, stem)
+    else:
+        out_dir = raw_out_dir
     fig_dir    = os.path.join(out_dir, "figures")
     data_dir   = os.path.join(out_dir, "data")
     extras_dir = os.path.join(out_dir, "firefly_extras")
@@ -2029,6 +2041,9 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             "source":         "external_csv",
             "csv_preset":     "auto",   # FIREFLY's own loc columns autodetect
             "out_dir":        out_dir,
+            # We've already chosen the wrapper name (`<source>_postprocN`);
+            # don't let _run_one_analysis nest another `<stem>/` inside it.
+            "wrap_in_stem_folder": False,
             "channel":        0,
             "bg_image_path":  _bg_path,
             # ROI is already applied — tell downstream to skip it.

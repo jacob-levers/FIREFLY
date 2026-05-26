@@ -4044,7 +4044,24 @@ class TrackMateBackend(LocaliserBackend):
         print(f"  TrackMate : mode={mode}  radius={radius_um:.3f}µm "
               f"(σ={sigma_px:.2f}px)  quality={quality}σ  "
               f"median={'on' if use_med else 'off'}")
-        print(f"  Parallelism : joblib × {n_workers} workers (loky backend)")
+        # Threading (not loky) — scipy.ndimage's gaussian_laplace /
+        # gaussian_filter / median_filter and skimage's peak_local_max
+        # all release the GIL on their C kernels, so a thread pool
+        # gets near-process-pool parallelism with NONE of the loky
+        # downsides:
+        #   * No multiprocessing.Pool spawn (Windows + PyInstaller
+        #     onefile re-extracts _MEIPASS per worker, so loky =
+        #     6 mini-FIREFLY processes appearing on screen + ~3 GB
+        #     of extra RAM each chunk).
+        #   * No pickling of frame arrays into worker processes.
+        #   * No "Defender chews through 6 simultaneous extractions"
+        #     stall.
+        # Override with FIREFLY_TRACKMATE_BACKEND=loky if you ever need
+        # to A/B compare against the old behaviour.
+        _jl_backend = os.environ.get(
+            "FIREFLY_TRACKMATE_BACKEND", "threading")
+        print(f"  Parallelism : joblib × {n_workers} workers "
+              f"({_jl_backend} backend)")
 
         t0 = time.perf_counter()
 
@@ -4088,8 +4105,14 @@ class TrackMateBackend(LocaliserBackend):
                     print("  TrackMate detection stopped by user.")
                     break
                 batch = chunk_ranges[batch_start:batch_start + stride]
-                results = Parallel(n_jobs=n_workers, backend="loky",
-                                    prefer="processes")(
+                # `prefer="threads"` lets joblib pick the threading
+                # executor without forcing a process pool — works on
+                # Windows frozen builds where loky would otherwise
+                # spawn N FIREFLY-bootloader copies and exhaust RAM.
+                _kwargs = ({"backend": _jl_backend}
+                           if _jl_backend != "threading"
+                           else {"prefer": "threads"})
+                results = Parallel(n_jobs=n_workers, **_kwargs)(
                     delayed(_process_chunk)(s, e) for s, e in batch)
                 for chunk_result in results:
                     for f_idx, xs, ys, masses, fr in chunk_result:

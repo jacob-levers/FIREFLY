@@ -5137,7 +5137,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row = QtWidgets.QHBoxLayout()
         self.e_outdir = QtWidgets.QLineEdit()
-        self.e_outdir.setPlaceholderText("Defaults to input file's folder")
+        self.e_outdir.setPlaceholderText(
+            "Defaults to input file's folder.  Each run is wrapped in "
+            "a subfolder named after the input stem.")
         b2 = QtWidgets.QPushButton("Browse")
         b2.clicked.connect(self._on_browse_outdir)
         row.addWidget(self.e_outdir); row.addWidget(b2)
