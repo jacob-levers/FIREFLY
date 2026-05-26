@@ -1208,6 +1208,27 @@ _CSV_PRESETS: dict = {
         "xy_unit":   "px",
         "mass":      ("photons", "photon", "intensity"),
     },
+    "TrackMate": {
+        # TrackMate (Fiji) export — column names are uppercase with
+        # underscores in the "machine-readable" header row (`FRAME`,
+        # `POSITION_X`, …); the file also contains 2 follow-up human-
+        # readable header rows that the importer's multi-row header
+        # detection skips automatically.
+        "frame":         ("FRAME", "frame", "Frame"),
+        "frame_offset":  0,                # TrackMate 7+ is 0-indexed
+        "x":             ("POSITION_X", "Position X", "X", "x"),
+        "y":             ("POSITION_Y", "Position Y", "Y", "y"),
+        "xy_unit":       "um",             # spatial cols are in micrometres
+        "mass":          ("MEAN_INTENSITY_CH1", "TOTAL_INTENSITY_CH1",
+                          "Mean intensity ch1", "Sum intensity ch1",
+                          "QUALITY", "Quality"),
+        # NEW — when a TRACK_ID column is present, the importer ALSO
+        # emits a `particle` column on the output DataFrame so the
+        # worker can skip its own linker and analyse TrackMate's
+        # tracks directly.  Unlinked spots (TRACK_ID empty / "None")
+        # are dropped.
+        "particle":      ("TRACK_ID", "Track ID"),
+    },
 }
 
 
@@ -1309,18 +1330,28 @@ def load_external_locs(csv_path: str, preset: str = "auto",
         #   1. It must have the highest column count seen in the preview
         #      (otherwise PALM-Tracer's 8-col metadata rows win).
         #   2. Its fields must LOOK like header names — i.e. contain
-        #      mostly letters, not just numbers.  Otherwise we'd pick a
-        #      data row whenever the metadata block was a different
-        #      width from the table.
+        #      mostly letters / unit-literals, not just numbers.
+        #      Otherwise we'd pick a data row whenever the metadata
+        #      block was a different width from the table.
         # Among all rows that satisfy both, take the FIRST one.
         def _looks_like_header(fields):
-            # A header row's fields are mostly non-numeric tokens.
+            # A header row's NON-EMPTY fields are mostly non-numeric
+            # tokens (column names, parenthesised units like
+            # "(micron)", or human-readable labels with spaces).
+            # We ignore empty fields entirely so TrackMate's units row
+            # (",,,,(micron),(micron),,(counts)") still qualifies even
+            # though half of its cells are blank.
             if not fields:
                 return False
+            non_empty = [f.strip() for f in fields if f.strip()]
+            if not non_empty:
+                return False
             letter_count = sum(
-                1 for f in fields
+                1 for f in non_empty
                 if any(c.isalpha() for c in f))
-            return letter_count >= max(2, len(fields) // 2)
+            # >= half of NON-EMPTY fields must look like tokens, and
+            # there must be at least 2 such fields overall.
+            return (letter_count >= max(2, (len(non_empty) + 1) // 2))
 
         split_rows = [_split(ln) for ln in preview]
         widths = [len(r) for r in split_rows]
@@ -1330,23 +1361,72 @@ def load_external_locs(csv_path: str, preset: str = "auto",
             if len(row) == max_w and _looks_like_header(row):
                 header_line = i
                 break
+        # Multi-row header skipping — TrackMate exports a 3-row header
+        # block (machine names / human names / units like "(micron)"),
+        # only the FIRST of which has the column names we recognise.
+        # After picking the machine-name row, walk forward and skip
+        # subsequent rows that ALSO look like headers (mostly non-
+        # numeric) so pandas starts reading from genuine data.  Each
+        # extra skipped row becomes a `skiprows` entry below.
+        skip_extra: list[int] = []
+        if header_line < len(split_rows):
+            j = header_line + 1
+            while j < len(split_rows):
+                row = split_rows[j]
+                if len(row) == max_w and _looks_like_header(row):
+                    skip_extra.append(j)
+                    j += 1
+                else:
+                    break
         if header_line > 0:
             print(f"  Skipping {header_line} metadata row(s) before the "
                   f"data table.")
+        if skip_extra:
+            print(f"  Skipping {len(skip_extra)} extra header row(s) "
+                  f"after the column-name row (TrackMate-style).")
 
     # Try comma → tab → python-engine sniff.  First attempt that yields
-    # more than one column wins.  The `skiprows` value is the
-    # metadata-block size detected above.
+    # more than one column wins.  `skiprows` is the metadata-block
+    # size detected above; for TrackMate-style multi-row headers, we
+    # also drop the extra header rows that follow the column-name row.
+    # Note: pandas treats the first NON-skipped row as the header by
+    # default — so we skip `header_line` rows BEFORE the column-name
+    # row, then pass a `skiprows` callable that ALSO drops the extra
+    # header rows AFTER it without disturbing pandas' header pick.
     df = None
     last_exc: Exception | None = None
+    # Build the `skiprows` set in source-file row coordinates.
+    # `header_line` rows before the header are unconditionally dropped
+    # via the int form; extra header rows AFTER the column-name row
+    # are dropped via a callable so pandas still treats the
+    # column-name row as the header.
+    if skip_extra:
+        # row 0 of pandas == csv row `header_line`; the column-name
+        # row is at csv index header_line, and pandas will consume
+        # IT as the header.  The "extra" rows are at csv indices
+        # `header_line + 1`, `header_line + 2`, …  After pandas has
+        # skipped `header_line` rows and read the header from the
+        # next row, the data rows it sees are numbered 0, 1, 2, …
+        # which map back to csv rows header_line+1, header_line+2…
+        # So we need to skip data-row indices 0, 1, …, len(skip_extra)-1.
+        skip_extra_data_rows = set(range(len(skip_extra)))
+        _skiprows = lambda i, _h=header_line, _s=skip_extra_data_rows: (
+            i < _h or (i - _h - 1) in _s
+            if i > _h else False
+        )
+    else:
+        _skiprows = header_line
     for kwargs in (
         {"sep": "\t",  "engine": "c"},
         {"sep": ",",   "engine": "c"},
         {"sep": None,  "engine": "python"},
     ):
+        # `skiprows=callable` requires the python engine.
+        if callable(_skiprows) and kwargs.get("engine") == "c":
+            continue
         try:
             attempt = _pd.read_csv(
-                csv_path, skiprows=header_line, **kwargs)
+                csv_path, skiprows=_skiprows, **kwargs)
         except Exception as exc:
             last_exc = exc
             continue
@@ -1396,12 +1476,12 @@ def load_external_locs(csv_path: str, preset: str = "auto",
                 f"Unknown preset '{preset}'.  Available: "
                 f"{list(_CSV_PRESETS) + ['Custom']}")
         mapping = {}
-        for canonical in ("frame", "x", "y", "mass"):
+        for canonical in ("frame", "x", "y", "mass", "particle"):
             for col in spec.get(canonical, ()):
                 if col in df.columns:
                     mapping[canonical] = col
                     break
-        # frame, x, y are required; mass is optional
+        # frame, x, y are required; mass + particle are optional
         for required in ("frame", "x", "y"):
             if required not in mapping:
                 raise ValueError(
@@ -1426,9 +1506,15 @@ def load_external_locs(csv_path: str, preset: str = "auto",
 
     x = df[mapping["x"]].astype(float).values
     y = df[mapping["y"]].astype(float).values
-    if spec.get("xy_unit") == "nm":
+    _xy_unit = (spec.get("xy_unit") or "px").lower()
+    if _xy_unit == "nm":
         x = x / (pixel_size_um * 1000.0)
         y = y / (pixel_size_um * 1000.0)
+    elif _xy_unit in ("um", "µm", "micron", "microns"):
+        # TrackMate-style: spatial columns in micrometres.  Convert to
+        # pixels using the user's pixel size.
+        x = x / float(pixel_size_um)
+        y = y / float(pixel_size_um)
     out["x"] = x
     out["y"] = y
 
@@ -1439,6 +1525,36 @@ def load_external_locs(csv_path: str, preset: str = "auto",
         # a constant mass column.  Filter-by-mass becomes a no-op which
         # is the right behaviour for pre-filtered external data.
         out["mass"] = 1.0
+
+    # Optional: pass through pre-linked track IDs.  Allows the caller
+    # to skip its own linker entirely and analyse the externally-
+    # produced tracks directly (e.g. "TrackMate detection + linking,
+    # FIREFLY analytics").  TRACK_ID may be empty / "None" / "" /
+    # a negative integer for unlinked spots — those rows are dropped
+    # before the canonical `particle` column is written.
+    if "particle" in mapping:
+        try:
+            raw = df[mapping["particle"]]
+            # Coerce to numeric; non-numeric strings ("None", "") → NaN.
+            pid = _pd.to_numeric(raw, errors="coerce")
+            # TrackMate uses -1 or absent for unlinked spots.
+            valid = pid.notna() & (pid >= 0)
+            n_dropped = int((~valid).sum())
+            if n_dropped:
+                print(f"  Dropping {n_dropped:,} unlinked spots "
+                      f"(empty / 'None' / negative TRACK_ID)")
+            out = out.loc[valid.values].reset_index(drop=True)
+            pid = pid.loc[valid].astype("int64").values
+            out["particle"] = pid
+            print(f"  Pre-linked tracks detected: "
+                  f"{int(_pd.Series(pid).nunique()):,} unique track IDs — "
+                  f"the worker will skip its own linker and analyse "
+                  f"these tracks directly.")
+        except Exception as exc:
+            print(f"  WARN: TRACK_ID column found but could not be "
+                  f"parsed as integers: {exc}.  Falling back to "
+                  f"re-linking via FIREFLY's linker.")
+
     print(f"  Loaded {len(out):,} external localisations "
           f"(preset={preset}, frames {int(out['frame'].min())}–"
           f"{int(out['frame'].max())})")

@@ -3150,25 +3150,67 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(6)
 
-        # Top row: label edit + colour swatch + delete card
+        # Top row: label edit + colour swatch + delete card.
+        #
+        # Earlier attempts used a styled QPushButton for the colour
+        # swatch and pinned every widget to the same _ROW_H.  On macOS
+        # that still left the swatch looking taller than the line edit
+        # because Qt's macOS QPushButton renders a couple of pixels of
+        # native chrome OUTSIDE its setFixedSize bounds (the rounded
+        # button face + focus ring).  The reliable fix is a chromeless
+        # widget — QToolButton with no border + a stylesheet-driven
+        # background — sized to the line edit's actual rendered height
+        # (~22 px on macOS dark mode).
         row = QtWidgets.QHBoxLayout()
+        row.setSpacing(6)
+        row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(QtWidgets.QLabel("Label"))
+
         self.e_label = QtWidgets.QLineEdit(label)
         self.e_label.textChanged.connect(lambda _: self.changed.emit())
         row.addWidget(self.e_label, 1)
+        # Read the actual line-edit render height AFTER it has been
+        # constructed but before it's laid out — gives us pixel-
+        # perfect match across themes / DPI.
+        _ROW_H = max(20, self.e_label.sizeHint().height() - 4)
 
-        self.btn_color = QtWidgets.QPushButton(" ")
-        self.btn_color.setFixedSize(28, 22)
+        # ── Colour swatch — flat QToolButton, no native chrome ─────
+        self.btn_color = QtWidgets.QToolButton()
+        self.btn_color.setAutoRaise(True)
+        self.btn_color.setFixedSize(_ROW_H + 8, _ROW_H)
         self._refresh_color_button()
         self.btn_color.clicked.connect(self._on_pick_color)
         self.btn_color.setToolTip("Pick a colour for this group's plots.")
-        row.addWidget(self.btn_color)
+        self.btn_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.addWidget(self.btn_color, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        # ── Delete button — big, obvious × ────────────────────────
         self.btn_delete = QtWidgets.QToolButton()
         self.btn_delete.setText("×")
+        self.btn_delete.setAutoRaise(True)
+        self.btn_delete.setFixedSize(_ROW_H + 4, _ROW_H)
+        _del_font = self.btn_delete.font()
+        # 24 pt minimum so the × is unmistakably a click target.
+        _del_font.setPointSize(max(_del_font.pointSize() + 12, 24))
+        _del_font.setBold(True)
+        self.btn_delete.setFont(_del_font)
         self.btn_delete.setToolTip("Remove this group.")
+        self.btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Subtle danger-tinted hover so the button telegraphs that it
+        # is destructive without screaming about it at rest.
+        self.btn_delete.setStyleSheet(
+            "QToolButton {"
+            "  padding: 0px; margin: 0px; border: none;"
+            f"  color: {_THEME['TXT_MUTED']};"
+            "}"
+            "QToolButton:hover {"
+            f"  color: {_THEME['DANGER']};"
+            "  background: rgba(255, 80, 80, 0.15);"
+            "  border-radius: 4px;"
+            "}"
+        )
         self.btn_delete.clicked.connect(lambda: self.delete_requested.emit(self))
-        row.addWidget(self.btn_delete)
+        row.addWidget(self.btn_delete, 0, Qt.AlignmentFlag.AlignVCenter)
         v.addLayout(row)
 
         # Folder list (drop target)
@@ -3202,8 +3244,23 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
         return self._color
 
     def _refresh_color_button(self):
+        # Flat-filled QToolButton.  The `:hover` state nudges the
+        # border slightly lighter so it's still obvious the chip is
+        # clickable, but no auto-chrome / 3-D outline from the native
+        # style — that was making the swatch render taller than the
+        # adjacent line edit on macOS.
         self.btn_color.setStyleSheet(
-            f"background-color: {self._color}; border: 1px solid #555;")
+            "QToolButton {"
+            f"  background-color: {self._color};"
+            "  border: 1px solid #555;"
+            "  border-radius: 3px;"
+            "  padding: 0px;"
+            "  margin: 0px;"
+            "}"
+            "QToolButton:hover {"
+            "  border: 1px solid #aaa;"
+            "}"
+        )
 
     def _refresh_count(self):
         n = self.lst_folders.count()
@@ -5203,7 +5260,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.e_csv_path = QtWidgets.QLineEdit()
         self.e_csv_path.setPlaceholderText(
             "Pick a localisations file (.csv / .txt / .tsv) from "
-            "PALM-Tracer / ThunderSTORM / Picasso…")
+            "PALM-Tracer / ThunderSTORM / Picasso / TrackMate…")
         btn_csv = QtWidgets.QPushButton("Browse")
         btn_csv.clicked.connect(self._on_browse_csv)
         row.addWidget(self.e_csv_path, 1); row.addWidget(btn_csv)
@@ -5213,12 +5270,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_csv_preset = _QuietComboBox()
         self.c_csv_preset.addItems(
             ["Auto-detect", "PALM-Tracer", "ThunderSTORM",
-             "Picasso", "Custom"])
+             "Picasso", "TrackMate", "Custom"])
         self.c_csv_preset.setToolTip(
             "Source-tool preset.  Tells FIREFLY how to interpret the\n"
             "CSV's columns (frame indexing, x/y units, mass column).\n"
             "Auto-detect sniffs the header; pick a specific preset if\n"
-            "auto-detect picks the wrong one.")
+            "auto-detect picks the wrong one.\n\n"
+            "TrackMate note: when the CSV's TRACK_ID column is present,\n"
+            "FIREFLY uses TrackMate's tracks directly and SKIPS its own\n"
+            "linker — the Linking sidebar params have no effect in that\n"
+            "case.  Use this to get \"TrackMate detection + linking,\n"
+            "FIREFLY analytics\" with no manual column mapping.")
         cg.addRow("Source preset", self.c_csv_preset)
         # Output folder
         row = QtWidgets.QHBoxLayout()
