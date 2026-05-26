@@ -237,6 +237,135 @@ def _format_metrics(label: str, m: AgreementMetrics) -> str:
             f"p90={m.p90_xy_px:.4f}  ratio={m.spot_count_ratio:.3f}")
 
 
+# ── Match-spot-count mode ────────────────────────────────────────────────────
+
+
+def _match_spot_count(args, full_stack, full_pp, theta: Theta,
+                        out_dir: Path):
+    """Find the Torch minmass that produces ~N_trackpy localisations.
+
+    Strategy
+    --------
+    1. Run Trackpy once at the user's minmass → reference count N_tp.
+    2. Run Torch once at a very low minmass (effectively no mass
+       filter on the candidate set) → all candidates with their
+       masses.
+    3. The matched minmass is simply the (N_tp)-th largest mass in
+       Torch's output — by construction this filter yields exactly
+       N_tp localisations.
+    4. Re-run the centroid-agreement metrics at the matched threshold.
+    5. Save a cumulative-count-vs-mass plot with both backends and a
+       vertical line at the matched threshold.
+
+    Single Torch run, no binary search — the mass array is all we
+    need.  Whether the same N spots survive into the same tracks is
+    a separate question (linking is order-dependent) but the
+    localisation-count match should bring D and α into agreement
+    with Trackpy, which is what the user is debating.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 1. Trackpy reference at user's minmass ─────────────────────────
+    print(f"\n── Match-spot-count ───────────────")
+    print(f"  Reference: trackpy at minmass={args.minmass}")
+    tp_locs = _run_trackpy(full_pp, diameter=args.diameter,
+                             minmass=args.minmass,
+                             percentile=args.percentile)
+    n_tp = int(len(tp_locs))
+    print(f"    → {n_tp:,} trackpy locs")
+
+    # ── 2. Torch at very low minmass to capture every candidate ─────────
+    # 0.01 is well below any reasonable per-frame integration so it
+    # acts as "no filter at all" — anything Torch found gets kept.
+    low_minmass = 0.01
+    print(f"  Probing: torch at minmass={low_minmass} (capture all "
+          f"candidates)")
+    torch_all = _run_torch_with_theta(
+        full_pp, theta, diameter=args.diameter,
+        minmass=low_minmass, percentile=args.percentile,
+        device=args.device)
+    n_torch_all = int(len(torch_all))
+    print(f"    → {n_torch_all:,} torch candidates")
+
+    if n_torch_all < n_tp:
+        print(f"\n  ⚠  Torch produced fewer candidates ({n_torch_all:,}) "
+              f"than Trackpy reported ({n_tp:,}) even with no mass "
+              f"filter.  This shouldn't happen — check that the "
+              f"`percentile` and `diameter` arguments match.")
+        return
+
+    # ── 3. The (N_tp)-th largest mass = matched threshold ──────────────
+    masses_sorted = np.sort(torch_all["mass"].values)[::-1]   # descending
+    matched_minmass = float(masses_sorted[n_tp - 1])
+    print(f"  Matched minmass = {matched_minmass:.4f} "
+          f"(yields exactly {n_tp:,} torch locs by construction)")
+
+    # ── 4. Filter Torch to the matched threshold + measure agreement ──
+    torch_matched = torch_all[torch_all["mass"] >= matched_minmass]\
+                    .reset_index(drop=True)
+    print(f"    → {len(torch_matched):,} torch locs after filter")
+    metrics = _match_spots(tp_locs, torch_matched)
+    print(_format_metrics("matched", metrics))
+
+    # Spot-count + centroid summary
+    print(f"\n  Headline numbers at the matched minmass:")
+    print(f"    Spot count:    trackpy {metrics.n_trackpy:,}  "
+          f"torch {metrics.n_torch:,}  (ratio {metrics.spot_count_ratio:.3f})")
+    print(f"    Matched pairs: {metrics.n_matched:,} "
+          f"({100 * metrics.n_matched / max(1, metrics.n_trackpy):.1f}% "
+          f"of trackpy)")
+    print(f"    Centroid:      median {metrics.median_xy_px:.4f} px  "
+          f"mean {metrics.mean_xy_px:.4f} px  "
+          f"p90 {metrics.p90_xy_px:.4f} px")
+
+    # ── 5. Cumulative-count plot ────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+
+    # Torch curve: descending-sorted masses give us "N above threshold"
+    # as a function of threshold by reversing the cumulative count.
+    th_masses_desc = np.sort(torch_all["mass"].values)[::-1]
+    th_cum = np.arange(1, len(th_masses_desc) + 1)
+    ax.semilogx(th_masses_desc, th_cum, "-", color="#d62728",
+                  lw=1.5, label=f"Torch  (N_total = {n_torch_all:,})")
+
+    # Trackpy curve: same construction but on Trackpy's own mass column.
+    if len(tp_locs) > 0 and "mass" in tp_locs.columns:
+        tp_masses_desc = np.sort(tp_locs["mass"].values)[::-1]
+        tp_cum = np.arange(1, len(tp_masses_desc) + 1)
+        ax.semilogx(tp_masses_desc, tp_cum, "-", color="#1f77b4",
+                      lw=1.5, label=f"Trackpy  (N_total = {n_tp:,})")
+
+    # Markers: user's minmass on Trackpy, matched minmass on Torch.
+    ax.axvline(args.minmass, color="#1f77b4", lw=1.0, ls="--",
+                 alpha=0.6, label=f"trackpy minmass = {args.minmass}")
+    ax.axvline(matched_minmass, color="#d62728", lw=1.0, ls="--",
+                 alpha=0.8,
+                 label=f"matched torch minmass = {matched_minmass:.3f}")
+    # Horizontal at the reference count so the visual intersection is
+    # obvious.
+    ax.axhline(n_tp, color="gray", lw=0.8, ls=":", alpha=0.6)
+
+    ax.set_xlabel("Mass threshold")
+    ax.set_ylabel("N localisations above threshold")
+    ax.set_title(
+        f"Cumulative localisation count vs mass threshold\n"
+        f"Read across at N={n_tp:,} (the Trackpy reference) to find\n"
+        f"the Torch minmass that yields equal spot counts.")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    out_png = out_dir / "match_spot_count.png"
+    fig.savefig(out_png, dpi=140); plt.close(fig)
+    print(f"\n  Saved {out_png}")
+
+    print(f"\n  → Set the GUI's `minmass` to {matched_minmass:.3f} for "
+          f"trackpy-equivalent results on this dataset.")
+
+
 # ── Diagnose-extras mode ─────────────────────────────────────────────────────
 
 
@@ -505,6 +634,13 @@ def main():
                     help="Run full localise+link pipeline on both "
                          "backends and emit diagnostic plots that "
                          "characterise Torch's extra tracks.")
+    ap.add_argument("--match-spot-count", action="store_true",
+                    help="Find the Torch minmass value that makes "
+                         "Torch's localisation count match Trackpy's. "
+                         "Prints the matched minmass, re-runs the "
+                         "agreement metrics at that value, and saves "
+                         "a cumulative-mass plot showing where the "
+                         "threshold lands on both backends.")
     ap.add_argument("--out", type=str, default=None,
                     help="Output folder for --diagnose-extras plots. "
                          "Defaults to the input file's folder.")
@@ -555,6 +691,27 @@ def main():
                             percentile=args.percentile)
     print(f"  trackpy hold-out: {len(tp_val):,} locs in "
           f"{time.perf_counter() - t1:.1f}s")
+
+    # ── Match-spot-count mode ───────────────────────────────────────────────
+    # Find the Torch minmass that produces ≈ Trackpy's count.  Saves a
+    # cumulative-mass plot showing where the threshold lands on both
+    # backends.  Faster than --diagnose-extras (no linking + MSD fit),
+    # so reach for this first when you want a single number to plug
+    # into the GUI's minmass field.
+    if args.match_spot_count:
+        theta = Theta()
+        if args.noise_size       is not None: theta.noise_size          = float(args.noise_size)
+        if args.smoothing_offset is not None: theta.smoothing_offset    = int(args.smoothing_offset)
+        if args.refine_iters     is not None: theta.refine_max_iters    = int(args.refine_iters)
+        if args.shift_thresh     is not None: theta.refine_shift_thresh = float(args.shift_thresh)
+        print(f"  θ = {theta.as_dict()}")
+        from sptpalm_analysis import load_file as _load_file
+        _full, _meta_px, _meta_fi = _load_file(args.stack)
+        _full_pp = preprocess_stack(
+            _full, bg_radius=int(args.diameter * 2 + 1))
+        out_root = Path(args.out) if args.out else Path(args.stack).parent
+        _match_spot_count(args, _full, _full_pp, theta, out_root)
+        return
 
     # ── Diagnose-extras mode ────────────────────────────────────────────────
     # Runs the full pipeline (detect → link → MSD-fit) through both
