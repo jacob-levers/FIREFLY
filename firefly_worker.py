@@ -193,26 +193,32 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
 
 
 def _start_memory_watchdog(cancel_event, msg_queue,
-                            critical_gb: float = 0.8,
-                            warn_gb: float = 1.6,
+                            critical_gb: float | None = None,
+                            warn_gb: float | None = None,
                             poll_s: float = 0.5,
-                            mem_abort_event=None):
+                            mem_abort_event=None,
+                            sustained_polls: int = 6):
     """Background daemon that aborts the run cleanly if free RAM gets
     dangerously low.
 
-    Two thresholds:
-      * `warn_gb`     — log a warning once when crossed (1.6 GB default)
-      * `critical_gb` — set `cancel_event` so the pipeline raises
-                        `_Cancelled` at its next stop-check
-                        (0.8 GB default)
+    Scaling-aware thresholds (key change from earlier versions):
+    `critical_gb` and `warn_gb` default to fractions of total system
+    RAM, NOT hardcoded constants.  A 32 GB Windows box was hitting
+    the old 0.8 GB abort threshold during normal preprocessing-to-
+    localisation transitions (6 parallel workers each holding a
+    frame buffer for a beat before Python releases) — even though
+    the OS had GBs to spare.  Fractions of total mean smaller
+    machines still get protection, bigger machines aren't aborted
+    on transient spikes.
 
-    Prevents the OS from being squeezed into swap or a kernel panic by
-    the analysis itself when long-running stages (linking, MSD over a
-    huge tracks DataFrame, figure rendering, etc.) keep allocating
-    after the initial RAM-vs-stack check passes.
+    `sustained_polls` debounces aborts: we need to see N consecutive
+    sub-critical readings before pulling the plug.  Default 6 polls
+    × 0.5 s = 3 s sustained low memory, which is long enough to
+    distinguish "Python hasn't GC'd the last chunk yet" from "we're
+    truly OOM".
 
-    Returns a `stop` Event the caller .set()s in a `finally` block to
-    shut the watchdog down at the end of the run.
+    Returns a `stop` Event the caller `.set()`s in a `finally` block
+    to shut the watchdog down at the end of the run.
     """
     import threading
     try:
@@ -221,16 +227,39 @@ def _start_memory_watchdog(cancel_event, msg_queue,
         # Can't monitor without psutil — degrade silently.
         return None
 
+    # Resolve thresholds from total RAM if caller didn't pin them.
+    try:
+        total_gb = _psutil.virtual_memory().total / 1e9
+    except Exception:
+        total_gb = 8.0
+    # Env-var override — FIREFLY_MEM_ABORT_GB takes precedence over
+    # everything else.  Useful for users on shared machines who need a
+    # tighter or looser threshold than the default.
+    _env_abort = os.environ.get("FIREFLY_MEM_ABORT_GB")
+    if _env_abort:
+        try:    critical_gb = float(_env_abort)
+        except ValueError: pass
+    if critical_gb is None:
+        # 3% of total RAM, never less than 0.5 GB, never more than 2 GB.
+        critical_gb = max(0.5, min(2.0, total_gb * 0.03))
+    if warn_gb is None:
+        warn_gb = max(critical_gb * 2.0, 1.0)
+
     stop = threading.Event()
 
     def _watch():
         warned = False
+        low_streak = 0
         while not stop.wait(poll_s):
             try:
                 free_gb = _psutil.virtual_memory().available / 1e9
             except Exception:
                 continue
             if free_gb < critical_gb:
+                low_streak += 1
+                if low_streak < sustained_polls:
+                    # Transient spike — don't pull the plug yet.
+                    continue
                 if cancel_event is not None and not cancel_event.is_set():
                     # Set the abort signals BEFORE attempting to enqueue
                     # the log message.  Under memory pressure the queue
@@ -245,12 +274,20 @@ def _start_memory_watchdog(cancel_event, msg_queue,
                     try:
                         msg_queue.put_nowait(("log",
                             f"\n  ⚠ CRITICAL: only {free_gb:.2f} GB RAM "
-                            f"free — aborting to keep the system "
-                            f"responsive.  Close other apps or set a "
-                            f"larger FIREFLY_USER_RAM_RESERVE_GB and "
-                            f"re-run."))
+                            f"free for {sustained_polls * poll_s:.1f}s "
+                            f"(threshold {critical_gb:.2f} GB on a "
+                            f"{total_gb:.0f} GB machine) — aborting to "
+                            f"keep the system responsive.  Close other "
+                            f"apps or set FIREFLY_MEM_ABORT_GB to "
+                            f"override."))
                     except Exception: pass
                 return
+            else:
+                # RAM recovered — reset the streak counter and the
+                # one-shot warn flag so future dips are flagged again.
+                if low_streak > 0:
+                    low_streak = 0
+                    warned = False
             if not warned and free_gb < warn_gb:
                 # Same put_nowait pattern — never block the watchdog
                 # on a queue that the memory-starved GUI may have
@@ -260,7 +297,8 @@ def _start_memory_watchdog(cancel_event, msg_queue,
                         f"  ⚠ Memory pressure: {free_gb:.2f} GB RAM "
                         f"free (warn < {warn_gb:.1f} GB / abort < "
                         f"{critical_gb:.1f} GB).  Run will abort if "
-                        f"this drops further."))
+                        f"this stays low for "
+                        f"{sustained_polls * poll_s:.1f}s."))
                 except Exception: pass
                 warned = True
 
@@ -655,6 +693,17 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "wavelet_threshold_k":  float(p.get("wavelet_threshold_k", 3.0)),
                 "wavelet_min_distance": int(p.get("wavelet_min_distance", 3)),
             }
+            # TrackMate backend params — only consumed when backend ==
+            # "trackmate" (other backends ignore the extra kwargs).
+            # `pixel_size_um` is needed for radius_um → radius_px
+            # conversion inside the backend.
+            trackmate_kwargs = {
+                "trackmate_mode":       str(p.get("trackmate_mode", "log")),
+                "trackmate_radius_um":  float(p.get("trackmate_radius_um", 0.5)),
+                "trackmate_quality":    float(p.get("trackmate_quality", 5.0)),
+                "trackmate_median":     bool(p.get("trackmate_median", False)),
+                "pixel_size_um":        float(px),
+            }
             locs, mean_proj, max_proj, blink_proj, _mm = preprocess_and_localise_adaptive(
                 stack,
                 diameter=int(p["diameter"]),
@@ -667,7 +716,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 mass_cb=_mass_cb,
                 preview_cb=_preview_cb,
                 backend=p["backend"],
-                **wavelet_kwargs)
+                **wavelet_kwargs,
+                **trackmate_kwargs)
         finally:
             # Stop the preview pump and let it drain whatever's left
             _preview_stop.set()
@@ -966,6 +1016,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         memory=int(p["memory"]),
         min_len=int(p["min_track_len"]),
         max_len=p.get("max_track_len"),
+        linker=str(p.get("linker", "trackpy")),
         progress_cb=_link_progress,
         stop_event=cancel_event)
     n_tracks_found = tracks['particle'].nunique() if len(tracks) else 0

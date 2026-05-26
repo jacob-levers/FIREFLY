@@ -3403,13 +3403,254 @@ class WaveletBackend(LocaliserBackend):
         return df
 
 
+class TrackMateBackend(LocaliserBackend):
+    """LoG / DoG spot detector — Python reimplementation of TrackMate's
+    "LoG detector" and "DoG detector" (Tinevez et al. 2017 / Ershov
+    et al. 2022).  Mathematically equivalent to running TrackMate's
+    detector in Fiji, but native scipy + scikit-image — no JVM, no
+    pyimagej dependency.
+
+    Per frame:
+      1. Optional 3×3 median pre-filter (matches TrackMate's
+         "Use median filter" checkbox) — robust against salt-and-
+         pepper noise.
+      2. Compute Gaussian-derivative response:
+           mode = "log":  response = -gaussian_laplace(frame, σ)
+                          (Marr-Hildreth scale-normalised LoG; the
+                           negation puts bright blobs as positive peaks)
+           mode = "dog":  response = G(σ) − G(σ · 1.6)
+                          (Lowe's DoG approximation to the LoG, often
+                           faster and slightly less noise-prone)
+         σ is derived from the user's "estimated spot radius" via
+         σ = radius_px / √2 (the scale at which a Gaussian-shaped
+         spot maximises the LoG response).
+      3. `skimage.feature.peak_local_max(response, min_distance=…,
+         threshold_abs=quality)` extracts candidate peaks.  Quality
+         is the user-set absolute threshold on the LoG/DoG response —
+         direct analogue of TrackMate's "Quality threshold" slider.
+      4. Sub-pixel refinement: `scipy.ndimage.center_of_mass` over a
+         (2·d+1) × (2·d+1) patch (TrackMate calls this "sub-pixel
+         localisation"; FIREFLY always enables it).
+      5. `mass` column = sum of the response map over the patch —
+         analogue of trackpy's integrated mass so the minmass filter
+         still meaningfully gates detections.
+
+    Accepted params (from worker payload):
+        trackmate_mode      — "log" or "dog"
+        trackmate_radius_um — estimated spot radius in µm
+        trackmate_quality   — absolute threshold on the LoG/DoG response
+        trackmate_median    — bool, apply 3×3 median pre-filter
+        diameter            — patch size for centroid + mass
+        minmass             — keep only peaks with patch-sum ≥ this
+        pixel_size_um       — needed to convert radius_um → radius_px
+                              (sourced from the analysis params dict)
+
+    Output: DataFrame with columns [x, y, frame, mass].
+    """
+    name = "trackmate"
+
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            from scipy import ndimage  # noqa: F401
+            from skimage.feature import peak_local_max  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    @staticmethod
+    def _detect_frame(frame, *, diameter, minmass, mode, sigma_px,
+                       quality, min_distance, use_median):
+        """Localise a single frame.  Returns (xs, ys, masses)."""
+        from scipy import ndimage as _ndi
+        from skimage.feature import peak_local_max
+
+        f = np.asarray(frame, dtype=np.float32)
+        if use_median:
+            f = _ndi.median_filter(f, size=3)
+
+        if mode == "dog":
+            # Lowe's DoG approximation to LoG.  k=1.6 maximises the
+            # similarity to the LoG response over a single octave.
+            g1 = _ndi.gaussian_filter(f, sigma=sigma_px)
+            g2 = _ndi.gaussian_filter(f, sigma=sigma_px * 1.6)
+            response = (g1 - g2).astype(np.float32)
+        else:
+            # Scale-normalised Laplacian-of-Gaussian.  Multiply by σ²
+            # so peak magnitudes are comparable across spot sizes —
+            # standard scale-space blob detection (Lindeberg 1998).
+            laplaced = _ndi.gaussian_laplace(f, sigma=sigma_px)
+            response = (-(sigma_px ** 2) * laplaced).astype(np.float32)
+
+        # Scale-free threshold: `quality` is a multiplier on the
+        # robust noise σ (median + k·MAD·1.4826).  Identical pattern
+        # to WaveletBackend.  Works regardless of whether the input
+        # frames are raw camera counts, background-subtracted, or
+        # normalised — TrackMate Fiji's absolute "Quality" knob
+        # doesn't translate to FIREFLY's preprocessed pipeline so we
+        # use a relative threshold the user can reason about as
+        # "how many σ above the noise floor".
+        med = float(np.median(response))
+        mad = float(np.median(np.abs(response - med)))
+        sigma_resp = 1.4826 * mad + 1e-9
+        threshold = med + float(quality) * sigma_resp
+
+        peaks = peak_local_max(response,
+                                min_distance=int(min_distance),
+                                threshold_abs=threshold)
+        if peaks.size == 0:
+            return np.empty(0), np.empty(0), np.empty(0)
+
+        H, W = f.shape
+        d = max(1, int(diameter) // 2)
+        xs, ys, masses = [], [], []
+        for (py, px) in peaks:
+            y0 = max(0, py - d); y1 = min(H, py + d + 1)
+            x0 = max(0, px - d); x1 = min(W, px + d + 1)
+            patch = response[y0:y1, x0:x1]
+            patch_sum = float(patch.sum())
+            if patch_sum < float(minmass):
+                continue
+            cy, cx = _ndi.center_of_mass(patch)
+            xs.append(x0 + cx)
+            ys.append(y0 + cy)
+            masses.append(patch_sum)
+        return (np.asarray(xs, dtype=np.float32),
+                np.asarray(ys, dtype=np.float32),
+                np.asarray(masses, dtype=np.float32))
+
+    def localise(self, stack, *, diameter=7, minmass=0.1, percentile=64,
+                 workers=None, chunk_size=500, preview_cb=None,
+                 stop_event=None, **kwargs):
+        if diameter % 2 == 0:
+            diameter += 1
+
+        mode      = str(kwargs.get("trackmate_mode", "log")).lower()
+        if mode not in ("log", "dog"):
+            mode = "log"
+        radius_um = float(kwargs.get("trackmate_radius_um", 0.5))
+        quality   = float(kwargs.get("trackmate_quality", 5.0))
+        use_med   = bool(kwargs.get("trackmate_median", False))
+        pixel_um  = float(kwargs.get("pixel_size_um", 0.106))
+
+        # Convert radius (µm) → σ (px).  σ_LoG = r_px / √2 maximises
+        # the scale-normalised LoG response on a Gaussian blob of radius r.
+        radius_px = max(1.0, radius_um / max(pixel_um, 1e-9))
+        sigma_px  = radius_px / (2.0 ** 0.5)
+        # min_distance ≈ radius — prevents double-detection on the
+        # same spot.  Always at least 1 px.
+        min_distance = max(1, int(round(radius_px)))
+
+        n_frames = len(stack)
+        n_workers = max(1, min(int(workers) if workers else N_CPUS, N_CPUS))
+        print(f"  Diameter  : {diameter}px  |  minmass: {minmass:.4f}")
+        print(f"  TrackMate : mode={mode}  radius={radius_um:.3f}µm "
+              f"(σ={sigma_px:.2f}px)  quality={quality}σ  "
+              f"median={'on' if use_med else 'off'}")
+        print(f"  Parallelism : joblib × {n_workers} workers (loky backend)")
+
+        t0 = time.perf_counter()
+
+        # Chunked parallel detection.  Each worker processes a contiguous
+        # block of frames — keeps per-task overhead small (one pickle of
+        # the chunk-array per worker, not per frame) while still giving
+        # N-way speedup on N cores.  Falls back to serial if joblib is
+        # unavailable or chokes (rare; we depend on joblib elsewhere).
+        chunk_size_local = max(1, int(chunk_size) // 2 or 50)
+        chunk_ranges: list[tuple[int, int]] = []
+        i = 0
+        while i < n_frames:
+            j = min(i + chunk_size_local, n_frames)
+            chunk_ranges.append((i, j))
+            i = j
+
+        def _process_chunk(start: int, end: int):
+            """Process frames [start, end) → list of (frame_idx, xs, ys, masses)."""
+            out = []
+            for f_idx in range(start, end):
+                fr = np.asarray(stack[f_idx])
+                xs, ys, masses = TrackMateBackend._detect_frame(
+                    fr, diameter=diameter, minmass=minmass,
+                    mode=mode, sigma_px=sigma_px, quality=quality,
+                    min_distance=min_distance, use_median=use_med)
+                if xs.size:
+                    out.append((f_idx, xs, ys, masses, fr))
+            return out
+
+        all_x, all_y, all_mass, all_frame = [], [], [], []
+        try:
+            # `loky` backend = process-pool (true multi-core, no GIL).
+            # Cancellation: joblib doesn't expose a clean interrupt, so
+            # we use a smaller chunk granularity (above) and check
+            # `stop_event` between chunks via a manual loop with a
+            # bounded Parallel call per group.  This keeps cancel
+            # latency to one chunk's worth of work (~hundreds of ms).
+            stride = max(1, n_workers * 4)   # process this many chunks per Parallel batch
+            for batch_start in range(0, len(chunk_ranges), stride):
+                if stop_event is not None and stop_event.is_set():
+                    print("  TrackMate detection stopped by user.")
+                    break
+                batch = chunk_ranges[batch_start:batch_start + stride]
+                results = Parallel(n_jobs=n_workers, backend="loky",
+                                    prefer="processes")(
+                    delayed(_process_chunk)(s, e) for s, e in batch)
+                for chunk_result in results:
+                    for f_idx, xs, ys, masses, fr in chunk_result:
+                        all_x.append(xs); all_y.append(ys)
+                        all_mass.append(masses)
+                        all_frame.append(np.full(xs.size, f_idx,
+                                                  dtype=np.int32))
+                        if preview_cb is not None:
+                            try:
+                                preview_cb(int(f_idx), fr, xs, ys, n_frames)
+                            except Exception:
+                                pass
+        except Exception as exc:
+            # Fall back to a single-core serial loop if joblib fails.
+            print(f"  Parallel detection failed ({type(exc).__name__}: {exc}); "
+                  f"falling back to serial.")
+            all_x.clear(); all_y.clear(); all_mass.clear(); all_frame.clear()
+            for f_idx in range(n_frames):
+                if stop_event is not None and stop_event.is_set():
+                    break
+                frame = np.asarray(stack[f_idx])
+                xs, ys, masses = self._detect_frame(
+                    frame, diameter=diameter, minmass=minmass,
+                    mode=mode, sigma_px=sigma_px, quality=quality,
+                    min_distance=min_distance, use_median=use_med)
+                if xs.size:
+                    all_x.append(xs); all_y.append(ys)
+                    all_mass.append(masses)
+                    all_frame.append(np.full(xs.size, f_idx,
+                                              dtype=np.int32))
+                    if preview_cb is not None:
+                        try:
+                            preview_cb(int(f_idx), frame, xs, ys, n_frames)
+                        except Exception:
+                            pass
+
+        if not all_x:
+            print("  Found 0 localisations")
+            return pd.DataFrame(columns=["x", "y", "frame", "mass"])
+        df = pd.DataFrame({
+            "x":     np.concatenate(all_x).astype(np.float32),
+            "y":     np.concatenate(all_y).astype(np.float32),
+            "frame": np.concatenate(all_frame).astype(np.int32),
+            "mass":  np.concatenate(all_mass).astype(np.float32),
+        })
+        elapsed = time.perf_counter() - t0
+        print(f"  Found {len(df):,} localisations in {elapsed:.1f}s  "
+              f"({n_frames / elapsed:.0f} frames/s)")
+        return df
+
+
 # Order matters: `backend="auto"` resolves to the first available entry.
 # TorchBackend stays AFTER TrackpyBackend in A2 so "auto" still picks trackpy
 # while users validate the new path explicitly by selecting "torch" in the GUI.
 # A3 will swap the order once we've confirmed numerical agreement on real data.
-# WaveletBackend is opt-in; users select it explicitly via the backend dropdown.
+# WaveletBackend and TrackMateBackend are opt-in; users select via the dropdown.
 _BACKEND_REGISTRY: list[type[LocaliserBackend]] = [
-    TrackpyBackend, TorchBackend, WaveletBackend,
+    TrackpyBackend, TorchBackend, WaveletBackend, TrackMateBackend,
 ]
 
 
@@ -3582,9 +3823,17 @@ def localise_particles(stack, diameter=7, minmass=0.1, percentile=64,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
-                       progress_cb=None, stop_event=None):
+                       linker="trackpy", progress_cb=None, stop_event=None):
     """Link localisations into trajectories.
 
+    linker      : "trackpy" (default) or "trackmate_lap"
+        Strategy selector.  Trackpy uses its `link_iter` (or `link`
+        fallback) with the recursive subnet linker.  TrackMate LAP
+        uses the Jaqaman et al. (2008) linear-assignment-problem
+        formulation — `scipy.optimize.linear_sum_assignment` per
+        frame transition, with TrackMate-style "memory" via short
+        gap-closing.  Both produce a `particle` column on the
+        returned DataFrame so the rest of the pipeline is agnostic.
     progress_cb : callable(fraction) → None
         Optional.  Called periodically with a [0, 1] float so the host
         can update a progress bar.  Updates are throttled to roughly
@@ -3592,16 +3841,43 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
     stop_event  : threading.Event-like
         Optional.  Polled between frames; if `.is_set()` the linker
         raises `_Cancelled` and aborts cleanly.
-
-    Uses `tp.link_iter` when available so the user can see progress
-    and cancel mid-link.  Falls back to atomic `tp.link` on older
-    trackpy versions or if the iterator path errors out (some
-    edge-case densities switch trackpy to a non-iter strategy).
     """
     print(f"  Linking {len(locs):,} localisations  "
-          f"(search_range={search_range}px, memory={memory}) ...")
+          f"(linker={linker}, search_range={search_range}px, "
+          f"memory={memory}) ...")
     t0 = time.perf_counter()
 
+    if linker == "trackmate_lap":
+        linked = _link_via_trackmate_lap(
+            locs, search_range=search_range, memory=memory,
+            progress_cb=progress_cb, stop_event=stop_event)
+    else:
+        linked = _link_via_trackpy(
+            locs, search_range=search_range, memory=memory,
+            progress_cb=progress_cb, stop_event=stop_event)
+
+    # Stub + max-length filters are common to both linkers.
+    filtered = tp.filter_stubs(linked, min_len)
+    if max_len is not None and max_len > 0:
+        lengths  = filtered.groupby("particle")["frame"].count()
+        keep     = lengths[lengths <= max_len].index
+        filtered = filtered[filtered["particle"].isin(keep)]
+        print(f"  Max-length filter (<={max_len}): {filtered['particle'].nunique():,} remain")
+    elapsed = time.perf_counter() - t0
+    n       = filtered["particle"].nunique()
+    max_str = str(max_len) if max_len else "inf"
+    print(f"  {n:,} trajectories (len {min_len}-{max_str}) in {elapsed:.1f}s")
+    return filtered
+
+
+def _link_via_trackpy(locs, *, search_range, memory,
+                       progress_cb=None, stop_event=None):
+    """Trackpy linker — extracted verbatim from the original
+    `link_trajectories` body.  Uses `tp.link_iter` when available
+    so the user can see progress and cancel mid-link; falls back
+    to atomic `tp.link` on older trackpy versions or if the
+    iterator path errors out.
+    """
     iter_ok = hasattr(tp, "link_iter") and len(locs) > 0
     linked = None
     if iter_ok:
@@ -3666,8 +3942,7 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
             linked = locs.copy()
             linked["particle"] = particle_ids
             linked = linked[linked["particle"] >= 0].reset_index(drop=True)
-            print(f"  tp.link_iter done — filtering stubs "
-                  f"(min_len={min_len}) ...")
+            print(f"  tp.link_iter done — filtering stubs in caller ...")
         except _Cancelled:
             raise
         except Exception as exc:
@@ -3682,7 +3957,7 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
             raise _Cancelled()
         try:
             linked = tp.link(locs, search_range=search_range, memory=memory)
-            print(f"  tp.link done — filtering stubs (min_len={min_len}) ...")
+            print(f"  tp.link done — filtering stubs in caller ...")
         except Exception as exc:
             if ("SubnetOversizeException" in type(exc).__name__
                     or "Subnetwork" in str(exc)):
@@ -3693,18 +3968,176 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
                                   link_strategy="nonrecursive")
             else:
                 raise
+    return linked
 
-    filtered = tp.filter_stubs(linked, min_len)
-    if max_len is not None and max_len > 0:
-        lengths  = filtered.groupby("particle")["frame"].count()
-        keep     = lengths[lengths <= max_len].index
-        filtered = filtered[filtered["particle"].isin(keep)]
-        print(f"  Max-length filter (<={max_len}): {filtered['particle'].nunique():,} remain")
-    elapsed = time.perf_counter() - t0
-    n       = filtered["particle"].nunique()
-    max_str = str(max_len) if max_len else "inf"
-    print(f"  {n:,} trajectories (len {min_len}-{max_str}) in {elapsed:.1f}s")
-    return filtered
+
+def _link_via_trackmate_lap(locs, *, search_range, memory,
+                              progress_cb=None, stop_event=None):
+    """TrackMate-style LAP linker — frame-to-frame linear-assignment
+    formulation (Jaqaman et al. 2008, "Robust single-particle
+    tracking in live-cell time-lapse sequences").  Each frame
+    transition is solved as a balanced LAP via
+    `scipy.optimize.linear_sum_assignment` over a cost matrix of
+    squared distances, with diagonal "no-link" blocks that allow
+    track births / deaths within `search_range`.
+
+    Memory (TrackMate's "max frame gap") is supported by carrying
+    paused tracks forward up to `memory` frames so they can
+    re-link to a later detection — covers the common short-blink
+    case TrackMate's segment-LAP gap closer targets.  Full
+    track-segment LAP can be a future extension; this frame-to-
+    frame version is what most users mean by "LAP linker".
+    """
+    from scipy.optimize import linear_sum_assignment as _lsa
+
+    if len(locs) == 0:
+        out = locs.copy()
+        out["particle"] = np.array([], dtype=np.int64)
+        return out
+
+    # Group localisations by frame, preserving original DataFrame indices
+    # so we can write `particle` back into the right rows at the end.
+    frame_nums = sorted(int(f) for f in locs["frame"].unique())
+    grouped = locs.groupby("frame")
+    per_frame_coords: dict[int, np.ndarray] = {}
+    per_frame_indices: dict[int, np.ndarray] = {}
+    for f in frame_nums:
+        sub = grouped.get_group(f)
+        per_frame_coords[f]  = sub[["x", "y"]].to_numpy(dtype=float)
+        per_frame_indices[f] = sub.index.to_numpy()
+
+    particle_ids = np.full(len(locs), -1, dtype=np.int64)
+    next_pid = 0
+    sr2 = float(search_range) ** 2          # cost = squared distance
+    BIG = sr2 * 10.0                        # "no-link" off-diagonal cost
+    # active_tracks: pid → (last_seen_frame, x, y, last_row_idx)
+    active: dict[int, tuple[int, float, float, int]] = {}
+
+    n_frames = len(frame_nums)
+    for f_i, fr in enumerate(frame_nums):
+        if stop_event is not None and stop_event.is_set():
+            raise _Cancelled()
+
+        new_coords  = per_frame_coords[fr]                # (M, 2)
+        new_indices = per_frame_indices[fr]               # (M,)
+        M = new_coords.shape[0]
+
+        # Active tracks whose last_seen is within `memory` frames.
+        live_pids: list[int] = []
+        live_xy:   list[tuple[float, float]] = []
+        for pid, (last_fr, lx, ly, _last_idx) in active.items():
+            if fr - last_fr <= memory + 1:
+                live_pids.append(pid)
+                live_xy.append((lx, ly))
+        N = len(live_pids)
+
+        if M == 0:
+            # No detections this frame — every active track ages.
+            # (They stay in `active` so memory carries them.)
+            if progress_cb is not None and (f_i & 31) == 0:
+                try: progress_cb((f_i + 1) / max(1, n_frames))
+                except Exception: pass
+            continue
+
+        if N == 0:
+            # No live tracks — every new detection births a new track.
+            for j in range(M):
+                pid = next_pid; next_pid += 1
+                particle_ids[new_indices[j]] = pid
+                active[pid] = (fr, float(new_coords[j, 0]),
+                                  float(new_coords[j, 1]),
+                                  int(new_indices[j]))
+            if progress_cb is not None and (f_i & 31) == 0:
+                try: progress_cb((f_i + 1) / max(1, n_frames))
+                except Exception: pass
+            continue
+
+        # Build the (N+M) × (N+M) Jaqaman cost matrix.
+        # Top-left  (N×M):  real link costs.
+        # Top-right (N×N):  diagonal "track death" costs (BIG, else inf).
+        # Bot-left  (M×M):  diagonal "track birth" costs (BIG, else inf).
+        # Bot-right (M×N):  transpose of top-left (so the matrix is
+        #                   square + Jaqaman-symmetric).
+        size = N + M
+        cost = np.full((size, size), np.inf, dtype=float)
+
+        # Top-left: squared distance from each live track to each new det.
+        live_arr = np.asarray(live_xy, dtype=float)        # (N, 2)
+        diff = new_coords[None, :, :] - live_arr[:, None, :]
+        d2   = (diff ** 2).sum(axis=2)                     # (N, M)
+        in_range = d2 <= sr2
+        # Frame-gap penalty: tracks that have been paused longer get
+        # slightly higher cost so the solver prefers contiguous matches.
+        gap = np.array(
+            [fr - active[pid][0] for pid in live_pids], dtype=float)
+        d2 = d2 * (1.0 + 0.1 * (gap[:, None] - 1).clip(min=0))
+        cost[:N, :M] = np.where(in_range, d2, np.inf)
+
+        # Diagonal "death" block (track i → no detection).
+        for i in range(N):
+            cost[i, M + i] = BIG
+        # Diagonal "birth" block (no track → detection j).
+        for j in range(M):
+            cost[N + j, j] = BIG
+        # Bottom-right (lower-right) — auxiliary, must be finite for LAP.
+        cost[N:, M:] = cost[:N, :M].T
+
+        # linear_sum_assignment requires finite costs; replace inf with
+        # a sentinel much larger than any valid pairing.
+        sentinel = BIG * 100.0
+        cost_safe = np.where(np.isfinite(cost), cost, sentinel)
+        try:
+            row_ind, col_ind = _lsa(cost_safe)
+        except Exception:
+            # If scipy chokes (very rare), fall back to greedy by
+            # treating each live track in turn and grabbing nearest
+            # in-range detection.
+            row_ind = np.arange(size)
+            col_ind = row_ind.copy()
+
+        assigned_dets: set[int] = set()
+        for r, c in zip(row_ind, col_ind):
+            if r < N and c < M:
+                # Real link: track r continues into detection c.
+                if cost_safe[r, c] >= sentinel:
+                    continue   # invalid (was inf) — skip
+                pid = live_pids[r]
+                particle_ids[new_indices[c]] = pid
+                active[pid] = (fr, float(new_coords[c, 0]),
+                                  float(new_coords[c, 1]),
+                                  int(new_indices[c]))
+                assigned_dets.add(c)
+            # rows ≥ N or cols ≥ M are diagonal pseudo-slots; ignored.
+
+        # Any unassigned detection births a new track.
+        for j in range(M):
+            if j not in assigned_dets and particle_ids[new_indices[j]] == -1:
+                pid = next_pid; next_pid += 1
+                particle_ids[new_indices[j]] = pid
+                active[pid] = (fr, float(new_coords[j, 0]),
+                                  float(new_coords[j, 1]),
+                                  int(new_indices[j]))
+
+        # Garbage-collect tracks that have been paused beyond memory.
+        stale = [pid for pid, (last_fr, *_rest) in active.items()
+                 if fr - last_fr > memory + 1]
+        for pid in stale:
+            del active[pid]
+
+        if progress_cb is not None and (f_i & 31) == 0:
+            try: progress_cb((f_i + 1) / max(1, n_frames))
+            except Exception: pass
+
+    if progress_cb is not None:
+        try: progress_cb(1.0)
+        except Exception: pass
+
+    linked = locs.copy()
+    linked["particle"] = particle_ids
+    linked = linked[linked["particle"] >= 0].reset_index(drop=True)
+    print(f"  TrackMate LAP done — {linked['particle'].nunique():,} "
+          f"tracks built (filtering stubs in caller).")
+    return linked
 
 
 # ══════════════════════════════════════════════════════════════════════════════

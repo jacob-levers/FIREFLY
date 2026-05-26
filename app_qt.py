@@ -113,6 +113,59 @@ TAB_VISUALISE = "Visualise"
 TAB_REPROCESS = "Re-process"    # was "Post-process"
 
 
+# ── Motion-class palette (single source of truth) ────────────────────────────
+# Used by:
+#   • Visualise tab — track-filter checkbox swatches
+#   • Visualise tab — napari Tracks layer colormap (via _make_motion_colormap)
+#   • Visualise tab — DBSCAN cluster overlay's motion-mode palette
+# Order matches the `motion_to_int` mapping in _ws_apply_motion_filter:
+#   0=Immobile, 1=Confined, 2=Brownian, 3=Directed, 4=Unknown.
+# Must stay in sync with sptpalm_analysis.MC — the figure-generation
+# palette.  Inspector swatches, napari layer colours, and the PDF
+# figures all read from these strings, so editing them here updates
+# every surface at once.
+_MOTION_PALETTE = {
+    "Immobile":  "#e05252",   # red
+    "Confined":  "#f5a623",   # orange
+    "Brownian":  "#4a90d9",   # blue
+    "Directed":  "#7ed321",   # green
+    "Unknown":   "#aaaaaa",   # grey
+}
+_MOTION_ORDER = ["Immobile", "Confined", "Brownian", "Directed", "Unknown"]
+
+
+_MOTION_CMAP_NAME = "firefly_motion"
+
+
+def _register_motion_colormap() -> str:
+    """Register a discrete 5-stop step colormap matching `_MOTION_PALETTE`
+    in napari's global colormap registry and return its name.
+
+    Idempotent — re-calling is cheap (dict overwrite).  We return the
+    NAME (not the Colormap instance) because napari's Tracks layer
+    internally hashes its `colormap` argument; passing a Colormap
+    instance raises `TypeError: unhashable type: 'Colormap'` and
+    aborts the layer build (the "filter error: unhashable type:
+    'Colormap'" the user hit).  Passing a registered name dodges
+    that code path entirely.
+    """
+    try:
+        from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
+    except Exception:
+        return "turbo"   # graceful fallback for very old napari
+    rgba = [QtGui.QColor(_MOTION_PALETTE[k]).getRgbF() for k in _MOTION_ORDER]
+    # napari step colormaps need N+1 control points for N colours
+    # (each pair defines a half-open interval).  Five 0.2-wide cells
+    # over [0, 1] ensure motion_int values 0..4 (normalised to
+    # 0.0, 0.25, 0.5, 0.75, 1.0) each land in their own bin.
+    cmap = Colormap(colors=rgba,
+                    controls=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+                    interpolation="zero",
+                    name=_MOTION_CMAP_NAME)
+    AVAILABLE_COLORMAPS[_MOTION_CMAP_NAME] = cmap
+    return _MOTION_CMAP_NAME
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  SUBPROCESS WORKER  (defined in firefly_worker.py — DO NOT REDEFINE HERE)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1262,10 +1315,10 @@ class _TrackInspector(QtWidgets.QFrame):
             self._grid.addWidget(lbl, r, 0, Qt.AlignmentFlag.AlignLeft)
             self._grid.addWidget(val, r, 1, Qt.AlignmentFlag.AlignLeft)
 
-        motion_colour = {
-            "Immobile": _THEME['DANGER'], "Confined": _THEME['WARN'],
-            "Brownian": _THEME['ACC'],   "Directed": _THEME['SUCCESS'],
-        }
+        # Pull straight from _MOTION_PALETTE so the inspector's swatch
+        # matches the napari layer colour AND the figure colour for that
+        # motion class — single source of truth.
+        motion_colour = dict(_MOTION_PALETTE)
         r = 0
         _row(r, "Particle ID", f"#{particle_id}"); r += 1
         if length is not None:
@@ -1495,13 +1548,8 @@ class _ResultsPanel(QtWidgets.QFrame):
             total = sum(motion_counts.values()) or 1
             # Standard order so the row is predictable
             order = ["Immobile", "Confined", "Brownian", "Directed", "Unknown"]
-            colour_map = {
-                "Immobile": _THEME['DANGER'],
-                "Confined": _THEME['WARN'],
-                "Brownian": _THEME['ACC'],
-                "Directed": _THEME['SUCCESS'],
-                "Unknown":  _THEME['TXT_MUTED'],
-            }
+            # Same source of truth as the napari layers and figures.
+            colour_map = dict(_MOTION_PALETTE)
             for cls in order:
                 if cls in motion_counts:
                     n = motion_counts[cls]
@@ -4240,11 +4288,77 @@ class MainWindow(QtWidgets.QMainWindow):
         # wired up below and selects "wavelet".
         self._set_wavelet_params_visible(False)
 
+        # ── TrackMate backend params ────────────────────────────────
+        # Only meaningful when Detection backend = "TrackMate (LoG/DoG)".
+        # Same hide-by-default mechanism as the wavelet rows so the
+        # Detection sidebar stays compact for other backends.
+        self.c_trackmate_mode = _QuietComboBox()
+        self.c_trackmate_mode.addItems(["LoG", "DoG"])
+        self.c_trackmate_mode.setToolTip(
+            "TrackMate spot detector kernel.\n"
+            "• LoG — scale-normalised Laplacian-of-Gaussian; the\n"
+            "  classic TrackMate default, best signal-to-noise on\n"
+            "  isolated PSFs.\n"
+            "• DoG — Difference-of-Gaussians; slightly faster and a\n"
+            "  bit more tolerant of bright background structure.")
+        gl.addRow("TrackMate mode", self.c_trackmate_mode)
+
+        self.s_trackmate_radius = self._spin_dbl(0.5, 0.05, 2.0, 0.01,
+            decimals=3,
+            tip="Estimated spot RADIUS in micrometres (TrackMate's\n"
+                "'estimated radius' field).  Sigma for the LoG/DoG\n"
+                "kernel is derived as radius/√2.  For typical sptPALM\n"
+                "PSFs at 0.106 µm/px try 0.3–0.5 µm.")
+        gl.addRow("TrackMate radius (µm)", self.s_trackmate_radius)
+
+        self.s_trackmate_quality = self._spin_dbl(3.0, 0.0, 20.0, 0.1,
+            decimals=2,
+            tip="Quality threshold on the LoG/DoG response, expressed as\n"
+                "a multiplier of the robust noise σ (median + k·MAD).\n"
+                "Higher = stricter detection (fewer spots).  Scale-free:\n"
+                "the same number works whether the input is raw camera\n"
+                "counts, background-subtracted, or normalised.\n"
+                "Typical values: 2.0–4.0 for clean PSFs, 4.0–8.0 for\n"
+                "noisier movies.  Differs from TrackMate Fiji's absolute\n"
+                "'Quality' field (Fiji works on raw frames; FIREFLY's\n"
+                "backend works on the preprocessed pipeline output).")
+        gl.addRow("TrackMate quality (σ)", self.s_trackmate_quality)
+
+        self.c_trackmate_median = QtWidgets.QCheckBox(
+            "Use median pre-filter")
+        self.c_trackmate_median.setToolTip(
+            "Apply a 3×3 median filter before computing the LoG/DoG\n"
+            "response.  Matches TrackMate's 'Use median filter'\n"
+            "checkbox — robust against salt-and-pepper / camera noise.")
+        gl.addRow("", self.c_trackmate_median)
+
+        self._trackmate_param_widgets = (
+            self.c_trackmate_mode,
+            self.s_trackmate_radius,
+            self.s_trackmate_quality,
+            self.c_trackmate_median,
+        )
+        self._trackmate_param_form = gl
+        self._set_trackmate_params_visible(False)
+
         layout.addWidget(sec)
 
         # ── Linking ───────────────────────────────────────────────────────
         sec, gl = self._make_form_section("Linking")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        # Linker strategy — Trackpy by default; TrackMate LAP optional.
+        self.c_linker = _QuietComboBox()
+        self.c_linker.addItems(list(self._LINKER_LABEL_TO_VALUE.keys()))
+        self.c_linker.setToolTip(
+            "Track-linking algorithm.\n"
+            "• Trackpy (default) — recursive subnet linker; fast and\n"
+            "  proven, the FIREFLY historical default.\n"
+            "• TrackMate LAP — Jaqaman et al. (2008) linear-assignment\n"
+            "  formulation, the same algorithm as TrackMate in Fiji.\n"
+            "  Solves each frame transition as a global LAP; tends to\n"
+            "  produce slightly fewer but longer tracks under dense\n"
+            "  conditions.  Memory (frame-gap) is supported.")
+        gl.addRow("Linker", self.c_linker)
         self.s_search_range = self._spin_int(5, 1, 30,
             tip="Maximum pixel distance a particle can move between consecutive\n"
                 "frames. Calibrate from your data: bigger search_range tolerates\n"
@@ -4510,6 +4624,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 value = ""
             self._set_wavelet_params_visible(value == "wavelet")
+            self._set_trackmate_params_visible(value == "trackmate")
         self.c_backend.currentTextChanged.connect(_on_backend_changed)
         # Apply once on construction so the rows reflect the initial
         # selection (Auto / Trackpy / Wavelet …).
@@ -5996,6 +6111,23 @@ class MainWindow(QtWidgets.QMainWindow):
                 try:    w.setVisible(bool(visible))
                 except Exception: pass
 
+    def _set_trackmate_params_visible(self, visible: bool):
+        """Show / hide the TrackMate-backend param rows.  Same
+        mechanism as `_set_wavelet_params_visible`; toggled by the
+        backend-combo's currentTextChanged signal so only the active
+        backend's rows are shown.
+        """
+        form = getattr(self, "_trackmate_param_form", None)
+        widgets = getattr(self, "_trackmate_param_widgets", ()) or ()
+        if form is None or not widgets:
+            return
+        for w in widgets:
+            try:
+                form.setRowVisible(w, bool(visible))
+            except (AttributeError, TypeError):
+                try:    w.setVisible(bool(visible))
+                except Exception: pass
+
     def _push_detection_preview_params(self):
         """Forward the current diameter / minmass / bg settings to the
         embedded viewer.  Bg settings matter because the pipeline runs
@@ -6432,34 +6564,35 @@ class MainWindow(QtWidgets.QMainWindow):
             "napari and slow the rest of FIREFLY down.")
         load_v.addWidget(self.c_ws_auto)
 
-        # ── Motion-class filter (re-parented into the sidebar) ────────────
-        # Checkboxes hide entire motion classes from the Tracks overlay.
-        # Used to be an inline row across the top of the tab body; now
-        # lives in the left sidebar's Visualise page so it doesn't
-        # eat horizontal room from the napari viewer.
+        # Reset-view: re-centre + re-fit napari camera on all visible
+        # layers.  One-click recovery after the user zooms / pans off
+        # the sample and gets lost.
+        self.btn_ws_reset_view = QtWidgets.QPushButton("Reset view")
+        self.btn_ws_reset_view.setToolTip(
+            "Re-centre the napari viewer on all visible layers — recover "
+            "from accidental pan/zoom that lost the sample off-screen.")
+        self.btn_ws_reset_view.clicked.connect(self._ws_reset_view)
+        load_v.addWidget(self.btn_ws_reset_view)
+
+        # ── Track filter sidebar (now layer-based) ────────────────────────
+        # Each motion class becomes its OWN napari Tracks layer (built by
+        # `_ws_apply_motion_filter`), so visibility is controlled directly
+        # from napari's built-in layer-list checkboxes — no parallel UI
+        # needed.  Sidebar keeps only the min-length filter + an
+        # informational label pointing users at the layer list.
         self._vis_filter_widget = QtWidgets.QWidget()
         filter_v = QtWidgets.QVBoxLayout(self._vis_filter_widget)
         filter_v.setContentsMargins(0, 0, 0, 0)
         filter_v.setSpacing(4)
-        filter_v.addWidget(QtWidgets.QLabel("Show tracks:"))
+        _hint = QtWidgets.QLabel(
+            "Each motion class is its own layer in the viewer — "
+            "toggle visibility from the napari layer list.")
+        _hint.setWordWrap(True)
+        _hint.setStyleSheet("color: #888;")
+        filter_v.addWidget(_hint)
+        # `_ws_motion_checks` is kept (empty) so any leftover references
+        # in `_ws_apply_motion_filter` degrade gracefully if hit.
         self._ws_motion_checks: dict[str, QtWidgets.QCheckBox] = {}
-        # Order = visual order; colours match the per-class fill used in
-        # the figures so the user gets a consistent palette.
-        for cls, swatch in (
-                ("Immobile",  "#7f7f7f"),
-                ("Confined",  "#1f77b4"),
-                ("Brownian",  "#2ca02c"),
-                ("Directed",  "#d62728"),
-                ("Unknown",   "#bbbbbb"),
-        ):
-            cb = QtWidgets.QCheckBox(cls)
-            cb.setChecked(True)
-            cb.setStyleSheet(
-                f"QCheckBox::indicator:checked {{ background:{swatch}; "
-                f"border:1px solid {swatch}; }}")
-            cb.toggled.connect(self._ws_apply_motion_filter)
-            filter_v.addWidget(cb)
-            self._ws_motion_checks[cls] = cb
 
         # Min-length filter — drop one/two-point detections that
         # clutter the field visually and aren't diffusion-classifiable.
@@ -6579,6 +6712,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ws_visible_pids: "set[int] | None" = None
         self._ws_diff_df:   "pd.DataFrame | None" = None
         self._ws_tracks_layer = None
+        # Per-motion-class napari layer names so a rebuild can clean up
+        # cleanly without stale layers lingering.  Keyed by class name
+        # (Immobile / Confined / Brownian / Directed / Unknown) →
+        # napari layer name string.
+        self._ws_motion_layer_names: dict[str, str] = {}
+        # Per-class particle-ID sets so the click resolver can map a
+        # click back to "which class is this from" by checking layer
+        # visibility against these sets — no need for a separate cached
+        # `_ws_visible_pids`.
+        self._ws_motion_pids: dict[str, set] = {}
         # Cluster-map state.  Populated by _ws_on_load_clusters; the
         # DBSCAN sliders refresh _ws_cluster_layer via _ws_recluster_now.
         self._ws_cluster_layer = None
@@ -6883,6 +7026,19 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         return self._napari_viewer
 
+    def _ws_reset_view(self):
+        """Re-centre + re-fit the napari camera on all visible layers.
+        Recovery affordance for users who've zoomed / panned off the
+        sample and need to get back to the data quickly.
+        """
+        v = self._ws_viewer_or_warn()
+        if v is None:
+            return
+        try:
+            v.reset_view()
+        except Exception:
+            pass
+
     def _ws_on_load_stack(self):
         v = self._ws_viewer_or_warn()
         if v is None:
@@ -6985,19 +7141,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 self, "Load failed",
                 f"Couldn't load tracks from {os.path.basename(csv_path)}:\n\n{exc}")
 
-    # ── Motion-class + length filter ──────────────────────────────────────
+    # ── Per-motion-class layer builder ────────────────────────────────────
     def _ws_apply_motion_filter(self, *_args, initial: bool = False):
-        """Re-build the napari Tracks layer with only the currently-
-        selected motion classes and length ≥ min_len.  Called whenever
-        the user toggles a filter checkbox or changes the spinbox.
+        """Re-build the napari viewer's per-motion-class Tracks layers.
 
-        `initial=True` is passed by _ws_load_tracks_path when this is
-        the first build for a freshly loaded CSV (skips the "nothing
-        loaded" early-return so we always create the layer).
+        One layer is created per motion class present in the dataset
+        (Immobile / Confined / Brownian / Directed / Unknown), each
+        rendered in its `_MOTION_PALETTE` colour — same palette used by
+        the analysis figures, so the napari view matches the report PDFs.
+        Visibility of individual classes is controlled directly from
+        napari's layer list — there's no parallel checkbox UI.
+
+        The min-length spinbox still drops short tracks across all
+        layers.  `initial=True` is passed by `_ws_load_tracks_path` on
+        first load so we don't bail out when the viewer hasn't been
+        warned about yet.
         """
         df = getattr(self, "_ws_tracks_df", None)
         if df is None:
-            # Filter changed but no tracks loaded yet — nothing to do.
             try: self._ws_filter_status.setText("")
             except Exception: pass
             return
@@ -7008,144 +7169,179 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         try:
+            import numpy as _np
             import pandas as pd  # noqa: F401 — used implicitly via df
 
             diff_df = getattr(self, "_ws_diff_df", None)
-            motion_map = {}
+            motion_map: dict = {}
             if diff_df is not None and "motion" in diff_df.columns:
                 motion_map = dict(zip(diff_df["particle"],
                                       diff_df["motion"]))
-
-            # Which classes does the user want to see?
-            checks = getattr(self, "_ws_motion_checks", {}) or {}
-            allowed = {cls for cls, cb in checks.items() if cb.isChecked()}
-            if not allowed:
-                # User unchecked everything — degrade gracefully (show
-                # nothing) rather than crashing on an empty layer.
-                allowed = set()
 
             min_len = 1
             try:    min_len = int(self._ws_min_len.value())
             except Exception: pass
 
-            # Per-track length (number of detections) for the length gate.
+            # Per-track length gate.  Apply BEFORE the per-class split
+            # so each layer only ever sees ≥ min_len tracks.
             try:
                 track_lens = df.groupby("particle").size()
             except Exception:
                 track_lens = None
 
-            # Build the per-row boolean mask.
-            pids = df["particle"].values
+            # ── Tear down any prior per-class layers ──────────────────
+            # Recorded layer names from the previous rebuild so we can
+            # remove them surgically without touching unrelated layers
+            # (the image stack, cluster overlay, etc.).  Also remove the
+            # legacy single-layer name if it lingers from an older session.
+            old_names = list(
+                getattr(self, "_ws_motion_layer_names", {}).values())
+            legacy = getattr(self, "_ws_tracks_layer_name", None)
+            if legacy:
+                old_names.append(legacy)
+            for nm in old_names:
+                try:
+                    if nm in v.layers:
+                        v.layers.remove(nm)
+                except Exception:
+                    pass
+            self._ws_motion_layer_names = {}
+            self._ws_motion_pids = {}
+
+            # Layer names are just "<Class> Tracks" — no file prefix.
+            # napari's layer list is narrow, and the file basename was
+            # truncating to a useless ellipsis anyway.  Users have the
+            # current file shown in the status bar / title elsewhere.
+
+            # ── Per-class build loop ──────────────────────────────────
+            # If we don't have a diffusion summary, treat every track
+            # as "Unknown" so the user still sees them — just in a
+            # single grey layer.
+            pids_all = df["particle"].values
             if motion_map:
-                row_motion = [motion_map.get(int(p), "Unknown") for p in pids]
-                motion_mask = [m in allowed for m in row_motion]
+                row_motion = _np.array(
+                    [motion_map.get(int(p), "Unknown") for p in pids_all])
             else:
-                # No diffusion summary → all rows pass motion filter,
-                # filter UI is informational but does nothing useful.
-                motion_mask = [True] * len(pids)
+                row_motion = _np.array(["Unknown"] * len(pids_all))
 
-            if track_lens is not None and min_len > 1:
-                ok_pids = set(track_lens[track_lens >= min_len].index)
-                len_mask = [int(p) in ok_pids for p in pids]
-            else:
-                len_mask = [True] * len(pids)
+            n_visible_total = 0
+            n_total = int(df["particle"].nunique())
+            built_any = False
+            first_layer_for_click = None
 
-            import numpy as _np
-            combined = _np.array(motion_mask) & _np.array(len_mask)
-            sub = df[combined]
+            for cls in _MOTION_ORDER:
+                cls_mask = (row_motion == cls)
+                if not cls_mask.any():
+                    continue
+                sub = df[cls_mask]
 
-            # Rebuild the layer.  Remove the old one first if present.
-            layer_name = getattr(self, "_ws_tracks_layer_name", None)
-            if layer_name is not None:
+                # Length gate
+                if track_lens is not None and min_len > 1:
+                    ok_pids = set(track_lens[track_lens >= min_len].index)
+                    sub = sub[sub["particle"].isin(ok_pids)]
+
+                # napari's Tracks layer needs ≥ 2 vertices per track,
+                # else it crashes deep in draw code with a useless
+                # IndexError.  Drop single-point particles up front.
+                if len(sub) == 0:
+                    continue
                 try:
-                    if layer_name in v.layers:
-                        v.layers.remove(layer_name)
-                except Exception: pass
+                    _counts = sub.groupby("particle").size()
+                    _good_pids = _counts[_counts >= 2].index
+                    sub = sub[sub["particle"].isin(_good_pids)]
+                except Exception:
+                    pass
+                if len(sub) == 0:
+                    continue
 
-            if len(sub) == 0:
-                # Nothing to show — leave the layer absent and clear
-                # status.  Restoring requires user to re-check classes.
-                self._ws_tracks_layer = None
-                self._ws_visible_pids = set()
+                # napari sorts internally by (track_id, frame); doing it
+                # ourselves first keeps our per-vertex `_track_colors`
+                # array aligned with napari's vertex order.
+                sub = sub.sort_values(["particle", "frame"],
+                                       kind="mergesort")
+
+                data = _np.column_stack([
+                    sub["particle"].values.astype(_np.int64),
+                    sub["frame"].values.astype(_np.float64),
+                    sub["y"].values.astype(_np.float64),
+                    sub["x"].values.astype(_np.float64),
+                ])
+
+                layer_name = f"{cls} Tracks"
                 try:
-                    n_total = df["particle"].nunique()
-                    self._ws_filter_status.setText(
-                        f"0 / {n_total:,} tracks visible")
-                except Exception: pass
-                return
+                    layer = v.add_tracks(
+                        data,
+                        name=layer_name,
+                        blending="opaque",
+                    )
+                except Exception:
+                    import traceback as _tb, sys as _sys
+                    _tb.print_exc(file=_sys.stderr)
+                    continue
 
-            # Drop single-point "tracks" before passing to napari.
-            # napari's Tracks layer needs ≥ 2 localisations per particle
-            # to render a trail; a single-point particle throws an
-            # IndexError deep inside its draw code and the whole filter
-            # gets aborted with the spectacularly unhelpful
-            # "filter error: list index out of range".  Single-point
-            # tracks are also useless to the inspector (zero
-            # displacement, no D fit, no motion class), so dropping
-            # them is purely upside.
-            try:
-                _counts = sub.groupby("particle").size()
-                _good_pids = _counts[_counts >= 2].index
-                sub = sub[sub["particle"].isin(_good_pids)]
-            except Exception:
-                pass
-            if len(sub) == 0:
-                self._ws_tracks_layer = None
-                self._ws_visible_pids = set()
+                # Solid per-class colour.  napari auto-derives turbo
+                # colours from the (otherwise unused) head/tail/track
+                # properties; overwrite `_track_colors` directly with a
+                # uniform RGBA so every vertex of every track in this
+                # layer wears `_MOTION_PALETTE[cls]`.  Same trick as
+                # before — disable `_recolor_tracks` on the instance so
+                # napari doesn't stomp on us when the data setter is
+                # later called by a refresh.
                 try:
-                    n_total = df["particle"].nunique()
-                    self._ws_filter_status.setText(
-                        f"0 / {n_total:,} tracks visible "
-                        f"(all single-frame)")
-                except Exception: pass
-                return
+                    rgba = QtGui.QColor(_MOTION_PALETTE[cls]).getRgbF()
+                    n_vertices = len(data)
+                    colors_arr = _np.tile(_np.asarray(rgba, dtype=float),
+                                           (n_vertices, 1))
+                    layer._track_colors = colors_arr
+                    try:    layer._recolor_tracks = lambda *a, **kw: None
+                    except Exception: pass
+                    # napari's vispy node only reads `_track_colors` when
+                    # one of the layer events it listens to fires.  A
+                    # plain `refresh()` repaints with the OLD buffer
+                    # (turbo via track_id) — hence the user sees purple
+                    # until they touch the tail-length slider, which
+                    # *does* fire the right event.  Nudge tail_length
+                    # by setting it to its current value: triggers
+                    # `events.tail_length`, the vispy listener re-reads
+                    # `_track_colors`, and the layer is correct from
+                    # frame zero.
+                    try:
+                        layer.tail_length = layer.tail_length
+                    except Exception:
+                        pass
+                    try:    layer.refresh()
+                    except Exception: pass
+                except Exception:
+                    import traceback as _tb, sys as _sys
+                    _tb.print_exc(file=_sys.stderr)
 
-            # NB: keep particle IDs as int.  Casting the whole array to
-            # float forces napari to coerce track IDs back to ints
-            # internally, which has been a source of IndexErrors when
-            # IDs aren't dense.  Build the data array column-by-column
-            # so we control each dtype.
-            import numpy as _np
-            data = _np.column_stack([
-                sub["particle"].values.astype(_np.int64),
-                sub["frame"].values.astype(_np.float64),
-                sub["y"].values.astype(_np.float64),
-                sub["x"].values.astype(_np.float64),
-            ])
-            features = None
-            color_by = None
-            if motion_map:
-                motion_to_int = {"Immobile": 0, "Confined": 1,
-                                 "Brownian": 2, "Directed": 3,
-                                 "Unknown":  4}
-                col = [motion_to_int.get(motion_map.get(int(p), "Unknown"), 4)
-                       for p in sub["particle"].values]
-                features = {"motion_int": col}
-                color_by = "motion_int"
+                # Record so the next rebuild can clean up & the click
+                # resolver can identify which class a particle belongs to.
+                self._ws_motion_layer_names[cls] = layer_name
+                try:
+                    self._ws_motion_pids[cls] = set(
+                        int(p) for p in sub["particle"].unique())
+                except Exception:
+                    self._ws_motion_pids[cls] = set()
 
-            kwargs = {"name": layer_name, "blending": "opaque"}
-            if features is not None:
-                kwargs["features"] = features
-                kwargs["color_by"] = color_by
-                kwargs["colormap"] = "turbo"
-            layer = v.add_tracks(data, **kwargs)
+                self._attach_track_click_handler(layer)
+                if first_layer_for_click is None:
+                    first_layer_for_click = layer
 
-            self._ws_tracks_layer = layer
-            # Remember which particles are currently visible so the
-            # click-resolver doesn't return hidden tracks.
-            try:
-                self._ws_visible_pids = set(int(p)
-                    for p in sub["particle"].unique())
-            except Exception:
-                self._ws_visible_pids = None
-            self._attach_track_click_handler(layer)
+                n_visible_total += int(sub["particle"].nunique())
+                built_any = True
+
+            self._ws_tracks_layer = first_layer_for_click
             self._ws_inspector.clear()
 
             try:
-                n_visible = sub["particle"].nunique()
-                n_total   = df["particle"].nunique()
-                self._ws_filter_status.setText(
-                    f"{n_visible:,} / {n_total:,} tracks visible")
+                if built_any:
+                    self._ws_filter_status.setText(
+                        f"{n_visible_total:,} / {n_total:,} tracks visible "
+                        f"across {len(self._ws_motion_layer_names)} layer(s)")
+                else:
+                    self._ws_filter_status.setText(
+                        f"0 / {n_total:,} tracks visible")
             except Exception: pass
         except Exception as exc:
             # Filter failures shouldn't tear the GUI down — log + show
@@ -7161,6 +7357,33 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 self._ws_filter_status.setText(f"filter error: {exc}")
             except Exception: pass
+
+    def _ws_currently_visible_pids(self) -> "set[int] | None":
+        """Return the set of particle IDs belonging to per-class layers
+        that are currently `visible` in the napari viewer.  Returns
+        `None` if no per-class layers have been built yet (the caller
+        should then treat the full df as visible).
+        """
+        names = getattr(self, "_ws_motion_layer_names", {}) or {}
+        pids_by_cls = getattr(self, "_ws_motion_pids", {}) or {}
+        if not names:
+            return None
+        v = getattr(self, "_napari_viewer", None)
+        if v is None:
+            return None
+        out: set = set()
+        for cls, layer_name in names.items():
+            try:
+                lyr = v.layers[layer_name]
+            except Exception:
+                continue
+            try:
+                if not bool(getattr(lyr, "visible", True)):
+                    continue
+            except Exception:
+                pass
+            out |= pids_by_cls.get(cls, set())
+        return out
 
     def _attach_track_click_handler(self, layer):
         """Hook a mouse-drag callback onto the Tracks layer so clicking a
@@ -7226,37 +7449,102 @@ class MainWindow(QtWidgets.QMainWindow):
         y = float(world_pos[-2])
         x = float(world_pos[-1])
         df = self._ws_tracks_df
-        # Restrict the search to currently-visible particles.  Without
-        # this, a click on a visible Immobile track can resolve to the
-        # nearest localisation in the FULL dataframe — which might
-        # belong to a hidden Confined/Brownian track that happens to
-        # lie near the click, and the inspector then reports the wrong
-        # motion class.  `_ws_visible_pids` is updated by
-        # `_ws_apply_motion_filter` after each successful rebuild.
-        vis = getattr(self, "_ws_visible_pids", None)
-        if vis is not None and len(vis) > 0:
-            mask_vis = df["particle"].isin(vis).values
-            if mask_vis.any():
-                df = df.loc[mask_vis]
-        xs = df["x"].values
-        ys = df["y"].values
-        fs = df["frame"].values
-        if len(xs) == 0:
+        # Build the candidate set frame-by-frame against what napari is
+        # ACTUALLY DRAWING right now, not just "any localisation of any
+        # visible-layer track".  napari renders each Tracks layer's
+        # trail across `[t - tail_length, t + head_length]` (and only if
+        # `layer.tail` is on); a vertex outside that window is invisible
+        # to the user.  Previously we ignored the time window and used
+        # only a tiny temporal tie-breaker — that let clicks land on
+        # tracks whose localisations are nowhere near the current frame
+        # (e.g. an Immobile track at frame 800 stealing a click meant
+        # for a Confined trail at frame 175 just because the Immobile
+        # point sat slightly closer in xy).  Filtering by each layer's
+        # current visible time-window fixes that.
+        v = getattr(self, "_napari_viewer", None)
+        names = getattr(self, "_ws_motion_layer_names", {}) or {}
+        pids_by_cls = getattr(self, "_ws_motion_pids", {}) or {}
+
+        # If we don't have per-class layers yet (e.g. tracks loaded but
+        # rebuild hasn't fired), fall back to old global-search behaviour.
+        if not names or v is None:
+            xs = df["x"].values
+            ys = df["y"].values
+            fs = df["frame"].values
+            if len(xs) == 0:
+                return None
+            d2 = (xs - x) ** 2 + (ys - y) ** 2
+            if have_time:
+                d2 = d2 + 0.01 * (fs - t) ** 2
+            idx = int(_np.argmin(d2))
+            sp_d2 = (xs[idx] - x) ** 2 + (ys[idx] - y) ** 2
+            if sp_d2 > 256.0:
+                return None
+            return int(df["particle"].values[idx])
+
+        # Resolve the viewer's current time even when world_pos doesn't
+        # carry one (e.g. tracks-only viewer with no image stack).  The
+        # napari viewer always has a `dims.current_step` we can read.
+        if not have_time:
+            try:
+                t = float(v.dims.current_step[0])
+                have_time = True
+            except Exception:
+                t = 0.0
+
+        # Collect candidate rows from each VISIBLE per-class layer,
+        # honouring that layer's own tail/head window.
+        candidates_idx: list = []
+        for cls, layer_name in names.items():
+            try:
+                lyr = v.layers[layer_name]
+            except Exception:
+                continue
+            if not bool(getattr(lyr, "visible", True)):
+                continue
+
+            pids = pids_by_cls.get(cls, set())
+            if not pids:
+                continue
+
+            # Trails-off → only the current frame's vertices are
+            # rendered.  Trails-on → a window of frames around t.
+            tail_on = bool(getattr(lyr, "tail", True))
+            tail_len  = float(getattr(lyr, "tail_length", 30.0))
+            head_len  = float(getattr(lyr, "head_length", 0.0))
+            if tail_on:
+                # +0.5 fudge so the boundary frames are inclusive even
+                # under float rounding; clicks on the very edge of the
+                # tail otherwise miss.
+                t_lo = t - tail_len - 0.5
+                t_hi = t + head_len + 0.5
+            else:
+                # No tail rendered — only the current frame counts.
+                t_lo = t - 0.5
+                t_hi = t + 0.5
+
+            mask = (
+                df["particle"].isin(pids).values
+                & (df["frame"].values >= t_lo)
+                & (df["frame"].values <= t_hi)
+            )
+            if mask.any():
+                candidates_idx.append(_np.where(mask)[0])
+
+        if not candidates_idx:
             return None
-        # Spatial distance² + an optional small temporal penalty so ties
-        # break toward localisations near the current frame.  The
-        # temporal weight is in *px²-per-frame²* units — set so ~10
-        # frames away costs the same as ~1 pixel away.
+        all_idx = _np.concatenate(candidates_idx)
+
+        xs = df["x"].values[all_idx]
+        ys = df["y"].values[all_idx]
+        # Pure spatial argmin — every candidate is already in the
+        # currently-rendered time window, so no temporal penalty needed
+        # (would just bias against trail tails the user can clearly see).
         d2 = (xs - x) ** 2 + (ys - y) ** 2
-        if have_time:
-            d2 = d2 + 0.01 * (fs - t) ** 2
-        idx = int(_np.argmin(d2))
-        # Tolerance is on the SPATIAL part only — generous (≤ ~16 px)
-        # so clicks on the trail line (between vertices) still register.
-        sp_d2 = (xs[idx] - x) ** 2 + (ys[idx] - y) ** 2
-        if sp_d2 > 256.0:        # > 16 px from any track point
+        sub_idx = int(_np.argmin(d2))
+        if d2[sub_idx] > 256.0:          # > 16 px in xy
             return None
-        return int(df["particle"].values[idx])
+        return int(df["particle"].values[all_idx[sub_idx]])
 
     def _show_track_in_inspector(self, particle_id: int):
         """Look up per-particle stats and push into the inspector panel."""
@@ -7451,16 +7739,21 @@ class MainWindow(QtWidgets.QMainWindow):
         if mode == "Motion" and self._ws_cluster_motion is None:
             mode = "ID"
 
-        # Per-class colours match the existing tracks-overlay legend
-        # so the user gets a consistent visual language.
+        # Per-class colours read from `_MOTION_PALETTE` — single source
+        # of truth shared with the track-filter swatches and napari
+        # Tracks layer colormap.  Alpha 0.85 makes the points slightly
+        # translucent so the underlying image stays visible.
+        def _swatch_rgba(hex_str: str, a: float) -> tuple:
+            c = QtGui.QColor(hex_str).getRgbF()
+            return (c[0], c[1], c[2], a)
         _MOTION_COLORS = {
-            "Immobile":  (0.50, 0.50, 0.50, 0.85),
-            "Confined":  (0.12, 0.47, 0.71, 0.85),
-            "Brownian":  (0.17, 0.63, 0.17, 0.85),
-            "Directed":  (0.84, 0.15, 0.16, 0.85),
-            "Unknown":   (0.73, 0.73, 0.73, 0.85),
-            "Unmatched": (0.30, 0.30, 0.30, 0.55),
+            cls: _swatch_rgba(_MOTION_PALETTE[cls], 0.85)
+            for cls in _MOTION_ORDER
         }
+        # "Unmatched" is unique to the cluster overlay — used when a
+        # cluster point has no recoverable motion class from the linked
+        # tracks (e.g. noise points DBSCAN couldn't assign).
+        _MOTION_COLORS["Unmatched"] = (0.30, 0.30, 0.30, 0.55)
 
         try:
             if mode == "Motion":
@@ -8247,8 +8540,15 @@ class MainWindow(QtWidgets.QMainWindow):
         "Torch — NVIDIA CUDA": "torch-cuda",
         "Torch — CPU":        "torch-cpu",
         "Wavelet (à trous)":  "wavelet",
+        "TrackMate (LoG/DoG)": "trackmate",
     }
     _BACKEND_VALUE_TO_LABEL = {v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()}
+
+    _LINKER_LABEL_TO_VALUE = {
+        "Trackpy (default)":  "trackpy",
+        "TrackMate LAP":      "trackmate_lap",
+    }
+    _LINKER_VALUE_TO_LABEL = {v: k for k, v in _LINKER_LABEL_TO_VALUE.items()}
 
     def _available_backends(self) -> list[str]:
         """Return the static list of selectable backend LABELS (display
@@ -8486,6 +8786,18 @@ class MainWindow(QtWidgets.QMainWindow):
             "wavelet_levels":       int(self.s_wavelet_levels.value()),
             "wavelet_threshold_k":  float(self.s_wavelet_threshold_k.value()),
             "wavelet_min_distance": int(self.s_wavelet_min_distance.value()),
+            # TrackMate-backend params — same idea: only consumed when
+            # the trackmate backend is active.  The pixel-size value
+            # for radius_um → radius_px conversion is already in the
+            # params dict ("pixel_size") so we don't duplicate it.
+            "trackmate_mode":       self.c_trackmate_mode.currentText().lower(),
+            "trackmate_radius_um":  float(self.s_trackmate_radius.value()),
+            "trackmate_quality":    float(self.s_trackmate_quality.value()),
+            "trackmate_median":     bool(self.c_trackmate_median.isChecked()),
+            # Linker strategy — "trackpy" or "trackmate_lap".  Used by
+            # link_trajectories() in sptpalm_analysis.py.
+            "linker": self._LINKER_LABEL_TO_VALUE.get(
+                self.c_linker.currentText(), "trackpy"),
             # ── Figures-tab knobs (single-sample figure output) ───────────
             "fig_theme":         self.c_fig_theme.currentText(),
             "fig_proj_cmap":     self.c_fig_proj_cmap.currentText(),
