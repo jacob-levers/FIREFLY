@@ -237,6 +237,215 @@ def _format_metrics(label: str, m: AgreementMetrics) -> str:
             f"p90={m.p90_xy_px:.4f}  ratio={m.spot_count_ratio:.3f}")
 
 
+# ── Diagnose-extras mode ─────────────────────────────────────────────────────
+
+
+def _classify_torch_tracks_against_trackpy(
+    tp_locs, torch_locs, torch_tracks, cutoff_px: float = 2.0,
+    match_frac: float = 0.5,
+):
+    """For each Torch track, decide whether it's "shared" with Trackpy
+    (≥ `match_frac` of its localisations have a Trackpy neighbour
+    within `cutoff_px`) or "torch-only" (the rest).
+
+    Returns
+    -------
+    shared_pids   : set[int]  — Torch particle IDs classed as shared.
+    torchonly_pids: set[int]  — Torch particle IDs with no Trackpy
+                                 counterpart.
+    """
+    from scipy.spatial import cKDTree
+    # Build per-frame KDTrees over Trackpy localisations.
+    tp_by_frame = {}
+    for f, sub in tp_locs.groupby("frame"):
+        tp_by_frame[int(f)] = sub[["x", "y"]].to_numpy()
+    # For each Torch row, was there a Trackpy spot within cutoff?
+    torch_locs = torch_locs.copy()
+    matched_flag = np.zeros(len(torch_locs), dtype=bool)
+    for f, sub_idx in torch_locs.groupby("frame").indices.items():
+        ref = tp_by_frame.get(int(f))
+        if ref is None or len(ref) == 0:
+            continue
+        torch_xy = torch_locs.iloc[sub_idx][["x", "y"]].to_numpy()
+        tree = cKDTree(ref)
+        dist, _ = tree.query(torch_xy, distance_upper_bound=cutoff_px)
+        matched_flag[sub_idx] = np.isfinite(dist) & (dist < cutoff_px)
+    torch_locs["matched"] = matched_flag
+    # Aggregate per Torch particle.  A track is "shared" when ≥match_frac
+    # of its rows have a Trackpy neighbour.  The threshold of 0.5 is
+    # forgiving — even a partly-overlapping track counts as shared,
+    # which mirrors how a human reviewer would think about "did Trackpy
+    # find this molecule".
+    shared_pids: set[int]    = set()
+    torchonly_pids: set[int] = set()
+    for pid, sub in torch_tracks.groupby("particle"):
+        # Track DataFrame doesn't carry our match flag — re-join by
+        # (frame, x, y) tuple, which is unique within a single run.
+        key_track = list(zip(sub["frame"].astype(int).tolist(),
+                              sub["x"].round(6).tolist(),
+                              sub["y"].round(6).tolist()))
+        key_loc = list(zip(torch_locs["frame"].astype(int).tolist(),
+                            torch_locs["x"].round(6).tolist(),
+                            torch_locs["y"].round(6).tolist()))
+        # Build a dict for O(1) lookup.
+        match_lookup = dict(zip(key_loc, matched_flag.tolist()))
+        match_counts = [bool(match_lookup.get(k, False)) for k in key_track]
+        frac_matched = sum(match_counts) / max(1, len(match_counts))
+        if frac_matched >= match_frac:
+            shared_pids.add(int(pid))
+        else:
+            torchonly_pids.add(int(pid))
+    return shared_pids, torchonly_pids
+
+
+def _diagnose_extras(args, tp_locs, torch_locs, out_dir: Path,
+                      diameter: int, search_range: int, memory: int,
+                      min_track_len: int, pixel_size_um: float,
+                      frame_interval_s: float):
+    """Full link + MSD-fit pipeline on both backends, then plots showing
+    whether the Torch-only tracks look statistically like the shared
+    tracks (real biology) or like outliers (false positives)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sptpalm_analysis import (link_trajectories,
+                                    compute_msd_and_fit,
+                                    classify_motion,
+                                    ALPHA_THRESHOLDS_DEFAULT)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n── Diagnose-extras: linking + MSD-fitting both backends ──")
+
+    print("  Linking trackpy locs ...")
+    tp_tracks = link_trajectories(
+        tp_locs.copy(), search_range=search_range, memory=memory,
+        min_len=min_track_len, linker="trackpy")
+    print(f"    → {tp_tracks['particle'].nunique():,} trackpy tracks")
+
+    print("  Linking torch locs ...")
+    th_tracks = link_trajectories(
+        torch_locs.copy(), search_range=search_range, memory=memory,
+        min_len=min_track_len, linker="trackpy")
+    n_th_tracks = th_tracks["particle"].nunique()
+    print(f"    → {n_th_tracks:,} torch tracks")
+
+    # MSD + α fit on Torch tracks (the side that has the "extras").
+    # `compute_msd_and_fit` returns (imsd_df, emsd_series, diff_df) —
+    # we only care about the per-track diffusion summary.
+    print("  Fitting per-track D + α on Torch tracks ...")
+    _imsd, _emsd, th_diff = compute_msd_and_fit(
+        th_tracks, pixel_size=pixel_size_um,
+        frame_interval=frame_interval_s,
+        max_lagtime=20, n_fit=5)
+    print(f"    → {len(th_diff):,} per-track fits")
+
+    # Classify Torch tracks as shared vs torch-only.
+    shared_pids, torchonly_pids = _classify_torch_tracks_against_trackpy(
+        tp_locs, torch_locs, th_tracks)
+    print(f"  Shared with trackpy: {len(shared_pids):,}  |  "
+          f"torch-only: {len(torchonly_pids):,}")
+
+    # ── Plot 1: Spatial map ────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 8))
+    shared_rows = th_tracks[th_tracks["particle"].isin(shared_pids)]
+    only_rows   = th_tracks[th_tracks["particle"].isin(torchonly_pids)]
+    if len(shared_rows):
+        for pid, sub in shared_rows.groupby("particle"):
+            ax.plot(sub["x"], sub["y"], "-", color="#1f77b4",
+                    alpha=0.35, lw=0.5)
+    if len(only_rows):
+        for pid, sub in only_rows.groupby("particle"):
+            ax.plot(sub["x"], sub["y"], "-", color="#d62728",
+                    alpha=0.70, lw=0.7)
+    ax.set_xlabel("x (px)")
+    ax.set_ylabel("y (px)")
+    ax.set_title(
+        f"Torch tracks — shared with trackpy (blue, n={len(shared_pids)}) "
+        f"vs torch-only (red, n={len(torchonly_pids)})\n"
+        f"If reds cluster with blues → real molecules below trackpy's "
+        f"intrinsic threshold.\nIf reds scatter randomly → likely artefacts.")
+    ax.set_aspect("equal")
+    ax.invert_yaxis()
+    fig.tight_layout()
+    out_spatial = out_dir / "diagnose_extras_spatial.png"
+    fig.savefig(out_spatial, dpi=140); plt.close(fig)
+    print(f"  Saved {out_spatial}")
+
+    # ── Plot 2: Track-length histogram ─────────────────────────────────
+    lens_shared = th_tracks[th_tracks["particle"].isin(shared_pids)]\
+                    .groupby("particle").size().to_numpy()
+    lens_only   = th_tracks[th_tracks["particle"].isin(torchonly_pids)]\
+                    .groupby("particle").size().to_numpy()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    max_len = int(max(lens_shared.max() if len(lens_shared) else 0,
+                       lens_only.max()   if len(lens_only)   else 0,
+                       min_track_len + 1))
+    bins = np.arange(min_track_len, max_len + 2)
+    if len(lens_shared):
+        ax.hist(lens_shared, bins=bins, alpha=0.6, color="#1f77b4",
+                label=f"shared (n={len(lens_shared)})", density=True)
+    if len(lens_only):
+        ax.hist(lens_only, bins=bins, alpha=0.6, color="#d62728",
+                label=f"torch-only (n={len(lens_only)})", density=True)
+    ax.set_xlabel("Track length (frames)")
+    ax.set_ylabel("Density")
+    ax.set_title("Track-length distribution\n"
+                 "Overlapping distributions → torch-only tracks are real "
+                 "molecules.  Mass at min_track_len → marginal detections.")
+    ax.legend()
+    fig.tight_layout()
+    out_lens = out_dir / "diagnose_extras_track_lengths.png"
+    fig.savefig(out_lens, dpi=140); plt.close(fig)
+    print(f"  Saved {out_lens}")
+
+    # ── Plot 3: α distribution (motion classes) ────────────────────────
+    if len(th_diff) and "alpha" in th_diff.columns:
+        diff_shared = th_diff[th_diff["particle"].isin(shared_pids)]["alpha"]\
+                        .dropna().to_numpy()
+        diff_only   = th_diff[th_diff["particle"].isin(torchonly_pids)]["alpha"]\
+                        .dropna().to_numpy()
+        fig, ax = plt.subplots(figsize=(8, 5))
+        bins = np.linspace(0, 2.0, 41)
+        if len(diff_shared):
+            ax.hist(diff_shared, bins=bins, alpha=0.6, color="#1f77b4",
+                    label=f"shared (n={len(diff_shared)})", density=True)
+        if len(diff_only):
+            ax.hist(diff_only, bins=bins, alpha=0.6, color="#d62728",
+                    label=f"torch-only (n={len(diff_only)})", density=True)
+        # Mark the motion-class thresholds.
+        t_imm, t_conf, t_dir = ALPHA_THRESHOLDS_DEFAULT
+        for t in (t_imm, t_conf, t_dir):
+            ax.axvline(t, color="k", lw=0.6, ls="--", alpha=0.4)
+        ax.set_xlabel("Anomalous exponent α")
+        ax.set_ylabel("Density")
+        ax.set_title(
+            "α (motion-class) distribution\n"
+            "Closely-overlapping curves → torch-only tracks share the\n"
+            "same motion physics as shared ones (i.e. real biology).")
+        ax.legend()
+        fig.tight_layout()
+        out_alpha = out_dir / "diagnose_extras_alpha.png"
+        fig.savefig(out_alpha, dpi=140); plt.close(fig)
+        print(f"  Saved {out_alpha}")
+
+        # Print motion-class summary.
+        if len(diff_only):
+            order = ["Immobile", "Confined", "Brownian", "Directed"]
+            print(f"\n  Motion-class breakdown (torch-only vs shared):")
+            for cls in order:
+                n_shared = sum(1 for a in diff_shared
+                                if classify_motion(a) == cls)
+                n_only   = sum(1 for a in diff_only
+                                if classify_motion(a) == cls)
+                frac_shared = n_shared / max(1, len(diff_shared))
+                frac_only   = n_only / max(1, len(diff_only))
+                print(f"    {cls:<10s}  shared {n_shared:>4d} "
+                      f"({100*frac_shared:>5.1f}%)   torch-only "
+                      f"{n_only:>4d} ({100*frac_only:>5.1f}%)")
+
+    print(f"\nDiagnostic plots written to {out_dir}")
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -282,6 +491,29 @@ def main():
                     help="Override Theta.refine_max_iters for the report.")
     ap.add_argument("--shift-thresh", type=float, default=None,
                     help="Override Theta.refine_shift_thresh for the report.")
+    # Diagnostics mode — runs the full localise + link + MSD-fit
+    # pipeline through both backends and writes side-by-side plots
+    # showing whether Torch's "extra" tracks (those with no Trackpy
+    # counterpart) are statistically indistinguishable from the
+    # matched set.  Three plots are produced:
+    #   * spatial map of all tracks (shared vs torch-only)
+    #   * histogram of track lengths (overlaid)
+    #   * histogram of per-track α (overlaid)
+    # Use this to defend either backend's track count in a methods
+    # section.  Output PNGs land next to the input file or in --out.
+    ap.add_argument("--diagnose-extras", action="store_true",
+                    help="Run full localise+link pipeline on both "
+                         "backends and emit diagnostic plots that "
+                         "characterise Torch's extra tracks.")
+    ap.add_argument("--out", type=str, default=None,
+                    help="Output folder for --diagnose-extras plots. "
+                         "Defaults to the input file's folder.")
+    ap.add_argument("--search-range", type=int, default=5,
+                    help="Linker search range (px). Default: 5.")
+    ap.add_argument("--memory", type=int, default=0,
+                    help="Linker memory (frames). Default: 0.")
+    ap.add_argument("--min-track-len", type=int, default=8,
+                    help="Minimum track length filter. Default: 8.")
     args = ap.parse_args()
 
     # ── Load + slice the stack ──────────────────────────────────────────────
@@ -323,6 +555,51 @@ def main():
                             percentile=args.percentile)
     print(f"  trackpy hold-out: {len(tp_val):,} locs in "
           f"{time.perf_counter() - t1:.1f}s")
+
+    # ── Diagnose-extras mode ────────────────────────────────────────────────
+    # Runs the full pipeline (detect → link → MSD-fit) through both
+    # backends and writes side-by-side plots that characterise the
+    # extra tracks Torch finds.  This is the mode you reach for when
+    # you see "Trackpy found 73, Torch found 103" and want to defend
+    # either number in a methods section.
+    if args.diagnose_extras:
+        theta = Theta()
+        if args.noise_size       is not None: theta.noise_size          = float(args.noise_size)
+        if args.smoothing_offset is not None: theta.smoothing_offset    = int(args.smoothing_offset)
+        if args.refine_iters     is not None: theta.refine_max_iters    = int(args.refine_iters)
+        if args.shift_thresh     is not None: theta.refine_shift_thresh = float(args.shift_thresh)
+        print(f"  θ = {theta.as_dict()}")
+        # Use the FULL (non-subsampled, non-held-out) stack for the
+        # diagnostic — track counts are the headline number we're
+        # debating, and they need every frame to be representative.
+        from sptpalm_analysis import load_file as _load_file
+        _full, _meta_px, _meta_fi = _load_file(args.stack)
+        _full_pp = preprocess_stack(
+            _full, bg_radius=int(args.diameter * 2 + 1))
+        print(f"\nRunning trackpy on full stack ({len(_full_pp)} frames) ...")
+        tp_full = _run_trackpy(_full_pp, diameter=args.diameter,
+                                minmass=args.minmass,
+                                percentile=args.percentile)
+        print(f"  → {len(tp_full):,} trackpy locs")
+        print(f"Running torch on full stack ...")
+        th_full = _run_torch_with_theta(
+            _full_pp, theta,
+            diameter=args.diameter, minmass=args.minmass,
+            percentile=args.percentile, device=args.device)
+        print(f"  → {len(th_full):,} torch locs")
+
+        out_root = Path(args.out) if args.out else Path(args.stack).parent
+        pixel_size_um    = float(_meta_px) if _meta_px else 0.106
+        frame_interval_s = float(_meta_fi) if _meta_fi else 0.020
+        _diagnose_extras(
+            args, tp_full, th_full, out_root,
+            diameter=args.diameter,
+            search_range=args.search_range,
+            memory=args.memory,
+            min_track_len=args.min_track_len,
+            pixel_size_um=pixel_size_um,
+            frame_interval_s=frame_interval_s)
+        return
 
     # ── Report-only / verify modes ──────────────────────────────────────────
     if args.report_only or args.verify is not None:
