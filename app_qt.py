@@ -8962,16 +8962,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 "analysis/pixel_size":      0.106,
                 "analysis/override_fi":     True,
                 "analysis/frame_interval":  0.020,
-                # Preprocessing — flat well-spread cytoplasm
+                # Preprocessing — flat well-spread cytoplasm; small radius
+                # tracks local background tightly without smearing the spots.
                 "analysis/bg_method":       "Uniform Filter",
-                "analysis/bg_radius":       20,
+                "analysis/bg_radius":       15,
                 # Detection — typical PALM PSF after preprocessing
                 "analysis/diameter":        7,
                 "analysis/auto_minmass":    False,
-                "analysis/minmass":         1.5,
-                # Linking — small per-step displacements at 50 fps
+                "analysis/minmass":         1.35,
+                # Linking — small per-step displacements at 50 fps.
+                # Memory=0 is correct for sptPALM: a fluorophore that
+                # blinks off for >1 frame is a different molecule and
+                # should NOT be re-linked across the gap.  Re-enabling
+                # memory inflates track-length statistics and corrupts
+                # diffusion fits.
                 "analysis/search_range":    5,
-                "analysis/memory":          3,
+                "analysis/memory":          0,
                 "analysis/min_track_len":   8,
                 "analysis/max_track_len":   0,
                 # Diffusion + motion classification — standard sptPALM
@@ -8980,20 +8986,23 @@ class MainWindow(QtWidgets.QMainWindow):
                 "analysis/alpha_immobile":  0.5,
                 "analysis/alpha_confined":  0.9,
                 "analysis/alpha_directed":  1.1,
-                "analysis/mobile_d":        0.05,
+                "analysis/mobile_d":        0.03,
                 "analysis/jdd_components":  2,
-                # ROI — let auto-threshold handle the cell outline
-                "analysis/roi_mode":        "Auto threshold",
+                # ROI — Manual threshold against the max-projection;
+                # the wide background sigma (σ=100) deliberately picks
+                # up the whole cell footprint rather than individual
+                # nanodomains.
+                "analysis/roi_mode":        "Manual threshold",
                 "analysis/roi_auto_method": "Li",
-                "analysis/roi_threshold":   0.08,
+                "analysis/roi_threshold":   0.030,
                 "analysis/roi_mask_mode":   "Max",
-                "analysis/roi_bg_sigma":    25.0,
-                # Drift correction — segment length tuned for ~10k frames
+                "analysis/roi_bg_sigma":    100.0,
+                # Drift correction — segment length tuned for ~4 k frames
                 "analysis/drift_correct":   True,
-                "analysis/drift_segment":   500,
-                # Clustering — receptor-nanodomain defaults
-                "analysis/cluster_eps_nm":  50.0,
-                "analysis/cluster_min_samples": 10,
+                "analysis/drift_segment":   400,
+                # Clustering — receptor-nanodomain defaults.
+                "analysis/cluster_eps_nm":  40.0,
+                "analysis/cluster_min_samples": 8,
             },
             "Drosophila Neurons": {
                 cls._BUILTIN_PRESETS_TAG: True,
