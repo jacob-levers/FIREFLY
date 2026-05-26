@@ -2807,16 +2807,19 @@ class TrackpyBackend(LocaliserBackend):
         use_mp_ok = False
 
         # Skip the multiprocessing.Pool path entirely for small jobs.
-        # MP spawn on Windows costs ~10-30 s up front (PyInstaller
-        # _MEIPASS re-import + pickle round-trip for the worker args),
-        # which dominates the wall-clock budget when there are only a
-        # handful of chunks.  Below the threshold, the BLAS-threaded
-        # single-process path is strictly faster overall AND starts
-        # producing per-chunk progress + previews immediately.
-        # Threshold of 6 is conservative — on a 6-core box that's
-        # exactly the break-even.  Override with FIREFLY_FORCE_MP=1
-        # if you're benchmarking and want MP regardless.
-        small_job = (n_chunks <= 6 and
+        # MP spawn on Windows can take >2 minutes (PyInstaller's
+        # onefile bootloader extracts _MEIPASS into %TEMP% per worker;
+        # with 6 workers all serialising the same ~200 MB extraction
+        # past Defender's real-time scanner, observed 120 s in the
+        # field).  Below the threshold, the BLAS-threaded single-
+        # process path is strictly faster overall AND starts producing
+        # per-chunk progress + previews immediately.
+        #
+        # Threshold of 16 chunks covers every typical PALM movie
+        # (~8 k frames at chunk_size=500); past that, the MP spawn
+        # cost is amortised over enough chunks to be worth paying.
+        # Override with FIREFLY_FORCE_MP=1 if you're benchmarking.
+        small_job = (n_chunks <= 16 and
                      os.environ.get("FIREFLY_FORCE_MP") != "1")
         if small_job:
             print(f"  Small job ({n_chunks} chunks) — using "

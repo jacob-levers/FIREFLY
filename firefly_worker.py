@@ -605,19 +605,67 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # (analysis itself keeps running — only the cosmetic stream pauses).
     try:    import psutil as _ps
     except Exception: _ps = None
-    # Pause live preview as soon as memory pressure starts — well before
-    # the watchdog's abort threshold.  Frees ~tens of MB of pickle/queue
-    # traffic per second when memory's getting tight, without affecting
-    # the analysis itself.
-    _MEM_FLOOR_GB = 2.5
+
+    # Scale the brake floor with total RAM so it doesn't fire
+    # spuriously on bigger machines.  Previously a flat 2.5 GB,
+    # which was 16% of a 16 GB laptop (fine) but only 8% of a 32 GB
+    # box (way too conservative).  On a 32 GB Windows machine
+    # running torch-cpu, `available` routinely dips to ~1.87 GB
+    # while PyTorch holds its caching allocator full of intermediates;
+    # the old brake then froze the live preview at whatever frame
+    # came in just before, even though the box had >25 GB usable.
+    #
+    # Formula: 5 % of total RAM, clamped to [0.75, 2.5] GB.  The
+    # upper cap keeps the brake tight on tiny VMs; the lower cap
+    # keeps it from disabling entirely on hosts that misreport.
+    # Override with FIREFLY_PREVIEW_MEM_FLOOR_GB if needed.
+    try:
+        _total_gb_pv = _ps.virtual_memory().total / 1e9 if _ps else 16.0
+    except Exception:
+        _total_gb_pv = 16.0
+    _override = os.environ.get("FIREFLY_PREVIEW_MEM_FLOOR_GB")
+    if _override:
+        try:    _MEM_FLOOR_GB = float(_override)
+        except ValueError: _MEM_FLOOR_GB = max(0.75, min(2.5, _total_gb_pv * 0.05))
+    else:
+        _MEM_FLOOR_GB = max(0.75, min(2.5, _total_gb_pv * 0.05))
+
+    # One-shot log so a "live view froze" report never goes silent
+    # again — the user (and we) can grep the log to see whether the
+    # brake fired AND at what free-RAM value.  Toggles back to "armed"
+    # if memory recovers, so a second event also produces a log.
+    _preview_brake_state = {"engaged": False}
 
     def _system_under_pressure() -> bool:
         if _ps is None:
             return False
         try:
-            return (_ps.virtual_memory().available / 1e9) < _MEM_FLOOR_GB
+            avail = _ps.virtual_memory().available / 1e9
         except Exception:
             return False
+        engaged = avail < _MEM_FLOOR_GB
+        if engaged and not _preview_brake_state["engaged"]:
+            try:
+                msg_queue.put_nowait((
+                    "log",
+                    f"\n  ⚠ Preview brake ON: only {avail:.2f} GB RAM "
+                    f"available (floor {_MEM_FLOOR_GB:.2f} GB).  Live "
+                    f"detection view will pause until memory frees up — "
+                    f"analysis continues normally."))
+            except Exception:
+                pass
+            _preview_brake_state["engaged"] = True
+        elif (not engaged) and _preview_brake_state["engaged"]:
+            try:
+                msg_queue.put_nowait((
+                    "log",
+                    f"  ✓ Preview brake OFF: {avail:.2f} GB available "
+                    f"(floor {_MEM_FLOOR_GB:.2f} GB).  Live detection "
+                    f"view resuming."))
+            except Exception:
+                pass
+            _preview_brake_state["engaged"] = False
+        return engaged
 
     def _preview_pump():
         period = 1.0 / 60.0
@@ -760,11 +808,117 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     roi_mode = p.get("roi_mode", "none")
     if p.get("roi_polygon"):
         roi_mode = "polygon"
+
+    # Auto-detect a microscope-exported sister ROI image (e.g.
+    # `<base>_green.tif`).  When `roi_mode == "auto_sister"` we ONLY use
+    # the sister TIFF, falling back to no-ROI if missing.  When
+    # `roi_mode` is something else but `roi_sister_autodetect` is on AND
+    # the dropdown is in "none"/"auto"/"manual" mode, we'll still check
+    # for a sister file and prefer it over the intensity-based modes.
+    roi_sister_suffix = str(p.get("roi_sister_suffix", "_green")).strip()
+    roi_sister_path: "str | None" = None
+    if not external_csv and roi_sister_suffix:
+        try:
+            _base = os.path.splitext(os.path.basename(fpath))[0]
+            # palmTRACER series: strip `-fileNNN` so the suffix sits
+            # against the bare root name (`<root>_green.tif`).
+            import re as _re
+            _root = _re.sub(r"-file\d+$", "", _base, flags=_re.IGNORECASE)
+            for _ext in (".tif", ".tiff"):
+                _cand = os.path.join(os.path.dirname(fpath),
+                                      f"{_root}{roi_sister_suffix}{_ext}")
+                if os.path.isfile(_cand):
+                    roi_sister_path = _cand
+                    break
+        except Exception:
+            roi_sister_path = None
+    # Promote to active mode if user explicitly picked "sister" OR if
+    # auto-detect is on and we found a file.
+    if roi_mode == "sister":
+        if roi_sister_path is None:
+            _log(f"  NOTE: ROI mode set to 'From sister TIFF' but no "
+                 f"`<base>{roi_sister_suffix}.tif` found — falling back "
+                 f"to no ROI.")
+            roi_mode = "none"
+    elif (roi_mode in ("none", "auto", "manual")
+            and bool(p.get("roi_sister_autodetect", True))
+            and roi_sister_path is not None):
+        _log(f"  NOTE: found sister ROI image "
+             f"{os.path.basename(roi_sister_path)} — using it instead "
+             f"of intensity-based ROI.  Set roi_sister_autodetect=False "
+             f"to disable.")
+        roi_mode = "sister"
+
     if roi_mode != "none" and len(locs) > 0:
         _log(f"\n── ROI mask ───────────────────────")
         try:
             from sptpalm_analysis import build_roi_mask_advanced
             roi_mask = None
+
+            # ── Sister TIFF ROI (microscope export, e.g. _green.tif) ─
+            if roi_mode == "sister" and roi_sister_path is not None:
+                try:
+                    import tifffile as _tf
+                    with _tf.TiffFile(roi_sister_path) as _t:
+                        _arr = _t.asarray()
+                    # Multi-frame → max projection so static ROI
+                    # outlines come through regardless of which frame
+                    # the microscope saved them on.
+                    if _arr.ndim == 3:
+                        _arr = _arr.max(axis=0)
+                    elif _arr.ndim > 3:
+                        # Squeeze leading singleton dims, then max-project.
+                        _arr = _np.squeeze(_arr)
+                        if _arr.ndim == 3:
+                            _arr = _arr.max(axis=0)
+                    # Resize / check shape matches the analysis stack.
+                    if mean_proj is not None and _arr.shape != mean_proj.shape:
+                        _log(f"  WARN: sister ROI image shape "
+                             f"{_arr.shape} ≠ stack shape "
+                             f"{mean_proj.shape} — skipping ROI.")
+                    else:
+                        # Robust mask logic: if the image is already
+                        # mostly zeros (i.e. a binary/labelled
+                        # segmentation), treat non-zero as inside.
+                        # Otherwise it's a grayscale fluorescence
+                        # channel — auto-threshold with Li.
+                        _nonzero_frac = float(
+                            (_arr > 0).sum()) / float(_arr.size or 1)
+                        if _nonzero_frac < 0.4:
+                            roi_mask = _arr > 0
+                            _log(f"  Sister ROI "
+                                 f"({os.path.basename(roi_sister_path)}): "
+                                 f"non-zero pixel mask, "
+                                 f"{100.0 * roi_mask.mean():.1f}% of frame")
+                        else:
+                            # Grayscale — normalise + Li threshold via
+                            # the existing pipeline so we benefit from
+                            # its bg-subtraction and morphology.
+                            try:
+                                _arrf = _arr.astype(_np.float32)
+                                _mn, _mx = float(_arrf.min()), float(_arrf.max())
+                                if _mx > _mn:
+                                    _arrf = (_arrf - _mn) / (_mx - _mn)
+                                roi_mask, _info = build_roi_mask_advanced(
+                                    _arrf,
+                                    threshold=None,
+                                    threshold_method="li",
+                                    bg_sigma=float(p.get("roi_bg_sigma", 25.0)),
+                                    mode_hint="mean")
+                                _log(f"  Sister ROI "
+                                     f"({os.path.basename(roi_sister_path)}): "
+                                     f"Li-threshold mask, "
+                                     f"{100.0 * roi_mask.mean():.1f}% of frame")
+                            except Exception as _exc:
+                                _log(f"  WARN: sister ROI Li threshold "
+                                     f"failed — {_exc}.  Falling back to "
+                                     f"non-zero mask.")
+                                roi_mask = _arr > 0
+                except Exception as _exc:
+                    _log(f"  WARN: could not load sister ROI image "
+                         f"{roi_sister_path}: {_exc}.  Continuing "
+                         f"without ROI.")
+                    roi_mask = None
 
             if roi_mode == "polygon":
                 # User-drawn polygon ROI.  `roi_polygon` is a list of
