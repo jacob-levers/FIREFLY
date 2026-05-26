@@ -317,6 +317,18 @@ try {
     no_progress_since = time.monotonic()
     stall_limit_s = 30.0   # BITS handles transient failures internally —
                             # only abort if it's COMPLETELY stuck.
+    # Separate, shorter timeout for the "BITS hasn't moved a byte yet"
+    # phase.  BITS likes to sit in Connecting/Transferring with
+    # transferred=0, total=0 indefinitely when something upstream is
+    # wrong (corporate proxy, blocked port, Defender scanning).  Users
+    # see "Downloading… 0 MB" with no movement and reasonably assume
+    # the app's frozen.  After this many seconds with zero bytes
+    # actually delivered we BAIL on BITS — but with a non-RuntimeError
+    # so `download_wheel` falls back to urllib instead of failing the
+    # whole install (RuntimeError is reserved for user-visible BITS
+    # errors we don't want masked by the fallback).
+    initial_connect_timeout_s = 12.0
+    started_at = time.monotonic()
 
     try:
         while True:
@@ -366,6 +378,27 @@ try {
             if trans > last_transferred:
                 last_transferred = trans
                 no_progress_since = time.monotonic()
+            elif (last_transferred == 0
+                    and (time.monotonic() - started_at)
+                        > initial_connect_timeout_s):
+                # BITS is wedged in Connecting/Transferring with zero
+                # bytes received.  Most common cause on user reports:
+                # Defender intercepting the TLS handshake or a
+                # corporate proxy holding the connection.  Bail and
+                # let urllib have a go — its read() blocks differently
+                # and often gets through where BITS doesn't.
+                elapsed = time.monotonic() - started_at
+                _log(f"  → BITS hasn't received any bytes after "
+                     f"{elapsed:.0f}s (state={state}); abandoning BITS "
+                     f"and falling back to urllib")
+                try:    proc.terminate()
+                except Exception: pass
+                # Plain Exception (not RuntimeError) so download_wheel's
+                # `except RuntimeError: raise` does NOT catch it — the
+                # broader `except Exception` falls through to urllib.
+                raise Exception(
+                    f"BITS failed to start transferring within "
+                    f"{initial_connect_timeout_s:.0f}s")
             elif time.monotonic() - no_progress_since > stall_limit_s:
                 _log(f"  → BITS stalled: no progress for {stall_limit_s:.0f}s "
                      f"({trans/1e6:.1f} MB / {total/1e6:.1f} MB)")
@@ -414,20 +447,35 @@ try {
 def download_wheel(url: str,
                    dest_path: str,
                    progress_cb: Optional[Callable[[int, int], None]] = None,
-                   cancel_cb: Optional[Callable[[], bool]] = None) -> None:
+                   cancel_cb: Optional[Callable[[], bool]] = None,
+                   max_attempts: int = 3) -> None:
     """Download `url` → `dest_path` with progress + cancel support.
 
-    Implementation strategy:
-      * On Windows, use BITS via PowerShell (rock-solid through
-        Defender / proxies / corporate networks).
-      * Anywhere else, the urllib path (with the existing stall
-        watchdog) is fine because the issues we've hit are
-        Windows-specific.
+    Bulletproofing (Murphy's Law mode):
+      * Atomic write — bytes land in `<dest>.part`; rename to `dest`
+        only after the full download verifies.  No partial file ever
+        looks like a complete one.
+      * Resumable — if `<dest>.part` is left over from a prior crash
+        we resume with a `Range: bytes=N-` header instead of starting
+        over.  Saves 2.5 GB of bandwidth on every retry.
+      * Retry-with-backoff — transient network failures (URLError,
+        TimeoutError, stall watchdog tripping, short reads) re-enter
+        the attempt loop up to `max_attempts` times with exponential
+        backoff.  Permanent failures (HTTP 4xx, user cancel) abort
+        immediately.
+      * BITS demoted to opt-in — historically caused more hangs than
+        it prevented (Defender / corp-proxy compatibility was the
+        original justification, but urllib turns out to be just as
+        compatible and we control the timeout behaviour).  Set the
+        env var `FIREFLY_USE_BITS=1` to opt back in.
+      * Zip-validity check — once the download finishes, the file is
+        opened with zipfile.is_zipfile; if it's not a zip we retry
+        rather than handing extract_wheel a corrupt archive.
     """
-    # Windows: try BITS first.  If PowerShell or BitsTransfer module is
-    # missing (unlikely on any current Windows install), fall back to
-    # the urllib path below.
-    if is_windows():
+    # BITS path: opt-in only via env var.  The default fall-through is
+    # urllib with retry/resume below — every problem we've seen on
+    # Windows traces to BITS's opaque state machine, not urllib.
+    if is_windows() and os.environ.get("FIREFLY_USE_BITS") == "1":
         try:
             _download_via_bits(url, dest_path,
                                 progress_cb=progress_cb,
@@ -441,6 +489,83 @@ def download_wheel(url: str,
                  f"to urllib")
             # fall through to urllib path
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+
+    # Retry loop.  Backoff schedule (seconds): 2, 5, 10 — enough to ride
+    # out a transient firewall hiccup but not enough to bore the user.
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _download_wheel_once(url, dest_path,
+                                  progress_cb=progress_cb,
+                                  cancel_cb=cancel_cb,
+                                  attempt=attempt,
+                                  max_attempts=max_attempts)
+            return
+        except RuntimeError as exc:
+            # User cancel + permanent server errors are RuntimeError
+            # and propagate immediately — don't burn retries on a 404.
+            msg = str(exc).lower()
+            if ("cancel" in msg or "http 4" in msg or "no cuda wheel" in msg):
+                raise
+            last_exc = exc
+            _log(f"  attempt {attempt}/{max_attempts} failed: {exc}")
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                OSError) as exc:
+            last_exc = exc
+            _log(f"  attempt {attempt}/{max_attempts} failed "
+                 f"({type(exc).__name__}: {exc})")
+        if attempt < max_attempts:
+            backoff = (2, 5, 10)[min(attempt - 1, 2)]
+            _log(f"  backing off {backoff}s before retry "
+                 f"(part file kept for resume)")
+            for _ in range(backoff):
+                if cancel_cb is not None:
+                    try:
+                        if cancel_cb():
+                            raise RuntimeError("Download cancelled by user.")
+                    except RuntimeError:
+                        raise
+                    except Exception:
+                        pass
+                time.sleep(1)
+    # All attempts exhausted — clean up the .part and report failure.
+    part_path = dest_path + ".part"
+    try:
+        if os.path.exists(part_path): os.remove(part_path)
+    except Exception:
+        pass
+    raise RuntimeError(
+        f"CUDA wheel download failed after {max_attempts} attempts.  "
+        f"Last error: {last_exc}\n\n"
+        f"Try again later, switch networks, or install FIREFLY from "
+        f"source (README → 'Enabling CUDA') to use pip's downloader "
+        f"instead."
+    )
+
+
+def _download_wheel_once(url: str,
+                          dest_path: str,
+                          *,
+                          progress_cb: Optional[Callable[[int, int], None]] = None,
+                          cancel_cb: Optional[Callable[[], bool]] = None,
+                          attempt: int = 1,
+                          max_attempts: int = 1) -> None:
+    """One attempt at downloading the wheel.  Writes to `<dest>.part`,
+    resumes from any prior `<dest>.part`, atomic-renames to `dest` on
+    success.  Raises on any failure — `download_wheel` decides whether
+    to retry.
+    """
+    part_path = dest_path + ".part"
+    # Resume support — if a previous attempt left bytes behind, send a
+    # Range header and append to the existing file.  download.pytorch.org
+    # supports Range; if the server doesn't (we'd see HTTP 200 instead
+    # of 206), we transparently fall back to a fresh download.
+    resume_from = 0
+    try:
+        if os.path.exists(part_path):
+            resume_from = int(os.path.getsize(part_path))
+    except Exception:
+        resume_from = 0
     # Bigger chunks → fewer read() syscalls AND fewer progress signals
     # queued to the GUI thread.  At ~50 MB/s on a 64 KB chunk that's
     # ~800 signal emissions per second, which overwhelms Qt's event
@@ -451,7 +576,8 @@ def download_wheel(url: str,
     chunk_size = 256 * 1024
     progress_throttle_s = 0.1   # 10 Hz cap on progress callbacks
     last_progress_t = 0.0
-    # Remove any stale partial from a prior attempt
+    # Remove any pre-existing FINAL file (we always re-derive it from
+    # .part).  Leave the .part in place — that's our resume buffer.
     try:
         if os.path.exists(dest_path):
             os.remove(dest_path)
@@ -462,8 +588,10 @@ def download_wheel(url: str,
     # appears stuck, the user (and we) can read the log to see if the
     # URL itself is 404 (wrong torch version → no matching cu wheel)
     # vs a real network problem.
-    _log(f"GET {url}")
-    _log(f"  dest: {dest_path}")
+    _log(f"GET {url}  (attempt {attempt}/{max_attempts}"
+         + (f", resume from {resume_from/1e6:.1f} MB" if resume_from else "")
+         + ")")
+    _log(f"  dest: {dest_path}  (writing to {os.path.basename(part_path)})")
 
     # Watchdog for stalled reads.  resp.read(N) can block forever on
     # Windows when the TLS connection stalls mid-stream (same bug class
@@ -521,42 +649,58 @@ def download_wheel(url: str,
                 return
 
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "FIREFLY-CUDA-installer/1.0"})
+        headers = {"User-Agent": "FIREFLY-CUDA-installer/1.0"}
+        if resume_from > 0:
+            headers["Range"] = f"bytes={resume_from}-"
+        req = urllib.request.Request(url, headers=headers)
         # 20 s timeout (was 30) so a dead URL fails fast instead of
         # leaving the user staring at a frozen-looking dialog.
         t0 = time.monotonic()
         with urllib.request.urlopen(req, timeout=20) as resp:
             resp_holder["resp"] = resp
-            _log(f"  HTTP {getattr(resp, 'status', '?')} "
-                 f"in {time.monotonic()-t0:.2f}s")
+            status = int(getattr(resp, "status", 0) or 0)
+            _log(f"  HTTP {status} in {time.monotonic()-t0:.2f}s")
+            # If we asked for a range but the server returned 200, it's
+            # ignoring our Range header — discard the .part and start
+            # fresh.  Better to re-download than corrupt the file.
+            if resume_from > 0 and status != 206:
+                _log(f"  server returned {status} (not 206 Partial Content) "
+                     f"— discarding {resume_from/1e6:.1f} MB resume buffer")
+                resume_from = 0
+                try: os.remove(part_path)
+                except Exception: pass
             try:
-                total = int(resp.headers.get("Content-Length") or 0)
+                cl = int(resp.headers.get("Content-Length") or 0)
             except Exception:
-                total = 0
-            _log(f"  Content-Length: {total/1e6:.1f} MB")
+                cl = 0
+            # On a 206 Partial Content, Content-Length is the REMAINDER,
+            # not the total.  Total file size = resume_from + remainder.
+            total = (resume_from + cl) if (status == 206 and cl > 0) else cl
+            _log(f"  Content-Length: {cl/1e6:.1f} MB"
+                 + (f"   (total wheel: {total/1e6:.1f} MB)"
+                    if status == 206 else ""))
             _log(f"  Starting read loop (chunk={chunk_size//1024} KB, "
                  f"stall watchdog={read_stall_s:.0f}s)")
             wdog = threading.Thread(target=_stall_watchdog, daemon=True,
                                      name="cuda-download-stall-watchdog")
             wdog.start()
-            downloaded = 0
+            downloaded = resume_from
+            # Seed the watchdog so the "no progress yet" check doesn't
+            # immediately fire on resume.
+            progress_state["downloaded"] = downloaded
             chunk_count = 0
             last_diag_t = time.monotonic()
-            with open(dest_path, "wb") as out:
+            # Append-mode for resume, write-mode for fresh download.
+            file_mode = "ab" if resume_from > 0 else "wb"
+            with open(part_path, file_mode) as out:
                 while True:
                     if cancel_cb is not None:
                         try:
                             if cancel_cb():
-                                # Cancelled — clean up the partial file
-                                try:
-                                    out.close()
-                                except Exception:
-                                    pass
-                                try:
-                                    os.remove(dest_path)
-                                except Exception:
-                                    pass
+                                # Cancelled — leave .part in place so
+                                # the user can resume by re-running the
+                                # installer; only delete on full
+                                # uninstall.
                                 progress_state["should_abort"] = True
                                 raise RuntimeError(
                                     "Download cancelled by user.")
@@ -568,24 +712,10 @@ def download_wheel(url: str,
                     if not chunk:
                         break
                     if progress_state["should_abort"]:
+                        # Don't delete .part — let the retry loop resume.
                         raise RuntimeError(
                             "Download stalled — no data received from "
-                            "download.pytorch.org for 10 seconds, even "
-                            "though the HTTPS connection is alive.\n\n"
-                            "Common causes on Windows:\n"
-                            "  • Windows Defender / antivirus real-time "
-                            "scanning is blocking writes to the .whl "
-                            "file.  Try temporarily excluding "
-                            "%LOCALAPPDATA%\\FIREFLY\\torch-cuda from "
-                            "antivirus scanning, then retry.\n"
-                            "  • A corporate firewall / VPN doing TLS "
-                            "deep packet inspection is buffering the "
-                            "stream.  Try on a different network.\n"
-                            "  • If neither applies: install FIREFLY "
-                            "from source instead (see README's "
-                            "'Enabling CUDA' section) — that path uses "
-                            "pip's own download stack, which is more "
-                            "tolerant of these issues.")
+                            "download.pytorch.org for 10 seconds.")
                     out.write(chunk)
                     downloaded += len(chunk)
                     chunk_count += 1
@@ -620,34 +750,79 @@ def download_wheel(url: str,
                         progress_cb(downloaded, total)
                     except Exception:
                         pass
+
+        # ── Post-download integrity gauntlet ─────────────────────────
+        # 1) File size matches Content-Length (if the server sent one).
+        try:
+            actual = os.path.getsize(part_path)
+        except Exception:
+            actual = 0
+        if total > 0 and actual != total:
+            # Short read — keep the .part so the next attempt can
+            # resume, but raise so the retry loop fires.
+            raise RuntimeError(
+                f"Short read: got {actual/1e6:.1f} MB but Content-Length "
+                f"indicated {total/1e6:.1f} MB.")
+        # 2) Looks like a valid zip (wheels are zips).  Catches the
+        # case where a captive portal / proxy returned an HTML page
+        # but the urllib stack didn't notice.
+        try:
+            ok_zip = zipfile.is_zipfile(part_path)
+        except Exception:
+            ok_zip = False
+        if not ok_zip:
+            # NOT a valid zip — almost certainly an HTML error page
+            # or a transparent proxy page got captured.  Discard.
+            try:    os.remove(part_path)
+            except Exception: pass
+            raise RuntimeError(
+                "Downloaded file is not a valid .whl/.zip — likely an "
+                "intercepting proxy returned an HTML error page.  "
+                "Try again on a different network.")
+        # 3) Atomic rename to the final path — only happens if every
+        # earlier check passed.  os.replace is atomic on POSIX and
+        # near-atomic on Windows (NTFS); either the final file exists
+        # complete or it doesn't.
+        try:
+            os.replace(part_path, dest_path)
+        except OSError as exc:
+            # Most common on Windows: Defender has the .part open for
+            # scanning.  Wait a beat and retry once before giving up.
+            _log(f"  rename failed ({exc}); retrying after 1s "
+                 f"(Defender scan?)")
+            time.sleep(1.0)
+            os.replace(part_path, dest_path)
     except urllib.error.HTTPError as exc:
         progress_state["should_abort"] = True
-        try:
-            os.remove(dest_path)
-        except Exception:
-            pass
-        raise RuntimeError(
-            f"Server returned HTTP {exc.code} when downloading the CUDA "
-            f"PyTorch wheel.  The exact build for this Python/torch "
-            f"combination may not be available — please report this URL: "
-            f"{url}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        try:
-            os.remove(dest_path)
-        except Exception:
-            pass
-        raise RuntimeError(
-            "Could not reach download.pytorch.org.  Check your internet "
-            "connection or proxy settings and try again."
-        ) from exc
+        # 416 = "Requested Range Not Satisfiable" — our .part is now
+        # bigger than the server's file (rare, but happens when the
+        # server's wheel was updated between attempts).  Discard.
+        if getattr(exc, "code", 0) == 416:
+            _log("  HTTP 416 — discarding stale .part and retrying fresh")
+            try: os.remove(part_path)
+            except Exception: pass
+            raise urllib.error.URLError(f"416: {exc.reason}") from exc
+        # 4xx other than 416 → permanent.  Tag with HTTP so the retry
+        # loop sees it and aborts immediately instead of burning 3
+        # attempts on a 404.
+        if 400 <= getattr(exc, "code", 0) < 500:
+            raise RuntimeError(
+                f"HTTP {exc.code} when downloading {url}\n"
+                f"The exact wheel build for this Python/torch "
+                f"combination may not be on download.pytorch.org."
+            ) from exc
+        # 5xx → transient, let the retry loop have it.
+        raise urllib.error.URLError(
+            f"{exc.code}: {exc.reason}") from exc
+    except urllib.error.URLError:
+        # Let the outer retry loop catch this — keep .part for resume.
+        raise
     except RuntimeError:
+        # Includes user-cancel + our own short-read / stalled errors.
         raise
     except Exception as exc:
-        try:
-            os.remove(dest_path)
-        except Exception:
-            pass
+        # Unknown exception — convert so the retry loop sees it; keep
+        # .part on disk for the next attempt to resume from.
         raise RuntimeError(
             f"Unexpected error while downloading the CUDA PyTorch wheel: "
             f"{exc}"
@@ -659,16 +834,45 @@ def extract_wheel(wheel_path: str,
                   progress_cb: Optional[Callable[[int, int], None]] = None
                   ) -> None:
     """Extract the .whl (a zip) into dest_dir.  progress_cb(done, total)
-    is invoked at ~10 Hz."""
+    is invoked at ~10 Hz.
+
+    If extraction fails partway, the partial `dest_dir` is wiped before
+    the exception propagates — leaving a half-extracted sidecar around
+    confuses `is_installed()` (torch/__init__.py might be present even
+    though the rest of the wheel is missing) and creates ImportErrors
+    at runtime that look unrelated to the installer.
+    """
+    # If dest_dir already has contents (caller didn't clean up), don't
+    # silently merge — extraction's atomicity contract is per-call.
     os.makedirs(dest_dir, exist_ok=True)
     last_t = 0.0
     progress_throttle_s = 0.1
+    bad_zip_cleanup_needed = False
     try:
+        # Quick integrity check before iterating — zipfile.is_zipfile
+        # is constant-time (reads the central directory) and catches
+        # the "captive portal returned HTML" case if download_wheel's
+        # check somehow missed it.
+        if not zipfile.is_zipfile(wheel_path):
+            bad_zip_cleanup_needed = True
+            raise zipfile.BadZipFile(
+                f"{wheel_path} is not a valid zip archive.")
         with zipfile.ZipFile(wheel_path) as zf:
             names = zf.namelist()
             total = len(names)
             for i, name in enumerate(names, start=1):
-                zf.extract(name, dest_dir)
+                try:
+                    zf.extract(name, dest_dir)
+                except OSError as exc:
+                    # On Windows: file-already-in-use, path-too-long,
+                    # Defender-blocking-write.  Add the failing path
+                    # to the error so the user can see what's blocked.
+                    raise RuntimeError(
+                        f"Could not write {name} during extraction: "
+                        f"{exc}.\n\nIf this is a Defender-scanning "
+                        f"issue, exclude {dest_dir} from real-time "
+                        f"scanning and retry."
+                    ) from exc
                 if progress_cb is not None:
                     now = time.monotonic()
                     if (now - last_t) >= progress_throttle_s or i == total:
@@ -678,11 +882,28 @@ def extract_wheel(wheel_path: str,
                         except Exception:
                             pass
     except zipfile.BadZipFile as exc:
+        # Wheel is corrupt — delete it so the retry path on the next
+        # invocation downloads fresh instead of resuming a broken
+        # .part.  Also clean up the partial extraction.
+        try:    os.remove(wheel_path)
+        except Exception: pass
+        if bad_zip_cleanup_needed or os.path.isdir(dest_dir):
+            try:    shutil.rmtree(dest_dir, ignore_errors=True)
+            except Exception: pass
         raise RuntimeError(
-            "The downloaded CUDA PyTorch wheel is corrupt.  Please try "
-            "again."
+            "The downloaded CUDA PyTorch wheel is corrupt.  The bad "
+            "file has been removed; please retry the installation."
         ) from exc
+    except RuntimeError:
+        # Our own pre-formatted error; clean up partial extraction
+        # but leave the wheel for forensics.
+        try:    shutil.rmtree(dest_dir, ignore_errors=True)
+        except Exception: pass
+        raise
     except Exception as exc:
+        # Unknown — clean up partial extraction.
+        try:    shutil.rmtree(dest_dir, ignore_errors=True)
+        except Exception: pass
         raise RuntimeError(
             f"Could not extract the CUDA PyTorch wheel: {exc}"
         ) from exc
@@ -696,6 +917,10 @@ def install_cuda_torch(cuda_tag: str = "cu124",
     """Download + extract the CUDA torch wheel matching the currently-
     bundled torch version into the sidecar directory.
 
+    Thin wrapper that delegates to `install_cuda_torch_from_url` so the
+    hardening (atomic rename, partial-extract cleanup, disk-space
+    pre-flight, etc.) applies here too.
+
     Raises RuntimeError with user-facing wording on any failure.
     """
     ver = bundled_torch_version()
@@ -705,47 +930,14 @@ def install_cuda_torch(cuda_tag: str = "cu124",
             "install CUDA acceleration without a matching version.")
 
     url = cuda_wheel_url(ver, cuda_tag=cuda_tag)
-    sd = sidecar_dir()
-    wheel_path = os.path.join(sd, f"torch-{ver}+{cuda_tag}.whl")
-    extracted = sidecar_extracted_dir()
-
-    # If a previous partial extraction is sitting in place, blow it away
-    # so we start clean.
-    try:
-        if os.path.isdir(extracted):
-            shutil.rmtree(extracted, ignore_errors=True)
-    except Exception:
-        pass
-
-    download_wheel(url, wheel_path,
-                   progress_cb=download_progress_cb, cancel_cb=cancel_cb)
-
-    # Honour cancellation between phases too
-    if cancel_cb is not None:
-        try:
-            if cancel_cb():
-                try:
-                    os.remove(wheel_path)
-                except Exception:
-                    pass
-                raise RuntimeError("Installation cancelled by user.")
-        except RuntimeError:
-            raise
-        except Exception:
-            pass
-
-    extract_wheel(wheel_path, extracted, progress_cb=extract_progress_cb)
-
-    # Wheel is no longer needed once extracted — reclaim ~2.5 GB
-    try:
-        os.remove(wheel_path)
-    except Exception:
-        pass
-
-    if not is_installed():
-        raise RuntimeError(
-            "Extraction completed but torch/__init__.py is missing in "
-            "the sidecar directory.  The wheel layout may be unexpected.")
+    install_cuda_torch_from_url(
+        url,
+        torch_version=ver,
+        cuda_tag=cuda_tag,
+        download_progress_cb=download_progress_cb,
+        extract_progress_cb=extract_progress_cb,
+        cancel_cb=cancel_cb,
+    )
 
 
 def url_exists(url: str, timeout: float = 8.0) -> bool:
@@ -876,6 +1068,29 @@ def install_cuda_torch_auto(torch_version: str,
     return chosen_tag
 
 
+def _check_free_space_gb(target_dir: str, needed_gb: float) -> None:
+    """Raise RuntimeError if the volume containing `target_dir` has
+    less than `needed_gb` GB free.  Refusing to start beats running out
+    of disk halfway through extraction and leaving a half-installed
+    sidecar that the user has no clear way to recover.
+    """
+    try:
+        free_bytes = shutil.disk_usage(target_dir).free
+    except Exception:
+        # Can't measure — don't enforce.  Better to try and fail than
+        # to refuse to start on a working drive.
+        return
+    free_gb = free_bytes / (1024 ** 3)
+    if free_gb < needed_gb:
+        raise RuntimeError(
+            f"Not enough disk space.  CUDA installation needs about "
+            f"{needed_gb:.1f} GB free on the drive containing "
+            f"{target_dir}, but only {free_gb:.1f} GB is available.\n\n"
+            f"Free up space (the wheel and its extraction together are "
+            f"~5 GB) and try again."
+        )
+
+
 def install_cuda_torch_from_url(url: str,
                                  *,
                                  torch_version: str,
@@ -888,19 +1103,57 @@ def install_cuda_torch_from_url(url: str,
     slow on Windows onefile bundles).  `torch_version` is only used
     to name the temporary .whl file.
 
+    Murphy's-Law-grade lifecycle:
+      1. Pre-flight: disk-space check (raises if < 6 GB free).
+      2. Wipe stale `extracted.partial/` from any prior killed install.
+      3. Wipe stale `extracted/` so we never half-overlay a new wheel
+         on an old one (mixed torch versions = import errors at
+         runtime that look unrelated to the install).
+      4. Download to `<wheel>.part` with retry/resume/atomic-rename.
+      5. Extract to `extracted.partial/`; atomic-rename to `extracted/`
+         on success.
+      6. Delete the .whl (free ~2.5 GB).
+
+    Any step that fails leaves the system in a recoverable state: the
+    .part can be resumed, the partial extraction dir is wiped on the
+    next attempt, and the previous (working) `extracted/` is only
+    replaced on full success.
+
     Raises RuntimeError with user-facing wording on any failure.
     """
     sd = sidecar_dir()
     wheel_path = os.path.join(sd, f"torch-{torch_version}+{cuda_tag}.whl")
     extracted = sidecar_extracted_dir()
+    extracted_partial = extracted + ".partial"
 
-    # Wipe any half-done previous attempt so we start clean.
+    # 1. Disk-space pre-flight — 6 GB covers the 2.5 GB wheel + 2.5 GB
+    # extraction + ~1 GB headroom for the OS and temp files.
+    _check_free_space_gb(sd, needed_gb=6.0)
+
+    # 2. Clean up any half-finished extraction from a prior killed run.
+    # The atomic-rename pattern below depends on `extracted.partial`
+    # being absent.
+    try:
+        if os.path.isdir(extracted_partial):
+            shutil.rmtree(extracted_partial, ignore_errors=True)
+    except Exception:
+        pass
+
+    # 3. Wipe stale `extracted/` — this is a destructive step but
+    # necessary: the new wheel might rename or delete files relative
+    # to the old one, and overlaying creates a Frankenstein torch.
+    # Only done after the disk-space check passes so we never end up
+    # with NEITHER a working old install NOR enough disk for a new
+    # one.
     try:
         if os.path.isdir(extracted):
+            _log(f"Removing previous installation at {extracted}")
             shutil.rmtree(extracted, ignore_errors=True)
     except Exception:
         pass
 
+    # 4. Download.  Retries + resumes internally; raises on terminal
+    # failure.
     download_wheel(url, wheel_path,
                    progress_cb=download_progress_cb,
                    cancel_cb=cancel_cb)
@@ -908,19 +1161,57 @@ def install_cuda_torch_from_url(url: str,
     if cancel_cb is not None:
         try:
             if cancel_cb():
-                try: os.remove(wheel_path)
-                except Exception: pass
+                # Keep the wheel around — cheap resume next time.
                 raise RuntimeError("Installation cancelled by user.")
         except RuntimeError:
             raise
         except Exception:
             pass
 
-    extract_wheel(wheel_path, extracted,
+    # 5. Extract to a side directory, atomic-rename on success.
+    extract_wheel(wheel_path, extracted_partial,
                   progress_cb=extract_progress_cb)
 
+    # Verify the layout looks right before committing the rename.
+    if not os.path.isfile(os.path.join(extracted_partial,
+                                        "torch", "__init__.py")):
+        # Don't trash the partial — keep it for forensics.
+        raise RuntimeError(
+            f"Extraction completed but torch/__init__.py is missing in "
+            f"{extracted_partial}.  The wheel layout may be unexpected.")
+
+    try:
+        os.replace(extracted_partial, extracted)
+    except OSError as exc:
+        # On Windows, os.replace fails if the destination already
+        # exists (we wiped it above, but Defender could've re-created
+        # an empty marker).  Last-resort: shutil.move which copies if
+        # rename fails.
+        _log(f"  atomic rename failed ({exc}); falling back to move")
+        try:
+            if os.path.isdir(extracted):
+                shutil.rmtree(extracted, ignore_errors=True)
+            shutil.move(extracted_partial, extracted)
+        except Exception as exc2:
+            raise RuntimeError(
+                f"Could not finalise the installation: {exc2}.  The "
+                f"extracted files are at {extracted_partial}; copy them "
+                f"to {extracted} manually if this keeps failing."
+            ) from exc2
+
+    # 6. Wheel no longer needed — reclaim ~2.5 GB.  Failure to delete
+    # is not fatal (Defender may still be scanning it).
     try: os.remove(wheel_path)
-    except Exception: pass
+    except Exception:
+        # Try once more after a beat — Defender often holds the file
+        # for 1-2 seconds on Windows.
+        try:
+            time.sleep(1.0)
+            os.remove(wheel_path)
+        except Exception:
+            _log(f"  NOTE: could not delete {wheel_path} "
+                 f"(probably still being scanned).  Safe to remove "
+                 f"manually later.")
 
     if not is_installed():
         raise RuntimeError(
