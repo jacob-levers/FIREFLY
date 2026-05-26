@@ -36,6 +36,19 @@ jobs:
           pip install -r requirements.txt
           pip install "pyinstaller==6.11.1"   # pinned for reproducible Tcl/Tk bundling behaviour
 
+      - name: Inject release tag into __version__
+        # Rewrite `__version__ = "..."` in sptpalm_analysis.py to match
+        # the git tag this build was triggered by — guarantees the
+        # bundled binary always reports the exact version it shipped
+        # under, so the in-app update checker doesn't nag users who
+        # already have the latest release.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "Stamping __version__ = ${TAG}"
+          python -c "import re, pathlib; p = pathlib.Path('sptpalm_analysis.py'); t = p.read_text(); t = re.sub(r'^__version__ = \".*\"', f'__version__ = \"${TAG}\"', t, count=1, flags=re.M); p.write_text(t)"
+          grep '^__version__' sptpalm_analysis.py
+
       - name: Build .app
         run: pyinstaller sptpalm.spec --noconfirm --clean
 
@@ -99,6 +112,27 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
           pip install "pyinstaller==6.11.1"   # pinned for reproducible bundling behaviour
+
+      - name: Inject release tag into __version__
+        # Same idea as the macOS job — stamp the build with the git
+        # tag so the bundled binary reports its real version and the
+        # in-app update checker doesn't keep nagging users who have
+        # the latest release.  pwsh-flavoured because the Windows
+        # runner doesn't ship bash by default.
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
+          Write-Host "Stamping __version__ = $tag"
+          $py = @"
+          import re, pathlib
+          p = pathlib.Path('sptpalm_analysis.py')
+          t = p.read_text()
+          t = re.sub(r'^__version__ = ".*"', f'__version__ = "$tag"', t, count=1, flags=re.M)
+          p.write_text(t)
+          "@
+          $py | python -
+          Select-String -Path sptpalm_analysis.py -Pattern '^__version__'
 
       - name: Build exe (onefile)
         # Spec produces a single self-contained FIREFLY.exe.  All binaries

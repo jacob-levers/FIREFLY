@@ -3,7 +3,15 @@ import multiprocessing
 import sys
 import os
 
-__version__ = "2.6.0"
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  RELEASE CHECKLIST                                                        ║
+# ║  Every release MUST bump this string so the in-app update checker         ║
+# ║  (app_qt._UpdateCheckThread → __version__) doesn't keep nagging users     ║
+# ║  who already installed the latest binary.  The check compares this        ║
+# ║  string against the latest GitHub tag — if they don't match, the nag      ║
+# ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+__version__ = "2.6.9"
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":
