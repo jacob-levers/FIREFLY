@@ -99,6 +99,7 @@ hidden += [
     "fa_preprocess",
     "fa_drift",
     "fa_roi",
+    "fa_localize",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
