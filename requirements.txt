@@ -28,3 +28,5 @@ roifile>=2024.5.24 # ImageJ / palmTRACER .roi + .zip ROI file loader, used by _R
 PySide6>=6.6,<7
 napari[pyside6]>=0.4.19,<0.5
 dask[array]       # napari's lazy image loader degrades to a "missing dask" warning without this
+lxml_html_clean   # lxml 5.2+ moved html.clean into a separate package; napari's dep chain still imports the old path, so the napari embed silently fails without this companion installed
+

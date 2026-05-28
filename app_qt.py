@@ -5181,7 +5181,8 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(QtWidgets.QLabel("Input folder"))
         self.e_batch_folder = QtWidgets.QLineEdit()
         self.e_batch_folder.setPlaceholderText(
-            "Pick a folder containing .czi / .tif files…")
+            "Pick a folder containing .czi / .tif images or "
+            ".csv / .txt localisation tables…")
         btn_pick = QtWidgets.QPushButton("Browse")
         btn_pick.clicked.connect(self._on_batch_pick_folder)
         btn_refresh = QtWidgets.QPushButton("↻ Rescan")
@@ -5828,7 +5829,67 @@ class MainWindow(QtWidgets.QMainWindow):
         if name.startswith("._"):
             return False
         n = name.lower()
-        return n.endswith(".czi") or n.endswith(".tif") or n.endswith(".tiff")
+        # Image stacks — the standard PALM input.
+        if n.endswith(".czi") or n.endswith(".tif") or n.endswith(".tiff"):
+            # palmTRACER also writes TIFF *outputs* (track-map
+            # visualisations) into its `.PT` analysis folders.  Those
+            # have characteristic filename markers like
+            # `-Tracks-Z6-DCoef-Filtered-...-InROI-1-100.tif`.  Skip
+            # them: they are not acquisitions, and treating them as
+            # input would produce garbage analyses.
+            if "-tracks-z" in n:
+                return False
+            return True
+        # External localisation tables — let the user batch-process
+        # CSVs / TXTs exported by FIREFLY itself or by palmTRACER /
+        # Picasso / ThunderSTORM / TrackMate.  We accept .csv and .txt
+        # but filter out FIREFLY's own auxiliary outputs and palmTRACER's
+        # derived files (tracks / D / MSD tables) so a folder of mixed
+        # outputs only shows the localisation file per dataset.
+        if not (n.endswith(".csv") or n.endswith(".txt")):
+            return False
+        # palmTRACER's tracks / D / MSD files start with `trcpalmtracer`
+        # (with or without a leading `<stem>_` from FIREFLY's export).
+        # A single substring test catches both naming conventions and
+        # all four variants (-1-D, -1-MSD, -AllROI-D, -AllROI-MSD).
+        # We check after stripping any leading FIREFLY stem prefix so
+        # we don't accidentally match a user-named file that happens
+        # to contain the substring 'trcpalmtracer' in the middle.
+        base = os.path.basename(n)
+        ext  = os.path.splitext(base)[1]
+        stem = base[:-len(ext)] if ext else base
+        # Strip any FIREFLY-style `<stem>_` prefix.  We compare the
+        # resulting bare token against the canonical palmTRACER aux
+        # names.
+        bare = stem.split("_")[-1] if "_" in stem else stem
+        PALMTRACER_AUX_BARE = {
+            "trcpalmtracer",
+            "trcpalmtracer-1-d",
+            "trcpalmtracer-1-msd",
+            "trcpalmtracer-allroi-d",
+            "trcpalmtracer-allroi-msd",
+        }
+        if bare in PALMTRACER_AUX_BARE:
+            return False
+        # FIREFLY's own auxiliary outputs (never the right input).
+        FIREFLY_AUX_SUFFIXES = (
+            "_run_manifest.json",
+            "_diffusion_summary.csv",
+            "_ensemble_msd.csv",
+            "_trajectories.csv",
+            "_localisations.csv",
+            "_drift.csv",
+            "_dwell_times.csv",
+            "_turning_angles.csv",
+            "_mobile_fraction.csv",
+            "_cluster_labels.csv",
+            "_cluster_stats.csv",
+            "_postproc_input.csv",
+            "_circular_statistics.csv",
+        )
+        if any(n.endswith(suf) for suf in FIREFLY_AUX_SUFFIXES):
+            return False
+        return True
 
     @staticmethod
     def _series_key(filename: str) -> str:
@@ -5837,10 +5898,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
           * Trailing `(N)`              — ImageJ split-TIFFs
           * Trailing `-fileNNN`         — palmTRACER split-TIFFs
+          * Trailing `_locPALMTracer`   — FIREFLY's own loc CSV export
 
-        so e.g. `expt.tif`, `expt(1).tif`, `expt-file002.tif` all map to
-        the same key `expt`, letting the batch UI collapse them into one
-        series row.
+        so e.g. `expt.tif`, `expt(1).tif`, `expt-file002.tif`, and
+        `expt_locPALMTracer.csv` all map to the same key `expt`,
+        letting the batch UI collapse them into one series row.
 
         Underscore-suffix sister files like `expt_green.tif` (palmTRACER's
         ROI image) are NOT stripped here — they keep their own key and
@@ -5856,7 +5918,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # ImageJ split-TIFF `(N)` — may have trailing whitespace before
         # the dot, hence the `\s*` allowance.
         stem = _re.sub(r"\(\d+\)\s*$", "", stem).rstrip()
+        # FIREFLY's localisation-CSV export uses `<stem>_locPALMTracer.csv`
+        # — strip the suffix so the CSV groups with its source stack if
+        # both happen to live in the same folder, and so two re-exports
+        # of the same dataset don't appear as separate batch rows.
+        stem = _re.sub(r"_locpalmtracer$", "", stem, flags=_re.IGNORECASE)
         return stem
+
+    @staticmethod
+    def _is_csv_input(path: str) -> bool:
+        """True if `path` is an external-localisations table the worker
+        should load via load_external_locs (rather than load_file)."""
+        n = path.lower()
+        return n.endswith(".csv") or n.endswith(".txt")
 
     def _on_batch_pick_folder(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -5910,15 +5984,71 @@ class MainWindow(QtWidgets.QMainWindow):
             self._batch_update_summary()
             return
 
-        # Phase 1 — group files into series by the loader's keying.
+        # Phase 1 — collect candidate files from the picked folder AND
+        # one level of subfolders (lab layouts like 1-AMA/Cell1/Loc.txt
+        # are typical).  For files inside a subfolder we keep the
+        # subfolder name in the display label so the user can see
+        # which cell each row came from, and we prefix the series key
+        # with the subfolder so e.g. `Cell1/Loc.txt` and `Cell2/Loc.txt`
+        # don't collapse into a single ambiguous "Loc" series.
+        # `candidates` holds (display_name, full_path, subfolder_or_None).
+        candidates: list[tuple[str, str, str | None]] = []
         for name in names:
-            if not self._looks_like_input_file(name):
+            if name.startswith("."):
                 continue
             full = os.path.join(folder, name)
-            if not os.path.isfile(full):
-                continue
-            key = self._series_key(name)
-            self._batch_series_map.setdefault(key, []).append((name, full))
+            if os.path.isfile(full):
+                if self._looks_like_input_file(name):
+                    candidates.append((name, full, None))
+            elif os.path.isdir(full):
+                # Skip the batch_results / drift_correction output sub-
+                # dirs we ourselves write, plus hidden folders.
+                if name.lower() in ("batch_results", "compare_results"):
+                    continue
+                try:
+                    child_names = sorted(os.listdir(full))
+                except OSError:
+                    continue
+                for cname in child_names:
+                    cfull = os.path.join(full, cname)
+                    if (os.path.isfile(cfull)
+                        and self._looks_like_input_file(cname)):
+                        display = f"{name}/{cname}"
+                        candidates.append((display, cfull, name))
+
+        # Phase 2 — group by series key.  Files in a subfolder get a
+        # `<subfolder>__<base_key>` key so same-named files in different
+        # cells stay separate; top-level files keep the bare base key.
+        #
+        # When the base key is a generic palmTRACER label (e.g.
+        # `locPALMTracer`), the subfolder name IS the experiment
+        # identifier on its own — repeating both produces hideous
+        # `20260122_..._Post.PT__locPALMTracer/` output folders.  In
+        # that case the subfolder alone is enough.
+        GENERIC_PT_NAMES = {"locpalmtracer", "trcpalmtracer"}
+        import re as _re_sub
+        for display, full, sub in candidates:
+            if sub is None:
+                key = self._series_key(display)
+            else:
+                base = self._series_key(os.path.basename(display))
+                # Sanitise the subfolder name for the output-folder path
+                # (worker uses the series key verbatim as the stem).
+                # Strip palmTRACER's `.PT` analysis-dir suffix so the
+                # output folder doesn't carry the analysis-software
+                # marker.
+                sub_clean = _re_sub.sub(r"\.PT$", "", sub,
+                                          flags=_re_sub.IGNORECASE)
+                safe_sub = _re_sub.sub(r"[^A-Za-z0-9_.-]+", "_",
+                                         sub_clean).strip("_") or "sub"
+                if base.lower() in GENERIC_PT_NAMES:
+                    # Subfolder alone is enough (the filename carries
+                    # no extra identity over the directory it's in).
+                    key = safe_sub
+                else:
+                    key = f"{safe_sub}__{base}"
+            self._batch_series_map.setdefault(key, []).append(
+                (display, full))
 
         # Phase 1b — drop ROI/channel sister files (palmTRACER's
         # `<base>_green.tif`, `<base>_red.tif`, etc.).  These have
@@ -9499,17 +9629,50 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Batch outputs go to <input_folder>/batch_results/<stem>/  — same
         # convention as the Tk app.  Build a params dict per series.
+        # Pass the parent `batch_results/` only; the worker is responsible
+        # for wrapping each run in its own per-stem subfolder (see
+        # firefly_worker.py near `wrap_in_stem_folder`).  Pre-wrapping
+        # here produced batch_results/<stem>/<stem>/ — the double-enclosure
+        # bug.
         out_root = os.path.join(self.e_batch_folder.text().strip(),
                                 "batch_results")
+        # Resolve the GUI's csv_preset choice once — every CSV input in
+        # this batch shares the same preset (the user can re-run with a
+        # different preset if they need to mix formats).
+        _csv_preset_choice = self.c_csv_preset.currentText()
+        _csv_preset = ("auto" if _csv_preset_choice == "Auto-detect"
+                       else _csv_preset_choice)
         params_list = []
         for g in groups:
             fpath = g["primary"]
-            stem = os.path.splitext(os.path.basename(fpath))[0]
-            file_out = os.path.join(out_root, stem)
-            p = self._build_params_for_file(fpath, file_out)
-            # Override loader auto-discovery: pass the exact list of
-            # checked sister files for this series.
-            p["series_files"] = list(g.get("files") or [])
+            p = self._build_params_for_file(fpath, out_root)
+            # Use the series key as the output-folder stem.  For files
+            # inside a subfolder this disambiguates same-named files
+            # across cells (e.g. Cell1/Loc.txt → Cell1__Loc/).  For
+            # top-level files it equals the basename stem so behaviour
+            # is unchanged.
+            if g.get("key"):
+                p["stem_override"] = str(g["key"])
+            if self._is_csv_input(fpath):
+                # External-localisations branch.  Mirror _start_csv_run:
+                # tell the worker to skip detection and load the CSV via
+                # load_external_locs.  Pixel size / frame interval come
+                # from the sidebar even when the override checkboxes are
+                # unticked (a CSV has no embedded image metadata to fall
+                # back on).
+                if not p.get("pixel_size"):
+                    p["pixel_size"] = float(self.s_pixel_size.value())
+                if not p.get("frame_interval"):
+                    p["frame_interval"] = float(self.s_frame_interval.value())
+                p["source"]     = "external_csv"
+                p["csv_preset"] = _csv_preset
+                # CSVs don't have multi-file splits — `series_files` is
+                # an image-loader concept only.  Leave it unset.
+            else:
+                # Image-stack branch.  Override loader auto-discovery
+                # with the exact list of checked sister files for this
+                # series (palmTRACER's `-fileNNN` splits etc.).
+                p["series_files"] = list(g.get("files") or [])
             params_list.append(p)
 
         try:

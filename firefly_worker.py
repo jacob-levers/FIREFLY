@@ -446,7 +446,13 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             raise _Cancelled()
 
     fpath = p["file"]
-    stem  = os.path.splitext(os.path.basename(fpath))[0]
+    # By default the output-folder stem is just the file's basename, but
+    # the batch caller can override this via `stem_override` — used to
+    # disambiguate same-named files coming from different subfolders
+    # (e.g. Cell1/Loc.txt vs Cell2/Loc.txt → "Cell1__Loc" vs "Cell2__Loc"
+    # so each cell gets its own per-stem subfolder under batch_results/).
+    stem  = (str(p.get("stem_override")
+                 or os.path.splitext(os.path.basename(fpath))[0]))
     # Wrap every run's artifacts inside a per-stem subfolder so the user's
     # chosen output directory stays tidy when batch-processing multiple
     # files (and so the per-run files are obviously grouped together
