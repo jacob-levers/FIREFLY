@@ -1,7 +1,7 @@
 """MainWindow VisualiseMixin methods, split out of app_qt.py (#7)."""
 from __future__ import annotations
 import sys
-from ui_helpers import (_make_napari_container_layout_opaque,
+from firefly.ui.ui_helpers import (_make_napari_container_layout_opaque,
                         _hide_napari_chrome, _MOTION_ORDER, _MOTION_PALETTE)
 
 import os
@@ -10,10 +10,10 @@ import pandas as pd
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
-import sptpalm_analysis
-import crash_reporter
-from ui_theme import _THEME
-from ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
+from firefly import sptpalm_analysis
+from firefly import crash_reporter
+from firefly.ui.ui_theme import _THEME
+from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_VISUALISE, TAB_REPROCESS)
 
 
@@ -119,7 +119,7 @@ class VisualiseMixin:
         if v is None:
             return
         try:
-            from sptpalm_analysis import load_file
+            from firefly.sptpalm_analysis import load_file
             self.statusBar().showMessage(f"Loading {os.path.basename(path)} into napari…")
             stack, _, _ = load_file(path, channel=0)
             v.add_image(stack, name=os.path.basename(path),
@@ -743,7 +743,7 @@ class VisualiseMixin:
         if self._ws_cluster_xy_um is None:
             return
         try:
-            from sptpalm_analysis import compute_clusters
+            from firefly.sptpalm_analysis import compute_clusters
         except Exception:
             return
         import numpy as _np, pandas as _pd

@@ -5,8 +5,8 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 from __future__ import annotations
 
 import os
-from fa_theme import _theme_palette
-from fa_palmtracer import load_summary_from_folder
+from firefly.analysis.fa_theme import _theme_palette
+from firefly.analysis.fa_palmtracer import load_summary_from_folder
 
 import numpy as np
 import pandas as pd
@@ -14,9 +14,9 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats as _stats
-from fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_THRESHOLD_DEFAULT,
+from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_THRESHOLD_DEFAULT,
                           _motion_fractions, _track_lengths)
-from fa_circular import (save_comparison_circular_statistics,
+from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
                          _stat_test, _stat_test_n,
                          _p_stars, compute_per_track_mean_angle,
                          compute_circular_comparison_tests)

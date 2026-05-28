@@ -54,7 +54,7 @@ jobs:
           cat > stamp_version.py <<'PYEOF'
           import os, re, pathlib
           tag = os.environ['FIREFLY_BUILD_TAG']
-          p = pathlib.Path('sptpalm_analysis.py')
+          p = pathlib.Path('firefly/sptpalm_analysis.py')
           t = p.read_text(encoding='utf-8')
           t = re.sub(r'^__version__ = ".*"',
                      f'__version__ = "{tag}"',
@@ -63,7 +63,7 @@ jobs:
           PYEOF
           python stamp_version.py
           rm stamp_version.py
-          grep '^__version__' sptpalm_analysis.py
+          grep '^__version__' firefly/sptpalm_analysis.py
 
       - name: Build .app
         run: pyinstaller sptpalm.spec --noconfirm --clean
@@ -191,7 +191,7 @@ jobs:
           @'
           import os, re, pathlib
           tag = os.environ['FIREFLY_BUILD_TAG']
-          p = pathlib.Path('sptpalm_analysis.py')
+          p = pathlib.Path('firefly/sptpalm_analysis.py')
           t = p.read_text(encoding='utf-8')
           t = re.sub(r'^__version__ = ".*"',
                      f'__version__ = "{tag}"',
@@ -201,7 +201,7 @@ jobs:
           python stamp_version.py
           if ($LASTEXITCODE -ne 0) { Write-Error "Version stamp failed"; exit 1 }
           Remove-Item stamp_version.py
-          Select-String -Path sptpalm_analysis.py -Pattern '^__version__'
+          Select-String -Path firefly/sptpalm_analysis.py -Pattern '^__version__'
 
       - name: Build exe (onefile)
         # Spec produces a single self-contained FIREFLY.exe.  All binaries

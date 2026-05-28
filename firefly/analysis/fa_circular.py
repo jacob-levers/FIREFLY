@@ -11,7 +11,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats as _stats
-from fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
+from firefly.analysis.fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
 
 
 def compute_circular_statistics(angles_deg):
