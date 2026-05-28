@@ -1845,6 +1845,16 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
 
+    # Persist this subprocess's diagnostics to its own rotating log file
+    # (separate from the GUI's, to avoid cross-process rotation races).
+    # console=False: stderr is already the queue stream above, so the GUI
+    # console still shows the run; this just adds a durable on-disk record.
+    try:
+        import crash_reporter as _cr
+        _cr.setup_logging(filename="firefly_worker.log", console=False)
+    except Exception:
+        pass
+
     def _log(msg: str):       msg_queue.put(("log", msg))
     def _prog(pct, msg):      msg_queue.put(("progress", (int(pct), str(msg))))
 
