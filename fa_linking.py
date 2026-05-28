@@ -27,6 +27,20 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
         Optional.  Polled between frames; if `.is_set()` the linker
         raises `_Cancelled` and aborts cleanly.
     """
+    # Empty input → trackpy's coords_from_df indexes unique_times[0] on a
+    # size-0 array and raises a cryptic IndexError.  Bail out cleanly with a
+    # clear message instead (e.g. when an ROI mask excluded the whole frame
+    # or minmass filtered out every spot).
+    if locs is None or len(locs) == 0:
+        print("  No localisations to link (0 spots) — returning 0 "
+              "trajectories.  If ROI masking is enabled it may have excluded "
+              "the whole frame; otherwise try a lower minmass.")
+        cols = list(locs.columns) if locs is not None else \
+            ["x", "y", "frame", "mass"]
+        if "particle" not in cols:
+            cols = cols + ["particle"]
+        return pd.DataFrame(columns=cols)
+
     print(f"  Linking {len(locs):,} localisations  "
           f"(linker=trackpy, search_range={search_range}px, "
           f"memory={memory}) ...")
