@@ -125,14 +125,10 @@ from tqdm import tqdm
 # tqdm progress lines will appear there in real time.
 import io as _io
 
-def _tqdm(*args, **kwargs):
-    """tqdm wrapper that writes to stdout (captured by the GUI log panel).
-    Falls back to a no-op StringIO if stdout is somehow invalid."""
-    out = sys.stdout if (sys.stdout is not None) else _io.StringIO()
-    kwargs.setdefault("file", out)
-    # Disable ANSI colour codes — the log panel is plain text.
-    kwargs.setdefault("colour", None)
-    return tqdm(*args, **kwargs)
+# Shared constants + leaf helpers now live in fa_constants and are
+# re-exported here so existing `sptpalm_analysis.N_CPUS` / `_Cancelled` /
+# `_tqdm` / `_dim_size` call sites keep working unchanged.
+from fa_constants import N_CPUS, _Cancelled, _tqdm, _dim_size
 
 # Optional readers
 try:
@@ -156,8 +152,6 @@ except ImportError:
     HAS_TIFFFILE = False
 
 tp.quiet()
-
-N_CPUS = multiprocessing.cpu_count()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -198,13 +192,6 @@ def _parse_czi_metadata(xml_str):
     except Exception:
         pass
     return meta
-
-
-def _dim_size(v, default=1):
-    """aicspylibczi returns dims as int or (start, size) tuple."""
-    if isinstance(v, tuple):
-        return int(v[1])
-    return int(v) if v is not None else default
 
 
 def load_projection_fast(path, channel=0, max_frames=100):
@@ -328,11 +315,6 @@ def _find_czi_series(path):
         for f in series:
             print(f"    {os.path.basename(f)}")
     return series if series else [path]
-
-
-class _Cancelled(Exception):
-    """Raised inside loaders when a stop_event fires mid-load."""
-    pass
 
 
 def _load_single_czi(path, channel=0, stop_event=None):
