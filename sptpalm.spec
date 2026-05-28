@@ -100,6 +100,9 @@ hidden += [
     "fa_drift",
     "fa_roi",
     "fa_localize",
+    "fa_linking",
+    "fa_diffusion",
+    "fa_clustering",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
