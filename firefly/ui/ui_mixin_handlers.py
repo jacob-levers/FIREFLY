@@ -13,17 +13,17 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 
-import sptpalm_analysis
-import crash_reporter
-import cuda_installer
-from ui_theme import _THEME
-from ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
+from firefly import sptpalm_analysis
+from firefly import crash_reporter
+from firefly import cuda_installer
+from firefly.ui.ui_theme import _THEME
+from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_VISUALISE, TAB_REPROCESS)
-from ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
+from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _make_napari_container_layout_opaque, _hide_napari_chrome,
                         _register_motion_colormap, _open_folder,
                         _MOTION_PALETTE, _MOTION_ORDER, _MOTION_CMAP_NAME)
-from ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _QuietSpinBox,
+from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _QuietSpinBox,
                         _QuietDoubleSpinBox, _QuietComboBox, _CollapsibleSection,
                         _ResourceMonitor, _MassHistogram, _LiveFrameView,
                         _TrackInspector, _ResultsPanel, _RoiDialog, _RoiViewer,
@@ -695,7 +695,7 @@ class HandlersMixin:
     def _on_cuda_button_clicked(self):
         """Manual entry point from the Performance section button."""
         try:
-            import cuda_installer as _cu
+            from firefly import cuda_installer as _cu
         except Exception:
             QtWidgets.QMessageBox.warning(
                 self, "CUDA installer unavailable",

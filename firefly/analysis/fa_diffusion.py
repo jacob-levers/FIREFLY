@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from scipy.optimize import curve_fit
-from fa_constants import N_CPUS, _tqdm
+from firefly.analysis.fa_constants import N_CPUS, _tqdm
 
 
 def msd_linear(t, D, offset):

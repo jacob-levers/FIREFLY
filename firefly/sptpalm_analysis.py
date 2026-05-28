@@ -128,7 +128,7 @@ import io as _io
 # Shared constants + leaf helpers now live in fa_constants and are
 # re-exported here so existing `sptpalm_analysis.N_CPUS` / `_Cancelled` /
 # `_tqdm` / `_dim_size` call sites keep working unchanged.
-from fa_constants import N_CPUS, _Cancelled, _tqdm, _dim_size
+from firefly.analysis.fa_constants import N_CPUS, _Cancelled, _tqdm, _dim_size
 
 
 tp.quiet()
@@ -140,7 +140,7 @@ tp.quiet()
 
 # CZI/TIF/external loaders now live in fa_loaders; re-exported here so
 # existing `sptpalm_analysis.load_file(...)` etc. call sites keep working.
-from fa_loaders import (
+from firefly.analysis.fa_loaders import (
     load_file, load_czi, load_tif, load_external_locs, load_projection_fast,
     _parse_czi_metadata, _parse_ome_metadata, _find_czi_series,
     _find_tif_series, _load_single_czi, _load_single_tif,
@@ -165,7 +165,7 @@ from fa_loaders import (
 # Memory / temp-stack management lives in fa_memory; re-exported here so
 # existing call sites (and firefly_worker's cleanup_temp_stack_paths
 # import) keep working unchanged.
-from fa_memory import (
+from firefly.analysis.fa_memory import (
     set_temp_stack_dir, _resolve_temp_stack_dir, _register_temp_stack_path,
     cleanup_temp_stack_paths, _cleanup_temp_stack_paths,
     _alloc_or_memmap_stack, _user_ram_reserve_gb,
@@ -196,10 +196,10 @@ from fa_memory import (
 
 # preprocess / drift / roi now live in fa_preprocess, fa_drift, fa_roi;
 # re-exported here so existing call sites keep working.
-from fa_preprocess import (_preprocess_fast, _preprocess_rolling,
+from firefly.analysis.fa_preprocess import (_preprocess_fast, _preprocess_rolling,
                            preprocess_stack, auto_threshold)
-from fa_drift import correct_drift
-from fa_roi import (build_roi_mask_mean, build_roi_mask_perframe,
+from firefly.analysis.fa_drift import correct_drift
+from firefly.analysis.fa_roi import (build_roi_mask_mean, build_roi_mask_perframe,
                     build_roi_mask, build_roi_mask_advanced, apply_roi_mask)
 
 
@@ -254,7 +254,7 @@ from fa_roi import (build_roi_mask_mean, build_roi_mask_perframe,
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_localize extracted; re-exported here so call sites keep working.
-from fa_localize import (
+from firefly.analysis.fa_localize import (
     _ram_strategy, _adaptive_chunk_and_workers,
     _fast_preprocess_and_localise, preprocess_and_localise_adaptive,
     preprocess_and_localise_stream, _localise_chunk, _localise_chunk_mp,
@@ -321,7 +321,7 @@ from fa_localize import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_linking extracted; re-exported here.
-from fa_linking import (
+from firefly.analysis.fa_linking import (
     link_trajectories, _link_via_trackpy,
 )
 
@@ -333,7 +333,7 @@ from fa_linking import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_diffusion extracted; re-exported here.
-from fa_diffusion import (
+from firefly.analysis.fa_diffusion import (
     msd_linear, classify_motion, _msd_and_fit_one, compute_msd_and_fit,
     compute_jdd, compute_turning_angles, compute_mobile_fraction_over_time,
     compute_dwell_times, compute_mss, _msd_auc, _mob_immob_ratio,
@@ -371,7 +371,7 @@ from fa_diffusion import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_circular extracted; re-exported here.
-from fa_circular import (
+from firefly.analysis.fa_circular import (
     compute_circular_statistics, _circ_watson_williams,
     _circ_mardia_watson_wheeler, _circ_wallraff_ktest,
     _circ_kuiper_two_sample, _circ_lin_correlation,
@@ -383,7 +383,7 @@ from fa_circular import (
 
 
 # fa_theme extracted; re-exported here.
-from fa_theme import (
+from firefly.analysis.fa_theme import (
     _theme_palette, _THEME_REQUIRED_KEYS,
 )
 
@@ -427,7 +427,7 @@ from fa_theme import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_clustering extracted; re-exported here.
-from fa_clustering import (
+from firefly.analysis.fa_clustering import (
     compute_clusters,
 )
 
@@ -449,7 +449,7 @@ from fa_clustering import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_figure extracted; re-exported here.
-from fa_figure import (
+from firefly.analysis.fa_figure import (
     _draw_track, make_figure, MC, MORD,
 )
 
@@ -676,7 +676,7 @@ def main():
 # fractions, track length distribution, JDD, dwell time CDF, turning angles.
 
 # fa_palmtracer extracted; re-exported here.
-from fa_palmtracer import (
+from firefly.analysis.fa_palmtracer import (
     _find_stem, _is_palmtracer_folder, _read_palmtracer_table,
     load_summary_from_palmtracer, load_summary_from_folder,
     save_palmtracer_csvs,
@@ -702,7 +702,7 @@ from fa_palmtracer import (
 
 
 # fa_compare extracted; re-exported here.
-from fa_compare import (
+from firefly.analysis.fa_compare import (
     _stat_test, _stat_test_n, _bar_with_dots_n, compare_groups,
     _write_pdf_report,
 )

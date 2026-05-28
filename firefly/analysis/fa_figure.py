@@ -14,8 +14,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
-from fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
-from fa_diffusion import classify_motion, msd_linear
+from firefly.analysis.fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
+from firefly.analysis.fa_diffusion import classify_motion, msd_linear
 
 
 MC   = {"Immobile":"#e05252","Confined":"#f5a623","Brownian":"#4a90d9",

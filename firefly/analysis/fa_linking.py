@@ -8,7 +8,7 @@ import time
 import numpy as np
 import pandas as pd
 import trackpy as tp
-from fa_constants import _Cancelled, _tqdm
+from firefly.analysis.fa_constants import _Cancelled, _tqdm
 
 
 def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,

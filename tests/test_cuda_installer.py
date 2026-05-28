@@ -1,5 +1,5 @@
 """Unit tests for the CUDA sidecar installer's pure logic (no network)."""
-import cuda_installer as cu
+from firefly import cuda_installer as cu
 
 
 def test_cuda_wheel_url_format():

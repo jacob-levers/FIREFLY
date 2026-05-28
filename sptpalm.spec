@@ -85,44 +85,17 @@ hidden += [
     "concurrent.futures.thread",
     "psutil",
     "threadpoolctl",
-    # FIREFLY's own helper modules — explicitly named so the spawned
-    # subprocess can find them even if static analysis misses the
-    # firefly_worker.run_analysis cross-module reference.
-    "firefly_worker",
-    "crash_reporter",
-    "sptpalm_analysis",
-    "cuda_installer",
-    # Extracted analysis submodules (re-exported by sptpalm_analysis).
-    "fa_constants",
-    "fa_memory",
-    "fa_loaders",
-    "fa_preprocess",
-    "fa_drift",
-    "fa_roi",
-    "fa_localize",
-    "fa_linking",
-    "fa_diffusion",
-    "fa_clustering",
-    "fa_theme",
-    "fa_circular",
-    "fa_figure",
-    "fa_compare",
-    "fa_palmtracer",
-    # GUI submodules (imported by app_qt).
-    "ui_theme",
-    "ui_helpers",
-    "ui_widgets",
-    "ui_constants",
-    "ui_mixin_visualise",
-    "ui_mixin_compare",
-    "ui_mixin_batch",
-    "ui_mixin_build",
-    "ui_mixin_handlers",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
     "encodings.latin_1",
 ]
+
+# FIREFLY's own package — collect every submodule (firefly, firefly.analysis.*,
+# firefly.ui.*) so the spawned worker subprocess can re-import
+# firefly.firefly_worker.run_analysis and the lazily-imported analysis/UI
+# modules are all present in the frozen bundle.
+hidden += collect_submodules("firefly")
 
 # ── Datas ─────────────────────────────────────────────────────────────────────
 datas = []
@@ -179,10 +152,14 @@ try:
 except Exception:
     pass
 
-datas += [("sptpalm_analysis.py", ".")]
-datas += [("firefly_worker.py",   ".")]
-datas += [("crash_reporter.py",   ".")]
-datas += [("cuda_installer.py",   ".")]
+# Ship the source .py for the top-level package modules alongside the bundle.
+# firefly_worker reads __file__ to locate the git SHA; crash_reporter embeds
+# source context in reports.  Mirror the package path so __file__-relative
+# lookups resolve.
+datas += [("firefly/sptpalm_analysis.py", "firefly")]
+datas += [("firefly/firefly_worker.py",   "firefly")]
+datas += [("firefly/crash_reporter.py",   "firefly")]
+datas += [("firefly/cuda_installer.py",   "firefly")]
 
 # Bundle the app icon PNG so the Qt window/dock icon can be loaded
 # at runtime from sys._MEIPASS/assets/icon.png in frozen mode.
@@ -191,7 +168,7 @@ if os.path.isfile(os.path.join(SPECPATH, "assets", "icon.png")):
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
-    ["app_qt.py"],
+    ["run_firefly.py"],
     pathex=["."],
     binaries=[],
     datas=datas,
