@@ -3560,6 +3560,14 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+        # Reveal/hide the localisation-table controls as the input path
+        # changes (a .csv/.txt/.tsv path shows them; an image hides them).
+        try:
+            self.e_file.textChanged.connect(
+                lambda _: self._update_single_loc_controls())
+        except Exception:
+            pass
+
         # Auto-load the active file into the embedded ROI viewer whenever
         # the path settles (debounced so we don't fire load-after-every-
         # keystroke while the user is typing or pasting a path).
@@ -4957,37 +4965,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.r_mode_single = self._make_mode_tile(
             "Single file",
-            "Analyse one .czi / .tif file end-to-end")
+            "Analyse one .czi / .tif image — or an external\n"
+            "localisations table (.csv / .txt / .tsv), auto-detected")
         self.r_mode_batch = self._make_mode_tile(
             "Batch (folder)",
             "Process every file in a folder, one after another")
-        self.r_mode_csv = self._make_mode_tile(
-            "External CSV",
-            "Skip detection — load localisations from PALM-Tracer /\n"
-            "ThunderSTORM / Picasso and run linking + downstream\n"
-            "analyses only")
         self.r_mode_single.setChecked(True)
 
         # Manual exclusivity (these custom tiles aren't QAbstractButtons,
         # so QButtonGroup can't manage them).  Clicking one unchecks the
-        # others and fires the mode-change handler.  Modes are tracked
-        # by string for clarity now that we have three of them.
+        # other and fires the mode-change handler.
         def _set_mode(name: str):
             self.r_mode_single.setChecked(name == "single")
             self.r_mode_batch.setChecked(name == "batch")
-            self.r_mode_csv.setChecked(name == "csv")
             self._on_import_mode_changed(name)
 
         self.r_mode_single.toggled.connect(
             lambda checked: _set_mode("single") if checked else None)
         self.r_mode_batch.toggled.connect(
             lambda checked: _set_mode("batch")  if checked else None)
-        self.r_mode_csv.toggled.connect(
-            lambda checked: _set_mode("csv")    if checked else None)
 
         mode_row.addWidget(self.r_mode_single, 1)
         mode_row.addWidget(self.r_mode_batch,  1)
-        mode_row.addWidget(self.r_mode_csv,    1)
         v.addLayout(mode_row)
 
         # ── Single-file sub-panel ─────────────────────────────────────────
@@ -4997,7 +4996,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row = QtWidgets.QHBoxLayout()
         self.e_file = QtWidgets.QLineEdit()
-        self.e_file.setPlaceholderText("Browse for a .czi / .tif file…")
+        self.e_file.setPlaceholderText(
+            "Browse for a .czi / .tif image or a .csv / .txt / .tsv "
+            "localisations table…")
         b1 = QtWidgets.QPushButton("Browse")
         b1.clicked.connect(self._on_browse_file)
         row.addWidget(self.e_file); row.addWidget(b1)
@@ -5038,6 +5039,53 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_single_roi_status.setStyleSheet(
             f"color: {_THEME['TXT_MUTED']};")
         sg.addRow("Region of interest", self.lbl_single_roi_status)
+
+        # Localisation-table controls — revealed only when the chosen input
+        # is an external .csv / .txt / .tsv table (auto-detected from the
+        # path).  Hidden for image inputs.  Widget names are kept as
+        # c_csv_preset / e_csv_bg because Batch mode and the run-launch code
+        # read them directly.
+        self._single_loc_panel = QtWidgets.QWidget()
+        lg = QtWidgets.QFormLayout(self._single_loc_panel)
+        lg.setContentsMargins(0, 0, 0, 0)
+        lg.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.c_csv_preset = _QuietComboBox()
+        self.c_csv_preset.addItems(
+            ["Auto-detect", "PALM-Tracer", "ThunderSTORM",
+             "Picasso", "TrackMate", "Custom"])
+        self.c_csv_preset.setToolTip(
+            "Source-tool preset.  Tells FIREFLY how to interpret the\n"
+            "CSV's columns (frame indexing, x/y units, mass column).\n"
+            "Auto-detect sniffs the header; pick a specific preset if\n"
+            "auto-detect picks the wrong one.\n\n"
+            "TrackMate note: when the CSV's TRACK_ID column is present,\n"
+            "FIREFLY uses TrackMate's tracks directly and SKIPS its own\n"
+            "linker — the Linking sidebar params have no effect in that\n"
+            "case.")
+        lg.addRow("Source preset", self.c_csv_preset)
+
+        row = QtWidgets.QHBoxLayout()
+        self.e_csv_bg = QtWidgets.QLineEdit()
+        self.e_csv_bg.setPlaceholderText(
+            "Optional — used only for the figure's max-projection panel")
+        btn_csv_bg = QtWidgets.QPushButton("Browse")
+        btn_csv_bg.clicked.connect(self._on_browse_csv_bg)
+        row.addWidget(self.e_csv_bg, 1); row.addWidget(btn_csv_bg)
+        w_csv_bg = QtWidgets.QWidget(); w_csv_bg.setLayout(row)
+        lg.addRow("Background image", w_csv_bg)
+
+        _loc_hint = QtWidgets.QLabel(
+            "Localisations table detected — detection / preprocessing are "
+            "skipped; linking + downstream analyses run on the imported "
+            "spots.  Set Pixel size / Frame interval in the sidebar.")
+        _loc_hint.setWordWrap(True)
+        _loc_hint.setStyleSheet(
+            f"color: {_THEME['TXT_MUTED']}; font-size: 11px;")
+        lg.addRow("", _loc_hint)
+
+        self._single_loc_panel.hide()
+        sg.addRow(self._single_loc_panel)
 
         v.addWidget(self._single_panel)
 
@@ -5118,76 +5166,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         v.addWidget(self._batch_panel, stretch=1)
 
-        # ── External-CSV sub-panel ────────────────────────────────────────
-        # "Skip detection" mode: load localisations from PALM-Tracer /
-        # ThunderSTORM / Picasso and run linking + downstream analyses
-        # only.  No image is loaded, so the live preview viewer below
-        # shows a placeholder unless the user supplies a background image
-        # (optional, used for the figure's max-projection panel only).
-        self._csv_panel = QtWidgets.QGroupBox("External CSV")
-        cg = QtWidgets.QFormLayout(self._csv_panel)
-        cg.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        # Input CSV
-        row = QtWidgets.QHBoxLayout()
-        self.e_csv_path = QtWidgets.QLineEdit()
-        self.e_csv_path.setPlaceholderText(
-            "Pick a localisations file (.csv / .txt / .tsv) from "
-            "PALM-Tracer / ThunderSTORM / Picasso / TrackMate…")
-        btn_csv = QtWidgets.QPushButton("Browse")
-        btn_csv.clicked.connect(self._on_browse_csv)
-        row.addWidget(self.e_csv_path, 1); row.addWidget(btn_csv)
-        w_csv = QtWidgets.QWidget(); w_csv.setLayout(row)
-        cg.addRow("Localisations file", w_csv)
-        # Preset combo
-        self.c_csv_preset = _QuietComboBox()
-        self.c_csv_preset.addItems(
-            ["Auto-detect", "PALM-Tracer", "ThunderSTORM",
-             "Picasso", "TrackMate", "Custom"])
-        self.c_csv_preset.setToolTip(
-            "Source-tool preset.  Tells FIREFLY how to interpret the\n"
-            "CSV's columns (frame indexing, x/y units, mass column).\n"
-            "Auto-detect sniffs the header; pick a specific preset if\n"
-            "auto-detect picks the wrong one.\n\n"
-            "TrackMate note: when the CSV's TRACK_ID column is present,\n"
-            "FIREFLY uses TrackMate's tracks directly and SKIPS its own\n"
-            "linker — the Linking sidebar params have no effect in that\n"
-            "case.  Use this to get \"TrackMate detection + linking,\n"
-            "FIREFLY analytics\" with no manual column mapping.")
-        cg.addRow("Source preset", self.c_csv_preset)
-        # Output folder
-        row = QtWidgets.QHBoxLayout()
-        self.e_csv_outdir = QtWidgets.QLineEdit()
-        self.e_csv_outdir.setPlaceholderText(
-            "Output folder for figure + CSV / JSON artifacts")
-        btn_csv_out = QtWidgets.QPushButton("Browse")
-        btn_csv_out.clicked.connect(self._on_browse_csv_outdir)
-        row.addWidget(self.e_csv_outdir, 1); row.addWidget(btn_csv_out)
-        w_csv_out = QtWidgets.QWidget(); w_csv_out.setLayout(row)
-        cg.addRow("Output folder", w_csv_out)
-        # Optional background image
-        row = QtWidgets.QHBoxLayout()
-        self.e_csv_bg = QtWidgets.QLineEdit()
-        self.e_csv_bg.setPlaceholderText(
-            "Optional — used only for the figure's max-projection panel")
-        btn_csv_bg = QtWidgets.QPushButton("Browse")
-        btn_csv_bg.clicked.connect(self._on_browse_csv_bg)
-        row.addWidget(self.e_csv_bg, 1); row.addWidget(btn_csv_bg)
-        w_csv_bg = QtWidgets.QWidget(); w_csv_bg.setLayout(row)
-        cg.addRow("Background image", w_csv_bg)
-        # Helpful note about which sidebar settings still matter
-        hint = QtWidgets.QLabel(
-            "External CSV mode uses:  Pixel size · Frame interval · "
-            "Linking · Diffusion · ROI · Drift correction · Clustering · "
-            "Figures.  Detection / preprocessing sidebar sections are "
-            "ignored.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; font-size: 11px;")
-        cg.addRow("", hint)
-        v.addWidget(self._csv_panel, stretch=1)
-
-        # Start visible state: single mode shown, others hidden
+        # Start visible state: single mode shown, batch hidden
         self._batch_panel.hide()
-        self._csv_panel.hide()
         self._import_mode = "single"
 
         # ── Embedded ROI viewer (always visible) ──────────────────────────
@@ -5215,16 +5195,28 @@ class MainWindow(QtWidgets.QMainWindow):
         others.  Accepts a string ("single" / "batch" / "csv") for the
         new tri-state mode toggle; falls back to bool for the legacy
         two-mode call sites."""
-        # Legacy callers pass a bool (single=True / batch=False).
+        # Legacy callers pass a bool (single=True / batch=False).  Any stale
+        # "csv" value (from before External CSV was folded into single mode)
+        # collapses to "single".
         if isinstance(mode, bool):
             mode = "single" if mode else "batch"
+        if mode == "csv":
+            mode = "single"
         self._import_mode = mode
         try:    self._single_panel.setVisible(mode == "single")
         except AttributeError: pass
         try:    self._batch_panel.setVisible(mode == "batch")
         except AttributeError: pass
-        try:    self._csv_panel.setVisible(mode == "csv")
-        except AttributeError: pass
+
+    def _update_single_loc_controls(self):
+        """Show the loc-table controls (Source preset + Background image)
+        only when the single-file input is an external localisations table;
+        hide them for image inputs."""
+        try:
+            is_loc = self._is_csv_input(self.e_file.text().strip())
+            self._single_loc_panel.setVisible(bool(is_loc))
+        except Exception:
+            pass
 
     def _build_analysis_tab(self):
         """Analysis tab — pure status display.  Stage label, progress bar,
@@ -5791,7 +5783,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """True if `path` is an external-localisations table the worker
         should load via load_external_locs (rather than load_file)."""
         n = path.lower()
-        return n.endswith(".csv") or n.endswith(".txt")
+        return n.endswith(".csv") or n.endswith(".txt") or n.endswith(".tsv")
 
     @staticmethod
     def _file_looks_corrupt(path: str) -> bool:
@@ -6253,6 +6245,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 path = it.data(0, self._ROLE_PATH) or ""
         else:
             path = self.e_file.text().strip()
+            # An external localisations table isn't an image — don't try to
+            # load it into the preview viewer (it would error / show junk).
+            if self._is_csv_input(path):
+                self._roi_viewer.set_file("", None)
+                return
         if path and os.path.isfile(path):
             existing = self._roi_polygons.get(os.path.abspath(path))
             self._roi_viewer.set_file(path, current_polygons=existing)
@@ -8666,7 +8663,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception: pass
 
         # 7. Close any leftover modal dialogs that might still be alive
-        # (CUDA debug log window, progress dialog, etc.).
+        # (CUDA install progress dialog, etc.).
         try:
             for w in QtWidgets.QApplication.topLevelWidgets():
                 if w is self:
@@ -8794,7 +8791,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_browse_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select input file", os.path.expanduser("~"),
-            "Image stacks (*.czi *.tif *.tiff);;All files (*)")
+            "Images or localisations "
+            "(*.czi *.tif *.tiff *.csv *.txt *.tsv);;"
+            "Image stacks (*.czi *.tif *.tiff);;"
+            "Localisations (*.csv *.txt *.tsv);;"
+            "All files (*)")
         if path:
             self.e_file.setText(path)
             if not self.e_outdir.text():
@@ -8806,31 +8807,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if path:
             self.e_outdir.setText(path)
 
-    # ── External-CSV pickers ──────────────────────────────────────────────
-    def _on_browse_csv(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select localisations file",
-            self.e_csv_outdir.text() or os.path.expanduser("~"),
-            "Localisations (*.csv *.txt *.tsv);;"
-            "CSV (*.csv);;"
-            "Tab / text (*.txt *.tsv);;"
-            "All files (*)")
-        if path:
-            self.e_csv_path.setText(path)
-            if not self.e_csv_outdir.text():
-                self.e_csv_outdir.setText(os.path.dirname(path))
-
-    def _on_browse_csv_outdir(self):
-        path = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select output folder",
-            self.e_csv_outdir.text() or os.path.expanduser("~"))
-        if path:
-            self.e_csv_outdir.setText(path)
-
     def _on_browse_csv_bg(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select background image (optional)",
-            self.e_csv_outdir.text() or os.path.expanduser("~"),
+            self.e_outdir.text() or os.path.dirname(self.e_file.text())
+            or os.path.expanduser("~"),
             "Image stacks (*.czi *.tif *.tiff);;All files (*)")
         if path:
             self.e_csv_bg.setText(path)
@@ -9346,8 +9327,6 @@ class MainWindow(QtWidgets.QMainWindow):
         active_tab_label = self.tabs.tabText(self.tabs.currentIndex())
         if active_tab_label.startswith(TAB_COMPARE):
             self._start_compare_run()
-        elif getattr(self, "r_mode_csv", None) and self.r_mode_csv.isChecked():
-            self._start_csv_run()
         elif self.r_mode_batch.isChecked():
             self._start_batch_run()
         else:
@@ -9361,71 +9340,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.tabs.setCurrentIndex(i)
                 return
 
-    def _start_csv_run(self):
-        """External-CSV mode: skip detection, treat the CSV as the
-        localisations source and run the rest of the pipeline."""
-        csv_path = self.e_csv_path.text().strip()
-        if not csv_path or not os.path.isfile(csv_path):
-            QtWidgets.QMessageBox.warning(
-                self, "No CSV",
-                "Pick a localisations CSV on the Import tab first.")
-            self._switch_to_tab(TAB_IMPORT)
-            return
-        out_dir = self.e_csv_outdir.text().strip() or os.path.dirname(csv_path)
-        self._switch_to_tab(TAB_ANALYSIS)
-        self._start_elapsed_timer()
-
-        # Build params the same way as a normal run, then override the
-        # source-related fields.  Using the same widget snapshot means
-        # ROI / drift / linking / MSD / figure settings are honoured.
-        params = self._build_params_for_file(csv_path, out_dir)
-        # Pixel size / frame interval default off the sidebar even when
-        # the Override checkboxes are unticked — there's no file metadata
-        # to fall back on for a CSV.
-        if not params.get("pixel_size"):
-            params["pixel_size"] = float(self.s_pixel_size.value())
-        if not params.get("frame_interval"):
-            params["frame_interval"] = float(self.s_frame_interval.value())
-        preset = self.c_csv_preset.currentText()
-        params["source"] = "external_csv"
-        params["csv_preset"] = (
-            "auto" if preset == "Auto-detect" else preset)
-        bg = self.e_csv_bg.text().strip()
-        if bg and os.path.isfile(bg):
-            params["bg_image_path"] = bg
-
-        try:
-            self._save_settings()
-        except Exception:
-            pass
-
-        # Clear UI for new run
-        self.console_log.clear()
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("Starting…")
-        self.run_stage_label.setText("Starting…")
-        self.run_results.reset("Run in progress…")
-        try:
-            self.mass_hist.reset()
-            self.live_view.reset()
-            self._analysis_stack.setCurrentIndex(0)
-        except AttributeError:
-            pass
-        self._is_batch_run   = False
-        self._is_compare_run = False
-
-        self._msg_queue    = multiprocessing.Queue(maxsize=2000)
-        self._cancel_event = multiprocessing.Event()
-        self._proc = multiprocessing.Process(
-            target=_run_analysis_in_subprocess,
-            args=(params, self._msg_queue, self._cancel_event),
-            name="FIREFLY-AnalysisWorker",
-            daemon=False)
-        self._proc.start()
-        self._poll_timer.start()
-        self.btn_run.setText("Stop")
-        self.statusBar().showMessage("Running (external CSV)…")
-
     def _start_single_run(self):
         fpath = self.e_file.text().strip()
         if not fpath or not os.path.isfile(fpath):
@@ -9434,16 +9348,41 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Pick an input file on the Import tab first.")
             self._switch_to_tab(TAB_IMPORT)
             return
-        # Pre-flight backend validation — catches "user picked CUDA on
-        # a CPU-only torch" before we waste minutes on frame loading.
-        if not self._validate_selected_backend():
-            return
+
+        # External localisations table (.csv / .txt / .tsv) → skip detection
+        # and run the downstream pipeline on the imported spots.  Anything
+        # else is an image stack and runs the full localiser.
+        is_loc = self._is_csv_input(fpath)
+
+        if not is_loc:
+            # Pre-flight backend validation — catches "user picked CUDA on
+            # a CPU-only torch" before we waste minutes on frame loading.
+            # Irrelevant for a localisations table (no detection step).
+            if not self._validate_selected_backend():
+                return
         # Auto-switch to the Analysis tab so the user sees progress
         self._switch_to_tab(TAB_ANALYSIS)
         self._start_elapsed_timer()
 
-        params = self._build_params_for_file(
-            fpath, self.e_outdir.text().strip() or None)
+        out_dir = self.e_outdir.text().strip() or (
+            os.path.dirname(fpath) if is_loc else None)
+        params = self._build_params_for_file(fpath, out_dir)
+
+        if is_loc:
+            # Pixel size / frame interval come from the sidebar even when the
+            # Override checkboxes are unticked — a localisations table has no
+            # embedded image metadata to fall back on.
+            if not params.get("pixel_size"):
+                params["pixel_size"] = float(self.s_pixel_size.value())
+            if not params.get("frame_interval"):
+                params["frame_interval"] = float(self.s_frame_interval.value())
+            preset = self.c_csv_preset.currentText()
+            params["source"] = "external_csv"
+            params["csv_preset"] = (
+                "auto" if preset == "Auto-detect" else preset)
+            bg = self.e_csv_bg.text().strip()
+            if bg and os.path.isfile(bg):
+                params["bg_image_path"] = bg
 
         # Persist before the long-running task in case of crash/abort.
         try:
@@ -9492,7 +9431,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._poll_timer.start()
 
         self.btn_run.setText("Stop")
-        self.statusBar().showMessage("Running…")
+        self.statusBar().showMessage(
+            "Running (external localisations)…" if is_loc else "Running…")
 
     def _start_batch_run(self):
         """Kick off batch analysis over the checked series.  Each series
@@ -9538,12 +9478,12 @@ class MainWindow(QtWidgets.QMainWindow):
             if g.get("key"):
                 p["stem_override"] = str(g["key"])
             if self._is_csv_input(fpath):
-                # External-localisations branch.  Mirror _start_csv_run:
-                # tell the worker to skip detection and load the CSV via
-                # load_external_locs.  Pixel size / frame interval come
-                # from the sidebar even when the override checkboxes are
-                # unticked (a CSV has no embedded image metadata to fall
-                # back on).
+                # External-localisations branch.  Like the single-file
+                # loc-table path: tell the worker to skip detection and load
+                # the CSV via load_external_locs.  Pixel size / frame
+                # interval come from the sidebar even when the override
+                # checkboxes are unticked (a CSV has no embedded image
+                # metadata to fall back on).
                 if not p.get("pixel_size"):
                     p["pixel_size"] = float(self.s_pixel_size.value())
                 if not p.get("frame_interval"):
@@ -10204,46 +10144,25 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg.setMinimumDuration(0)
         dlg.setValue(0)
 
-        # Live debug-log window — every step inside cuda_installer logs
-        # here so we can see exactly where things stall.  Non-modal,
-        # docked next to the progress dialog so a screenshot captures
-        # both.  Auto-shown when the install starts; the user can close
-        # it any time (it's just for diagnosis).
-        log_win = QtWidgets.QDialog(self)
-        log_win.setWindowTitle("CUDA install — debug log")
-        log_win.setModal(False)
-        log_win.resize(720, 360)
-        log_layout = QtWidgets.QVBoxLayout(log_win)
-        log_layout.setContentsMargins(8, 8, 8, 8)
-        log_view = QtWidgets.QPlainTextEdit(log_win)
-        log_view.setReadOnly(True)
-        log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
-        try:
-            log_view.setFont(QtGui.QFont("Menlo, Consolas, monospace", 10))
-        except Exception:
-            pass
-        log_layout.addWidget(log_view)
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_copy = QtWidgets.QPushButton("Copy all", log_win)
-        btn_close = QtWidgets.QPushButton("Close", log_win)
-        btn_row.addWidget(btn_copy)
-        btn_row.addStretch(1)
-        btn_row.addWidget(btn_close)
-        log_layout.addLayout(btn_row)
+        # Thread-safe cancellation.  The worker thread must NOT call
+        # dlg.wasCanceled() — QProgressDialog is a QWidget, and touching a
+        # widget from a non-GUI thread is undefined behaviour that
+        # intermittently deadlocks the main thread on Windows (the whole app
+        # white-outs / goes "Not Responding" mid-download).  Instead the
+        # dialog's `canceled` signal — emitted on the GUI thread when the
+        # user clicks Cancel — flips a threading.Event the worker polls.
+        import threading as _threading
+        cancel_event = _threading.Event()
+        dlg.canceled.connect(cancel_event.set)
 
-        def _copy_log():
-            QtWidgets.QApplication.clipboard().setText(log_view.toPlainText())
-        btn_copy.clicked.connect(_copy_log)
-        btn_close.clicked.connect(log_win.hide)
-        self._cuda_log_win = log_win
-        self._cuda_log_view = log_view
-        log_win.show()
+        # cuda_installer still prints its step-by-step diagnostics to stdout
+        # (visible in the launching terminal), so no in-app log window is
+        # needed for normal use.
 
         # Background worker — QObject moved to a QThread (NOT a
         # QThread subclass).  Signals dispatch back to the GUI thread.
         class _CudaWorker(QtCore.QObject):
             progress = QtCore.Signal(int, str)   # pct, label
-            log      = QtCore.Signal(str)        # one diagnostic line
             finished = QtCore.Signal()
             failed   = QtCore.Signal(str)
 
@@ -10260,13 +10179,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 # waiting for the server to start sending bytes.
                 self.progress.emit(
                     0, "Connecting to download.pytorch.org…")
-                # Wire cuda_installer's diagnostic stream to this
-                # worker's log signal so the debug-log window sees
-                # every step in real time.
-                try:
-                    _cu.set_log_callback(self.log.emit)
-                except Exception:
-                    pass
                 try:
                     def _dl_cb(done, total):
                         if total > 0:
@@ -10325,7 +10237,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         thread = QtCore.QThread(self)
         worker = _CudaWorker(
-            cancel_check=lambda: dlg.wasCanceled(),
+            cancel_check=cancel_event.is_set,
             wheel_url=url,
             torch_version=ver)
         worker.moveToThread(thread)
@@ -10395,12 +10307,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._cuda_heartbeat.stop()
             except Exception:
                 pass
-            # Clear the cuda_installer log hook so the worker can't emit
-            # into a slot that's about to be destroyed.
-            try:
-                _cu.set_log_callback(None)
-            except Exception:
-                pass
             try:
                 thread.quit()
                 thread.wait(2000)
@@ -10410,11 +10316,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 dlg.close()
             except Exception:
                 pass
-            # Keep the debug log window open — the whole point is for
-            # the user to read/copy the trace after success/failure.
             self._cuda_thread = None
             self._cuda_worker = None
             self._cuda_heartbeat = None
+            self._cuda_relay = None
 
         def _on_finished():
             _cleanup()
@@ -10444,19 +10349,29 @@ class MainWindow(QtWidgets.QMainWindow):
             box.activateWindow()
             box.exec()
 
-        def _on_log(line):
-            try:
-                self._cuda_log_view.appendPlainText(line)
-                # Auto-scroll to bottom
-                bar = self._cuda_log_view.verticalScrollBar()
-                bar.setValue(bar.maximum())
-            except Exception:
-                pass
+        # Route worker signals through a QObject that lives in the GUI
+        # thread.  Connecting a signal directly to a bare closure gives a
+        # *Direct* connection (a functor has no thread affinity), so the
+        # slot would run in whatever thread emits the signal — including
+        # cuda_installer's non-Qt daemon threads.  Touching QWidgets (the
+        # progress dialog) off the GUI thread is an access violation that
+        # hard-crashes the process.  A relay whose slots are real @Slot
+        # methods on a main-thread QObject makes AutoConnection pick
+        # QueuedConnection, so the slots always run on the GUI thread.
+        class _CudaSignalRelay(QtCore.QObject):
+            @QtCore.Slot(int, str)
+            def on_progress(self, pct, label): _on_progress(pct, label)
+            @QtCore.Slot()
+            def on_finished(self): _on_finished()
+            @QtCore.Slot(str)
+            def on_failed(self, msg): _on_failed(msg)
 
-        worker.progress.connect(_on_progress)
-        worker.log.connect(_on_log)
-        worker.finished.connect(_on_finished)
-        worker.failed.connect(_on_failed)
+        relay = _CudaSignalRelay()
+        self._cuda_relay = relay   # keep alive until cleanup
+
+        worker.progress.connect(relay.on_progress)
+        worker.finished.connect(relay.on_finished)
+        worker.failed.connect(relay.on_failed)
 
         thread.start()
         dlg.show()
