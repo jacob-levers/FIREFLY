@@ -94,6 +94,7 @@ hidden += [
     "cuda_installer",
     # Extracted analysis submodules (re-exported by sptpalm_analysis).
     "fa_constants",
+    "fa_memory",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
