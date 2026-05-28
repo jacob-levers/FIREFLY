@@ -536,6 +536,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         n_frames = len(stack)
         _log(f"  Shape: {stack.shape}  (T x Y x X)")
         _log(f"  Frames: {n_frames:,}  |  px={px} µm  fi={fi} s")
+        # Surface missing acquisition metadata once per file — explains why
+        # px/fi fell back to a sidebar override or the built-in default.
+        if not meta_px or not meta_fi:
+            _missing = " and ".join(
+                lbl for lbl, val in (("pixel size", meta_px),
+                                     ("frame interval", meta_fi)) if not val)
+            _log(f"  NOTE: {_missing} not found in file metadata; "
+                 f"using px={px} µm, fi={fi} s — set an override in the "
+                 f"sidebar if these are wrong")
         # Sample frames for the figure-background panel.
         n_proj = min(200, n_frames)
         proj_idx = _np.linspace(0, n_frames - 1, n_proj, dtype=int)
@@ -1871,8 +1880,9 @@ def run_analysis(params: dict, msg_queue, cancel_event):
         _out_dir = (params.get("out_dir")
                     or os.path.dirname(os.path.abspath(params["file"])))
         _disk_stop = _start_disk_watchdog(_out_dir, cancel_event, msg_queue)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"  WARN: disk-full watchdog could not start ({exc}); the run "
+             f"will proceed without low-disk protection")
 
     try:
         _log("── Worker subprocess started ──")
@@ -1931,8 +1941,9 @@ def run_postproc(params: dict, msg_queue, cancel_event):
         _src = params.get("source_folder")
         if _src:
             _disk_stop = _start_disk_watchdog(_src, cancel_event, msg_queue)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"  WARN: disk-full watchdog could not start ({exc}); the run "
+             f"will proceed without low-disk protection")
 
     try:
         _log("── Post-process worker started ──")
@@ -2133,8 +2144,9 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         if _cmp_out:
             _disk_stop = _start_disk_watchdog(
                 _cmp_out, cancel_event, msg_queue)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"  WARN: disk-full watchdog could not start ({exc}); the run "
+             f"will proceed without low-disk protection")
 
     try:
         _log("── Compare worker subprocess started ──")
@@ -2259,8 +2271,9 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                           os.path.abspath(params_list[0]["file"])))
         _disk_stop = _start_disk_watchdog(
             _first_out, cancel_event, msg_queue)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"  WARN: disk-full watchdog could not start ({exc}); the run "
+             f"will proceed without low-disk protection")
 
     try:
         n = len(params_list)
