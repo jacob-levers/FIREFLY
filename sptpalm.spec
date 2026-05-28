@@ -110,6 +110,7 @@ hidden += [
     "fa_palmtracer",
     # GUI submodules (imported by app_qt).
     "ui_theme",
+    "ui_helpers",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
