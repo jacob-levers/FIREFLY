@@ -32,6 +32,11 @@ hidden += collect_submodules("joblib")
 hidden += collect_submodules("aicspylibczi")
 hidden += collect_submodules("imagecodecs")
 
+# certifi — frozen builds don't ship a usable CA store, so HTTPS verification
+# (auto-update check, in-app CUDA-wheel installer) fails without certifi's
+# bundled cacert.pem.  Its data file is collected below.
+hidden += collect_submodules("certifi")
+
 # Qt / PySide6 — the Qt6 stack.  collect_submodules pulls in plugin loaders.
 hidden += collect_submodules("PySide6")
 hidden += collect_submodules("shiboken6")
@@ -99,6 +104,9 @@ datas += collect_data_files("skimage")
 datas += collect_data_files("matplotlib")
 datas += collect_data_files("aicspylibczi")
 datas += collect_data_files("PIL")
+# certifi's cacert.pem — without it, certifi.where() points at a missing file
+# in the frozen bundle and HTTPS still fails.
+datas += collect_data_files("certifi")
 
 # Napari ships configuration JSON + theme files + plugin manifests as
 # package-data.  Collect them so the embedded viewer starts correctly.

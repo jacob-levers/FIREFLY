@@ -35,6 +35,12 @@ from typing import Callable, Optional
 _log_cb: Optional[Callable[[str], None]] = None
 _log_t0: float = 0.0
 
+# Last underlying reason a url_exists() probe failed (SSL error, timeout, …).
+# Surfaced in install_cuda_torch_auto's error so the windowed .exe — which has
+# no console and no longer shows a debug-log window — can report WHY the wheel
+# check failed instead of a misleading "no wheel exists".
+_last_probe_error: Optional[str] = None
+
 
 def set_log_callback(cb: Optional[Callable[[str], None]]) -> None:
     """Register a callable that receives each diagnostic line.  Pass
@@ -955,8 +961,9 @@ def url_exists(url: str, timeout: float = 8.0) -> bool:
     _log(f"HEAD {url}")
     _log(f"  (timeout={timeout}s, watchdog={timeout + 2}s)")
 
+    global _last_probe_error
     import threading
-    result_holder = {"ok": False, "done": False}
+    result_holder = {"ok": False, "done": False, "err": None}
     t0 = time.monotonic()
 
     def _do_head():
@@ -969,18 +976,23 @@ def url_exists(url: str, timeout: float = 8.0) -> bool:
                 code = int(getattr(resp, "status", 0) or 0)
                 _log(f"  → HTTP {code} in {dt:.2f}s")
                 result_holder["ok"] = 200 <= code < 300
+                if not result_holder["ok"]:
+                    result_holder["err"] = f"HTTP {code}"
         except urllib.error.HTTPError as exc:
             _log(f"  → HTTPError {exc.code}: {exc.reason} "
                  f"in {time.monotonic()-t0:.2f}s")
             result_holder["ok"] = False
+            result_holder["err"] = f"HTTP {exc.code} {exc.reason}"
         except urllib.error.URLError as exc:
             _log(f"  → URLError: {exc.reason} "
                  f"in {time.monotonic()-t0:.2f}s")
             result_holder["ok"] = False
+            result_holder["err"] = f"connection failed: {exc.reason}"
         except Exception as exc:
             _log(f"  → {type(exc).__name__}: {exc} "
                  f"in {time.monotonic()-t0:.2f}s")
             result_holder["ok"] = False
+            result_holder["err"] = f"{type(exc).__name__}: {exc}"
         finally:
             result_holder["done"] = True
 
@@ -996,7 +1008,10 @@ def url_exists(url: str, timeout: float = 8.0) -> bool:
         # or the worker thread.  Critical: we DON'T close the socket
         # here — that would race with the daemon thread.  It'll time
         # out eventually and exit on its own.
+        _last_probe_error = f"probe timed out after {timeout + 2:.0f}s"
         return False
+    if result_holder["err"]:
+        _last_probe_error = result_holder["err"]
     return result_holder["ok"]
 
 
@@ -1044,16 +1059,18 @@ def install_cuda_torch_auto(torch_version: str,
         # bundled torch version isn't a real release on PyTorch's
         # index (e.g. a pre-release or test version).
         url_lines = "\n  ".join(tried_urls)
+        reason = (f"\n\nLast probe error: {_last_probe_error}"
+                  if _last_probe_error else "")
         raise RuntimeError(
-            f"No CUDA wheel exists for torch {torch_version} at "
-            f"download.pytorch.org.\n\n"
+            f"Couldn't reach a CUDA wheel for torch {torch_version} at "
+            f"download.pytorch.org.{reason}\n\n"
             f"Tried:\n  {url_lines}\n\n"
-            f"The bundled torch version may be a pre-release or a "
-            f"version PyTorch hasn't shipped CUDA builds for.  To get "
-            f"GPU acceleration on this machine, install FIREFLY from "
-            f"source and follow the 'Enabling CUDA' section of the "
-            f"README — that path lets pip resolve the latest matching "
-            f"CUDA torch wheel against your local Python."
+            f"If the last error mentions a certificate/SSL or connection "
+            f"problem, it's a network/proxy issue rather than a missing "
+            f"wheel.  Otherwise the bundled torch version may be one "
+            f"PyTorch hasn't shipped CUDA builds for — install FIREFLY "
+            f"from source and follow the 'Enabling CUDA' section of the "
+            f"README to let pip resolve a matching wheel."
         )
 
     url = cuda_wheel_url(torch_version, cuda_tag=chosen_tag)
