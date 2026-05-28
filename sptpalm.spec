@@ -108,6 +108,8 @@ hidden += [
     "fa_figure",
     "fa_compare",
     "fa_palmtracer",
+    # GUI submodules (imported by app_qt).
+    "ui_theme",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
