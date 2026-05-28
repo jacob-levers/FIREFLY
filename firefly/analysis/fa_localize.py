@@ -23,10 +23,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import trackpy as tp
-from fa_constants import N_CPUS, _Cancelled, _tqdm
-from fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
+from firefly.analysis.fa_constants import N_CPUS, _Cancelled, _tqdm
+from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
-from fa_preprocess import (preprocess_stack, _preprocess_fast,
+from firefly.analysis.fa_preprocess import (preprocess_stack, _preprocess_fast,
                            _preprocess_rolling)
 
 

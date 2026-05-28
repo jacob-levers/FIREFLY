@@ -108,14 +108,56 @@ def detect_nvidia_gpu() -> Optional[str]:
 
 
 # ── Filesystem layout ─────────────────────────────────────────────────────────
+def _current_py_tag() -> str:
+    """CPython ABI tag for the running interpreter, e.g. 'cp313'.  A torch
+    wheel's compiled extensions are tagged with this, and only load under a
+    matching interpreter."""
+    return f"cp{sys.version_info.major}{sys.version_info.minor}"
+
+
+def _sidecar_abi_ok(extracted: str) -> bool:
+    """True if the extracted torch's compiled core extension matches THIS
+    interpreter's ABI (e.g. _C.cp313-win_amd64.pyd under Python 3.13).
+
+    A CUDA wheel installed under one Python version (say the old 3.12 build)
+    must never be injected into a different one (the 3.13 build): the cp312
+    `_C` binary fails to import under 3.13 and shadows the bundled torch,
+    leaving the whole process unable to `import torch`.  This guard is what
+    lets the version transition self-heal."""
+    try:
+        tdir = os.path.join(extracted, "torch")
+        if not os.path.isdir(tdir):
+            return False
+        tag = _current_py_tag()
+        found_ext = False
+        for name in os.listdir(tdir):
+            if name.startswith("_C.") and name.endswith((".pyd", ".so")):
+                found_ext = True
+                if f".{tag}-" in name or f".{tag}." in name:
+                    return True
+        # If a tagged _C extension exists but none matched our tag, it's for
+        # a different interpreter — reject.  If no tagged _C was found at all
+        # (unexpected layout), be permissive rather than block a real install.
+        return not found_ext
+    except Exception:
+        return False
+
+
 def sidecar_dir() -> str:
-    """%LOCALAPPDATA%\\FIREFLY\\torch-cuda on Windows, ~/.firefly/torch-cuda
-    elsewhere (dev/testing only).  Parent dirs are created on demand."""
+    """Per-interpreter sidecar root, e.g.
+    %LOCALAPPDATA%\\FIREFLY\\torch-cuda\\cp313 on Windows,
+    ~/.firefly/torch-cuda/cp313 elsewhere (dev/testing only).
+
+    Version-namespaced by interpreter ABI tag so a CUDA wheel installed under
+    one Python version is never picked up by a build on another — that
+    cross-version collision is what broke `import torch` after the 3.13 bump.
+    Parent dirs are created on demand."""
     if is_windows():
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        path = os.path.join(base, "FIREFLY", "torch-cuda")
+        path = os.path.join(base, "FIREFLY", "torch-cuda", _current_py_tag())
     else:
-        path = os.path.join(os.path.expanduser("~"), ".firefly", "torch-cuda")
+        path = os.path.join(os.path.expanduser("~"), ".firefly",
+                            "torch-cuda", _current_py_tag())
     try:
         os.makedirs(path, exist_ok=True)
     except Exception:
@@ -128,9 +170,16 @@ def sidecar_extracted_dir() -> str:
 
 
 def is_installed() -> bool:
+    """True only if a torch sidecar exists AND its ABI matches this
+    interpreter.  The ABI check keeps the GUI honest: a mismatched leftover
+    install reports as not-installed so the setup button reappears instead of
+    silently poisoning `import torch`."""
     try:
-        return os.path.isfile(
-            os.path.join(sidecar_extracted_dir(), "torch", "__init__.py"))
+        extracted = sidecar_extracted_dir()
+        if not os.path.isfile(
+                os.path.join(extracted, "torch", "__init__.py")):
+            return False
+        return _sidecar_abi_ok(extracted)
     except Exception:
         return False
 
@@ -1250,6 +1299,13 @@ def inject_sidecar_into_sys_path() -> None:
         if not is_installed():
             return
         target = sidecar_extracted_dir()
+        # ABI gate: never inject a torch built for a different Python
+        # version.  is_installed() already checks this, but verify again at
+        # the actual injection site — a cp312 sidecar prepended to a cp313
+        # process shadows the bundled torch and makes `import torch` fail
+        # outright (the bug that crashed the 3.13 build).
+        if not _sidecar_abi_ok(target):
+            return
         # Drop any stale entry first, then put it at the very front so it
         # shadows the bundled CPU torch.
         try:

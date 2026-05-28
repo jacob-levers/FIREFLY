@@ -15,7 +15,7 @@
 setlocal
 
 set "FOLDER=%~dp0"
-set "APP=%FOLDER%app_qt.py"
+set "APP=%FOLDER%run_firefly.py"
 set "VENV=%FOLDER%sptpalm-env"
 set "VENV_PY=%VENV%\Scripts\python.exe"
 set "REQ=%FOLDER%requirements.txt"

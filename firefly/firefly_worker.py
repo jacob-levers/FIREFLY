@@ -39,7 +39,7 @@ import traceback
 # A failure here (no GPU, no sidecar, permissions, etc.) must NEVER
 # crash the worker — fall through silently to the CPU build.
 try:
-    from cuda_installer import inject_sidecar_into_sys_path
+    from firefly.cuda_installer import inject_sidecar_into_sys_path
     inject_sidecar_into_sys_path()
 except Exception:
     pass
@@ -128,7 +128,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
 
     def _firefly_version() -> str:
         try:
-            import sptpalm_analysis as _sa
+            from firefly import sptpalm_analysis as _sa
             v = getattr(_sa, "__version__", None)
             return str(v) if v else "unknown"
         except Exception:
@@ -424,7 +424,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     """
     p = params
 
-    from sptpalm_analysis import (
+    from firefly.sptpalm_analysis import (
         load_file, preprocess_and_localise_adaptive, link_trajectories,
         compute_msd_and_fit, compute_jdd, compute_turning_angles,
         compute_circular_statistics, save_circular_statistics_pdf,
@@ -504,7 +504,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # the system /var/folders temp).  An explicit FIREFLY_TEMP_DIR env
     # var still wins.  Skipped for external-CSV mode (no memmap needed).
     try:
-        from sptpalm_analysis import set_temp_stack_dir as _set_tmp
+        from firefly.sptpalm_analysis import set_temp_stack_dir as _set_tmp
         if not os.environ.get("FIREFLY_TEMP_DIR"):
             _set_tmp(out_dir)
     except Exception: pass
@@ -856,7 +856,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     if roi_mode != "none" and len(locs) > 0:
         _log(f"\n── ROI mask ───────────────────────")
         try:
-            from sptpalm_analysis import build_roi_mask_advanced
+            from firefly.sptpalm_analysis import build_roi_mask_advanced
             roi_mask = None
 
             # ── Sister TIFF ROI (microscope export, e.g. _green.tif) ─
@@ -1859,7 +1859,7 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     # console=False: stderr is already the queue stream above, so the GUI
     # console still shows the run; this just adds a durable on-disk record.
     try:
-        import crash_reporter as _cr
+        from firefly import crash_reporter as _cr
         _cr.setup_logging(filename="firefly_worker.log", console=False)
     except Exception:
         pass
@@ -2152,7 +2152,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         _log("── Compare worker subprocess started ──")
         _prog(0, "Importing comparison pipeline…")
 
-        from sptpalm_analysis import compare_groups, _Cancelled
+        from firefly.sptpalm_analysis import compare_groups, _Cancelled
 
         p = comparison_params
 
@@ -2397,7 +2397,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                 try:
                     import gc as _gc
                     _gc.collect()
-                    from sptpalm_analysis import cleanup_temp_stack_paths
+                    from firefly.sptpalm_analysis import cleanup_temp_stack_paths
                     cleanup_temp_stack_paths()
                 except Exception: pass
                 # Free torch's MPS / CUDA caches between files.  PyTorch

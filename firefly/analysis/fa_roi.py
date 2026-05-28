@@ -4,13 +4,13 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 """
 from __future__ import annotations
 
-from fa_constants import _tqdm
+from firefly.analysis.fa_constants import _tqdm
 
 import numpy as np
 from scipy import ndimage as ndi
 from scipy.ndimage import gaussian_filter
 from skimage import filters, exposure, morphology
-from fa_preprocess import auto_threshold, preprocess_stack
+from firefly.analysis.fa_preprocess import auto_threshold, preprocess_stack
 
 
 def build_roi_mask_mean(stack, threshold=0.15, smooth_sigma=5):

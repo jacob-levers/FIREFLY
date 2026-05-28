@@ -4,7 +4,7 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 """
 from __future__ import annotations
 
-from fa_diffusion import (compute_msd_and_fit, compute_jdd,
+from firefly.analysis.fa_diffusion import (compute_msd_and_fit, compute_jdd,
                           compute_dwell_times, compute_turning_angles,
                           compute_mobile_fraction_over_time,
                           MOBILE_D_THRESHOLD_DEFAULT)

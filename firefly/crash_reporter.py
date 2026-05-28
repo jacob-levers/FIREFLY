@@ -159,7 +159,7 @@ def log_exception(msg: str = "swallowed exception", *,
 def _firefly_version() -> str:
     # Single source of truth: read from a VERSION constant if present
     try:
-        import sptpalm_analysis as _sa
+        from firefly import sptpalm_analysis as _sa
         v = getattr(_sa, "__version__", None)
         if v: return str(v)
     except Exception:

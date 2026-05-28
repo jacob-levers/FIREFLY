@@ -17,7 +17,7 @@ set -eu
 # Resolve the project folder.  Launch_sptPALM.app/Contents/MacOS/launcher
 # is the executable; the project root sits three levels above it.
 FOLDER="$(cd "$(dirname "$0")/../../.." && pwd)"
-APP="$FOLDER/app_qt.py"
+APP="$FOLDER/run_firefly.py"
 VENV="$FOLDER/sptpalm-env"
 VENV_PY="$VENV/bin/python3"
 REQ="$FOLDER/requirements.txt"
@@ -80,7 +80,7 @@ tell application "Terminal"
         echo '  Setup complete — launching FIREFLY...'; \
         echo '────────────────────────────────────────────────'; \
         echo ''; \
-        sptpalm-env/bin/python3 app_qt.py"
+        sptpalm-env/bin/python3 run_firefly.py"
 end tell
 EOF
     exit 0

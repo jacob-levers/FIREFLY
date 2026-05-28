@@ -10,8 +10,8 @@ import subprocess
 import sys
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
-import crash_reporter
-from ui_theme import _THEME
+from firefly import crash_reporter
+from firefly.ui.ui_theme import _THEME
 
 
 _NAPARI_WELCOME_PHRASES = (
