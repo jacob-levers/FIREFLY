@@ -92,6 +92,8 @@ hidden += [
     "crash_reporter",
     "sptpalm_analysis",
     "cuda_installer",
+    # Extracted analysis submodules (re-exported by sptpalm_analysis).
+    "fa_constants",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
