@@ -103,6 +103,11 @@ hidden += [
     "fa_linking",
     "fa_diffusion",
     "fa_clustering",
+    "fa_theme",
+    "fa_circular",
+    "fa_figure",
+    "fa_compare",
+    "fa_palmtracer",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
