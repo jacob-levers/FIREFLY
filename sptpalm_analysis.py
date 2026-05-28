@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.6.9"
+__version__ = "2.6.17"
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":
@@ -3437,10 +3437,18 @@ class TorchBackend(LocaliserBackend):
     #     Re-derive by running `--match-spot-count` on a few
     #     representative datasets, averaging the matched / user minmass
     #     ratios, and setting `_TP_MASS_SCALE = 1 / mean_ratio`.
-    _TP_NOISE_SIZE             = 1.0
+    # Re-calibrated 2026-05-27 against Calibration3.tif (4019 frames,
+    # diameter=7, minmass=1.0, percentile=64) via Nelder-Mead sweep over
+    # 60 evaluations on a 1350-frame training set with a 150-frame
+    # hold-out.  Optimised θ brought training count_ratio from 0.985 →
+    # 1.000 and hold-out count_ratio to 0.993, with median centroid
+    # disagreement essentially unchanged (0.0548 → 0.0531 px on hold-out,
+    # i.e. 5.3 nm at 100 nm/px).  Previous (as-shipped) defaults shown
+    # alongside for reference.
+    _TP_NOISE_SIZE             = 0.9659  # was 1.0
     _TP_SMOOTHING_SIZE_OFFSET  = 1     # smoothing_size = diameter + offset
     _TP_REFINE_MAX_ITERS       = 10
-    _TP_REFINE_SHIFT_THRESH    = 0.6
+    _TP_REFINE_SHIFT_THRESH    = 0.6093  # was 0.6
     _TP_MASS_SCALE             = 0.588   # = 1 / 1.70  (Trackpy-scale)
 
     @staticmethod

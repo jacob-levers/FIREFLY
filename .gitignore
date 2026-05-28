@@ -5,3 +5,13 @@ __pycache__/
 dist/
 build/
 *.spec.bak
+
+# Calibration / backend-comparison tooling — kept local, not shipped with
+# the program.  These scripts compare the Torch backend against trackpy /
+# palmTRACER and are developer-only.
+tools/calibrate_torch_vs_trackpy.py
+tools/compare_overlay_plots.py
+tools/compare_to_palmtracer.py
+
+# Local agent / session data
+.claude/
