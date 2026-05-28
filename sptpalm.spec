@@ -95,6 +95,7 @@ hidden += [
     # Extracted analysis submodules (re-exported by sptpalm_analysis).
     "fa_constants",
     "fa_memory",
+    "fa_loaders",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
