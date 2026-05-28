@@ -116,6 +116,8 @@ hidden += [
     "ui_mixin_visualise",
     "ui_mixin_compare",
     "ui_mixin_batch",
+    "ui_mixin_build",
+    "ui_mixin_handlers",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
