@@ -17,8 +17,8 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 
-from fa_constants import N_CPUS, _Cancelled, _dim_size, _tqdm
-from fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
+from firefly.analysis.fa_constants import N_CPUS, _Cancelled, _dim_size, _tqdm
+from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
 
 

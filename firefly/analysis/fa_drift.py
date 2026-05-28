@@ -7,7 +7,7 @@ from __future__ import annotations
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
-from fa_constants import N_CPUS
+from firefly.analysis.fa_constants import N_CPUS
 
 import numpy as np
 from scipy.signal import correlate as _correlate2d

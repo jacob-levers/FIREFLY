@@ -1,7 +1,7 @@
 """Tests for the persistent-logging infrastructure (crash_reporter)."""
 import logging
 
-import crash_reporter as cr
+from firefly import crash_reporter as cr
 
 
 def _reset_handlers(saved):

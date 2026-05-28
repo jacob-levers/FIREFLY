@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from app_qt import MainWindow  # noqa: F401  (forward ref only)
+    from firefly.ui.app_qt import MainWindow  # noqa: F401  (forward ref only)
 
 import os
 import sys
@@ -17,9 +17,9 @@ from PySide6.QtCore import Qt, QTimer
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
-import crash_reporter
-from ui_theme import _THEME, _ACTIVE_THEME_NAME
-from ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
+from firefly import crash_reporter
+from firefly.ui.ui_theme import _THEME, _ACTIVE_THEME_NAME
+from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _make_napari_container_layout_opaque,
                         _hide_napari_chrome, _register_motion_colormap,
                         _MOTION_PALETTE, _MOTION_ORDER,
@@ -2435,7 +2435,7 @@ class _RoiViewer(QtWidgets.QWidget):
             # build_roi_mask_advanced — same function the firefly_worker
             # calls during analysis — so what the user sees in this
             # preview is what gets applied to the localisations.
-            from sptpalm_analysis import build_roi_mask_advanced
+            from firefly.sptpalm_analysis import build_roi_mask_advanced
         except Exception:
             return
         # Build the projection that will be thresholded.  All four modes

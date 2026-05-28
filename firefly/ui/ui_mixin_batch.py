@@ -7,10 +7,10 @@ import pandas as pd
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
-import sptpalm_analysis
-import crash_reporter
-from ui_theme import _THEME
-from ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
+from firefly import sptpalm_analysis
+from firefly import crash_reporter
+from firefly.ui.ui_theme import _THEME
+from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_VISUALISE, TAB_REPROCESS)
 
 

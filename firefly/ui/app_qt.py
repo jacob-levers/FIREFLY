@@ -67,7 +67,7 @@ except Exception:
 # A failure here (no GPU, no sidecar, permissions, etc.) must NEVER
 # crash startup — fall through silently to the CPU build.
 try:
-    from cuda_installer import inject_sidecar_into_sys_path
+    from firefly.cuda_installer import inject_sidecar_into_sys_path
     inject_sidecar_into_sys_path()
 except Exception:
     pass
@@ -105,18 +105,18 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 
-import crash_reporter
-from ui_mixin_handlers import HandlersMixin
-from ui_mixin_build import BuildMixin
-from ui_mixin_batch import BatchMixin
-from ui_mixin_compare import CompareMixin
-from ui_mixin_visualise import VisualiseMixin
+from firefly import crash_reporter
+from firefly.ui.ui_mixin_handlers import HandlersMixin
+from firefly.ui.ui_mixin_build import BuildMixin
+from firefly.ui.ui_mixin_batch import BatchMixin
+from firefly.ui.ui_mixin_compare import CompareMixin
+from firefly.ui.ui_mixin_visualise import VisualiseMixin
 # ui_constants extracted; re-exported here.
-from ui_constants import (
+from firefly.ui.ui_constants import (
     TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE, TAB_VISUALISE, TAB_REPROCESS,
 )
 # ui_widgets extracted; re-exported here.
-from ui_widgets import (
+from firefly.ui.ui_widgets import (
     _UpdateCheckThread, _ModeTile, _ActionTile, _QuietSpinBox,
     _QuietDoubleSpinBox, _QuietComboBox, _CollapsibleSection,
     _ResourceMonitor, _MassHistogram, _LiveFrameView, _TrackInspector,
@@ -125,14 +125,14 @@ from ui_widgets import (
     _CompareGroupCard, _PreferencesDialog,
 )
 # ui_helpers extracted; re-exported here.
-from ui_helpers import (
+from firefly.ui.ui_helpers import (
     _MOTION_PALETTE, _MOTION_ORDER, _MOTION_CMAP_NAME,
     _register_motion_colormap, _make_cogwheel_icon, _make_close_x_icon,
     _make_napari_container_layout_opaque, _hide_napari_chrome, _open_folder,
     _qt_message_handler,
 )
 # ui_theme extracted; re-exported here.
-from ui_theme import (
+from firefly.ui.ui_theme import (
     _THEMES, _pick_startup_theme, _ACTIVE_THEME_NAME, _THEME, _FIREFLY_QSS,
     _apply_firefly_theme,
 )
@@ -144,7 +144,7 @@ N_CPUS = multiprocessing.cpu_count()
 # subprocess doesn't accidentally re-import PySide6 (which would defeat
 # the whole point of subprocess isolation on macOS Metal — see the
 # firefly_worker.py module docstring for the full rationale).
-import firefly_worker
+from firefly import firefly_worker
 _run_analysis_in_subprocess = firefly_worker.run_analysis
 _run_batch_in_subprocess    = firefly_worker.run_batch_analysis
 _run_compare_in_subprocess  = firefly_worker.run_comparison
@@ -411,7 +411,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         """Hit GitHub Releases asynchronously and show the update pill
         in the header if a newer tag is available than __version__."""
         try:
-            import sptpalm_analysis as _sa
+            from firefly import sptpalm_analysis as _sa
             current = str(getattr(_sa, "__version__", "0.0.0"))
         except Exception:
             current = "0.0.0"
@@ -2097,7 +2097,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 self._cuda_thread.wait(500)
         except Exception: pass
         try:
-            import cuda_installer as _cu
+            from firefly import cuda_installer as _cu
             _cu.set_log_callback(None)
         except Exception: pass
 
@@ -2992,7 +2992,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         directory.  Silent no-op on macOS/Linux or when the user
         previously declined or already installed."""
         try:
-            import cuda_installer as _cu
+            from firefly import cuda_installer as _cu
         except Exception:
             return
         try:
@@ -3034,7 +3034,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         """Drive the download + extract in a background QThread and show
         a cancellable QProgressDialog with two phases."""
         try:
-            import cuda_installer as _cu
+            from firefly import cuda_installer as _cu
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
                 self, "CUDA installer unavailable", str(exc))
@@ -3452,9 +3452,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
 
     def _load_icon(self):
         """Best-effort: load assets/icon.png as the window/dock icon."""
+        # Source layout: this file lives at <repo>/firefly/ui/app_qt.py, so
+        # the assets/ folder is three dirnames up.  Frozen: _MEIPASS/assets.
+        _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
         for cand in (
-                os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "assets", "icon.png"),
+                os.path.join(_repo_root, "assets", "icon.png"),
                 os.path.join(getattr(sys, "_MEIPASS", ""), "assets", "icon.png"),
         ):
             if os.path.isfile(cand):

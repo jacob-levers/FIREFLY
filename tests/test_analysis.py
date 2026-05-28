@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import sptpalm_analysis as s
+from firefly import sptpalm_analysis as s
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ def test_alloc_stack_uses_ram_when_it_fits():
 def test_alloc_stack_falls_back_to_memmap_when_too_big(monkeypatch):
     # The allocator lives in fa_memory and resolves the RAM reserve there,
     # so patch fa_memory's copy to force the "won't fit in RAM" branch.
-    import fa_memory
+    from firefly.analysis import fa_memory
     monkeypatch.setattr(fa_memory, "_user_ram_reserve_gb", lambda: 1e9)
     arr = fa_memory._alloc_or_memmap_stack((4, 8, 8))
     try:

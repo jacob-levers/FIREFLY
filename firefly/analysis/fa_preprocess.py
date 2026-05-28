@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
-from fa_constants import N_CPUS, _tqdm
+from firefly.analysis.fa_constants import N_CPUS, _tqdm
 
 import numpy as np
 from scipy.ndimage import uniform_filter, gaussian_filter, gaussian_filter1d
