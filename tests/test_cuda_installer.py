@@ -68,3 +68,49 @@ def test_is_installed_false_for_mismatched_abi(tmp_path, monkeypatch):
 
 def test_is_windows_returns_bool():
     assert isinstance(cu.is_windows(), bool)
+
+
+# ── wheel discovery (pure, no network) ────────────────────────────────────────
+_SAMPLE_INDEX = """
+<a href="cu130/torch-2.12.0%2Bcu130-cp313-cp313-win_amd64.whl#sha256=a">w</a>
+<a href="cu130/torch-2.10.0%2Bcu130-cp313-cp313-win_amd64.whl">w</a>
+<a href="cu130/torch-2.5.1%2Bcu130-cp313-cp313-win_amd64.whl">out of range</a>
+<a href="cu130/torch-2.12.0%2Bcu130-cp312-cp312-win_amd64.whl">wrong python</a>
+<a href="cu130/torch-2.12.0%2Bcu130-cp313-cp313-linux_x86_64.whl">wrong os</a>
+"""
+
+
+def test_extract_wheel_versions_filters_and_sorts():
+    v = cu._extract_wheel_versions(_SAMPLE_INDEX, "cu130", "cp313")
+    # 2.5.1 is below the >=2.6 floor; cp312 + linux entries are excluded.
+    assert v == ["2.12.0", "2.10.0"]
+
+
+def test_extract_wheel_versions_wrong_python_tag_empty():
+    assert cu._extract_wheel_versions(_SAMPLE_INDEX, "cu130", "cp311") == []
+
+
+def test_select_version_prefers_exact_then_newest():
+    avail = ["2.12.0", "2.10.0", "2.8.0"]
+    assert cu._select_version(avail, "2.10.0") == "2.10.0"   # exact match
+    assert cu._select_version(avail, "2.99.0") == "2.12.0"   # absent -> newest
+    assert cu._select_version(avail, None) == "2.12.0"
+    assert cu._select_version([], "2.10.0") is None
+
+
+def test_version_range_bounds():
+    assert cu._ver_in_range(cu._parse_ver("2.6.0")) is True
+    assert cu._ver_in_range(cu._parse_ver("2.12.0")) is True
+    assert cu._ver_in_range(cu._parse_ver("2.5.1")) is False   # below floor
+    assert cu._ver_in_range(cu._parse_ver("3.0.0")) is False   # at ceiling
+    assert cu._ver_in_range(cu._parse_ver("nope")) is False
+
+
+def test_cuda_tags_are_newest_first():
+    # cu130 must be probed before the legacy cu124/cu121/cu118 so a modern
+    # GPU gets the newest toolkit, and torch versions that only ship on the
+    # newest channel (e.g. 2.12.0 on cu130) are found at all.
+    tags = cu._CUDA_TAGS_NEWEST_FIRST
+    nums = [int(t[2:]) for t in tags]
+    assert nums == sorted(nums, reverse=True)
+    assert tags[0] == "cu130"

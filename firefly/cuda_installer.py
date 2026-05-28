@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 
 # ── Diagnostic log plumbing ───────────────────────────────────────────────────
@@ -258,6 +259,139 @@ def cuda_wheel_url(torch_version: str, cuda_tag: str = "cu124",
         f"-{python_tag}-{python_tag}-win_amd64.whl"
     )
     return f"https://download.pytorch.org/whl/{cuda_tag}/{filename}"
+
+
+# ── Wheel discovery ───────────────────────────────────────────────────────────
+# Match the app's runtime requirement (requirements.txt: torch>=2.6,<3).  The
+# CUDA sidecar fully shadows the bundled CPU torch once injected, so it only
+# needs to satisfy THIS constraint — it does NOT need to equal the bundled
+# version.  That decoupling is what fixes the "no CUDA wheel for torch 2.12.0"
+# dead-end: PyPI ships a torch newer than any Windows CUDA wheel PyTorch has
+# published, so we install the newest CUDA build that's still in range instead.
+_TORCH_MIN = (2, 6, 0)
+_TORCH_MAX_EXCL = (3, 0, 0)
+
+# CUDA toolkit channels to consider, NEWEST FIRST.  Probing a channel that
+# doesn't exist just fails the index fetch and is skipped, so an over-broad
+# list is safe and future-proof: when PyTorch adds e.g. cu131 we prepend it.
+_CUDA_TAGS_NEWEST_FIRST = (
+    "cu130", "cu129", "cu128", "cu126", "cu124", "cu121", "cu118")
+
+
+def _parse_ver(s: str) -> Optional[tuple]:
+    """'2.9.1' -> (2, 9, 1).  None if unparseable."""
+    try:
+        nums = [int(p) for p in s.split(".")[:3]]
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums)
+    except Exception:
+        return None
+
+
+def _ver_in_range(v: Optional[tuple]) -> bool:
+    return v is not None and _TORCH_MIN <= v < _TORCH_MAX_EXCL
+
+
+def _extract_wheel_versions(index_html: str, cuda_tag: str,
+                            python_tag: str) -> List[str]:
+    """From a PyTorch channel index page, return the in-range torch versions
+    that have a `torch-<ver>+<cuda_tag>-<python_tag>-<python_tag>-win_amd64.whl`
+    wheel, sorted newest-first.  Pure function — unit-tested without network."""
+    pat = re.compile(
+        r"torch-(\d+(?:\.\d+){1,2})(?:\.post\d+)?(?:%2B|\+)"
+        + re.escape(cuda_tag)
+        + r"-" + re.escape(python_tag) + r"-" + re.escape(python_tag)
+        + r"-win_amd64\.whl")
+    found = {}
+    for m in pat.finditer(index_html):
+        v = _parse_ver(m.group(1))
+        if _ver_in_range(v):
+            found[v] = m.group(1)
+    return [found[v] for v in sorted(found, reverse=True)]
+
+
+def _select_version(available: List[str],
+                    preferred: Optional[str]) -> Optional[str]:
+    """Prefer an exact (in-range) match to the bundled torch version when the
+    channel actually has it; otherwise take the newest available."""
+    if not available:
+        return None
+    if preferred:
+        pv = _parse_ver(preferred)
+        if _ver_in_range(pv):
+            for s in available:
+                if _parse_ver(s) == pv:
+                    return s
+    return available[0]  # newest (list is sorted desc)
+
+
+def _http_get_text(url: str, timeout: float = 10.0) -> Optional[str]:
+    """GET a small text/HTML resource, wrapped in the same wall-clock watchdog
+    url_exists() uses so a stalled Windows TLS handshake can't wedge the
+    worker thread.  Returns the decoded body, or None on any failure."""
+    global _last_probe_error
+    import threading
+    holder = {"text": None, "done": False}
+
+    def _do():
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "FIREFLY-CUDA-installer/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                holder["text"] = resp.read().decode("utf-8", "replace")
+        except Exception as exc:
+            _last_probe_error = f"{type(exc).__name__}: {exc}"
+        finally:
+            holder["done"] = True
+
+    t = threading.Thread(target=_do, daemon=True, name="cuda-index-fetch")
+    t.start()
+    t.join(timeout=timeout + 2)
+    if not holder["done"]:
+        _last_probe_error = f"index fetch timed out after {timeout + 2:.0f}s"
+        return None
+    return holder["text"]
+
+
+def discover_cuda_wheel(python_tag: Optional[str] = None,
+                        preferred_version: Optional[str] = None,
+                        cuda_tags: tuple = _CUDA_TAGS_NEWEST_FIRST,
+                        status_cb: Optional[Callable[[str], None]] = None,
+                        cancel_cb=None) -> Optional[dict]:
+    """Find the best CUDA torch wheel actually PUBLISHED for this interpreter
+    by reading PyTorch's per-channel indexes (newest CUDA toolkit first).
+
+    Returns {'cuda_tag', 'version', 'url'} for the newest in-range torch in
+    the first reachable channel that has one — preferring an exact match to
+    `preferred_version` (the bundled torch) when that channel lists it.  None
+    if nothing suitable is found (offline / proxy block / PyTorch dropped
+    Windows CUDA for this Python version)."""
+    if python_tag is None:
+        python_tag = _current_py_tag()
+    for tag in cuda_tags:
+        if cancel_cb is not None and cancel_cb():
+            raise RuntimeError("Installation cancelled by user.")
+        if status_cb is not None:
+            try: status_cb(f"Checking CUDA {tag} index…")
+            except Exception: pass
+        index_url = f"https://download.pytorch.org/whl/{tag}/torch/"
+        _log(f"--- index {index_url} ---")
+        html = _http_get_text(index_url)
+        if not html:
+            _log(f"  ✗ {tag}: index unreachable")
+            continue
+        avail = _extract_wheel_versions(html, tag, python_tag)
+        if not avail:
+            _log(f"  ✗ {tag}: no in-range {python_tag} win_amd64 wheel listed")
+            continue
+        chosen = _select_version(avail, preferred_version)
+        _log(f"  ✓ {tag}: {len(avail)} candidate(s) "
+             f"({avail[0]}..{avail[-1]}); chose {chosen}")
+        return {"cuda_tag": tag, "version": chosen,
+                "url": cuda_wheel_url(chosen, cuda_tag=tag,
+                                      python_tag=python_tag)}
+    return None
 
 
 # ── Download / extract ────────────────────────────────────────────────────────
@@ -1065,69 +1199,92 @@ def url_exists(url: str, timeout: float = 8.0) -> bool:
 
 
 def install_cuda_torch_auto(torch_version: str,
-                             cuda_tags: tuple = ("cu124", "cu121", "cu118"),
+                             cuda_tags: tuple = _CUDA_TAGS_NEWEST_FIRST,
                              download_progress_cb=None,
                              extract_progress_cb=None,
                              cancel_cb=None,
                              status_cb: Optional[Callable[[str], None]] = None
                              ) -> str:
-    """Try each CUDA tag in `cuda_tags` until one is reachable, then
-    download.  Returns the cuda_tag that worked.
+    """Discover the best published CUDA torch wheel for this interpreter and
+    install it.  Returns the cuda_tag that was installed.
 
-    Strategy: cheap HEAD requests to pick the first tag whose wheel
-    actually exists (each HEAD is <1 s on a normal connection), THEN
-    one full GET.  Avoids the 60-second triple-timeout stall the user
-    hit when the bundled torch version doesn't have any CUDA wheel.
+    Primary strategy: read PyTorch's per-channel wheel indexes (newest CUDA
+    toolkit first) and pick the newest torch version in the app's >=2.6,<3
+    range — preferring an exact match to the bundled `torch_version` when a
+    channel lists it.  This decouples the sidecar from the bundled CPU torch
+    version: PyPI can ship a torch newer than any Windows CUDA wheel PyTorch
+    has built (the "no CUDA wheel for torch 2.12.0" case), and we still find
+    the newest CUDA build that works.
 
-    `status_cb(msg)` is called between attempts so the GUI can update
-    its label ("Checking cu121…", "Found cu121, downloading…").
+    Fallback (if the index can't be read — offline / corporate proxy that
+    blocks directory listings but not direct downloads): HEAD-probe the
+    bundled version across the same channels, newest first.
+
+    `status_cb(msg)` is called between attempts so the GUI can update its
+    label ("Checking CUDA cu128 index…", "Found torch 2.9.1 + cu128…").
     """
-    _log(f"install_cuda_torch_auto starting — torch_version={torch_version}, "
-         f"cuda_tags={cuda_tags}")
-    chosen_tag: Optional[str] = None
-    tried_urls = []
-    for tag in cuda_tags:
-        url = cuda_wheel_url(torch_version, cuda_tag=tag)
-        tried_urls.append(url)
-        _log(f"--- Checking {tag} ---")
-        if status_cb is not None:
-            try: status_cb(f"Checking torch {torch_version} + {tag}…")
-            except Exception: pass
-        if cancel_cb is not None and cancel_cb():
-            raise RuntimeError("Installation cancelled by user.")
-        if url_exists(url):
-            _log(f"  ✓ {tag} is available, will download")
-            chosen_tag = tag
-            break
-        _log(f"  ✗ {tag} not available, trying next")
+    _log(f"install_cuda_torch_auto starting — bundled torch={torch_version}, "
+         f"py={_current_py_tag()}, cuda_tags={cuda_tags}")
 
-    if chosen_tag is None:
-        _log("✗ No CUDA tag returned a working wheel URL")
-        # All three HEAD-checks said "not found" — make the failure
-        # actionable instead of mysterious.  Most likely cause: the
-        # bundled torch version isn't a real release on PyTorch's
-        # index (e.g. a pre-release or test version).
-        url_lines = "\n  ".join(tried_urls)
-        reason = (f"\n\nLast probe error: {_last_probe_error}"
-                  if _last_probe_error else "")
-        raise RuntimeError(
-            f"Couldn't reach a CUDA wheel for torch {torch_version} at "
-            f"download.pytorch.org.{reason}\n\n"
-            f"Tried:\n  {url_lines}\n\n"
-            f"If the last error mentions a certificate/SSL or connection "
-            f"problem, it's a network/proxy issue rather than a missing "
-            f"wheel.  Otherwise the bundled torch version may be one "
-            f"PyTorch hasn't shipped CUDA builds for — install FIREFLY "
-            f"from source and follow the 'Enabling CUDA' section of the "
-            f"README to let pip resolve a matching wheel."
-        )
+    found: Optional[dict] = None
+    try:
+        found = discover_cuda_wheel(
+            python_tag=_current_py_tag(),
+            preferred_version=torch_version,
+            cuda_tags=cuda_tags,
+            status_cb=status_cb,
+            cancel_cb=cancel_cb)
+    except RuntimeError:
+        raise  # cancellation propagates
+    except Exception as exc:
+        _log(f"index discovery errored ({exc}); falling back to HEAD probe")
 
-    url = cuda_wheel_url(torch_version, cuda_tag=chosen_tag)
+    # Fallback: legacy exact-version HEAD probe.
+    if found is None:
+        _log("discovery found nothing — HEAD-probing bundled version directly")
+        tried_urls = []
+        for tag in cuda_tags:
+            if cancel_cb is not None and cancel_cb():
+                raise RuntimeError("Installation cancelled by user.")
+            url = cuda_wheel_url(torch_version, cuda_tag=tag)
+            tried_urls.append(url)
+            if status_cb is not None:
+                try: status_cb(f"Checking torch {torch_version} + {tag}…")
+                except Exception: pass
+            if url_exists(url):
+                found = {"cuda_tag": tag, "version": torch_version, "url": url}
+                break
+
+        if found is None:
+            url_lines = "\n  ".join(tried_urls)
+            reason = (f"\n\nLast probe error: {_last_probe_error}"
+                      if _last_probe_error else "")
+            raise RuntimeError(
+                f"Couldn't find a CUDA build of PyTorch for this version of "
+                f"FIREFLY (Python {_current_py_tag()}) at "
+                f"download.pytorch.org.{reason}\n\n"
+                f"FIREFLY looks for a CUDA torch in the {_TORCH_MIN[0]}.{_TORCH_MIN[1]}"
+                f"–{_TORCH_MAX_EXCL[0]}.x range across recent CUDA toolkits, "
+                f"and also tried the bundled version directly:\n  {url_lines}\n\n"
+                f"If the error mentions a certificate/SSL or connection problem, "
+                f"it's a network/proxy issue rather than a missing wheel.  "
+                f"Otherwise PyTorch may not yet ship a Windows CUDA wheel for "
+                f"this Python version — install FIREFLY from source and follow "
+                f"the 'Enabling CUDA' section of the README to let pip resolve "
+                f"a matching wheel."
+            )
+
+    chosen_tag = found["cuda_tag"]
+    chosen_ver = found["version"]
+    if chosen_ver != torch_version:
+        _log(f"NOTE: bundled torch is {torch_version} but no CUDA wheel exists "
+             f"for it; installing {chosen_ver}+{chosen_tag} instead (in-range, "
+             f"shadows the bundled CPU build).")
     if status_cb is not None:
-        try: status_cb(f"Found cu{chosen_tag[2:]}, downloading…")
+        try: status_cb(f"Found torch {chosen_ver} + {chosen_tag}, downloading…")
         except Exception: pass
     install_cuda_torch_from_url(
-        url, torch_version=torch_version, cuda_tag=chosen_tag,
+        found["url"], torch_version=chosen_ver, cuda_tag=chosen_tag,
         download_progress_cb=download_progress_cb,
         extract_progress_cb=extract_progress_cb,
         cancel_cb=cancel_cb)
