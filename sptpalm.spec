@@ -111,6 +111,7 @@ hidden += [
     # GUI submodules (imported by app_qt).
     "ui_theme",
     "ui_helpers",
+    "ui_widgets",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
