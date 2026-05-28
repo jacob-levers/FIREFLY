@@ -1290,13 +1290,22 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     fig_theme    = p.get("fig_theme", "Dark")
     fig_proj_cmap = p.get("fig_proj_cmap", "Inferno")
     want_pdf     = bool(p.get("fig_save_pdf", False))
+    # Per-panel PNG rendering is the dominant figure-save cost (one full
+    # figure rasterisation per panel).  Only render the panels that will
+    # actually be written below: none unless fig_per_panel is on, and just
+    # the selected subset when fig_single_panels narrows it.
+    if bool(p.get("fig_per_panel", False)):
+        _allowed_panels = p.get("fig_single_panels")
+        want_panels = None if _allowed_panels is None else set(_allowed_panels)
+    else:
+        want_panels = set()
     fig_data = make_figure(
         proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
         fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
         jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
         cluster_labels=cluster_labels, cluster_locs=cluster_xy,
         dwell_df=dwell_df, dwell_tau=dwell_tau,
-        return_pdf_bytes=want_pdf)
+        return_pdf_bytes=want_pdf, want_panels=want_panels)
     del proj_sample
 
     # ── Save outputs ──────────────────────────────────────────────────────

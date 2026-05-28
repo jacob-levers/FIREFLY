@@ -355,24 +355,75 @@ def _load_single_czi(path, channel=0, stop_event=None):
         n_c  = _dim_size(dims.get("C"), 1)
         ch   = min(channel, n_c - 1)
         print(f"  Frames: {n_t}  |  Channels: {n_c}  |  Using channel: {ch}", flush=True)
-        # Read first frame to discover H×W, then pre-allocate the full array.
-        # This avoids building a Python list + np.stack which doubles peak RAM.
+        # Read first frame to discover H×W.
         img0, _ = czi.read_image(T=0, C=ch)
         f0 = img0.squeeze()
         if f0.ndim > 2:
             f0 = f0[0]
         H, W  = f0.shape
-        stack = np.empty((n_t, H, W), dtype=np.float32)
-        stack[0] = f0.astype(np.float32)
-        for t in range(1, n_t):
-            img, _ = czi.read_image(T=t, C=ch)
-            frame  = img.squeeze()
-            if frame.ndim > 2:
-                frame = frame[0]
-            stack[t] = frame.astype(np.float32)
-            if t % 500 == 0:
-                print(f"  Loading: {t}/{n_t} frames...", flush=True)
-                _chk()
+
+        # Fast path: a single read_image() pulls the entire T stack in one
+        # libCZI call.  Per-frame read_image(T=t) carries a large fixed
+        # per-call cost (subblock-directory parsing), so looping it over
+        # thousands of frames takes minutes — one bulk call is sub-second
+        # (~300x faster on a 16 000-frame 256×256 stack).
+        #
+        # The bulk path briefly holds BOTH the uint16 array and its float32
+        # copy (~1.5x the final stack), while the per-frame fallback peaks at
+        # ~1x.  On tight-RAM machines (e.g. a 16 GB Mac) a large stack can fit
+        # per-frame but not in bulk, so gate the fast path on free memory —
+        # macOS swaps rather than raising MemoryError, so we must check up
+        # front instead of relying on a failed allocation.
+        bytes_f32 = n_t * H * W * 4
+        peak_need = bytes_f32 + n_t * H * W * int(f0.dtype.itemsize)
+        try:
+            import psutil as _psutil
+            avail   = _psutil.virtual_memory().available
+            reserve = _user_ram_reserve_gb() * (1024 ** 3)
+            bulk_ok = peak_need < (avail - reserve)
+        except Exception:
+            bulk_ok = bytes_f32 < 2 * (1024 ** 3)   # can't measure → only if small
+
+        stack = None
+        if bulk_ok:
+            try:
+                bulk, _ = czi.read_image(C=ch)
+                arr = np.asarray(bulk).squeeze()
+                while arr.ndim > 3:        # drop residual leading singleton dims
+                    arr = arr[0]
+                if arr.ndim == 2:          # single timepoint
+                    arr = arr[None, ...]
+                if arr.shape == (n_t, H, W):
+                    stack = np.ascontiguousarray(arr, dtype=np.float32)
+                    print(f"  Loaded {n_t} frames (bulk read).", flush=True)
+                else:
+                    print(f"  Bulk read shape {arr.shape} != expected "
+                          f"{(n_t, H, W)}; using per-frame read.", flush=True)
+                del bulk, arr
+            except _Cancelled:
+                raise
+            except Exception as exc:
+                print(f"  Bulk CZI read unavailable ({exc}); using per-frame "
+                      f"read.", flush=True)
+        else:
+            print(f"  Limited free RAM (~{peak_need/1e9:.1f} GB needed for a "
+                  f"bulk read); using memory-frugal per-frame read.",
+                  flush=True)
+
+        if stack is None:
+            # Pre-allocate the full array (avoids a Python list + np.stack
+            # that would double peak RAM) and fill it frame by frame.
+            stack = np.empty((n_t, H, W), dtype=np.float32)
+            stack[0] = f0.astype(np.float32)
+            for t in range(1, n_t):
+                img, _ = czi.read_image(T=t, C=ch)
+                frame  = img.squeeze()
+                if frame.ndim > 2:
+                    frame = frame[0]
+                stack[t] = frame.astype(np.float32)
+                if t % 500 == 0:
+                    print(f"  Loading: {t}/{n_t} frames...", flush=True)
+                    _chk()
         return stack, meta["pixel_size_um"], meta["frame_interval_s"]
 
     if HAS_CZIFILE:
@@ -7019,7 +7070,16 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 fig_theme="Dark", proj_cmap="Inferno", jdd=None,
                 turning_angles=None, mobile_frac_df=None,
                 cluster_labels=None, cluster_locs=None,
-                dwell_df=None, dwell_tau=None, return_pdf_bytes=False):
+                dwell_df=None, dwell_tau=None, return_pdf_bytes=False,
+                want_panels=None):
+    # want_panels controls the per-panel PNG export, which is expensive:
+    # each panel is produced by a full-figure savefig() cropped to that
+    # panel's bbox, so rendering all 15 panels means ~15 full rasterisations
+    # of the whole figure.  Callers that don't need per-panel PNGs should
+    # pass an empty collection to skip the loop entirely.
+    #   * None            → render every panel (back-compat default)
+    #   * set()/[]        → render no panels (just the combined figure)
+    #   * {"A","C", ...}  → render only those panels
     print("  Rendering figure ...")
 
     # ── Theme palettes ─────────────────────────────────────────────────────────
@@ -7501,31 +7561,38 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
 
     from PIL import Image as _PILImage
 
-    # Render individual panels WITHOUT letter labels
-    for _txt in _letter_artists:
-        _txt.set_visible(False)
-    fig.canvas.draw()
-    _renderer = fig.canvas.get_renderer()
-    _pad_px   = fig.dpi * 0.12
+    # Render individual panels WITHOUT letter labels.  Each panel costs a
+    # full-figure savefig(), so only do this for the panels actually
+    # requested — and skip the whole block (and its two extra draws) when
+    # none are wanted.
     panel_images = {}
-    for _ltr, _pax in _panels:
-        _bbox = _pax.get_tightbbox(_renderer)
-        if _bbox is None:
-            continue
-        _bbox_pad = _Bbox([[_bbox.x0 - _pad_px, _bbox.y0 - _pad_px],
-                            [_bbox.x1 + _pad_px, _bbox.y1 + _pad_px]])
-        _bbox_in  = _bbox_pad.transformed(fig.dpi_scale_trans.inverted())
-        _pbuf = _io.BytesIO()
-        fig.savefig(_pbuf, format="png", dpi=150, bbox_inches=_bbox_in,
-                    facecolor=fig.get_facecolor())
-        _pbuf.seek(0)
-        panel_images[_ltr] = _PILImage.open(_pbuf).copy()
-        _pbuf.close()
+    _render_panels = (want_panels is None) or bool(want_panels)
+    if _render_panels:
+        for _txt in _letter_artists:
+            _txt.set_visible(False)
+        fig.canvas.draw()
+        _renderer = fig.canvas.get_renderer()
+        _pad_px   = fig.dpi * 0.12
+        for _ltr, _pax in _panels:
+            if want_panels is not None and _ltr not in want_panels:
+                continue
+            _bbox = _pax.get_tightbbox(_renderer)
+            if _bbox is None:
+                continue
+            _bbox_pad = _Bbox([[_bbox.x0 - _pad_px, _bbox.y0 - _pad_px],
+                                [_bbox.x1 + _pad_px, _bbox.y1 + _pad_px]])
+            _bbox_in  = _bbox_pad.transformed(fig.dpi_scale_trans.inverted())
+            _pbuf = _io.BytesIO()
+            fig.savefig(_pbuf, format="png", dpi=150, bbox_inches=_bbox_in,
+                        facecolor=fig.get_facecolor())
+            _pbuf.seek(0)
+            panel_images[_ltr] = _PILImage.open(_pbuf).copy()
+            _pbuf.close()
 
-    # Restore letter labels then render combined figure
-    for _txt in _letter_artists:
-        _txt.set_visible(True)
-    fig.canvas.draw()
+        # Restore letter labels for the combined figure
+        for _txt in _letter_artists:
+            _txt.set_visible(True)
+        fig.canvas.draw()
     _buf = _io.BytesIO()
     fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
