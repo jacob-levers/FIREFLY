@@ -43,6 +43,24 @@ from __future__ import annotations
 import os
 import sys
 
+# ── HTTPS / CA certificates ───────────────────────────────────────────────────
+# Frozen PyInstaller builds don't reliably ship a usable CA store, so HTTPS
+# certificate verification fails for EVERY request in the .exe — which surfaced
+# as a misleading "No CUDA wheel exists" error (the wheel was present; the HEAD
+# probe just failed verification) and silently broke the auto-update check.
+# Point Python's default HTTPS context at certifi's bundled cacert.pem so all
+# urllib HTTPS in this process verifies correctly.  Harmless from source.
+try:
+    import ssl as _ssl
+    import certifi as _certifi
+    _ca = _certifi.where()
+    if _ca and os.path.isfile(_ca):
+        os.environ.setdefault("SSL_CERT_FILE", _ca)
+        _ssl._create_default_https_context = (
+            lambda *a, **k: _ssl.create_default_context(cafile=_ca))
+except Exception:
+    pass
+
 # ── CUDA sidecar injection ───────────────────────────────────────────────────
 # Must run BEFORE any torch import so the CUDA-built torch in
 # %LOCALAPPDATA%\FIREFLY\torch-cuda can shadow the bundled CPU build.
