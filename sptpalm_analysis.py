@@ -412,8 +412,10 @@ def _load_single_czi(path, channel=0, stop_event=None):
 
         if stack is None:
             # Pre-allocate the full array (avoids a Python list + np.stack
-            # that would double peak RAM) and fill it frame by frame.
-            stack = np.empty((n_t, H, W), dtype=np.float32)
+            # that would double peak RAM) and fill it frame by frame.  Uses a
+            # disk-backed memmap when the stack won't fit in RAM, so a single
+            # CZI larger than memory loads instead of OOM-ing / swapping.
+            stack = _alloc_or_memmap_stack((n_t, H, W))
             stack[0] = f0.astype(np.float32)
             for t in range(1, n_t):
                 img, _ = czi.read_image(T=t, C=ch)
@@ -1005,6 +1007,44 @@ def _cleanup_temp_stack_paths() -> None:
     # Re-register any we couldn't delete so the next call (or atexit)
     # gets another chance.
     _firefly_temp_stack_paths.extend(still_locked)
+
+
+def _alloc_or_memmap_stack(shape, dtype=np.float32):
+    """Allocate a single-file (T, H, W) stack.  Returns a plain in-RAM array
+    when it fits in available memory (minus the OS reserve), otherwise a
+    disk-backed np.memmap so a stack larger than RAM doesn't OOM or silently
+    swap.  Mirrors the RAM-vs-memmap policy the multi-file / TIF loaders
+    already use, extending it to the single-file CZI/TIF paths."""
+    import numpy as _np
+    nbytes = int(_np.prod(shape)) * _np.dtype(dtype).itemsize
+    fits_ram = True
+    try:
+        import psutil as _ps
+        avail   = _ps.virtual_memory().available
+        reserve = _user_ram_reserve_gb() * (1024 ** 3)
+        fits_ram = nbytes < (avail - reserve)
+    except Exception:
+        fits_ram = True
+    if fits_ram:
+        return _np.empty(shape, dtype=dtype)
+    # Too big for RAM → disk-backed memmap.
+    import tempfile, shutil
+    tmp_dir   = _resolve_temp_stack_dir()
+    probe_dir = tmp_dir or tempfile.gettempdir()
+    try:
+        if shutil.disk_usage(probe_dir).free < nbytes * 1.05:
+            print("  WARN: stack exceeds available RAM and the temp disk is "
+                  "low; attempting an in-RAM load anyway.", flush=True)
+            return _np.empty(shape, dtype=dtype)
+    except Exception:
+        pass
+    fd, tmp_path = tempfile.mkstemp(suffix=".dat", prefix="firefly_stack_",
+                                    dir=tmp_dir)
+    os.close(fd)
+    _register_temp_stack_path(tmp_path)
+    print(f"  Stack too large for RAM ({nbytes/1e9:.1f} GB) -> disk memmap at "
+          f"{tmp_path}", flush=True)
+    return _np.memmap(tmp_path, dtype=dtype, mode="w+", shape=tuple(shape))
 
 
 #  How much physical RAM to leave for the OS + the user's other apps.

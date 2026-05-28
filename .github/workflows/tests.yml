@@ -1,0 +1,33 @@
+name: Tests
+
+# Fast numerical-regression gate, independent of the release build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        # Only the analysis stack is needed — no Qt / napari / CZI loaders.
+        # CPU-only torch keeps the install small (the engine-agreement test
+        # skips automatically if torch is absent).
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2" "pandas<3" scipy matplotlib scikit-image \
+                      trackpy joblib tqdm scikit-learn psutil threadpoolctl pytest
+          pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.3,<2.6"
+
+      - name: Run tests
+        run: pytest
