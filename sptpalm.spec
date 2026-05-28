@@ -96,6 +96,9 @@ hidden += [
     "fa_constants",
     "fa_memory",
     "fa_loaders",
+    "fa_preprocess",
+    "fa_drift",
+    "fa_roi",
     # Encoding tables sometimes missed in frozen builds
     "encodings.utf_8",
     "encodings.ascii",
