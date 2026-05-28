@@ -1,8 +1,8 @@
 # sptPALM Analysis Pipeline — runtime dependencies
 # Install with:  pip install -r requirements.txt
 
-numpy<2            # napari 0.4.x was built against the numpy 1.x C-ABI — numpy 2.x breaks the frozen build's napari/vispy import
-pandas<3           # pandas 3.x dropped numpy 1.x support; with napari<0.5 pinning us to numpy 1.x, pandas must stay on 2.x
+numpy>=2,<3        # numpy 2.x — napari>=0.5 is built against the 2.x C-ABI, which also unblocks Python 3.13
+pandas>=2.2,<3     # 2.2+ supports numpy 2.x and Python 3.13
 scipy
 matplotlib
 scikit-image
@@ -18,14 +18,14 @@ Pillow
 psutil
 scikit-learn
 threadpoolctl      # dynamically expand BLAS pool during localisation
-torch>=2.3,<2.6    # GPU localiser backend.  Capped at <2.6 so the bundled version always exists on PyTorch's CUDA index (download.pytorch.org/whl/cuXYZ).  The in-app CUDA installer needs a real version to download a matching wheel from.
+torch>=2.6,<3      # GPU localiser backend.  2.6+ ships cp313 + numpy-2 wheels and CUDA cuXYZ wheels (download.pytorch.org/whl/cuXYZ) for the in-app installer.
 roifile>=2024.5.24 # ImageJ / palmTRACER .roi + .zip ROI file loader, used by _RoiViewer's "Load ROI…" button.
 
 # ── Qt UI stack ───────────────────────────────────────────────────────────────
 # FIREFLY 2.0+ uses PySide6 (Qt6) instead of tkinter.  Napari is embedded
 # in the Workspace tab for frame scrubbing + track overlay.
-PySide6>=6.6,<7
-napari[pyside6]>=0.4.19,<0.5
+PySide6>=6.7,<7
+napari[pyside6]>=0.6,<0.7   # 0.6 = numpy-2 C-ABI + Python 3.13 support (0.5 caps at 3.12)
 dask[array]       # napari's lazy image loader degrades to a "missing dask" warning without this
 lxml_html_clean   # lxml 5.2+ moved html.clean into a separate package; napari's dep chain still imports the old path, so the napari embed silently fails without this companion installed
 
