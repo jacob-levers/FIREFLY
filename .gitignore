@@ -13,5 +13,8 @@ tools/calibrate_torch_vs_trackpy.py
 tools/compare_overlay_plots.py
 tools/compare_to_palmtracer.py
 
+# Backend-agreement unit test — kept local, not shipped.
+tests/
+
 # Local agent / session data
 .claude/
