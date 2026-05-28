@@ -19,7 +19,6 @@ psutil
 scikit-learn
 threadpoolctl      # dynamically expand BLAS pool during localisation
 torch>=2.3,<2.6    # GPU localiser backend.  Capped at <2.6 so the bundled version always exists on PyTorch's CUDA index (download.pytorch.org/whl/cuXYZ).  The in-app CUDA installer needs a real version to download a matching wheel from.
-PyWavelets>=1.4    # à-trous wavelet detection backend (palmTRACER-style spot detector).  Used by WaveletBackend in sptpalm_analysis.py.
 roifile>=2024.5.24 # ImageJ / palmTRACER .roi + .zip ROI file loader, used by _RoiViewer's "Load ROI…" button.
 
 # ── Qt UI stack ───────────────────────────────────────────────────────────────

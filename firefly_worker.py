@@ -749,27 +749,6 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     blink_proj = None
     if not external_csv:
         try:
-            # Wavelet backend params: only consumed when backend=="wavelet"
-            # (trackpy / torch ignore the extra kwargs).  Pulled from the
-            # GUI payload with sensible defaults so older payloads still
-            # work without a backwards-incompat error.
-            wavelet_kwargs = {
-                "wavelet":              p.get("wavelet", "db2"),
-                "wavelet_levels":       int(p.get("wavelet_levels", 2)),
-                "wavelet_threshold_k":  float(p.get("wavelet_threshold_k", 3.0)),
-                "wavelet_min_distance": int(p.get("wavelet_min_distance", 3)),
-            }
-            # TrackMate backend params — only consumed when backend ==
-            # "trackmate" (other backends ignore the extra kwargs).
-            # `pixel_size_um` is needed for radius_um → radius_px
-            # conversion inside the backend.
-            trackmate_kwargs = {
-                "trackmate_mode":       str(p.get("trackmate_mode", "log")),
-                "trackmate_radius_um":  float(p.get("trackmate_radius_um", 0.5)),
-                "trackmate_quality":    float(p.get("trackmate_quality", 5.0)),
-                "trackmate_median":     bool(p.get("trackmate_median", False)),
-                "pixel_size_um":        float(px),
-            }
             locs, mean_proj, max_proj, blink_proj, _mm = preprocess_and_localise_adaptive(
                 stack,
                 diameter=int(p["diameter"]),
@@ -781,9 +760,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 stop_event=cancel_event,
                 mass_cb=_mass_cb,
                 preview_cb=_preview_cb,
-                backend=p["backend"],
-                **wavelet_kwargs,
-                **trackmate_kwargs)
+                backend=p["backend"])
         finally:
             # Stop the preview pump and let it drain whatever's left
             _preview_stop.set()

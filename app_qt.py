@@ -4300,126 +4300,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_bg_radius.valueChanged.connect(
             lambda _=None: self._push_detection_preview_params())
 
-        # ── Wavelet backend params ──────────────────────────────────
-        # Only meaningful when Detection backend = "Wavelet (à trous)".
-        # Hidden by default to keep the Detection section compact; we
-        # show them via setRowVisible() when the user picks the wavelet
-        # backend.  Without this, the four extra rows pushed the
-        # sidebar's intrinsic height up enough to squeeze the console
-        # dock at the bottom of the window.
-        self.c_wavelet_family = _QuietComboBox()
-        self.c_wavelet_family.addItems(
-            ["db2", "db4", "sym4", "bior1.3", "coif1"])
-        self.c_wavelet_family.setToolTip(
-            "Wavelet family for the à-trous decomposition.\n"
-            "• db2   — palmTRACER default; sharp localisation.\n"
-            "• db4   — smoother; good for noisier movies.\n"
-            "• sym4 — symmetric Daubechies; less ringing.\n"
-            "• bior1.3 — biorthogonal; symmetric reconstruction.\n"
-            "• coif1 — Coiflet; vanishing moments on both sides.")
-        gl.addRow("Wavelet family", self.c_wavelet_family)
-        self.s_wavelet_levels = self._spin_int(2, 1, 5,
-            tip="Number of detail scales summed before thresholding.\n"
-                "Higher levels capture broader spots but admit more\n"
-                "background.  2 is tuned for the typical 7-px PSF at\n"
-                "0.106 µm/px sampling.")
-        gl.addRow("Wavelet levels", self.s_wavelet_levels)
-        self.s_wavelet_threshold_k = self._spin_dbl(3.0, 0.5, 10.0, 0.1,
-            decimals=2,
-            tip="Detail-map threshold = k · MAD · 1.4826 (robust-σ).\n"
-                "Higher = stricter detection (fewer spots, fewer false\n"
-                "positives).  Default 3.0 matches the palmTRACER preset.")
-        gl.addRow("Wavelet threshold k", self.s_wavelet_threshold_k)
-        self.s_wavelet_min_distance = self._spin_int(3, 1, 20,
-            tip="Minimum separation (px) between accepted peaks.\n"
-                "Prevents the same blink being detected multiple times\n"
-                "at adjacent maxima of the wavelet response.")
-        gl.addRow("Wavelet min distance (px)", self.s_wavelet_min_distance)
-        # Stash the form layout + the four widgets so we can toggle
-        # row visibility from the backend-changed signal.  Kept as
-        # tuple so the order is explicit and self-documenting.
-        self._wavelet_param_widgets = (
-            self.c_wavelet_family,
-            self.s_wavelet_levels,
-            self.s_wavelet_threshold_k,
-            self.s_wavelet_min_distance,
-        )
-        self._wavelet_param_form = gl
-        # Start hidden — they'll show when the backend combo gets
-        # wired up below and selects "wavelet".
-        self._set_wavelet_params_visible(False)
-
-        # ── TrackMate backend params ────────────────────────────────
-        # Only meaningful when Detection backend = "TrackMate (LoG/DoG)".
-        # Same hide-by-default mechanism as the wavelet rows so the
-        # Detection sidebar stays compact for other backends.
-        self.c_trackmate_mode = _QuietComboBox()
-        self.c_trackmate_mode.addItems(["LoG", "DoG"])
-        self.c_trackmate_mode.setToolTip(
-            "TrackMate spot detector kernel.\n"
-            "• LoG — scale-normalised Laplacian-of-Gaussian; the\n"
-            "  classic TrackMate default, best signal-to-noise on\n"
-            "  isolated PSFs.\n"
-            "• DoG — Difference-of-Gaussians; slightly faster and a\n"
-            "  bit more tolerant of bright background structure.")
-        gl.addRow("TrackMate mode", self.c_trackmate_mode)
-
-        self.s_trackmate_radius = self._spin_dbl(0.5, 0.05, 2.0, 0.01,
-            decimals=3,
-            tip="Estimated spot RADIUS in micrometres (TrackMate's\n"
-                "'estimated radius' field).  Sigma for the LoG/DoG\n"
-                "kernel is derived as radius/√2.  For typical sptPALM\n"
-                "PSFs at 0.106 µm/px try 0.3–0.5 µm.")
-        gl.addRow("TrackMate radius (µm)", self.s_trackmate_radius)
-
-        self.s_trackmate_quality = self._spin_dbl(3.0, 0.0, 20.0, 0.1,
-            decimals=2,
-            tip="Quality threshold on the LoG/DoG response, expressed as\n"
-                "a multiplier of the robust noise σ (median + k·MAD).\n"
-                "Higher = stricter detection (fewer spots).  Scale-free:\n"
-                "the same number works whether the input is raw camera\n"
-                "counts, background-subtracted, or normalised.\n"
-                "Typical values: 2.0–4.0 for clean PSFs, 4.0–8.0 for\n"
-                "noisier movies.  Differs from TrackMate Fiji's absolute\n"
-                "'Quality' field (Fiji works on raw frames; FIREFLY's\n"
-                "backend works on the preprocessed pipeline output).")
-        gl.addRow("TrackMate quality (σ)", self.s_trackmate_quality)
-
-        self.c_trackmate_median = QtWidgets.QCheckBox(
-            "Use median pre-filter")
-        self.c_trackmate_median.setToolTip(
-            "Apply a 3×3 median filter before computing the LoG/DoG\n"
-            "response.  Matches TrackMate's 'Use median filter'\n"
-            "checkbox — robust against salt-and-pepper / camera noise.")
-        gl.addRow("", self.c_trackmate_median)
-
-        self._trackmate_param_widgets = (
-            self.c_trackmate_mode,
-            self.s_trackmate_radius,
-            self.s_trackmate_quality,
-            self.c_trackmate_median,
-        )
-        self._trackmate_param_form = gl
-        self._set_trackmate_params_visible(False)
-
         layout.addWidget(sec)
 
         # ── Linking ───────────────────────────────────────────────────────
+        # FIREFLY uses trackpy's recursive subnet linker exclusively.
         sec, gl = self._make_form_section("Linking")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        # Linker strategy — Trackpy by default; TrackMate LAP optional.
-        self.c_linker = _QuietComboBox()
-        self.c_linker.addItems(list(self._LINKER_LABEL_TO_VALUE.keys()))
-        self.c_linker.setToolTip(
-            "Track-linking algorithm.\n"
-            "• Trackpy (default) — recursive subnet linker; fast and\n"
-            "  proven, the FIREFLY historical default.\n"
-            "• TrackMate LAP — Jaqaman et al. (2008) linear-assignment\n"
-            "  formulation, the same algorithm as TrackMate in Fiji.\n"
-            "  Solves each frame transition as a global LAP; tends to\n"
-            "  produce slightly fewer but longer tracks under dense\n"
-            "  conditions.  Memory (frame-gap) is supported.")
-        gl.addRow("Linker", self.c_linker)
         self.s_search_range = self._spin_int(5, 1, 30,
             tip="Maximum pixel distance a particle can move between consecutive\n"
                 "frames. Calibrate from your data: bigger search_range tolerates\n"
@@ -4679,25 +4565,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "                        macOS/M-chip combinations may hit memory-\n"
             "                        allocator issues at very low minmass.\n"
             "• Torch — NVIDIA CUDA — force NVIDIA GPU.\n"
-            "• Torch — CPU         — force PyTorch on CPU (for benchmarking).\n"
-            "• Wavelet (à trous)   — palmTRACER-style CPU detector.  Slower than\n"
-            "                        the GPU backends but yields a different\n"
-            "                        spot list — useful for cross-validation.")
+            "• Torch — CPU         — force PyTorch on CPU (for benchmarking).")
         gl.addRow("Detection backend", self.c_backend)
-        # Wavelet params are hidden by default; show them only when
-        # the user picks the wavelet backend.
-        def _on_backend_changed(label):
-            try:
-                value = self._backend_value_from_label(str(label))
-            except Exception:
-                value = ""
-            self._set_wavelet_params_visible(value == "wavelet")
-            self._set_trackmate_params_visible(value == "trackmate")
-        self.c_backend.currentTextChanged.connect(_on_backend_changed)
-        # Apply once on construction so the rows reflect the initial
-        # selection (Auto / Trackpy / Wavelet …).
-        QtCore.QTimer.singleShot(0, lambda: _on_backend_changed(
-            self.c_backend.currentText()))
         self.s_workers = self._spin_int(N_CPUS, 1, N_CPUS,
             tip="Parallel CPU workers for the trackpy backend's multiprocessing\n"
                 "pool and the MSD fitting thread pool.  Default = all cores.")
@@ -5848,28 +5717,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # outputs only shows the localisation file per dataset.
         if not (n.endswith(".csv") or n.endswith(".txt")):
             return False
-        # palmTRACER's tracks / D / MSD files start with `trcpalmtracer`
-        # (with or without a leading `<stem>_` from FIREFLY's export).
-        # A single substring test catches both naming conventions and
-        # all four variants (-1-D, -1-MSD, -AllROI-D, -AllROI-MSD).
-        # We check after stripping any leading FIREFLY stem prefix so
-        # we don't accidentally match a user-named file that happens
-        # to contain the substring 'trcpalmtracer' in the middle.
-        base = os.path.basename(n)
-        ext  = os.path.splitext(base)[1]
-        stem = base[:-len(ext)] if ext else base
-        # Strip any FIREFLY-style `<stem>_` prefix.  We compare the
-        # resulting bare token against the canonical palmTRACER aux
-        # names.
-        bare = stem.split("_")[-1] if "_" in stem else stem
-        PALMTRACER_AUX_BARE = {
-            "trcpalmtracer",
-            "trcpalmtracer-1-d",
-            "trcpalmtracer-1-msd",
-            "trcpalmtracer-allroi-d",
-            "trcpalmtracer-allroi-msd",
-        }
-        if bare in PALMTRACER_AUX_BARE:
+        # palmTRACER's track-derived files (tracks, D, MSD) ALL contain
+        # the token `trcPALMTracer` in their name, across every ROI /
+        # mode variant palmTRACER emits:
+        #     trcPALMTracer.txt
+        #     trcPALMTracer-1-D.txt        trcPALMTracer-1-MSD.txt
+        #     trcPALMTracer-2-D.txt        …
+        #     trcPALMTracer-Full-D.txt     trcPALMTracer-Full-MSD.txt
+        #     trcPALMTracer-AllROI-D.txt   trcPALMTracer-AllROI-MSD.txt
+        # The localisation file we DO want is `locPALMTracer`, which does
+        # NOT contain `trcpalmtracer`.  A single substring test cleanly
+        # excludes every track-derived variant (present or future ROI
+        # tags) while keeping the loc file — and works whether or not
+        # FIREFLY's `<stem>_` export prefix is present.
+        if "trcpalmtracer" in n:
             return False
         # FIREFLY's own auxiliary outputs (never the right input).
         FIREFLY_AUX_SUFFIXES = (
@@ -5932,6 +5793,56 @@ class MainWindow(QtWidgets.QMainWindow):
         n = path.lower()
         return n.endswith(".csv") or n.endswith(".txt")
 
+    @staticmethod
+    def _file_looks_corrupt(path: str) -> bool:
+        """Cheap O(1) integrity probe run at folder-scan time.
+
+        Catches the 'allocated but never written' failure mode we've
+        seen from aborted acquisitions / interrupted copies: the file
+        is full-size on disk but every byte is 0x00.  Such files pass a
+        size check yet crash the loader mid-batch.
+
+        Strategy — read at most a few KB total regardless of file size:
+          • size 0                       → corrupt
+          • TIFF with a bad magic number → corrupt (must be II*\\0 / MM\\0*)
+          • every byte null across ~5 evenly-spaced 4 KB samples → corrupt
+
+        Returns False (assume healthy) on any read error EXCEPT a stat
+        failure — we don't want a transient FS hiccup to hide good data,
+        but an unstattable file genuinely can't be opened.
+        """
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return True
+        if size == 0:
+            return True
+        n = path.lower()
+        is_tiff = n.endswith((".tif", ".tiff"))
+        try:
+            with open(path, "rb") as fh:
+                if is_tiff:
+                    head = fh.read(4)
+                    # Valid TIFF byte-order marks; anything else (e.g.
+                    # the all-zero header b'\\x00\\x00\\x00\\x00') is junk.
+                    if head not in (b"II*\x00", b"MM\x00*"):
+                        return True
+                CHUNK = 4096
+                N_SAMPLES = 5
+                for i in range(N_SAMPLES):
+                    off = int(size * i / N_SAMPLES)
+                    fh.seek(off)
+                    buf = fh.read(CHUNK)
+                    # `.strip(b'\\x00')` is a C-level op — empty result
+                    # means the whole chunk was null.  As soon as ANY
+                    # sample has real content the file isn't all-null.
+                    if buf.strip(b"\x00"):
+                        return False
+                # Every sample was null → empty allocation.
+                return True
+        except OSError:
+            return False
+
     def _on_batch_pick_folder(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select folder containing input files",
@@ -5992,13 +5903,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # with the subfolder so e.g. `Cell1/Loc.txt` and `Cell2/Loc.txt`
         # don't collapse into a single ambiguous "Loc" series.
         # `candidates` holds (display_name, full_path, subfolder_or_None).
+        # `self._batch_corrupt_paths` collects full-paths that fail the
+        # cheap integrity probe so the tree-builder can flag + auto-skip
+        # them.
         candidates: list[tuple[str, str, str | None]] = []
+        self._batch_corrupt_paths: set[str] = set()
         for name in names:
             if name.startswith("."):
                 continue
             full = os.path.join(folder, name)
             if os.path.isfile(full):
                 if self._looks_like_input_file(name):
+                    if self._file_looks_corrupt(full):
+                        self._batch_corrupt_paths.add(full)
                     candidates.append((name, full, None))
             elif os.path.isdir(full):
                 # Skip the batch_results / drift_correction output sub-
@@ -6013,6 +5930,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     cfull = os.path.join(full, cname)
                     if (os.path.isfile(cfull)
                         and self._looks_like_input_file(cname)):
+                        if self._file_looks_corrupt(cfull):
+                            self._batch_corrupt_paths.add(cfull)
                         display = f"{name}/{cname}"
                         candidates.append((display, cfull, name))
 
@@ -6092,13 +6011,20 @@ class MainWindow(QtWidgets.QMainWindow):
                     primary_name, primary_full = nm, pth
                     break
             n = len(sisters)
+            corrupt = getattr(self, "_batch_corrupt_paths", set())
+            # A series is wholly unusable when every sister file is corrupt.
+            n_corrupt = sum(1 for _nm, _pth in sisters if _pth in corrupt)
+            series_dead = (n_corrupt == n)
             parent_label = (primary_name if n == 1
                             else f"{primary_name}   ×  {n} files")
+            if series_dead:
+                parent_label = f"⚠ {parent_label}  — corrupt, skipped"
             parent = QtWidgets.QTreeWidgetItem([parent_label])
             parent.setFlags(parent.flags()
                             | Qt.ItemFlag.ItemIsUserCheckable
                             | Qt.ItemFlag.ItemIsAutoTristate)
-            parent.setCheckState(0, Qt.CheckState.Checked)
+            parent.setCheckState(0, Qt.CheckState.Unchecked
+                                 if series_dead else Qt.CheckState.Checked)
             parent.setData(0, self._ROLE_PATH, primary_full)
             parent.setData(0, self._ROLE_KIND, "series")
             parent.setData(0, self._ROLE_SERIES_KEY, key)
@@ -6107,17 +6033,34 @@ class MainWindow(QtWidgets.QMainWindow):
             f = parent.font(0); f.setBold(True); parent.setFont(0, f)
             # Add one child per sister file (in display order)
             for nm, pth in sisters:
-                child = QtWidgets.QTreeWidgetItem([nm])
+                is_corrupt = pth in corrupt
+                label = f"⚠ {nm}  — corrupt (all-null / unreadable)" \
+                    if is_corrupt else nm
+                child = QtWidgets.QTreeWidgetItem([label])
                 child.setFlags(child.flags()
                                | Qt.ItemFlag.ItemIsUserCheckable)
-                child.setCheckState(0, Qt.CheckState.Checked)
+                # Corrupt files start UNCHECKED so they can't be run by
+                # accident; the user can still tick them manually if they
+                # really want the loader to try (and fail loudly).
+                child.setCheckState(0, Qt.CheckState.Unchecked
+                                    if is_corrupt else Qt.CheckState.Checked)
                 child.setData(0, self._ROLE_PATH, pth)
                 child.setData(0, self._ROLE_KIND, "file")
                 child.setData(0, self._ROLE_SERIES_KEY, key)
+                if is_corrupt:
+                    # Grey the text + tooltip so it reads as disabled.
+                    child.setForeground(0, QtGui.QColor("#b04646"))
+                    child.setToolTip(
+                        0, f"{pth}\n\nThis file is full-size on disk but "
+                           f"its contents are all-null (0x00) — typically "
+                           f"an aborted acquisition or interrupted copy. "
+                           f"Unchecked by default so it won't break the "
+                           f"batch.")
                 parent.addChild(child)
             self.tree_batch_files.addTopLevelItem(parent)
-            # Single-file series collapse — no point expanding a one-row group.
-            parent.setExpanded(n > 1)
+            # Single-file series collapse — no point expanding a one-row group,
+            # but expand a dead one so the ⚠ child is visible.
+            parent.setExpanded(n > 1 or series_dead)
 
         self.tree_batch_files.blockSignals(False)
         self.tree_batch_files.itemChanged.connect(self._on_tree_item_changed)
@@ -6351,42 +6294,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 bg_sigma=bg_sigma)
         except Exception:
             pass
-
-    def _set_wavelet_params_visible(self, visible: bool):
-        """Show / hide the four wavelet-backend param rows in the
-        Detection section.  Called from the backend-combo's
-        currentTextChanged signal so the rows only appear when the
-        wavelet backend is selected — keeps the sidebar compact for
-        the other backends."""
-        form = getattr(self, "_wavelet_param_form", None)
-        widgets = getattr(self, "_wavelet_param_widgets", ()) or ()
-        if form is None or not widgets:
-            return
-        for w in widgets:
-            try:
-                form.setRowVisible(w, bool(visible))
-            except (AttributeError, TypeError):
-                # Qt < 6.4 fallback: hide the widget itself (label
-                # stays but the field-side disappears).
-                try:    w.setVisible(bool(visible))
-                except Exception: pass
-
-    def _set_trackmate_params_visible(self, visible: bool):
-        """Show / hide the TrackMate-backend param rows.  Same
-        mechanism as `_set_wavelet_params_visible`; toggled by the
-        backend-combo's currentTextChanged signal so only the active
-        backend's rows are shown.
-        """
-        form = getattr(self, "_trackmate_param_form", None)
-        widgets = getattr(self, "_trackmate_param_widgets", ()) or ()
-        if form is None or not widgets:
-            return
-        for w in widgets:
-            try:
-                form.setRowVisible(w, bool(visible))
-            except (AttributeError, TypeError):
-                try:    w.setVisible(bool(visible))
-                except Exception: pass
 
     def _push_detection_preview_params(self):
         """Forward the current diameter / minmass / bg settings to the
@@ -8799,16 +8706,8 @@ class MainWindow(QtWidgets.QMainWindow):
         "Torch — Apple MPS":  "torch-mps",
         "Torch — NVIDIA CUDA": "torch-cuda",
         "Torch — CPU":        "torch-cpu",
-        "Wavelet (à trous)":  "wavelet",
-        "TrackMate (LoG/DoG)": "trackmate",
     }
     _BACKEND_VALUE_TO_LABEL = {v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()}
-
-    _LINKER_LABEL_TO_VALUE = {
-        "Trackpy (default)":  "trackpy",
-        "TrackMate LAP":      "trackmate_lap",
-    }
-    _LINKER_VALUE_TO_LABEL = {v: k for k, v in _LINKER_LABEL_TO_VALUE.items()}
 
     def _available_backends(self) -> list[str]:
         """Return the static list of selectable backend LABELS (display
@@ -9047,24 +8946,9 @@ class MainWindow(QtWidgets.QMainWindow):
                                     self.c_backend.currentText()),
             "workers":           int(self.s_workers.value()),
             "chunk_size":        int(self.s_chunk_size.value()),
-            # Wavelet-backend params — ignored by trackpy / torch
-            # backends, consumed by WaveletBackend when active.
-            "wavelet":              self.c_wavelet_family.currentText(),
-            "wavelet_levels":       int(self.s_wavelet_levels.value()),
-            "wavelet_threshold_k":  float(self.s_wavelet_threshold_k.value()),
-            "wavelet_min_distance": int(self.s_wavelet_min_distance.value()),
-            # TrackMate-backend params — same idea: only consumed when
-            # the trackmate backend is active.  The pixel-size value
-            # for radius_um → radius_px conversion is already in the
-            # params dict ("pixel_size") so we don't duplicate it.
-            "trackmate_mode":       self.c_trackmate_mode.currentText().lower(),
-            "trackmate_radius_um":  float(self.s_trackmate_radius.value()),
-            "trackmate_quality":    float(self.s_trackmate_quality.value()),
-            "trackmate_median":     bool(self.c_trackmate_median.isChecked()),
-            # Linker strategy — "trackpy" or "trackmate_lap".  Used by
-            # link_trajectories() in sptpalm_analysis.py.
-            "linker": self._LINKER_LABEL_TO_VALUE.get(
-                self.c_linker.currentText(), "trackpy"),
+            # FIREFLY links exclusively with trackpy's recursive subnet
+            # linker.  Kept as an explicit key for the worker / manifest.
+            "linker":            "trackpy",
             # ── Figures-tab knobs (single-sample figure output) ───────────
             "fig_theme":         self.c_fig_theme.currentText(),
             "fig_proj_cmap":     self.c_fig_proj_cmap.currentText(),

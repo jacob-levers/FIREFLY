@@ -9,6 +9,13 @@ cross-correlation drift correction, turning-angle and radial-distribution
 analysis, plus a multi-group comparison mode with statistical tests and a
 multi-page PDF report.
 
+FIREFLY specialises in **two detection engines — trackpy and PyTorch** —
+both Crocker-Grier-family centroid localisers, calibrated to agree to
+within the experiment's noise floor. Linking is done exclusively with
+trackpy's recursive subnet linker. You can also **import and analyse
+localisation tables exported by other tools** (TrackMate, palmTRACER,
+Picasso, ThunderSTORM) — see [Analyse external localisations](#analyse-external-localisations).
+
 Built with Python + PySide6 + napari. Localisation runs on the GPU via
 PyTorch (Apple MPS or NVIDIA CUDA) and falls back to trackpy on CPU.
 
@@ -25,6 +32,7 @@ By Jacob Levers · macOS and Windows
 3. [Features](#features)
 4. [Workflow](#workflow)
    - [Analyse a sample](#analyse-a-sample)
+   - [Analyse external localisations](#analyse-external-localisations)
    - [Batch a folder](#batch-a-folder)
    - [Compare groups](#compare-groups)
    - [Visualise tracks](#visualise-tracks)
@@ -124,9 +132,16 @@ every tab switch.
 
 ### Detection & tracking
 
-- **Trackpy or PyTorch backend**, auto-selected per platform — Apple MPS,
-  NVIDIA CUDA, or CPU-trackpy. The auto-resolver prefers the GPU but
-  drops back cleanly when it's unavailable.
+- **Two detection engines — trackpy and PyTorch**, auto-selected per
+  platform (Apple MPS, NVIDIA CUDA, or CPU-trackpy). Both are
+  Crocker-Grier-family centroid localisers calibrated to agree to within
+  ~5 nm; the auto-resolver prefers the GPU but drops back cleanly when
+  it's unavailable. **Linking** is always done with trackpy's recursive
+  subnet linker.
+- **Import external localisations** — analyse localisation tables produced
+  by other software (TrackMate, palmTRACER, Picasso, ThunderSTORM) without
+  re-detecting. Column conventions are auto-detected. The whole downstream
+  pipeline (linking, MSD, diffusion, figures) runs on the imported spots.
 - **Streaming chunked localisation** so large stacks (10⁴+ frames) don't
   need to live in RAM all at once. Each chunk's mass values stream into a
   live histogram on the Analysis tab so a bad threshold is obvious within
@@ -213,7 +228,10 @@ Four modes:
 - **Per-series batch tree** — multi-file series (`name.tif`, `name(1).tif`,
   `name(2).tif`, …) are grouped under one parent node; expand to
   individually deselect sister files within a series. Loader concatenates
-  exactly the checked subset.
+  exactly the checked subset. Scans one level of subfolders, accepts
+  external `.csv` / `.txt` localisation tables alongside image stacks,
+  filters out other tools' derived/aux files, and flags + auto-skips
+  corrupt (all-null) files.
 - **Quality-control panel** — link ratio, locs / frame, median track
   length, gap fraction, stuck-track fraction, with colour-coded warnings
   for runs that look off (e.g. <10 % linked, >800 locs/frame).
@@ -263,11 +281,44 @@ Four modes:
 5. When done: figure renders to `<output_folder>/figures/`, manifest +
    CSVs to `<output_folder>/`.
 
+### Analyse external localisations
+
+FIREFLY can run its full downstream pipeline on a localisation table that
+another tool produced — no re-detection.
+
+1. **Import** tab — under **Localisations file**, browse to a `.csv` /
+   `.txt` / `.tsv` exported by TrackMate, palmTRACER, Picasso or
+   ThunderSTORM. The **Source preset** dropdown auto-detects the column
+   convention (or pick it explicitly).
+2. Set pixel size / frame interval (external tables rarely embed them).
+   Optionally point **Background image** at the original stack so the
+   figure's projection panel isn't blank.
+3. Click **Start**. Detection is skipped; linking (trackpy), MSD,
+   diffusion, motion classification and all figures run as normal.
+
+> palmTRACER `.PT` folders contain several files — FIREFLY uses the
+> `locPALMTracer` localisation table; the `trcPALMTracer-*` track / D /
+> MSD files are palmTRACER's own outputs and are ignored on import.
+
 ### Batch a folder
 
 1. **Import** tab → **Batch (folder)** mode.
-2. Pick a folder. The tree groups files into series; expand a series to
-   deselect individual sister files.
+2. Pick a folder. Both **image stacks** (`.czi` / `.tif`) and **external
+   localisation tables** (`.csv` / `.txt`) are picked up — each file is
+   dispatched to the right pipeline automatically. The tree groups files
+   into series; expand a series to deselect individual sister files.
+   - **Subfolders** one level deep are scanned too, so a layout like
+     `Experiment/Cell1/locPALMTracer.txt`, `Experiment/Cell2/...` works
+     when you pick `Experiment/`. Same-named files in different
+     subfolders stay distinct (output lands in
+     `batch_results/Cell1/`, `batch_results/Cell2/`, …).
+   - palmTRACER's derived files (`trcPALMTracer-*`), visualisation TIFFs
+     (`*-Tracks-Z*.tif`), logs and FIREFLY's own outputs are filtered out
+     of the queue automatically.
+   - **Corrupt files are flagged ⚠ and auto-unchecked.** A cheap probe
+     run at scan time catches the "full-size on disk but all-null"
+     failure mode (aborted acquisition / interrupted copy) so it can't
+     silently break the batch.
 3. Click **Open in viewer** to preview any series before starting
    (the heavy file load only fires here, never on checkbox toggles —
    selecting / deselecting is always instant).
