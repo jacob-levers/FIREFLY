@@ -780,8 +780,7 @@ class _ResourceMonitor(QtWidgets.QFrame):
                 "font-weight: 600;")
             val = QtWidgets.QLabel("—")
             val.setStyleSheet(
-                f"color: {_THEME['TXT']}; font-size: 12px; "
-                "font-variant-numeric: tabular-nums;")
+                f"color: {_THEME['TXT']}; font-size: 12px;")
             val.setMinimumWidth(70)
             self._cells[key] = val
             cell.addWidget(cap)
@@ -882,8 +881,7 @@ class _ResourceMonitor(QtWidgets.QFrame):
         if lbl is None: return
         col = _THEME['WARN'] if warn else _THEME['TXT']
         lbl.setStyleSheet(
-            f"color: {col}; font-size: 12px; "
-            "font-variant-numeric: tabular-nums;")
+            f"color: {col}; font-size: 12px;")
         lbl.setText(txt)
 
     def _refresh(self):
@@ -3814,7 +3812,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QPushButton {{ background-color: {_THEME['ACC']}; "
             f"color: {_THEME['ACC_FG']}; border: none; "
             "border-radius: 10px; padding: 4px 10px; "
-            "font-size: 11px; font-weight: 700; }} "
+            "font-size: 11px; font-weight: 700; } "
             f"QPushButton:hover {{ background-color: {_THEME['ACC_HOVER']}; }}")
         self.btn_update_pill.clicked.connect(self._on_update_pill_clicked)
         h.addWidget(self.btn_update_pill)
@@ -5254,7 +5252,7 @@ class MainWindow(QtWidgets.QMainWindow):
         stage_row.addWidget(self.run_stage_label, 1)
         self.lbl_elapsed = QtWidgets.QLabel("")
         self.lbl_elapsed.setStyleSheet(
-            f"color: {_THEME['TXT_MUTED']}; font-variant-numeric: tabular-nums;")
+            f"color: {_THEME['TXT_MUTED']};")
         self.lbl_elapsed.setAlignment(Qt.AlignmentFlag.AlignRight)
         stage_row.addWidget(self.lbl_elapsed)
         v.addLayout(stage_row)
@@ -5459,7 +5457,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lbl.setStyleSheet(
                 f"QLabel {{ border: 1px solid {_THEME['BORDER']}; "
                 f"background: {_THEME['PANEL']}; color: {_THEME['TXT_MUTED']}; "
-                "border-radius: 4px; }}")
+                "border-radius: 4px; }")
             return lbl
 
         cap_single = QtWidgets.QLabel("Single-sample figure")
