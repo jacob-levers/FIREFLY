@@ -100,13 +100,39 @@ def test_alloc_stack_uses_ram_when_it_fits():
 
 
 def test_alloc_stack_falls_back_to_memmap_when_too_big(monkeypatch):
-    # Force "won't fit in RAM" by making the reserve absurdly large.
-    monkeypatch.setattr(s, "_user_ram_reserve_gb", lambda: 1e9)
-    arr = s._alloc_or_memmap_stack((4, 8, 8))
+    # The allocator lives in fa_memory and resolves the RAM reserve there,
+    # so patch fa_memory's copy to force the "won't fit in RAM" branch.
+    import fa_memory
+    monkeypatch.setattr(fa_memory, "_user_ram_reserve_gb", lambda: 1e9)
+    arr = fa_memory._alloc_or_memmap_stack((4, 8, 8))
     try:
         assert isinstance(arr, np.memmap)
         arr[0] = 3.0
         assert float(arr[0, 0, 0]) == 3.0
     finally:
         del arr
-        s.cleanup_temp_stack_paths()
+        fa_memory.cleanup_temp_stack_paths()
+
+
+# ── regression: pre-existing ROI/empty-locs crash (fixed) ───────────────────
+def test_link_trajectories_handles_empty_locs():
+    """Empty localisations must not crash the trackpy linker (it used to raise
+    a cryptic IndexError on coords_from_df)."""
+    empty = pd.DataFrame(columns=["x", "y", "frame", "mass"])
+    out = s.link_trajectories(empty, search_range=5, memory=3, min_len=5)
+    assert len(out) == 0
+    assert "particle" in out.columns
+
+
+def test_roi_mask_not_wiped_for_small_structure():
+    """A compact bright structure far smaller than the legacy 8000-px object
+    floor must still yield a non-empty ROI mask — the bug that dropped every
+    localisation and crashed linking."""
+    yy, xx = np.mgrid[0:128, 0:128]
+    proj = (5.0 * np.exp(-(((xx - 64) ** 2 + (yy - 64) ** 2) / (2 * 8.0 ** 2)))
+            ).astype(np.float32)
+    mask, info = s.build_roi_mask_advanced(
+        proj, threshold=None, threshold_method="li", bg_sigma=25.0,
+        mode_hint="max")
+    assert mask.any(), "ROI mask wrongly empty for a real small structure"
+    assert 0.0 < float(mask.mean()) < 1.0
