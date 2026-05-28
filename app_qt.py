@@ -8593,7 +8593,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 1. Persist settings BEFORE anything that could fail.
         try:    self._save_settings()
-        except Exception: pass
+        except Exception: crash_reporter.log_exception("failed to save settings")
 
         # 2. Stop all QTimers so none of them can fire during teardown.
         # Relying on Qt parent-cleanup is racy — an in-flight singleShot
@@ -9404,7 +9404,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             self._save_settings()
         except Exception:
-            pass
+            crash_reporter.log_exception("failed to save settings before run")
 
         # Clear UI for new run
         self.console_log.clear()
@@ -9518,7 +9518,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             self._save_settings()
         except Exception:
-            pass
+            crash_reporter.log_exception("failed to save settings before run")
 
         # Clear batch UI for new run.  batch_progress and batch_stage_label
         # are aliased to the Analysis-tab widgets in the new layout.
@@ -9611,7 +9611,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             self._save_settings()
         except Exception:
-            pass
+            crash_reporter.log_exception("failed to save settings before run")
 
         # Clear compare UI for new run
         self.console_log.clear()
@@ -10544,9 +10544,24 @@ def _open_folder(path: str) -> None:
 
 
 def _qt_message_handler(mode, context, message):
-    """Forward Qt's own log messages to stderr so they're visible in the
-    terminal and end up in the crash report's "Recent log" snapshot."""
-    sys.stderr.write(f"[Qt {mode.name}] {message}\n")
+    """Route Qt's own log messages into the FIREFLY log file instead of
+    spamming the console.  Warnings/info are recorded to the log only;
+    critical/fatal also surface on stderr.  Falls back to stderr if logging
+    isn't available."""
+    try:
+        lg = crash_reporter.get_logger("firefly.qt")
+        name = getattr(mode, "name", str(mode))
+        if name in ("QtCriticalMsg", "QtFatalMsg"):
+            lg.error(message)
+        elif name == "QtDebugMsg":
+            lg.debug(message)
+        else:  # QtWarningMsg / QtInfoMsg — keep them off the console
+            lg.info(message)
+    except Exception:
+        try:
+            sys.stderr.write(f"[Qt {getattr(mode, 'name', mode)}] {message}\n")
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -11195,6 +11210,8 @@ def _apply_firefly_theme(app: QtWidgets.QApplication):
 #  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
+    # Start the rotating log file first so even early failures are recorded.
+    crash_reporter.setup_logging()
     # Install crash handlers BEFORE creating QApplication so an early failure
     # (e.g. Qt plugin load, OpenGL init) still produces a useful report.
     crash_reporter.install_global_handlers()

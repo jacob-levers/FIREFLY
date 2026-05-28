@@ -25,6 +25,7 @@ The user is shown the path via a non-blocking message and can copy / open it.
 from __future__ import annotations
 
 import datetime as _dt
+import logging as _logging
 import os
 import platform
 import sys
@@ -38,6 +39,10 @@ __all__ = [
     "install_global_handlers",
     "set_app_state_provider",
     "set_log_provider",
+    "log_dir",
+    "setup_logging",
+    "get_logger",
+    "log_exception",
 ]
 
 # ── Configurable hooks the host app installs ──────────────────────────────────
@@ -73,6 +78,81 @@ def crash_report_dir() -> str:
         base = os.path.expanduser("~/.local/share/FIREFLY/crash_reports")
     os.makedirs(base, exist_ok=True)
     return base
+
+
+# ── Persistent logging ────────────────────────────────────────────────────────
+# A rotating log file alongside the crash reports.  Until now FIREFLY swallowed
+# most non-fatal errors silently (~430 bare `except: pass`), so "it just froze /
+# did nothing" left no trace.  This gives a durable record: call setup_logging()
+# once at startup, then use get_logger()/log_exception() in place of a silent
+# `except: pass` to leave a breadcrumb without changing control flow.
+def log_dir() -> str:
+    """`<app-data>/FIREFLY/logs`, created on first use."""
+    d = os.path.join(os.path.dirname(crash_report_dir()), "logs")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+_logging_configured = False
+
+
+def setup_logging(level: int = _logging.INFO, *,
+                  filename: str = "firefly.log",
+                  console: bool = True) -> str:
+    """Configure the root logger with a rotating file handler in the FIREFLY
+    log dir (+ optional stderr handler for WARNING and above).  Idempotent —
+    safe to call from both the GUI process and the analysis subprocess (each
+    passes its own `filename` to avoid cross-process rotation races).  Returns
+    the log-file path.  Never raises."""
+    global _logging_configured
+    try:
+        path = os.path.join(log_dir(), filename)
+    except Exception:
+        return ""
+    if _logging_configured:
+        return path
+    try:
+        from logging.handlers import RotatingFileHandler
+        fmt = _logging.Formatter(
+            "%(asctime)s %(levelname)-7s [%(process)d] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S")
+        root = _logging.getLogger()
+        root.setLevel(level)
+        try:
+            fh = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=3,
+                                     encoding="utf-8", delay=True)
+            fh.setLevel(level)
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+        except Exception:
+            pass
+        if console:
+            sh = _logging.StreamHandler()
+            sh.setLevel(_logging.WARNING)   # keep the console quiet; file gets all
+            sh.setFormatter(fmt)
+            root.addHandler(sh)
+        _logging_configured = True
+        get_logger().info("Logging started (level=%s) -> %s",
+                          _logging.getLevelName(level), path)
+    except Exception:
+        pass
+    return path
+
+
+def get_logger(name: str = "firefly") -> "_logging.Logger":
+    """Return the shared FIREFLY logger."""
+    return _logging.getLogger(name)
+
+
+def log_exception(msg: str = "swallowed exception", *,
+                  name: str = "firefly") -> None:
+    """Log the exception currently being handled (with traceback) at ERROR
+    level.  Drop-in for a silent `except Exception: pass` — call it inside the
+    handler to leave a breadcrumb without re-raising.  Never raises."""
+    try:
+        _logging.getLogger(name).exception(msg)
+    except Exception:
+        pass
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -274,6 +354,11 @@ def _main_excepthook(exc_type, exc_value, exc_tb):
         _original_excepthook(exc_type, exc_value, exc_tb)
         return
     try:
+        try:
+            get_logger().critical("Uncaught exception (main thread)",
+                                  exc_info=(exc_type, exc_value, exc_tb))
+        except Exception:
+            pass
         path = write_crash_report(exc_type, exc_value, exc_tb,
                                   source="main thread")
         if _on_crash_callback is not None:
@@ -285,6 +370,13 @@ def _main_excepthook(exc_type, exc_value, exc_tb):
 
 def _thread_excepthook(args):
     try:
+        try:
+            get_logger().critical(
+                "Uncaught exception (thread '%s')",
+                getattr(args.thread, "name", "?"),
+                exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+        except Exception:
+            pass
         path = write_crash_report(
             args.exc_type, args.exc_value, args.exc_traceback,
             source=f"thread '{getattr(args.thread, 'name', '?')}'")
