@@ -298,23 +298,52 @@ def build_roi_mask_advanced(projection,
         t = float(threshold)
 
     # ── 3. Morphology cleanup ───────────────────────────────────────────
+    # The min_object_size / max_hole_size defaults (8000 / 2000 px) are tuned
+    # for large frames; on a small frame (e.g. 256×256 = 65 k px) an 8000-px
+    # object floor can delete a real but compact ROI entirely, leaving an
+    # all-False mask that then drops every localisation.  Scale the absolute
+    # floors down for small frames (never up — large frames keep the
+    # defaults) so a genuine small structure survives.
+    _area = int(proj.size)
+    eff_min_obj  = min(int(min_object_size), max(8, int(_area * 0.02)))
+    eff_max_hole = min(int(max_hole_size),  max(1, int(_area * 0.02)))
+
     raw = smoothed > t
+    raw_signal = raw  # pre-morphology thresholded mask, for the fallback below
     try:    raw = binary_opening(raw, disk(int(opening_radius)))
     except Exception: pass
     try:    mask = binary_closing(raw, disk(int(closing_radius)))
     except Exception: mask = raw
     try:
-        mask = remove_small_holes(mask, area_threshold=int(max_hole_size))
+        mask = remove_small_holes(mask, area_threshold=eff_max_hole)
     except TypeError:
-        mask = remove_small_holes(mask, int(max_hole_size))
+        mask = remove_small_holes(mask, eff_max_hole)
     except Exception:
         pass
     try:
-        mask = remove_small_objects(mask, min_size=int(min_object_size))
+        mask = remove_small_objects(mask, min_size=eff_min_obj)
     except TypeError:
-        mask = remove_small_objects(mask, int(min_object_size))
+        mask = remove_small_objects(mask, eff_min_obj)
     except Exception:
         pass
+
+    # Fallback: if cleanup removed everything but there WAS signal above the
+    # threshold, keep the single largest connected component of the raw mask.
+    # Guarantees we never return an empty ROI when a thresholdable region
+    # exists (which would otherwise crash linking on zero localisations).
+    if not mask.any() and raw_signal.any():
+        try:
+            from skimage.measure import label as _label
+            lbl = _label(raw_signal, connectivity=2)
+            sizes = _np.bincount(lbl.ravel())
+            sizes[0] = 0
+            if sizes.max() > 0:
+                mask = (lbl == int(_np.argmax(sizes)))
+                print(f"  ROI: morphology cleanup emptied the mask; kept the "
+                      f"largest thresholded component ({int(sizes.max()):,} px) "
+                      f"instead.")
+        except Exception:
+            mask = raw_signal
 
     # ── 4. Keep top-N connected components ──────────────────────────────
     if keep_n_components and keep_n_components > 0:
