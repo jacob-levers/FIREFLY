@@ -1123,7 +1123,12 @@ def save_comparison_circular_statistics(groups_angles, *,
         # direction, circular variance/SD) which ARE meaningful.
         row.update({k: v for k, v in stats.items()
                     if k not in ("rayleigh_z", "rayleigh_p",
-                                 "v_test_z", "v_test_p")})
+                                 "v_test_z", "v_test_p", "n")})
+        # Name the angle count explicitly (n_angles) so it can't be
+        # confused with the per-replicate n (n_replicates) reported in the
+        # per-replicate test rows further down.
+        if "n" in stats:
+            row["n_angles"] = stats["n"]
         rows.append(row)
 
     # ── Between-group tests ────────────────────────────────────────────
@@ -1283,18 +1288,27 @@ def save_comparison_circular_statistics(groups_angles, *,
                         "p_value": om.get("p"),
                     })
                 for pw in (t.get("pairwise") or []):
+                    def _nn(v):
+                        return None if v is None else (">500" if v > 500 else v)
                     test_rows.append({
                         "kind": "per_replicate_test",
                         "test": f"{label} (pairwise, per-replicate)",
                         "label_a": pw.get("label_i"),
                         "label_b": pw.get("label_j"),
-                        "n_a": pw.get("n_i"), "n_b": pw.get("n_j"),
+                        # Renamed from n_a/n_b → n_replicates_* to make
+                        # clear these count REPLICATES, not turning angles
+                        # (the per-group rows' n_angles).
+                        "n_replicates_a": pw.get("n_i"),
+                        "n_replicates_b": pw.get("n_j"),
                         "mean_a": pw.get("mean_i"),
                         "mean_b": pw.get("mean_j"),
                         "sem_a": pw.get("sem_i"),
                         "sem_b": pw.get("sem_j"),
                         "statistic": pw.get("test"),
                         "p_value": pw.get("p"),
+                        "cohens_d": pw.get("cohens_d"),
+                        "n_per_group_for_80pct_power": _nn(pw.get("n_needed_80")),
+                        "n_per_group_for_90pct_power": _nn(pw.get("n_needed_90")),
                     })
 
             _flatten_per_rep_test("per_replicate_kappa_test", "Welch κ")
@@ -1515,12 +1529,13 @@ def save_comparison_circular_statistics(groups_angles, *,
             cols = ["group", "n", "mean_direction_deg",
                     "mean_resultant_length", "circular_std_deg",
                     "concentration_kappa"]
-            col_labels = ["Group", "n", "μ (°)", "R̄", "σ_circ (°)", "κ"]
+            col_labels = ["Group", "n (angles)", "μ (°)", "R̄",
+                          "σ_circ (°)", "κ"]
             cell = []
             for r in rows:
                 cell.append([
                     str(r["group"]),
-                    f"{int(r['n']):,}",
+                    f"{int(r['n_angles']):,}",
                     _fmt(r["mean_direction_deg"], 4),
                     _fmt(r["mean_resultant_length"], 4),
                     _fmt(r["circular_std_deg"], 4),
@@ -1721,9 +1736,20 @@ def save_comparison_circular_statistics(groups_angles, *,
                             f"{pw.get('label_j', '?')}")
                     n_i = pw.get("n_i", 0)
                     n_j = pw.get("n_j", 0)
+                    # "reps" makes explicit these are replicate counts, not
+                    # turning-angle counts.  When the test is NOT significant,
+                    # append the power-based sample size so the reader sees
+                    # how many replicates/group would be needed at 80% power.
+                    stat_cell = f"{n_i} vs {n_j} reps"
+                    p_val = pw.get("p")
+                    n80 = pw.get("n_needed_80")
+                    if (p_val is not None and np.isfinite(p_val)
+                            and p_val >= 0.05 and n80 is not None):
+                        n80_str = ">500" if n80 > 500 else str(int(n80))
+                        stat_cell += f" · need ~{n80_str}/grp (80%)"
                     per_rep_rows.append([
                         f"{label} · {pair}  ({pw.get('test', '')})",
-                        f"n = {n_i} vs {n_j}",
+                        stat_cell,
                         _fmt_p(pw["p"]),
                         _p_stars(pw["p"]),
                     ])
@@ -2085,6 +2111,52 @@ def _stat_test(a, b):
     except Exception:
         return (np.nan, "")
 
+def _cohens_d_pooled(a, b):
+    """Pooled-SD Cohen's d for two 1-D arrays.  None if either group has
+    < 2 points or the pooled SD is zero."""
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return None
+    va, vb = float(np.var(a, ddof=1)), float(np.var(b, ddof=1))
+    sp = np.sqrt(((na - 1) * va + (nb - 1) * vb) / (na + nb - 2))
+    if not np.isfinite(sp) or sp == 0:
+        return None
+    return float((np.mean(a) - np.mean(b)) / sp)
+
+
+def _n_per_group_for_power(d, power=0.80, alpha=0.05, n_max=500):
+    """Smallest n PER GROUP for a two-sample, two-sided t-test to reach
+    `power` at significance `alpha`, given Cohen's d.
+
+    Uses exact noncentral-t power (no statsmodels dependency).  Returns
+    an int n, or None if d is unusable, or `n_max + 1` as a ">n_max"
+    sentinel when the effect is too small to be practically reachable.
+
+    Caveat for callers: this is a PARAMETRIC (t-test) estimate.  When the
+    auto-selected test was Mann-Whitney (non-normal data) it is an
+    approximation, and it assumes the OBSERVED effect size is the true
+    one — noisy at small n.  Treat it as a planning guide, not a promise.
+    """
+    if d is None:
+        return None
+    d = abs(float(d))
+    if d < 1e-6:
+        return n_max + 1
+    try:
+        from scipy import stats as _st
+        for n in range(2, n_max + 1):
+            df = 2 * n - 2
+            nc = d * np.sqrt(n / 2.0)
+            tcrit = _st.t.ppf(1.0 - alpha / 2.0, df)
+            pw = (1.0 - _st.nct.cdf(tcrit, df, nc)
+                  + _st.nct.cdf(-tcrit, df, nc))
+            if pw >= power:
+                return int(n)
+    except Exception:
+        return None
+    return n_max + 1
+
+
 def _stat_test_n(arrays, labels):
     """Statistical test across N≥2 groups.
 
@@ -2125,6 +2197,8 @@ def _stat_test_n(arrays, labels):
                               if len(arrs[i]) > 1 else np.nan),
                     "sem_j": (float(arrs[j].std(ddof=1) / np.sqrt(len(arrs[j])))
                               if len(arrs[j]) > 1 else np.nan),
+                    "cohens_d": None,
+                    "n_needed_80": None, "n_needed_90": None,
                 })
         return omnibus, pairwise
 
@@ -2188,6 +2262,10 @@ def _stat_test_n(arrays, labels):
                     else:
                         p = mannwhitneyu(a, b, alternative="two-sided").pvalue
                         test_name = "Mann-Whitney U"
+                # Effect size + power-based sample-size estimate: how many
+                # replicates PER GROUP would be needed to detect this
+                # observed effect at 80% / 90% power (α=0.05, two-sided).
+                d_eff = _cohens_d_pooled(a, b)
                 pairwise.append({
                     "i": i, "j": j,
                     "label_i": labels[i], "label_j": labels[j],
@@ -2199,6 +2277,9 @@ def _stat_test_n(arrays, labels):
                     "mean_j": float(b.mean()) if len(b) else np.nan,
                     "sem_i": float(a.std(ddof=1) / np.sqrt(len(a))) if len(a) > 1 else np.nan,
                     "sem_j": float(b.std(ddof=1) / np.sqrt(len(b))) if len(b) > 1 else np.nan,
+                    "cohens_d":    d_eff,
+                    "n_needed_80": _n_per_group_for_power(d_eff, 0.80),
+                    "n_needed_90": _n_per_group_for_power(d_eff, 0.90),
                 })
     except Exception:
         pass

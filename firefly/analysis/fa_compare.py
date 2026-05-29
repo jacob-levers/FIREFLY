@@ -616,6 +616,16 @@ def compare_groups(groups,
     # Bonferroni correction across pairwise comparisons WITHIN each metric:
     # multiplies the raw p-value by the number of pairs (capped at 1.0).
     # The omnibus row gets the raw p-value only — it's a single test.
+    # Format the power-based sample-size estimate: int, ">500" when the
+    # effect is too small to be practical, or "" when not computable.
+    def _fmt_n_needed(v):
+        if v is None:
+            return ""
+        try:
+            return ">500" if int(v) > 500 else int(v)
+        except (TypeError, ValueError):
+            return ""
+
     stats_rows = []
     for metric, rec in stats_records.items():
         omn = rec.get("omnibus")
@@ -629,6 +639,9 @@ def compare_groups(groups,
                 "p_value_bonferroni": omn["p"], "stars_bonferroni": stars_bonf,
                 "n_a": "", "n_b": "", "mean_a": "", "mean_b": "",
                 "sem_a": "", "sem_b": "", "label_a": "all groups", "label_b": "",
+                "cohens_d": "",
+                "n_per_group_for_80pct_power": "",
+                "n_per_group_for_90pct_power": "",
             })
         pairs = rec.get("pairwise", [])
         n_pairs = max(1, len(pairs))
@@ -652,6 +665,9 @@ def compare_groups(groups,
                 "mean_a": pw["mean_i"], "mean_b": pw["mean_j"],
                 "sem_a": pw["sem_i"], "sem_b": pw["sem_j"],
                 "label_a": pw["label_i"], "label_b": pw["label_j"],
+                "cohens_d": pw.get("cohens_d"),
+                "n_per_group_for_80pct_power": _fmt_n_needed(pw.get("n_needed_80")),
+                "n_per_group_for_90pct_power": _fmt_n_needed(pw.get("n_needed_90")),
             })
     stats_df = pd.DataFrame(stats_rows)
 
