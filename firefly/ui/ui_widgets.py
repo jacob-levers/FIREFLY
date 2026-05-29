@@ -2661,7 +2661,7 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
                        "#ffa657", "#79c0ff"]
 
     def __init__(self, index: int, label: str = "", color: str = "",
-                 parent=None):
+                 timepoint: str = "", parent=None):
         super().__init__(parent)
         if not label:
             # Default labels are just "Group N" — the previous
@@ -2740,6 +2740,26 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
         self.btn_delete.clicked.connect(lambda: self.delete_requested.emit(self))
         row.addWidget(self.btn_delete, 0, Qt.AlignmentFlag.AlignVCenter)
         v.addLayout(row)
+
+        # Optional time-point field.  When ≥2 cards carry a time point, the
+        # Compare tab switches to a paired group × time-point two-way mixed
+        # ANOVA (cells matched across time points by folder name).
+        tp_row = QtWidgets.QHBoxLayout()
+        tp_row.setSpacing(6)
+        tp_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        tp_row.addWidget(QtWidgets.QLabel("Time point"))
+        self.e_timepoint = QtWidgets.QLineEdit(timepoint)
+        self.e_timepoint.setPlaceholderText("optional — e.g. Pre / Post / T0")
+        self.e_timepoint.setToolTip(
+            "Optional.  Set a time point (e.g. Pre / Post) on two or more cards "
+            "to run a paired group × time-point two-way mixed ANOVA.\n\n"
+            "Cells are paired across time points by folder name — the time-point "
+            "word is stripped from each folder's stem to identify the same cell "
+            "(so '…_DMSO_D1_Pre' and '…_DMSO_D1_Post' are matched).\n\n"
+            "Leave blank on every card for a normal group comparison.")
+        self.e_timepoint.textChanged.connect(lambda _: self.changed.emit())
+        tp_row.addWidget(self.e_timepoint, 1)
+        v.addLayout(tp_row)
 
         # Folder list (drop target)
         self.lst_folders = _FolderDropList()
@@ -2831,13 +2851,16 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
                    for i in range(self.lst_folders.count())]
         return {"label":  self.e_label.text().strip() or "Group",
                 "color":  self._color,
+                "timepoint": self.e_timepoint.text().strip(),
                 "folders": folders}
 
-    def set_state(self, label: str, color: str, folders: list):
+    def set_state(self, label: str, color: str, folders: list,
+                  timepoint: str = ""):
         self.e_label.setText(label)
         if color:
             self._color = color
             self._refresh_color_button()
+        self.e_timepoint.setText(timepoint or "")
         self.lst_folders.clear()
         for f in folders:
             self.lst_folders.addItem(str(f))

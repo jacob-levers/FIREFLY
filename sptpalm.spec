@@ -32,6 +32,16 @@ hidden += collect_submodules("joblib")
 hidden += collect_submodules("aicspylibczi")
 hidden += collect_submodules("imagecodecs")
 
+# pingouin (two-way mixed ANOVA for the Compare tab) and its heavy deps.
+# Optional at runtime — fa_twoway guards the import — so only collect if
+# actually installed, to avoid inflating the bundle with missing stubs.
+for _opt in ("pingouin", "statsmodels", "pandas_flavor", "outdated"):
+    try:
+        __import__(_opt)
+        hidden += collect_submodules(_opt)
+    except Exception:
+        pass
+
 # certifi — frozen builds don't ship a usable CA store, so HTTPS verification
 # (auto-update check, in-app CUDA-wheel installer) fails without certifi's
 # bundled cacert.pem.  Its data file is collected below.
@@ -136,7 +146,11 @@ for _pkg in ("numpy", "pandas", "scipy", "scikit-image", "scikit-learn",
              # "Cannot show napari window".
              "PySide6", "shiboken6", "qtpy", "superqt", "pydantic",
              "imageio", "scikit-image", "cachey", "lazy_loader",
-             "pint", "app-model", "in-n-out", "psygnal"):
+             "pint", "app-model", "in-n-out", "psygnal",
+             # pingouin (Compare-tab two-way ANOVA) + deps do runtime
+             # importlib.metadata version lookups; without .dist-info the
+             # frozen import raises PackageNotFoundError.
+             "pingouin", "statsmodels", "pandas_flavor", "outdated"):
     try:
         datas += copy_metadata(_pkg)
     except Exception:

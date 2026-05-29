@@ -20,6 +20,7 @@ from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
                          _stat_test, _stat_test_n,
                          _p_stars, compute_per_track_mean_angle,
                          compute_circular_comparison_tests)
+from firefly.analysis import fa_twoway
 
 
 
@@ -91,6 +92,46 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                           alpha=0.7, pad=3))
 
 
+# Qualitative colours for the time-point series in two-factor interaction plots.
+_TP_SERIES_COLORS = ["#3b6ed8", "#f78166", "#56d364", "#d2a8ff",
+                     "#ffa657", "#79c0ff", "#e3b341", "#ff7b72"]
+
+
+def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
+                      group_colors, palette, ylabel=""):
+    """Group × time-point interaction plot: x = TIME POINTS (in the order the
+    user assigned them), one mean±SEM line per group drawn in that group's
+    assigned colour — a time-course view.  Cell-level points are jittered
+    behind each mean."""
+    x = np.arange(len(tp_order))
+    rng = np.random.default_rng(2)
+    for gi, grp in enumerate(group_order):
+        col = (group_colors or {}).get(grp) \
+            or _TP_SERIES_COLORS[gi % len(_TP_SERIES_COLORS)]
+        means, sems = [], []
+        for ti, tp in enumerate(tp_order):
+            vals = summary_df.loc[(summary_df["group"] == grp)
+                                  & (summary_df["timepoint"] == tp),
+                                  metric].to_numpy(dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if len(vals):
+                means.append(float(np.mean(vals)))
+                sems.append(float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
+                            if len(vals) > 1 else 0.0)
+                ax.scatter(np.full(len(vals), x[ti]) + rng.uniform(-0.06, 0.06, len(vals)),
+                           vals, color=col, s=12, alpha=0.6, zorder=2)
+            else:
+                means.append(np.nan); sems.append(0.0)
+        ax.errorbar(x, means, yerr=sems, color=col, marker="o", ms=5,
+                    lw=1.8, capsize=3, label=str(grp), zorder=3)
+    ax.set_xticks(x)
+    ax.set_xticklabels(tp_order)
+    ax.set_xlim(-0.35, len(tp_order) - 0.65)   # pad so end markers aren't clipped
+    ax.set_xlabel("Time point")
+    ax.set_ylabel(ylabel)
+    ax.legend(frameon=False, loc="best", fontsize=8, title="Group")
+
+
 def compare_groups(groups,
                    output_dir=None, output_stem="comparison",
                    panels=None, theme="Dark",
@@ -136,7 +177,19 @@ def compare_groups(groups,
                   "radial_dist"}
 
     n_groups = len(groups)
-    labels   = [g.get("label", f"Group {i+1}") for i, g in enumerate(groups)]
+    # `group_factor` is the raw group label of each card (the between-subjects
+    # factor); `timepoints_per_card` is the optional within-subjects factor.
+    # When ANY card carries a time point we enter two-factor (group × time
+    # point) mode: several cards can share a group label but differ in time
+    # point.  `labels` is the per-card DISPLAY label (group / time point) used
+    # in legends and the suptitle so duplicated group names stay distinct.
+    group_factor = [g.get("label", f"Group {i+1}") for i, g in enumerate(groups)]
+    timepoints_per_card = [str(g.get("timepoint", "")).strip() for g in groups]
+    two_factor = any(timepoints_per_card)
+    timepoint_tokens = sorted({t for t in timepoints_per_card if t})
+    labels = [(f"{group_factor[i]} / {timepoints_per_card[i]}"
+               if (two_factor and timepoints_per_card[i]) else group_factor[i])
+              for i in range(n_groups)]
     colors   = [g.get("color", "#3b6ed8")     for g in groups]
     folder_lists = [list(g["folders"]) for g in groups]
 
@@ -164,15 +217,23 @@ def compare_groups(groups,
         progress_cb(total, total, "Computing scalars and rendering...")
 
     # ── Compute per-folder scalars (one row per replicate) ────────────────────
+    # `group` holds the raw group factor; `timepoint` is the (optional) within
+    # factor; `cell` is the subject key (the stem with the time-point token
+    # stripped) used to pair the same cell across time points.
     summary_rows = []
-    def _row(group_label, summary):
+    def _row(group_label, timepoint, summary):
         p = summary["params"]
         fi = float(p.get("frame_interval_s", 0.05))
         d = summary["diffusion"]
+        stem = summary["stem"]
+        cell, _matched = (fa_twoway.derive_subject_key(stem, timepoint_tokens)
+                          if two_factor else (stem, True))
         return {
             "group":            group_label,
+            "timepoint":        timepoint,
+            "cell":             cell,
             "folder":           summary["folder"],
-            "stem":             summary["stem"],
+            "stem":             stem,
             "n_tracks":         len(d) if d is not None else 0,
             "auc_msd":          _msd_auc(summary["ensemble_msd"], fi),
             "mob_immob_ratio":  _mob_immob_ratio(d, mobile_d_threshold),
@@ -183,8 +244,17 @@ def compare_groups(groups,
         }
     for gi, summaries in enumerate(all_summaries):
         for s in summaries:
-            summary_rows.append(_row(labels[gi], s))
+            summary_rows.append(_row(group_factor[gi], timepoints_per_card[gi], s))
     summary_df = pd.DataFrame(summary_rows)
+
+    # Ordered factor levels.  Time points keep ASSIGNMENT order (the order the
+    # user entered them across cards) so the x-axis reads e.g. Pre → Post, not
+    # alphabetical.  Each group keeps its user-assigned colour for its line.
+    group_order = list(dict.fromkeys(group_factor))
+    tp_order = list(dict.fromkeys(t for t in timepoints_per_card if t))
+    group_colors = {}
+    for i, gf in enumerate(group_factor):
+        group_colors.setdefault(gf, colors[i])
 
     # Per-metric statistics dict — populated as panels render
     stats_records = {}
@@ -270,11 +340,15 @@ def compare_groups(groups,
     # ── 2. AUC bar chart ──────────────────────────────────────────────────────
     if "auc" in panels:
         ax = _next_ax()
-        data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
-                for lbl in labels]
-        _bar_with_dots_n(ax, data, labels, colors, pal,
-                         ylabel="AUC (µm²·s)",
-                         record_stats=stats_records, metric_name="auc_msd")
+        if two_factor:
+            _interaction_plot(ax, summary_df, "auc_msd", group_order, tp_order,
+                              group_colors, pal, ylabel="AUC (µm²·s)")
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
+                    for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal,
+                             ylabel="AUC (µm²·s)",
+                             record_stats=stats_records, metric_name="auc_msd")
         ax.set_title("Area Under the Curve")
 
     # ── 3. LogD frequency distribution ────────────────────────────────────────
@@ -305,11 +379,16 @@ def compare_groups(groups,
     # ── 4. Mobile/Immobile ratio bar ──────────────────────────────────────────
     if "mob_immob" in panels:
         ax = _next_ax()
-        data = [summary_df.loc[summary_df["group"] == lbl, "mob_immob_ratio"].values
-                for lbl in labels]
-        _bar_with_dots_n(ax, data, labels, colors, pal,
-                         ylabel="Mobile/Immobile ratio",
-                         record_stats=stats_records, metric_name="mob_immob_ratio")
+        if two_factor:
+            _interaction_plot(ax, summary_df, "mob_immob_ratio", group_order,
+                              tp_order, group_colors, pal,
+                              ylabel="Mobile/Immobile ratio")
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, "mob_immob_ratio"].values
+                    for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal,
+                             ylabel="Mobile/Immobile ratio",
+                             record_stats=stats_records, metric_name="mob_immob_ratio")
         ax.set_title("Mobile/Immobile Ratio")
 
     # ── 5. Motion class fractions (grouped bars, N groups) ────────────────────
@@ -339,11 +418,15 @@ def compare_groups(groups,
                 ax.scatter(np.full(len(fracs), x[ci] + x_off)
                            + rng.uniform(-w*0.25, w*0.25, len(fracs)),
                            fracs[:, ci], color=color, s=12, zorder=3)
-        # Per-class stats
-        for ci, cname in enumerate(classes):
-            arrs = [fracs[:, ci] if len(fracs) else np.array([]) for fracs in per_group]
-            omn, pw = _stat_test_n(arrs, labels)
-            stats_records[f"motion_frac_{cname}"] = {"omnibus": omn, "pairwise": pw}
+        # Per-class one-way stats — only meaningful when each card is an
+        # independent group.  In two-factor mode the cards are paired across
+        # time points, so a one-way test across them is invalid; the two-way
+        # ANOVA report covers it instead.
+        if not two_factor:
+            for ci, cname in enumerate(classes):
+                arrs = [fracs[:, ci] if len(fracs) else np.array([]) for fracs in per_group]
+                omn, pw = _stat_test_n(arrs, labels)
+                stats_records[f"motion_frac_{cname}"] = {"omnibus": omn, "pairwise": pw}
         ax.set_xticks(x); ax.set_xticklabels(classes, rotation=15)
         ax.set_ylabel("Fraction of tracks")
         ax.set_title("Motion Class Fractions")
@@ -387,11 +470,13 @@ def compare_groups(groups,
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
             ax.set_title("Track Length Distribution")
-        # Stats: mean track length (per-replicate)
-        arrs = [summary_df.loc[summary_df["group"] == lbl, "mean_track_length_s"].values
-                for lbl in labels]
-        omn, pw = _stat_test_n(arrs, labels)
-        stats_records["mean_track_length_s"] = {"omnibus": omn, "pairwise": pw}
+        # Stats: mean track length (per-replicate) — one-way only in flat mode;
+        # the two-way ANOVA report covers it in two-factor mode.
+        if not two_factor:
+            arrs = [summary_df.loc[summary_df["group"] == lbl, "mean_track_length_s"].values
+                    for lbl in labels]
+            omn, pw = _stat_test_n(arrs, labels)
+            stats_records["mean_track_length_s"] = {"omnibus": omn, "pairwise": pw}
 
     # ── 7. JDD: per-population D + fraction (N groups) ────────────────────────
     if "jdd" in panels:
@@ -671,6 +756,44 @@ def compare_groups(groups,
             })
     stats_df = pd.DataFrame(stats_rows)
 
+    # ── Two-factor (group × time point) mixed ANOVA ───────────────────────────
+    # Paired design: between=group, within=timepoint, subject=cell.  Scalars run
+    # directly; the curve graphs (MSD, LogD) get a per-time-point group×(lag|bin)
+    # drill-down because pingouin can't fit 1-between + 2-within in one model.
+    twoway_df, twoway_msg, pair_warn = None, None, None
+    drilldown = {}
+    if two_factor:
+        paired_df, pair_warn, _dropped = fa_twoway.validate_pairing(summary_df)
+        if pair_warn:
+            print(f"  Two-way pairing: {pair_warn}")
+        twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df)
+        print(f"  Two-way ANOVA: {twoway_msg}")
+        # Build per-cell curve records, restricted to the paired cell set.
+        paired_cells = (set(zip(paired_df["group"], paired_df["cell"]))
+                        if paired_df is not None and len(paired_df) else set())
+        records = []
+        for gi, summaries in enumerate(all_summaries):
+            for s in summaries:
+                cell, _m = fa_twoway.derive_subject_key(s["stem"], timepoint_tokens)
+                if paired_cells and (group_factor[gi], cell) not in paired_cells:
+                    continue
+                d = s.get("diffusion")
+                e = s.get("ensemble_msd")
+                msd = None
+                if e is not None and "lag_frame" in getattr(e, "columns", []):
+                    msd = e.sort_values("lag_frame").set_index("lag_frame")["msd_um2"]
+                records.append({
+                    "group": group_factor[gi], "timepoint": timepoints_per_card[gi],
+                    "cell": cell, "msd": msd,
+                    "diffusion_D": (d["D"].to_numpy() if d is not None
+                                    and "D" in d.columns else None),
+                })
+        for kind, pnl in (("msd", "msd"), ("logd", "logd_dist")):
+            if pnl in panels:
+                ddf, dmsg = fa_twoway.curve_drilldown_per_timepoint(records, kind)
+                if ddf is not None and len(ddf):
+                    drilldown[kind] = (ddf, dmsg)
+
     # ── Save outputs ──────────────────────────────────────────────────────────
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -690,13 +813,25 @@ def compare_groups(groups,
         if len(stats_df):
             print(f"  Saved: {stats_csv}")
 
+        # ── Two-factor ANOVA CSV ─────────────────────────────────────────────
+        if two_factor and twoway_df is not None and len(twoway_df):
+            tw_csv = os.path.join(output_dir, f"{output_stem}_twoway_anova.csv")
+            try:
+                _write_twoway_csv(tw_csv, twoway_df, twoway_msg, drilldown,
+                                  summary_df, group_order, tp_order, pair_warn)
+                print(f"  Saved: {tw_csv}")
+            except Exception as exc:
+                print(f"  Two-way CSV skipped ({type(exc).__name__}: {exc})")
+
         # ── Combined PDF report (figure + parameters + folders + stats) ──────
         if pdf_report:
             report_path = os.path.join(output_dir, f"{output_stem}_report.pdf")
             try:
                 _write_pdf_report(report_path, fig, groups, all_summaries,
                                   labels, colors, summary_df, stats_df,
-                                  panels=panels, theme=theme, palette=pal)
+                                  panels=panels, theme=theme, palette=pal,
+                                  twoway_df=twoway_df, twoway_msg=twoway_msg,
+                                  drilldown=drilldown, pair_warn=pair_warn)
                 print(f"  Saved: {report_path}")
             except Exception as exc:
                 print(f"  PDF report skipped ({type(exc).__name__}: {exc})")
@@ -781,8 +916,11 @@ def compare_groups(groups,
 
 
 def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
-                      summary_df, stats_df, panels, theme, palette):
-    """Multi-page PDF: cover + figure, parameters & folders, statistics."""
+                      summary_df, stats_df, panels, theme, palette,
+                      twoway_df=None, twoway_msg=None, drilldown=None,
+                      pair_warn=None):
+    """Multi-page PDF: cover + figure, parameters & folders, statistics, and
+    (in two-factor mode) the group × time-point ANOVA tables."""
     from matplotlib.backends.backend_pdf import PdfPages
     import matplotlib.pyplot as plt
 
@@ -878,3 +1016,133 @@ def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
                     cell.set_text_props(weight="bold", color=pal["TXT"])
             pdf.savefig(page4, facecolor=pal["BG"], bbox_inches="tight")
             plt.close(page4)
+
+        # ── Page 5+: two-factor (group × time point) ANOVA ────────────────────
+        if twoway_df is not None and len(twoway_df):
+            _twoway_pdf_pages(pdf, twoway_df, twoway_msg, drilldown or {},
+                              pair_warn, pal)
+
+
+def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
+                      group_order, tp_order, pair_warn):
+    """Write the group × time-point ANOVA report: a settings header, the scalar
+    mixed-ANOVA table, Holm-corrected simple effects, and the per-time-point
+    curve drill-down tables."""
+    import csv
+
+    def _g(df, **eq):
+        m = pd.Series(True, index=df.index)
+        for k, v in eq.items():
+            m &= (df[k] == v)
+        return df[m]
+
+    # per group×timepoint cell counts
+    count_bits = []
+    for grp in group_order:
+        cells = [f"{tp}:{_g(summary_df, group=grp, timepoint=tp)['cell'].nunique()}"
+                 for tp in tp_order]
+        count_bits.append(f"{grp} [{', '.join(cells)}]")
+
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["# FIREFLY two-factor comparison — group × time point mixed ANOVA"])
+        w.writerow(["# model", twoway_msg or ""])
+        w.writerow(["setting", "value"])
+        w.writerow(["groups", ", ".join(map(str, group_order))])
+        w.writerow(["time_points", ", ".join(map(str, tp_order))])
+        w.writerow(["cells_per_group_timepoint", " ; ".join(count_bits)])
+        w.writerow(["pairing", pair_warn or "all cells paired across every time point"])
+        w.writerow(["alpha", 0.05])
+        w.writerow(["effect_size", "np2 = partial eta-squared"])
+        w.writerow(["sphericity", "Greenhouse-Geisser (p_GG); for 2 time points GG=uncorrected"])
+        w.writerow(["curve_note",
+                    "MSD/LogD tested via scalar summary (auc_msd / median_D / "
+                    "mob_immob_ratio) PLUS a per-time-point group×(lag|bin) drill-down; "
+                    "pingouin cannot fit 1-between + 2-within in one model"])
+        w.writerow([])
+
+        anova = twoway_df[twoway_df["section"] == "anova"]
+        if len(anova):
+            w.writerow(["=== SCALAR METRICS: two-way mixed ANOVA "
+                        "(between=group, within=timepoint, subject=cell) ==="])
+            cols = ["metric", "effect", "F", "df1", "df2", "p_unc", "p_GG", "np2", "eps"]
+            w.writerow(cols)
+            for _, r in anova.iterrows():
+                w.writerow([r.get(c, "") if r.get(c) is not None else "" for c in cols])
+            w.writerow([])
+
+        post = twoway_df[twoway_df["section"] == "posthoc"]
+        if len(post):
+            w.writerow(["=== SIMPLE EFFECTS (Holm-corrected) ==="])
+            cols = ["metric", "contrast", "at", "level_A", "level_B", "paired",
+                    "p", "p_holm", "stars"]
+            w.writerow(cols)
+            for _, r in post.iterrows():
+                w.writerow([r.get(c, "") if r.get(c) is not None else "" for c in cols])
+            w.writerow([])
+
+        for kind in ("msd", "logd"):
+            if kind in drilldown:
+                ddf, dmsg = drilldown[kind]
+                w.writerow([f"=== CURVE DRILL-DOWN ({kind.upper()}): {dmsg} ==="])
+                cols = ["graph", "timepoint", "effect", "F", "df1", "df2",
+                        "p_unc", "p_GG", "np2", "eps"]
+                w.writerow(cols)
+                for _, r in ddf.iterrows():
+                    w.writerow([r.get(c, "") if r.get(c) is not None else "" for c in cols])
+                w.writerow([])
+
+
+def _twoway_table_page(pdf, title, subtitle, df, cols, pal):
+    """Render one themed table page from a DataFrame subset."""
+    import matplotlib.pyplot as plt
+    if df is None or not len(df):
+        return
+    page = plt.figure(figsize=(11, 8.5), facecolor=pal["BG"])
+    page.text(0.5, 0.965, title, ha="center", fontsize=14, fontweight="bold",
+              color=pal["TXT"])
+    if subtitle:
+        page.text(0.5, 0.93, subtitle, ha="center", fontsize=8,
+                  color=pal["TXT"], wrap=True)
+    ax = page.add_axes([0.03, 0.04, 0.94, 0.84])
+    ax.axis("off")
+    disp = df[cols].copy()
+    for c in cols:
+        disp[c] = disp[c].apply(
+            lambda x: (f"{x:.4g}" if isinstance(x, float) and np.isfinite(x)
+                       else ("" if x is None else x)))
+    tbl = ax.table(cellText=disp.values.tolist(), colLabels=cols,
+                   loc="center", cellLoc="left")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(7)
+    tbl.scale(1, 1.2)
+    for (r, c), cell in tbl.get_celld().items():
+        cell.set_edgecolor(pal["GRD"])
+        cell.set_text_props(color=pal["TXT"])
+        cell.set_facecolor(pal["PNL"] if r > 0 else pal["BG"])
+        if r == 0:
+            cell.set_text_props(weight="bold", color=pal["TXT"])
+    pdf.savefig(page, facecolor=pal["BG"], bbox_inches="tight")
+    plt.close(page)
+
+
+def _twoway_pdf_pages(pdf, twoway_df, twoway_msg, drilldown, pair_warn, pal):
+    """Render the two-factor ANOVA pages into an open PdfPages."""
+    note = (twoway_msg or "")
+    if pair_warn:
+        note += "\n" + pair_warn
+    anova = twoway_df[twoway_df["section"] == "anova"]
+    _twoway_table_page(pdf, "Group × Time-point ANOVA — scalar metrics", note,
+                       anova, ["metric", "effect", "F", "df1", "df2",
+                               "p_unc", "p_GG", "np2", "eps"], pal)
+    post = twoway_df[twoway_df["section"] == "posthoc"]
+    _twoway_table_page(pdf, "Simple effects (Holm-corrected)", "",
+                       post, ["metric", "contrast", "at", "level_A", "level_B",
+                              "paired", "p", "p_holm", "stars"], pal)
+    for kind in ("msd", "logd"):
+        if kind in drilldown:
+            ddf, dmsg = drilldown[kind]
+            _twoway_table_page(
+                pdf, f"Curve drill-down — {kind.upper()}", dmsg, ddf,
+                ["graph", "timepoint", "effect", "F", "df1", "df2",
+                 "p_unc", "p_GG", "np2", "eps"], pal)

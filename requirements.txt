@@ -17,6 +17,7 @@ imageio
 Pillow
 psutil
 scikit-learn
+pingouin>=0.6,<0.7 # two-way mixed ANOVA (group × time point) for the Compare tab; 0.6 uses underscore column names (p_unc/p_GG_corr). Pulls statsmodels + pandas_flavor. Optional at runtime — fa_twoway guards the import.
 threadpoolctl      # dynamically expand BLAS pool during localisation
 torch>=2.6,<3      # GPU localiser backend.  2.6+ ships cp313 + numpy-2 wheels and CUDA cuXYZ wheels (download.pytorch.org/whl/cuXYZ) for the in-app installer.
 roifile>=2024.5.24 # ImageJ / palmTRACER .roi + .zip ROI file loader, used by _RoiViewer's "Load ROI…" button.

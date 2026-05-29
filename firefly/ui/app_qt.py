@@ -1906,7 +1906,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                         self._cmp_group_cards[-1].set_state(
                             g.get("label", f"Group {i+1}"),
                             g.get("color", ""),
-                            g.get("folders", []))
+                            g.get("folders", []),
+                            g.get("timepoint", ""))
         except Exception:
             pass
 
@@ -2745,6 +2746,32 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 "Pick at least one panel to include in the comparison "
                 "figure.")
             return
+
+        # Two-factor pre-flight: if any card carries a time point, the
+        # group × time-point ANOVA needs pingouin.  Warn (don't block) if it's
+        # missing — the comparison figure still renders, just without the ANOVA.
+        if any(str(g.get("timepoint", "")).strip() for g in non_empty):
+            try:
+                from firefly.analysis import fa_twoway
+                have_pg = fa_twoway.HAVE_PINGOUIN
+            except Exception:
+                have_pg = False
+            if not have_pg:
+                box = QtWidgets.QMessageBox(
+                    QtWidgets.QMessageBox.Icon.Warning,
+                    "Two-factor stats unavailable",
+                    "You set time points, but the statistics package "
+                    "'pingouin' isn't installed, so the group × time-point "
+                    "ANOVA will be skipped.\n\nThe comparison figure and CSVs "
+                    "will still be produced. Continue anyway?",
+                    QtWidgets.QMessageBox.StandardButton.NoButton, self)
+                box.addButton("Continue",
+                              QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+                btn_cancel = box.addButton(
+                    "Cancel", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() is btn_cancel:
+                    return
 
         comparison_params = {
             "groups":      non_empty,

@@ -142,3 +142,72 @@ def test_roi_mask_not_wiped_for_small_structure():
         mode_hint="max")
     assert mask.any(), "ROI mask wrongly empty for a real small structure"
     assert 0.0 < float(mask.mean()) < 1.0
+
+
+# ── two-factor (group × time point) mixed ANOVA ──────────────────────────────
+def _paired_twofactor_df(interaction=True, seed=0):
+    """Synthetic paired 2-group × 2-time-point cell-level scalars.  When
+    `interaction` is True, group 'B' shifts only at the 'Post' time point —
+    a clean group×time interaction the mixed ANOVA must recover."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for grp, base in [("A", 0.040), ("B", 0.040)]:
+        for ci in range(8):
+            cell = f"{grp}_c{ci}"
+            for tp in ["Pre", "Post"]:
+                val = base + rng.normal(0, 0.003)
+                if interaction and grp == "B" and tp == "Post":
+                    val -= 0.012
+                rows.append({"group": grp, "timepoint": tp, "cell": cell,
+                             "auc_msd": val})
+    return pd.DataFrame(rows)
+
+
+def test_twoway_recovers_planted_interaction():
+    tw = pytest.importorskip("firefly.analysis.fa_twoway")
+    if not tw.HAVE_PINGOUIN:
+        pytest.skip("pingouin not installed")
+    # interaction present → significant
+    df = _paired_twofactor_df(interaction=True)
+    res, _msg = tw.compute_twoway_anova(df, ["auc_msd"])
+    inter = res[(res["section"] == "anova") & (res["effect"] == "Interaction")]
+    p = float(inter["p_GG"].iloc[0])
+    assert p < 0.05, f"planted interaction not detected (p={p:.4f})"
+    # no interaction → not significant
+    df0 = _paired_twofactor_df(interaction=False, seed=1)
+    res0, _ = tw.compute_twoway_anova(df0, ["auc_msd"])
+    inter0 = res0[(res0["section"] == "anova") & (res0["effect"] == "Interaction")]
+    assert float(inter0["p_GG"].iloc[0]) > 0.05, "false-positive interaction"
+
+
+def test_twoway_validate_pairing_drops_unmatched():
+    tw = pytest.importorskip("firefly.analysis.fa_twoway")
+    df = _paired_twofactor_df(interaction=False)
+    # remove one cell's 'Post' row → it should be listwise-dropped
+    df = df[~((df["cell"] == "A_c0") & (df["timepoint"] == "Post"))]
+    clean, warn, dropped = tw.validate_pairing(df)
+    assert warn is not None and "A_c0" in warn
+    assert ("A", "A_c0") not in set(zip(clean["group"], clean["cell"]))
+    # every surviving cell appears at both time points
+    counts = clean.groupby(["group", "cell"])["timepoint"].nunique()
+    assert (counts == 2).all()
+
+
+def test_twoway_subject_key_strips_timepoint():
+    tw = pytest.importorskip("firefly.analysis.fa_twoway")
+    key, matched = tw.derive_subject_key(
+        "20250319_PC12 P11_Syntaxin_DMSO_D1_Post", ["Pre", "Post"])
+    assert matched and key == "20250319_PC12 P11_Syntaxin_DMSO_D1"
+    # no token present → unmatched, stem returned unchanged
+    key2, matched2 = tw.derive_subject_key("cellX_only", ["Pre", "Post"])
+    assert key2 == "cellX_only" and matched2 is False
+
+
+def test_twoway_needs_two_timepoints():
+    tw = pytest.importorskip("firefly.analysis.fa_twoway")
+    if not tw.HAVE_PINGOUIN:
+        pytest.skip("pingouin not installed")
+    df = _paired_twofactor_df()
+    df = df[df["timepoint"] == "Pre"]            # only one time point
+    res, msg = tw.compute_twoway_anova(df, ["auc_msd"])
+    assert res is None and "time point" in msg
