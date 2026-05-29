@@ -813,6 +813,12 @@ class BuildMixin:
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.c_backend = _QuietComboBox()
         self.c_backend.addItems(self._available_backends())
+        # Default to the PyTorch engine with the device auto-selected.  The
+        # "torch" value routes through TorchBackend.select_device(), which
+        # sanity-checks the GPU and transparently falls back to CPU on cards
+        # the bundled CUDA build can't run (e.g. a Pascal GTX 1060).  A saved
+        # user preference, if present, overrides this on settings restore.
+        self.c_backend.setCurrentText("Torch (auto)")
         self.c_backend.setToolTip(
             "Which implementation to use for spot localisation.\n"
             "• Auto                — pick the fastest healthy backend on this machine.\n"

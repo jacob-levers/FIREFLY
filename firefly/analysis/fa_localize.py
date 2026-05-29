@@ -983,6 +983,13 @@ class TorchBackend(LocaliserBackend):
                 x = torch.zeros(1, 1, 8, 8, device=t, dtype=torch.float32)
                 _ = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
                 _ = F.max_pool2d(x, kernel_size=3, stride=1, padding=1)
+                # conv2d — the separable Gaussian blur in the hot path.  This
+                # is the exact op that raised cudaErrorNoKernelImageForDevice
+                # on an unsupported GPU architecture (a Pascal GTX 1060 under a
+                # CUDA-13 PyTorch build).  Probe it here so an unusable card is
+                # caught up front instead of crashing mid-localisation.
+                _w = torch.ones(1, 1, 1, 3, device=t, dtype=torch.float32)
+                _ = F.conv2d(x, _w, padding=(0, 1))
                 # einsum (used in normal-equations assembly)
                 _ = torch.einsum('ni,ij,ik->njk',
                                  torch.ones(2, 4, device=t),
@@ -1394,6 +1401,23 @@ class TorchBackend(LocaliserBackend):
         dev_str = (device
                    or getattr(self, "_forced_device", None)
                    or self.select_device())
+        # Final safety net: if a GPU device was forced/pinned upstream without
+        # a sanity check (or the hardware/driver changed), verify it once and
+        # fall back to CPU rather than dying on the first kernel launch.  The
+        # result is cached on the instance so the per-chunk localise() calls
+        # don't re-probe (which would relaunch a failing CUDA kernel each chunk).
+        if dev_str != "cpu":
+            committed = getattr(self, "_validated_device", None)
+            if committed is None:
+                if self._device_sanity_check(dev_str):
+                    committed = dev_str
+                else:
+                    print(f"  WARNING: Torch device '{dev_str}' is not usable on "
+                          f"this machine (no kernel image / unsupported GPU "
+                          f"architecture). Falling back to Torch — CPU.")
+                    committed = "cpu"
+                self._validated_device = committed
+            dev_str = committed
         dev     = torch.device(dev_str)
         # Float32 is plenty for centroid math; saves memory on GPUs and
         # avoids dtype gotchas with MPS (which dislikes float64).
@@ -1778,12 +1802,21 @@ def _resolve_backend(name: str | None):
         if TorchBackend.is_available():
             try:
                 import torch as _torch
-                if _torch.cuda.is_available():
+                # Only commit to a GPU if it passes the hot-path sanity check.
+                # torch.cuda.is_available() returns True even for cards the
+                # bundled CUDA build has no kernels for (e.g. a Pascal GTX 1060
+                # under a CUDA-13 wheel); committing on that basis crashes
+                # mid-localisation with cudaErrorNoKernelImageForDevice.  The
+                # probe launches the real kernels and fails cleanly, so auto
+                # then falls through to trackpy on such machines.
+                if (_torch.cuda.is_available()
+                        and TorchBackend._device_sanity_check("cuda")):
                     inst = TorchBackend()
                     inst._forced_device = "cuda"
                     return inst
                 if (hasattr(_torch.backends, "mps")
-                        and _torch.backends.mps.is_available()):
+                        and _torch.backends.mps.is_available()
+                        and TorchBackend._device_sanity_check("mps")):
                     inst = TorchBackend()
                     inst._forced_device = "mps"
                     return inst
@@ -1841,6 +1874,21 @@ def _resolve_backend(name: str | None):
             # If we can't introspect torch for any reason, fall through
             # and let the original code path produce its native error.
             pass
+        # The pinned GPU is present, but make sure the bundled torch actually
+        # has kernels for it.  An unsupported architecture (e.g. Pascal under
+        # CUDA 13) passes is_available() yet has no kernel image — rather than
+        # crash mid-localisation, downgrade to CPU with a clear warning.
+        if forced.split(":", 1)[0] in ("cuda", "mps"):
+            try:
+                if not TorchBackend._device_sanity_check(forced):
+                    print(f"  WARNING: the selected Torch device '{forced}' is "
+                          f"present but this PyTorch build has no usable kernels "
+                          f"for it (likely an unsupported GPU architecture — e.g. "
+                          f"a Pascal card under a CUDA-13 build). Falling back to "
+                          f"Torch — CPU.")
+                    forced = "cpu"
+            except Exception:
+                pass
         inst = TorchBackend()
         inst._forced_device = forced
         return inst
