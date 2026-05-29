@@ -87,9 +87,15 @@ def test_torch_agrees_with_trackpy(backend):
     assert abs(len(tp0) - len(th0)) <= 1, \
         f"spot-count mismatch trackpy={len(tp0)} {backend}={len(th0)}"
     # Every trackpy spot should have a close match in the torch output.
+    # Tolerance 0.2 px: the engines agree to ~0.01 px on these clean
+    # synthetic spots, and to ~0.05 px (5 nm) median on real sptPALM data.
+    # 0.2 px keeps ~20x headroom over the synthetic value so the gate
+    # isn't flaky across platforms / numpy builds, while still being tight
+    # enough to catch a genuine calibration regression (the old 1.0 px
+    # tolerance would have passed a 10x degradation silently).
     for _, r in tp0.iterrows():
         d = np.hypot(th0["x"] - r["x"], th0["y"] - r["y"]).min()
-        assert d <= 1.0, f"engine disagreement: {d:.2f}px > 1px tolerance"
+        assert d <= 0.2, f"engine disagreement: {d:.3f}px > 0.2px tolerance"
 
 
 # ── memory-safe loader allocation ────────────────────────────────────────────
