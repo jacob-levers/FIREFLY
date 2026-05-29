@@ -976,40 +976,28 @@ def compute_circular_comparison_tests(groups, *, track_angle_d_pairs=None,
     """
     labels = [g[0] for g in groups]
     samples = [g[1] for g in groups]
+    # The pooled-angle inferential tests (Watson-Williams,
+    # Mardia-Watson-Wheeler, Wallraff κ-test, Kuiper two-sample, and the
+    # circular-linear angle-vs-D correlation) are intentionally NOT
+    # computed.  Each pools every localisation across all replicates, so
+    # n = hundreds of thousands of angles and the test returns p ≈ 0
+    # regardless of the true biological effect — classic pseudoreplication.
+    # Only the per-replicate tests below (each replicate = one data point)
+    # are reported.  The keys are kept (None / []) so the CSV and PDF
+    # writers' existing truthiness guards simply skip them.
+    # `track_angle_d_pairs` is accepted for call-site compatibility but no
+    # longer used.
     out = {
-        "omnibus_ww":       _circ_watson_williams(samples),
-        "omnibus_mww":      _circ_mardia_watson_wheeler(samples),
-        "omnibus_wallraff": _circ_wallraff_ktest(samples),
-        "pairwise": [],
+        "omnibus_ww":       None,
+        "omnibus_mww":      None,
+        "omnibus_wallraff": None,
+        "pairwise":         [],
         "circ_lin_per_group": [],
-        # Per-replicate tests: see `per_replicate_angles` arg below.
-        # Populated when the caller provides per-replicate angle arrays;
-        # otherwise None so consumers can detect "not computed".
         "per_replicate_kappa_test": None,
         "per_replicate_rbar_test":  None,
         "per_replicate_mu_ww":      None,
         "per_replicate_scalars":    None,
     }
-    for i in range(len(samples)):
-        for j in range(i + 1, len(samples)):
-            out["pairwise"].append({
-                "label_a": labels[i],
-                "label_b": labels[j],
-                "ww":       _circ_watson_williams([samples[i], samples[j]]),
-                "mww":      _circ_mardia_watson_wheeler(
-                    [samples[i], samples[j]]),
-                "wallraff": _circ_wallraff_ktest(
-                    [samples[i], samples[j]]),
-                "kuiper":   _circ_kuiper_two_sample(samples[i],
-                                                    samples[j]),
-            })
-    if track_angle_d_pairs is not None:
-        for label, pair in zip(labels, track_angle_d_pairs):
-            theta, x = pair
-            out["circ_lin_per_group"].append({
-                "label":  label,
-                "result": _circ_lin_correlation(theta, x),
-            })
 
     # ── Per-replicate tests ──────────────────────────────────────────
     # Treats each replicate as ONE data point (its own κ, R̄, μ),
@@ -1129,7 +1117,13 @@ def save_comparison_circular_statistics(groups_angles, *,
         stats = compute_circular_statistics(a)
         per_group_stats.append((label, a, color, stats))
         row = {"group": label}
-        row.update(stats)
+        # Drop the pooled-angle uniformity p-values (Rayleigh, V-test):
+        # at ~10^5 localisations they are always ~0 and uninformative.
+        # Keep the descriptive concentration measures (R̄, κ, mean
+        # direction, circular variance/SD) which ARE meaningful.
+        row.update({k: v for k, v in stats.items()
+                    if k not in ("rayleigh_z", "rayleigh_p",
+                                 "v_test_z", "v_test_p")})
         rows.append(row)
 
     # ── Between-group tests ────────────────────────────────────────────
@@ -1513,11 +1507,15 @@ def save_comparison_circular_statistics(groups_angles, *,
             # the most informative stats for an at-a-glance comparison.
             ax_tbl = fig.add_axes([0.05, 0.43, 0.90, 0.10])
             ax_tbl.axis("off")
+            # Descriptive per-group concentration measures only.  The
+            # Rayleigh / V-test uniformity p-values were removed: at
+            # ~10^5 pooled localisations they are always ~0 and convey
+            # nothing — R̄ and κ already quantify how concentrated each
+            # group's turning-angle distribution is.
             cols = ["group", "n", "mean_direction_deg",
                     "mean_resultant_length", "circular_std_deg",
-                    "concentration_kappa", "rayleigh_p", "v_test_p"]
-            col_labels = ["Group", "n", "μ (°)", "R̄", "σ_circ (°)",
-                          "κ", "Rayleigh p", "V-test p"]
+                    "concentration_kappa"]
+            col_labels = ["Group", "n", "μ (°)", "R̄", "σ_circ (°)", "κ"]
             cell = []
             for r in rows:
                 cell.append([
@@ -1527,8 +1525,6 @@ def save_comparison_circular_statistics(groups_angles, *,
                     _fmt(r["mean_resultant_length"], 4),
                     _fmt(r["circular_std_deg"], 4),
                     _fmt(r["concentration_kappa"], 4),
-                    _fmt(r["rayleigh_p"], 3),
-                    _fmt(r["v_test_p"], 3),
                 ])
             tbl = ax_tbl.table(cellText=cell, colLabels=col_labels,
                                cellLoc="left", colLoc="left",
@@ -1575,22 +1571,19 @@ def save_comparison_circular_statistics(groups_angles, *,
             txt_kw = dict(fontsize=8.0, color=pal["TXT"], ha="left",
                           va="top", family=pal["FONT"])
             explain_block = [
-                "Watson-Williams F-test (circular ANOVA): tests "
-                "EQUAL MEAN DIRECTIONS.  Assumes κ ≥ 2 — rows tagged "
-                "\"κ<2\" violate this, prefer M-W-W or Kuiper.",
-                "Mardia-Watson-Wheeler & Kuiper (non-parametric): "
-                "test EQUAL FULL DISTRIBUTIONS (any change in mean, "
-                "spread, or shape).  Safe at any κ.",
-                "Wallraff κ-test: tests EQUAL CONCENTRATIONS — answers "
-                "\"is one group MORE TIGHTLY clustered than the other?\".",
-                "Per-replicate (n = #replicates): Welch's t-test on κ "
-                "and R̄, plus Watson-Williams F on per-replicate μ — "
-                "respects biological n, not pooled n.",
-                "Circ-lin angle vs D (per group): tests whether each "
-                "track's mean turning angle correlates with its "
-                "diffusion coefficient.  r ∈ [0, 1].",
-                "Significant p (< 0.05, stars) rejects H₀ — i.e. "
-                "groups DO differ (or angle DOES correlate with D).",
+                "Per-replicate tests treat each replicate (movie / cell) "
+                "as ONE data point, so n = the number of replicates — "
+                "the correct biological unit.",
+                "Welch's t-test on per-replicate κ and R̄ asks whether the "
+                "turning-angle concentration differs between groups; "
+                "Watson-Williams F on per-replicate μ tests the mean "
+                "direction.",
+                "Pooled-angle tests (Watson-Williams / Mardia-Watson-"
+                "Wheeler / Wallraff / Kuiper on all localisations) are "
+                "deliberately NOT shown: with ~10^5 pooled angles they "
+                "return p ≈ 0 regardless of effect (pseudoreplication).",
+                "Significant p (< 0.05, stars) rejects H₀ — i.e. the "
+                "groups DO differ at the replicate level.",
             ]
             yE = 0.395
             for line in explain_block:
