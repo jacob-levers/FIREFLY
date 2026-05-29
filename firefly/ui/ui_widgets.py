@@ -981,6 +981,18 @@ class _ResultsPanel(QtWidgets.QFrame):
         self._stats_container.hide()
         v.addWidget(self._stats_container)
 
+        # QC flag messages — these are multi-line, word-wrapped warnings.
+        # They live in their OWN vertical layout, not the stats grid:
+        # QGridLayout doesn't honour heightForWidth for a wrapped label that
+        # spans columns, so wrapped flags rendered there get clipped to one
+        # row and overlap the cell above.  A QVBoxLayout sizes them correctly.
+        self._flags_container = QtWidgets.QWidget()
+        self._flags_layout = QtWidgets.QVBoxLayout(self._flags_container)
+        self._flags_layout.setContentsMargins(0, 2, 0, 0)
+        self._flags_layout.setSpacing(4)
+        self._flags_container.hide()
+        v.addWidget(self._flags_container)
+
         # Output-folder row (visible only after a run)
         self._folder_row = QtWidgets.QWidget()
         fr = QtWidgets.QHBoxLayout(self._folder_row)
@@ -1030,6 +1042,13 @@ class _ResultsPanel(QtWidgets.QFrame):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+        # QC flag messages live in their own layout/container — clear those too.
+        while self._flags_layout.count():
+            item = self._flags_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._flags_container.hide()
 
     def _add_stat_row(self, row: int, label: str, value: str,
                       value_colour: str | None = None):
@@ -1161,7 +1180,10 @@ class _ResultsPanel(QtWidgets.QFrame):
                                    _fmt_pct(sf),
                                    value_colour=col); r += 1
 
-            # Flag list — each flag is a colour-coded one-liner
+            # Flag list — each flag is a colour-coded, word-wrapped message.
+            # Rendered in the dedicated _flags_layout (a QVBoxLayout) so the
+            # wrapped text gets its full height instead of overflowing a grid
+            # cell.
             flags = qc.get("flags") or []
             if flags:
                 for f in flags:
@@ -1169,13 +1191,14 @@ class _ResultsPanel(QtWidgets.QFrame):
                     icon  = "⚠" if level == "warn" else "ℹ"
                     col   = (_THEME['WARN'] if level == "warn"
                              else _THEME['TXT_MUTED'])
-                    msg = QtWidgets.QLabel(f"  {icon}  {f.get('msg', '')}")
+                    msg = QtWidgets.QLabel(f"{icon}  {f.get('msg', '')}")
                     msg.setStyleSheet(
                         f"color: {col}; font-size: 12px;")
                     msg.setWordWrap(True)
-                    self._stats_grid.addWidget(
-                        msg, r, 0, 1, 2,
-                        Qt.AlignmentFlag.AlignLeft); r += 1
+                    msg.setAlignment(Qt.AlignmentFlag.AlignLeft
+                                     | Qt.AlignmentFlag.AlignTop)
+                    self._flags_layout.addWidget(msg)
+                self._flags_container.show()
 
         self._stats_container.show()
 
