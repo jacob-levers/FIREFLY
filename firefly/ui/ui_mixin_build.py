@@ -587,11 +587,43 @@ class BuildMixin:
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.s_max_lagtime = self._spin_int(20, 5, 100,
             tip="Maximum lag-time (in frames) used in the MSD curve.")
-        gl.addRow("Max lag time", self.s_max_lagtime)
+        _row = QtWidgets.QHBoxLayout(); _row.setContentsMargins(0, 0, 0, 0)
+        self.lbl_max_lag_sec = QtWidgets.QLabel()
+        self.lbl_max_lag_sec.setStyleSheet("color: gray;")
+        _row.addWidget(self.s_max_lagtime, 1); _row.addWidget(self.lbl_max_lag_sec)
+        _w = QtWidgets.QWidget(); _w.setLayout(_row)
+        gl.addRow("Max lag time (frames)", _w)
+
         self.s_n_fit = self._spin_int(5, 2, 20,
-            tip="Number of initial lag times used to fit D and α via linear LSQ.\n"
-                "Fewer = more local (short-time D); more = more global.")
-        gl.addRow("N fit lags", self.s_n_fit)
+            tip="Number of initial lag times used to fit D and α.\n"
+                "Fewer = more local (short-time D); more = more global.\n"
+                "Tip: dial this until the seconds readout matches your lab's MSD\n"
+                "fit window (e.g. 0.2 s).")
+        _row2 = QtWidgets.QHBoxLayout(); _row2.setContentsMargins(0, 0, 0, 0)
+        self.lbl_n_fit_sec = QtWidgets.QLabel()
+        self.lbl_n_fit_sec.setStyleSheet("color: gray;")
+        _row2.addWidget(self.s_n_fit, 1); _row2.addWidget(self.lbl_n_fit_sec)
+        _w2 = QtWidgets.QWidget(); _w2.setLayout(_row2)
+        gl.addRow("N fit lags (frames)", _w2)
+
+        # Live seconds readout: lag_frames × frame_interval.  The analysis works
+        # in frames, but labs usually express the MSD fit window in seconds
+        # (e.g. "cap at 0.2 s").  Showing the equivalent live — and updating it
+        # when either the lag count OR the Frame-interval field changes — lets
+        # the user match their convention without doing the conversion by hand.
+        # (Uses the Frame-interval field's value; when that's read from file
+        # metadata the readout reflects the field shown above it.)
+        def _update_lag_seconds(*_):
+            fi = float(self.s_frame_interval.value())
+            self.lbl_max_lag_sec.setText(
+                f"= {self.s_max_lagtime.value() * fi:.3f} s")
+            self.lbl_n_fit_sec.setText(
+                f"= {self.s_n_fit.value() * fi:.3f} s")
+        self._update_lag_seconds = _update_lag_seconds
+        self.s_max_lagtime.valueChanged.connect(_update_lag_seconds)
+        self.s_n_fit.valueChanged.connect(_update_lag_seconds)
+        self.s_frame_interval.valueChanged.connect(_update_lag_seconds)
+        _update_lag_seconds()
         self.s_alpha_immobile = self._spin_dbl(0.5, 0.0, 2.0, 0.01, decimals=2,
             tip="α below this → 'Immobile'. Default 0.5 from the SPT literature.")
         gl.addRow("α  immobile threshold", self.s_alpha_immobile)
