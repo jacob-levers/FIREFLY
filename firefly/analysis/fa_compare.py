@@ -27,6 +27,16 @@ from firefly.analysis import fa_twoway
 
 
 
+def _replicate_colors(k):
+    """k visually distinct colours for per-replicate SuperPlot dots.  Uses
+    tab10 for ≤10 replicates, tab20 beyond that (cycling if even larger)."""
+    if k <= 0:
+        return []
+    import matplotlib.pyplot as plt
+    cmap = plt.get_cmap("tab10" if k <= 10 else "tab20")
+    return [cmap(i % cmap.N) for i in range(k)]
+
+
 def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                      ylabel="", record_stats=None, metric_name=""):
     """Bar chart with mean ± SEM and individual replicate dots, generalised
@@ -45,15 +55,22 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     sems  = [float(a.std(ddof=1) / np.sqrt(len(a))) if len(a) > 1 else 0.0
              for a in arrs]
     x = np.arange(n)
+    # Bar = mean across REPLICATES; error = SEM across replicates.  The dots
+    # are the per-replicate values the stats are actually computed on — a
+    # SuperPlot (Lord et al. 2020): each replicate gets its own colour so the
+    # reader sees the true unit of replication, not pooled localisations.
     ax.bar(x, means, yerr=sems, capsize=4,
            color=[fill] * n,
            edgecolor=colors, linewidth=1.5,
            ecolor=sig_col)
     rng = np.random.default_rng(0)
+    max_rep = max((len(a) for a in arrs), default=0)
+    rep_colors = _replicate_colors(max_rep)
     for i, a in enumerate(arrs):
         if len(a):
             ax.scatter(i + rng.uniform(-0.15, 0.15, len(a)), a,
-                       color=colors[i], s=18, zorder=3)
+                       c=[rep_colors[k] for k in range(len(a))],
+                       s=34, zorder=3, edgecolors=colors[i], linewidths=0.6)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=15 if n > 3 else 0)
     ax.set_ylabel(ylabel)
@@ -63,22 +80,38 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     if record_stats is not None and metric_name:
         record_stats[metric_name] = {"omnibus": omnibus, "pairwise": pairwise}
 
+    def _g_ci_str(rec):
+        """'g = -1.20 [95% CI -2.10, -0.30]' or '' if g unavailable."""
+        g = rec.get("hedges_g")
+        if g is None or not np.isfinite(g):
+            return ""
+        lo, hi = rec.get("hedges_g_ci_low"), rec.get("hedges_g_ci_high")
+        if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
+            return f"g = {g:.2f} [95% CI {lo:.2f}, {hi:.2f}]"
+        return f"g = {g:.2f}"
+
     # Annotation
     top_data = max([a.max() if len(a) else 0 for a in arrs] + [max(means) * 1.2 if max(means) > 0 else 1])
     if n == 2 and pairwise:
         pair = pairwise[0]
-        if pair["stars"] and np.isfinite(pair["p"]):
+        note = pair.get("note", "")
+        if np.isfinite(pair["p"]):
             top = top_data * 1.05
             ax.plot([0, 0, 1, 1], [top, top * 1.03, top * 1.03, top],
                     color=sig_col, lw=0.8)
-            # Numeric p plus stars, e.g. "p = 0.003  **"
+            # p (+ stars when interpretable) and the effect size with CI; if the
+            # comparison is underpowered (n<3 replicates) show that instead of stars.
             p_str = (f"p = {pair['p']:.2e}" if pair['p'] < 0.001
                      else f"p = {pair['p']:.3f}")
-            label = f"{p_str}  {pair['stars']}"
-            ax.text(0.5, top * 1.05, label, ha="center", va="bottom",
-                    fontsize=9, color=sig_col)
-            # Make room above the bracket for the longer label
-            ax.set_ylim(0, top * 1.30)
+            lines = [f"{p_str}  {pair['stars']}".rstrip()]
+            g_str = _g_ci_str(pair)
+            if g_str:
+                lines.append(g_str)
+            if note:
+                lines.append(note)
+            ax.text(0.5, top * 1.05, "\n".join(lines), ha="center", va="bottom",
+                    fontsize=8, color=sig_col)
+            ax.set_ylim(0, top * 1.42)
     elif n > 2 and omnibus:
         # Show test name + omnibus p + stars in the upper-left corner.
         # Numeric format adapts to magnitude: scientific < 0.001, fixed otherwise.
@@ -86,6 +119,8 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         p_str = (f"p = {p_val:.2e}" if p_val < 0.001
                  else f"p = {p_val:.3f}")
         text = f"{omnibus['test']}\n{p_str}   {omnibus['stars']}"
+        if omnibus.get("note"):
+            text += f"\n{omnibus['note']}"
         ax.text(0.02, 0.98, text, transform=ax.transAxes,
                 ha="left", va="top", fontsize=8, color=sig_col,
                 bbox=dict(facecolor=palette["PNL"], edgecolor="none",
@@ -724,9 +759,11 @@ def compare_groups(groups,
                 "p_value_bonferroni": omn["p"], "stars_bonferroni": stars_bonf,
                 "n_a": "", "n_b": "", "mean_a": "", "mean_b": "",
                 "sem_a": "", "sem_b": "", "label_a": "all groups", "label_b": "",
-                "cohens_d": "",
+                "cohens_d": "", "hedges_g": "",
+                "hedges_g_ci_low": "", "hedges_g_ci_high": "",
                 "n_per_group_for_80pct_power": "",
                 "n_per_group_for_90pct_power": "",
+                "note": omn.get("note", ""),
             })
         pairs = rec.get("pairwise", [])
         n_pairs = max(1, len(pairs))
@@ -751,8 +788,12 @@ def compare_groups(groups,
                 "sem_a": pw["sem_i"], "sem_b": pw["sem_j"],
                 "label_a": pw["label_i"], "label_b": pw["label_j"],
                 "cohens_d": pw.get("cohens_d"),
+                "hedges_g": pw.get("hedges_g"),
+                "hedges_g_ci_low": pw.get("hedges_g_ci_low"),
+                "hedges_g_ci_high": pw.get("hedges_g_ci_high"),
                 "n_per_group_for_80pct_power": _fmt_n_needed(pw.get("n_needed_80")),
                 "n_per_group_for_90pct_power": _fmt_n_needed(pw.get("n_needed_90")),
+                "note": pw.get("note", ""),
             })
     stats_df = pd.DataFrame(stats_rows)
 
@@ -817,9 +858,9 @@ def compare_groups(groups,
         if two_factor and twoway_df is not None and len(twoway_df):
             tw_csv = os.path.join(output_dir, f"{output_stem}_twoway_anova.csv")
             try:
+                # Writes split single-table files and prints each saved path.
                 _write_twoway_csv(tw_csv, twoway_df, twoway_msg, drilldown,
                                   summary_df, group_order, tp_order, pair_warn)
-                print(f"  Saved: {tw_csv}")
             except Exception as exc:
                 print(f"  Two-way CSV skipped ({type(exc).__name__}: {exc})")
 
@@ -896,6 +937,9 @@ def compare_groups(groups,
                     (np.asarray(t_angles_g, dtype=float),
                      np.asarray(t_D_g,      dtype=float)))
                 per_replicate_angles[label] = rep_angle_arrays
+            # Stem for the split circular CSVs (the function derives
+            # _circular_per_group / _per_replicate / _tests from this and
+            # prints each saved path itself).
             cs_csv = os.path.join(
                 output_dir, f"{output_stem}_circular_statistics.csv")
             cs_pdf = os.path.join(
@@ -906,7 +950,6 @@ def compare_groups(groups,
                 fig_theme=theme,
                 track_angle_d_pairs=track_angle_d_pairs,
                 per_replicate_angles=per_replicate_angles)
-            print(f"  Saved: {cs_csv}")
             print(f"  Saved: {cs_pdf}")
         except Exception as exc:
             print(f"  Comparison circular-stats skipped "
@@ -1025,10 +1068,15 @@ def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
 
 def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
                       group_order, tp_order, pair_warn):
-    """Write the group × time-point ANOVA report: a settings header, the scalar
-    mixed-ANOVA table, Holm-corrected simple effects, and the per-time-point
-    curve drill-down tables."""
-    import csv
+    """Write the group × time-point ANOVA report as SEPARATE clean tables
+    (settings, scalar ANOVA, Holm-corrected simple effects, per-time-point
+    curve drill-downs) instead of stacking them into one ragged sheet.
+
+    `path` is the legacy "{stem}_twoway_anova.csv"; sibling names are derived
+    from its stem.  Prints each file it writes."""
+    base = path[:-4] if path.lower().endswith(".csv") else path
+    if base.endswith("_twoway_anova"):
+        base = base[:-len("_twoway_anova")]
 
     def _g(df, **eq):
         m = pd.Series(True, index=df.index)
@@ -1043,54 +1091,57 @@ def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
                  for tp in tp_order]
         count_bits.append(f"{grp} [{', '.join(cells)}]")
 
-    with open(path, "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["# FIREFLY two-factor comparison — group × time point mixed ANOVA"])
-        w.writerow(["# model", twoway_msg or ""])
-        w.writerow(["setting", "value"])
-        w.writerow(["groups", ", ".join(map(str, group_order))])
-        w.writerow(["time_points", ", ".join(map(str, tp_order))])
-        w.writerow(["cells_per_group_timepoint", " ; ".join(count_bits)])
-        w.writerow(["pairing", pair_warn or "all cells paired across every time point"])
-        w.writerow(["alpha", 0.05])
-        w.writerow(["effect_size", "np2 = partial eta-squared"])
-        w.writerow(["sphericity", "Greenhouse-Geisser (p_GG); for 2 time points GG=uncorrected"])
-        w.writerow(["curve_note",
-                    "MSD/LogD tested via scalar summary (auc_msd / median_D / "
-                    "mob_immob_ratio) PLUS a per-time-point group×(lag|bin) drill-down; "
-                    "pingouin cannot fit 1-between + 2-within in one model"])
-        w.writerow([])
+    written = []
 
-        anova = twoway_df[twoway_df["section"] == "anova"]
-        if len(anova):
-            w.writerow(["=== SCALAR METRICS: two-way mixed ANOVA "
-                        "(between=group, within=timepoint, subject=cell) ==="])
-            cols = ["metric", "effect", "F", "df1", "df2", "p_unc", "p_GG", "np2", "eps"]
-            w.writerow(cols)
-            for _, r in anova.iterrows():
-                w.writerow([r.get(c, "") if r.get(c) is not None else "" for c in cols])
-            w.writerow([])
+    # 1) Settings — a clean two-column table.
+    settings = [
+        ("model", twoway_msg or ""),
+        ("groups", ", ".join(map(str, group_order))),
+        ("time_points", ", ".join(map(str, tp_order))),
+        ("cells_per_group_timepoint", " ; ".join(count_bits)),
+        ("pairing", pair_warn or "all cells paired across every time point"),
+        ("alpha", "0.05"),
+        ("effect_size", "np2 = partial eta-squared"),
+        ("sphericity",
+         "Greenhouse-Geisser (p_GG); for 2 time points GG=uncorrected"),
+        ("curve_note",
+         "MSD/LogD tested via scalar summary (auc_msd / median_D / "
+         "mob_immob_ratio) PLUS a per-time-point group×(lag|bin) drill-down; "
+         "pingouin cannot fit 1-between + 2-within in one model"),
+    ]
+    sp = base + "_twoway_settings.csv"
+    pd.DataFrame(settings, columns=["setting", "value"]).to_csv(sp, index=False)
+    written.append(sp)
 
-        post = twoway_df[twoway_df["section"] == "posthoc"]
-        if len(post):
-            w.writerow(["=== SIMPLE EFFECTS (Holm-corrected) ==="])
-            cols = ["metric", "contrast", "at", "level_A", "level_B", "paired",
-                    "p", "p_holm", "stars"]
-            w.writerow(cols)
-            for _, r in post.iterrows():
-                w.writerow([r.get(c, "") if r.get(c) is not None else "" for c in cols])
-            w.writerow([])
+    # 2) Scalar mixed-ANOVA table.
+    anova = twoway_df[twoway_df["section"] == "anova"]
+    if len(anova):
+        cols = ["metric", "effect", "F", "df1", "df2", "p_unc", "p_GG", "np2", "eps"]
+        ap = base + "_twoway_anova_scalar.csv"
+        anova.reindex(columns=cols).to_csv(ap, index=False)
+        written.append(ap)
 
-        for kind in ("msd", "logd"):
-            if kind in drilldown:
-                ddf, dmsg = drilldown[kind]
-                w.writerow([f"=== CURVE DRILL-DOWN ({kind.upper()}): {dmsg} ==="])
-                cols = ["graph", "timepoint", "effect", "F", "df1", "df2",
-                        "p_unc", "p_GG", "np2", "eps"]
-                w.writerow(cols)
-                for _, r in ddf.iterrows():
-                    w.writerow([r.get(c, "") if r.get(c) is not None else "" for c in cols])
-                w.writerow([])
+    # 3) Holm-corrected simple effects.
+    post = twoway_df[twoway_df["section"] == "posthoc"]
+    if len(post):
+        cols = ["metric", "contrast", "at", "level_A", "level_B", "paired",
+                "p", "p_holm", "stars"]
+        pp = base + "_twoway_simple_effects.csv"
+        post.reindex(columns=cols).to_csv(pp, index=False)
+        written.append(pp)
+
+    # 4) Per-time-point curve drill-downs (one file per graph kind).
+    for kind in ("msd", "logd"):
+        if kind in drilldown:
+            ddf, _dmsg = drilldown[kind]
+            cols = ["graph", "timepoint", "effect", "F", "df1", "df2",
+                    "p_unc", "p_GG", "np2", "eps"]
+            dp = base + f"_twoway_drilldown_{kind}.csv"
+            ddf.reindex(columns=cols).to_csv(dp, index=False)
+            written.append(dp)
+
+    for p in written:
+        print(f"  Saved: {p}")
 
 
 def _twoway_table_page(pdf, title, subtitle, df, cols, pal):

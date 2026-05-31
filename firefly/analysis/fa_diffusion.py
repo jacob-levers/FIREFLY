@@ -19,6 +19,20 @@ def msd_linear(t, D, offset):
     return 4 * D * t + offset
 
 
+def msd_anomalous(t, D, alpha, offset):
+    """2D MSD with an anomalous exponent and a localisation-error floor:
+
+        MSD(t) = 4·D·t^alpha + offset
+
+    `offset` is the static localisation-error term (≈ 4·sigma²); it lifts the
+    whole curve and must be modelled jointly with `alpha`, otherwise a plain
+    log-log slope of the raw MSD reads alpha < 1 for genuinely Brownian (and
+    especially slow) particles — the offset dominates the first lags and
+    flattens the log-log curve.
+    """
+    return 4 * D * t ** alpha + offset
+
+
 ALPHA_THRESHOLDS_DEFAULT = (0.5, 0.9, 1.1)
 
 
@@ -61,23 +75,53 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             d = xy_um[lag:][valid] - xy_um[:-lag][valid]
             msd_vals[lag_idx] = np.mean(d[:, 0] ** 2 + d[:, 1] ** 2)
 
-    # Fit using first n_fit lag times
+    # Fit using the first n_fit lag times.  ONE consistent model —
+    #     MSD(t) = 4·D·t^alpha + offset
+    # — so the anomalous exponent (alpha) and the diffusion coefficient (D)
+    # come from the SAME curve.  Crucially this fits the localisation-error
+    # floor (offset == 4·sigma²) jointly: a naive log-log slope of the raw MSD
+    # ignores that floor and biases alpha DOWN at short lags, mislabelling slow
+    # Brownian tracks as confined/immobile.  offset is constrained ≥ 0 (it is a
+    # squared quantity).
     t   = lag_times[:n_fit]
     m   = msd_vals[:n_fit]
     ok  = np.isfinite(m) & (m > 0)
     D = alpha = np.nan
-    msd0 = np.nan        # linear-fit intercept (PALM-Tracer "MSD(0)")
-    mse  = np.nan        # mean squared residual of the linear fit
-    if ok.sum() >= 3:
-        try:    alpha = np.polyfit(np.log(t[ok]), np.log(m[ok]), 1)[0]
+    msd0 = np.nan        # localisation-error offset (4·sigma²) == PALM-Tracer "MSD(0)"
+    mse  = np.nan        # mean squared residual of the fit
+    n_ok = int(ok.sum())
+    t_ok, m_ok = t[ok], m[ok]
+    if n_ok >= 4:
+        # Seed D and offset from a quick linear (alpha=1) fit; seed alpha=1.
+        try:
+            slope, intercept = np.polyfit(t_ok, m_ok, 1)
+            d_seed   = max(slope / 4.0, 1e-6)
+            off_seed = max(intercept, 0.0)
+        except Exception:
+            d_seed, off_seed = 0.01, max(0.0, float(m_ok[0]))
+        try:
+            popt, _ = curve_fit(msd_anomalous, t_ok, m_ok,
+                                p0=[d_seed, 1.0, off_seed],
+                                bounds=([0, 0, 0], [np.inf, 3.0, np.inf]),
+                                maxfev=5000)
+            D, alpha, msd0 = float(popt[0]), float(popt[1]), float(popt[2])
+            _resid = m_ok - msd_anomalous(t_ok, *popt)
+            mse = float(np.mean(_resid ** 2))
+        except Exception:
+            pass
+    if not np.isfinite(D) and n_ok >= 3:
+        # Fallback for very short tracks (or a non-converging joint fit): the
+        # legacy two-step estimate (linear D + log-log alpha).  Less accurate
+        # near the localisation floor but always returns something.
+        try:    alpha = float(np.polyfit(np.log(t_ok), np.log(m_ok), 1)[0])
         except Exception: pass
         try:
-            popt, _ = curve_fit(msd_linear, t[ok], m[ok], p0=[0.01, 0],
+            popt, _ = curve_fit(msd_linear, t_ok, m_ok, p0=[0.01, 0],
                                 bounds=([0, -np.inf], [np.inf, np.inf]),
                                 maxfev=2000)
-            D = popt[0]
+            D = float(popt[0])
             msd0 = float(popt[1])
-            _resid = m[ok] - msd_linear(t[ok], *popt)
+            _resid = m_ok - msd_linear(t_ok, *popt)
             mse = float(np.mean(_resid ** 2))
         except Exception: pass
 

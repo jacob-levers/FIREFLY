@@ -4,11 +4,15 @@ These exercise the real localisation + diffusion code on synthetic data
 with known ground truth, so a refactor that silently changes the numbers
 gets caught.  No image/CSV fixtures or GUI are required.
 """
+import os
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from firefly import sptpalm_analysis as s
+from firefly.analysis import fa_circular as fc
+from firefly.analysis import fa_diffusion as fd
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -59,6 +63,90 @@ def test_brownian_diffusion_recovers_D_and_alpha():
     assert 0.8 <= ratio <= 1.2, f"D off: median/true = {ratio:.3f}"
     assert 0.85 <= diff["alpha"].median() <= 1.15, \
         f"alpha not ~1: {diff['alpha'].median():.3f}"
+
+
+def test_alpha_offset_aware_unbiased_under_localisation_error():
+    """A genuinely Brownian (slow) population observed WITH localisation error
+    has an MSD floor (≈4·sigma²) that flattens the first lags.  A naive log-log
+    slope reads alpha < 1 (mislabelling it confined/immobile); the offset-aware
+    joint fit recovers alpha ≈ 1.  This test demonstrates the bias AND the fix."""
+    px, dt = 0.1, 0.05
+    sigma_px = 0.5            # slow diffusion -> small signal at short lags
+    loc_noise_px = 0.5        # static localisation error -> MSD offset
+    tracks = _synthetic_brownian_tracks(
+        n_tracks=400, n_frames=60, sigma_px=sigma_px, seed=7).copy()
+    rng = np.random.default_rng(11)
+    tracks["x"] = tracks["x"].to_numpy() + rng.normal(0, loc_noise_px, len(tracks))
+    tracks["y"] = tracks["y"].to_numpy() + rng.normal(0, loc_noise_px, len(tracks))
+
+    _imsd, emsd, diff = fd.compute_msd_and_fit(
+        tracks, px, dt, max_lagtime=20, n_fit=5, workers=1)
+
+    # The OLD estimator (plain log-log slope of the ensemble MSD) is biased low.
+    t5 = np.arange(1, 6) * dt
+    m5 = np.asarray(emsd)[:5]
+    old_alpha = float(np.polyfit(np.log(t5), np.log(m5), 1)[0])
+    assert old_alpha < 0.8, f"expected biased-low old alpha, got {old_alpha:.3f}"
+
+    # The NEW offset-aware estimator recovers ~1.
+    assert diff["alpha"].median() > 0.85, \
+        f"offset-aware alpha still biased: {diff['alpha'].median():.3f}"
+    # offset (MSD0) is recovered as a positive localisation-error floor.
+    assert diff["MSD0"].median() > 0
+
+
+def test_hedges_g_ci_and_small_n_guard():
+    """Hedges' g returns a finite value bracketed by its bootstrap CI; the
+    n<3-replicate guard blanks the significance stars and flags the comparison."""
+    a = np.array([0.10, 0.12, 0.11, 0.13])
+    b = np.array([0.30, 0.31, 0.29, 0.32])
+    g, lo, hi = fc._hedges_g_ci(a, b)
+    assert g is not None and np.isfinite(g)
+    assert lo <= g <= hi
+
+    _om, pw = fc._stat_test_n([a, b], ["A", "B"])
+    assert pw[0]["hedges_g"] is not None
+    assert pw[0]["stars"] in ("*", "**", "***")   # n=4, real difference
+
+    # n=2 per group: test is not interpretable -> no stars, flagged underpowered.
+    _om2, pw2 = fc._stat_test_n(
+        [np.array([0.1, 0.2]), np.array([0.9, 1.0])], ["A", "B"])
+    assert pw2[0]["stars"] == ""
+    assert "underpowered" in pw2[0]["note"]
+
+
+def test_circular_comparison_csv_is_split_and_clean(tmp_path):
+    """The comparison circular CSV is split into three clean single-table files
+    (per-group / per-replicate / tests), each with a consistent header."""
+    rng = np.random.default_rng(0)
+
+    def reps(mean_deg, k=3, n=200):
+        return [np.degrees(rng.vonmises(np.radians(mean_deg), 2.0, n))
+                for _ in range(k)]
+
+    a_reps, b_reps = reps(0.0), reps(90.0)
+    groups_angles = [("A", np.concatenate(a_reps), "#ff0000"),
+                     ("B", np.concatenate(b_reps), "#00ff00")]
+    per_rep = {"A": a_reps, "B": b_reps}
+
+    csv = tmp_path / "X_circular_statistics.csv"
+    fc.save_comparison_circular_statistics(
+        groups_angles, csv_path=str(csv), pdf_path=None,
+        per_replicate_angles=per_rep)
+
+    base = str(tmp_path / "X")
+    pg = pd.read_csv(base + "_circular_per_group.csv")
+    rep = pd.read_csv(base + "_circular_per_replicate.csv")
+    tst = pd.read_csv(base + "_circular_tests.csv")
+
+    # The old monolithic file should NOT be written.
+    assert not os.path.exists(str(csv))
+
+    assert {"group", "n_replicates"}.issubset(pg.columns) and len(pg) == 2
+    assert list(rep.columns) == ["group", "replicate", "kappa", "rbar", "mu_deg"]
+    assert len(rep) == 6                       # 2 groups × 3 replicates
+    assert {"metric", "scope", "p_value"}.issubset(tst.columns)
+    assert tst["hedges_g"].notna().any()       # effect size populated
 
 
 # ── localisation ─────────────────────────────────────────────────────────────

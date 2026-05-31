@@ -1146,187 +1146,113 @@ def save_comparison_circular_statistics(groups_angles, *,
         track_angle_d_pairs=track_angle_d_pairs,
         per_replicate_angles=per_replicate_angles)
 
-    # ── CSV ────────────────────────────────────────────────────────────
-    # The single CSV grows by one row per pairwise test (with a `kind`
-    # column distinguishing per-group rows from test rows) so a
-    # downstream consumer (Excel / R / pandas) can read all the
-    # comparison output from one file.
+    # ── CSV (split into clean single-table files) ──────────────────────
+    # Previously every kind of row (per-group descriptive + per-replicate
+    # scalars + between-group tests) was unioned into ONE wide, mostly-empty
+    # sheet — unreadable in Excel.  Split into three single-purpose tables,
+    # each with a uniform schema.  `csv_path` is the legacy
+    # "{stem}_circular_statistics.csv"; sibling names are derived from its stem.
     if csv_path is not None:
         try:
-            per_group_rows = [{"kind": "group", **r} for r in rows]
-            test_rows = []
-            ow = comp_tests.get("omnibus_ww") or {}
-            om = comp_tests.get("omnibus_mww") or {}
-            if ow:
-                test_rows.append({
-                    "kind": "test", "test": "Watson-Williams (omnibus)",
-                    "label_a": "all", "label_b": "all",
-                    "statistic_F": ow.get("F"),
-                    "df1": ow.get("df1"), "df2": ow.get("df2"),
-                    "p_value": ow.get("p"),
-                    "kappa_pooled": ow.get("kappa_pooled"),
-                    "valid_assumptions": ow.get("valid"),
-                })
-            if om:
-                test_rows.append({
-                    "kind": "test", "test": "Mardia-Watson-Wheeler (omnibus)",
-                    "label_a": "all", "label_b": "all",
-                    "statistic_W": om.get("W"),
-                    "df": om.get("df"),
-                    "p_value": om.get("p"),
-                })
-            ok = comp_tests.get("omnibus_wallraff") or {}
-            if ok:
-                test_rows.append({
-                    "kind": "test",
-                    "test": "Wallraff κ-test (omnibus)",
-                    "label_a": "all", "label_b": "all",
-                    "statistic_H": ok.get("H"),
-                    "statistic_U": ok.get("U"),
-                    "df": ok.get("df"),
-                    "p_value": ok.get("p"),
-                })
-            for pw in comp_tests.get("pairwise", []):
-                ww  = pw.get("ww")  or {}
-                mww = pw.get("mww") or {}
-                wal = pw.get("wallraff") or {}
-                kup = pw.get("kuiper")   or {}
-                if ww:
-                    test_rows.append({
-                        "kind": "test",
-                        "test": "Watson-Williams (pairwise)",
-                        "label_a": pw["label_a"],
-                        "label_b": pw["label_b"],
-                        "statistic_F": ww.get("F"),
-                        "df1": ww.get("df1"), "df2": ww.get("df2"),
-                        "p_value": ww.get("p"),
-                        "kappa_pooled": ww.get("kappa_pooled"),
-                        "valid_assumptions": ww.get("valid"),
-                    })
-                if mww:
-                    test_rows.append({
-                        "kind": "test",
-                        "test": "Mardia-Watson-Wheeler (pairwise)",
-                        "label_a": pw["label_a"],
-                        "label_b": pw["label_b"],
-                        "statistic_W": mww.get("W"),
-                        "df": mww.get("df"),
-                        "p_value": mww.get("p"),
-                    })
-                if wal:
-                    test_rows.append({
-                        "kind": "test",
-                        "test": "Wallraff κ-test (pairwise)",
-                        "label_a": pw["label_a"],
-                        "label_b": pw["label_b"],
-                        "statistic_U": wal.get("U"),
-                        "p_value": wal.get("p"),
-                    })
-                if kup:
-                    test_rows.append({
-                        "kind": "test",
-                        "test": "Kuiper two-sample",
-                        "label_a": pw["label_a"],
-                        "label_b": pw["label_b"],
-                        "statistic_V": kup.get("V"),
-                        "p_value": kup.get("p"),
-                    })
-            # Circular-linear correlation (per-track mean angle vs D)
-            # is a PER-GROUP descriptive measure, not a between-group
-            # test — one row per group with r, r², n, p.
-            for cl in comp_tests.get("circ_lin_per_group", []):
-                res = cl.get("result")
-                if not res:
-                    continue
-                test_rows.append({
-                    "kind": "correlation",
-                    "test": "Circ-lin: per-track mean angle vs D",
-                    "label_a": cl.get("label"),
-                    "label_b": "",
-                    "r": res.get("r"),
-                    "r_squared": res.get("r2"),
-                    "statistic_chi2": res.get("test_stat"),
-                    "df": res.get("df"),
-                    "p_value": res.get("p"),
-                    "n": res.get("n"),
-                })
+            base = csv_path[:-4] if csv_path.lower().endswith(".csv") else csv_path
+            if base.endswith("_circular_statistics"):
+                base = base[:-len("_circular_statistics")]
+            pg_path    = base + "_circular_per_group.csv"
+            rep_path   = base + "_circular_per_replicate.csv"
+            tests_path = base + "_circular_tests.csv"
 
-            # ── Per-replicate (n=replicates) tests ─────────────────
-            # One row per replicate listing the scalars used as data
-            # points; then between-group rows for the κ and R̄ Welch
-            # / ANOVA tests and the Watson-Williams F-test on μ.
             scalars = comp_tests.get("per_replicate_scalars") or []
-            for grp in scalars:
-                lbl = grp.get("label", "?")
-                ks  = grp.get("kappa") or []
-                rs  = grp.get("rbar")  or []
-                ms  = grp.get("mu_deg") or []
-                # Pad to common length so each replicate gets one row.
-                n_rep = max(len(ks), len(rs), len(ms))
-                for i in range(n_rep):
-                    test_rows.append({
-                        "kind": "per_replicate_scalar",
-                        "test": "per-replicate κ/R̄/μ",
-                        "label_a": lbl,
-                        "label_b": f"replicate_{i + 1}",
-                        "kappa":   ks[i] if i < len(ks) else None,
-                        "rbar":    rs[i] if i < len(rs) else None,
-                        "mu_deg":  ms[i] if i < len(ms) else None,
-                    })
+            n_rep_by_label = {
+                g.get("label"): max(len(g.get("kappa") or []),
+                                    len(g.get("rbar") or []),
+                                    len(g.get("mu_deg") or []))
+                for g in scalars}
 
-            def _flatten_per_rep_test(slot, label):
+            # 1) Per-group descriptive statistics — one row per group.
+            pg_rows = []
+            for r in rows:
+                rr = dict(r)
+                rr["n_replicates"] = n_rep_by_label.get(rr.get("group"))
+                pg_rows.append(rr)
+            pg_df = pd.DataFrame(pg_rows)
+            lead = [c for c in ("group", "n_angles", "n_replicates")
+                    if c in pg_df.columns]
+            pg_df = pg_df[lead + [c for c in pg_df.columns if c not in lead]]
+            pg_df.to_csv(pg_path, index=False)
+
+            # 2) Per-replicate scalars — one row per (group, replicate).
+            rep_rows = []
+            for g in scalars:
+                lbl = g.get("label", "?")
+                ks, rs, ms = (g.get("kappa") or [], g.get("rbar") or [],
+                              g.get("mu_deg") or [])
+                for i in range(max(len(ks), len(rs), len(ms))):
+                    rep_rows.append({
+                        "group": lbl, "replicate": i + 1,
+                        "kappa":  ks[i] if i < len(ks) else None,
+                        "rbar":   rs[i] if i < len(rs) else None,
+                        "mu_deg": ms[i] if i < len(ms) else None,
+                    })
+            pd.DataFrame(rep_rows, columns=["group", "replicate",
+                                            "kappa", "rbar", "mu_deg"]
+                         ).to_csv(rep_path, index=False)
+
+            # 3) Between-group per-replicate tests — uniform schema.
+            test_rows = []
+
+            def _add_scalar_test(slot, metric):
                 t = comp_tests.get(slot)
                 if not t:
                     return
                 om = t.get("omnibus") or {}
                 if om:
                     test_rows.append({
-                        "kind": "per_replicate_test",
-                        "test": f"{label} (omnibus, per-replicate)",
-                        "label_a": "all", "label_b": "all",
-                        "statistic": om.get("p") and om.get("test"),
-                        "p_value": om.get("p"),
+                        "metric": metric, "scope": "omnibus",
+                        "label_a": "all groups", "label_b": "",
+                        "test": om.get("test"), "p_value": om.get("p"),
+                        "stars": om.get("stars", ""), "note": om.get("note", ""),
                     })
                 for pw in (t.get("pairwise") or []):
-                    def _nn(v):
-                        return None if v is None else (">500" if v > 500 else v)
                     test_rows.append({
-                        "kind": "per_replicate_test",
-                        "test": f"{label} (pairwise, per-replicate)",
-                        "label_a": pw.get("label_i"),
-                        "label_b": pw.get("label_j"),
-                        # Renamed from n_a/n_b → n_replicates_* to make
-                        # clear these count REPLICATES, not turning angles
-                        # (the per-group rows' n_angles).
-                        "n_replicates_a": pw.get("n_i"),
-                        "n_replicates_b": pw.get("n_j"),
-                        "mean_a": pw.get("mean_i"),
-                        "mean_b": pw.get("mean_j"),
-                        "sem_a": pw.get("sem_i"),
-                        "sem_b": pw.get("sem_j"),
-                        "statistic": pw.get("test"),
-                        "p_value": pw.get("p"),
+                        "metric": metric, "scope": "pairwise",
+                        "label_a": pw.get("label_i"), "label_b": pw.get("label_j"),
+                        "test": pw.get("test"), "p_value": pw.get("p"),
+                        "stars": pw.get("stars", ""),
+                        "n_rep_a": pw.get("n_i"), "n_rep_b": pw.get("n_j"),
+                        "mean_a": pw.get("mean_i"), "mean_b": pw.get("mean_j"),
+                        "sem_a": pw.get("sem_i"), "sem_b": pw.get("sem_j"),
                         "cohens_d": pw.get("cohens_d"),
-                        "n_per_group_for_80pct_power": _nn(pw.get("n_needed_80")),
-                        "n_per_group_for_90pct_power": _nn(pw.get("n_needed_90")),
+                        "hedges_g": pw.get("hedges_g"),
+                        "hedges_g_ci_low": pw.get("hedges_g_ci_low"),
+                        "hedges_g_ci_high": pw.get("hedges_g_ci_high"),
+                        "note": pw.get("note", ""),
                     })
 
-            _flatten_per_rep_test("per_replicate_kappa_test", "Welch κ")
-            _flatten_per_rep_test("per_replicate_rbar_test",  "Welch R̄")
+            _add_scalar_test("per_replicate_kappa_test", "kappa (concentration)")
+            _add_scalar_test("per_replicate_rbar_test",  "Rbar (resultant length)")
 
             mu_ww = comp_tests.get("per_replicate_mu_ww")
             if mu_ww is not None:
                 test_rows.append({
-                    "kind": "per_replicate_test",
-                    "test": "Watson-Williams μ (per-replicate)",
-                    "label_a": "all", "label_b": "all",
+                    "metric": "mu (mean direction)", "scope": "omnibus",
+                    "label_a": "all groups", "label_b": "",
+                    "test": "Watson-Williams F (per-replicate)",
                     "statistic_F": mu_ww.get("F"),
                     "df1": mu_ww.get("df1"), "df2": mu_ww.get("df2"),
-                    "p_value": mu_ww.get("p"),
+                    "p_value": mu_ww.get("p"), "note": mu_ww.get("note", ""),
                 })
 
-            df = pd.DataFrame(per_group_rows + test_rows)
-            df.to_csv(csv_path, index=False)
+            tests_cols = ["metric", "scope", "label_a", "label_b", "test",
+                          "statistic_F", "df1", "df2", "p_value", "stars",
+                          "n_rep_a", "n_rep_b", "mean_a", "mean_b",
+                          "sem_a", "sem_b", "cohens_d", "hedges_g",
+                          "hedges_g_ci_low", "hedges_g_ci_high", "note"]
+            tdf = pd.DataFrame(test_rows)
+            tdf = tdf.reindex(columns=[c for c in tests_cols if c in tdf.columns])
+            tdf.to_csv(tests_path, index=False)
+
+            for p in (pg_path, rep_path, tests_path):
+                print(f"  Saved: {p}")
         except Exception as exc:
             print(f"  comparison-circstats CSV failed: {exc}")
 
@@ -2124,6 +2050,43 @@ def _cohens_d_pooled(a, b):
     return float((np.mean(a) - np.mean(b)) / sp)
 
 
+def _hedges_g_ci(a, b, n_boot=2000, seed=0):
+    """Hedges' g (small-sample-corrected Cohen's d) with a percentile
+    bootstrap 95% CI.
+
+    Cohen's d is biased upward at small n; Hedges' g multiplies it by the
+    correction factor J = 1 − 3/(4·(na+nb) − 9).  Returns
+    ``(g, ci_low, ci_high)`` or ``(None, None, None)`` when undefined.
+    The CI is more honest than a star at the small replicate counts typical
+    of SPT (n = a few cells/experiments per group)."""
+    a = np.asarray(a, dtype=float); a = a[np.isfinite(a)]
+    b = np.asarray(b, dtype=float); b = b[np.isfinite(b)]
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return (None, None, None)
+    d = _cohens_d_pooled(a, b)
+    if d is None:
+        return (None, None, None)
+    J = 1.0 - 3.0 / (4.0 * (na + nb) - 9.0)
+    g = float(J * d)
+    try:
+        rng = np.random.default_rng(seed)
+        boot = np.empty(n_boot, dtype=float)
+        k = 0
+        for _ in range(n_boot):
+            da = _cohens_d_pooled(rng.choice(a, na, replace=True),
+                                  rng.choice(b, nb, replace=True))
+            if da is not None and np.isfinite(da):
+                boot[k] = J * da
+                k += 1
+        if k >= max(20, n_boot // 10):
+            lo, hi = np.percentile(boot[:k], [2.5, 97.5])
+            return (g, float(lo), float(hi))
+    except Exception:
+        pass
+    return (g, None, None)
+
+
 def _n_per_group_for_power(d, power=0.80, alpha=0.05, n_max=500):
     """Smallest n PER GROUP for a two-sample, two-sided t-test to reach
     `power` at significance `alpha`, given Cohen's d.
@@ -2190,6 +2153,7 @@ def _stat_test_n(arrays, labels):
                     "i": i, "j": j,
                     "label_i": labels[i], "label_j": labels[j],
                     "test": "n<2", "p": np.nan, "stars": "",
+                    "note": "n<2 replicates - no test possible",
                     "n_i": int(len(arrs[i])), "n_j": int(len(arrs[j])),
                     "mean_i": float(arrs[i].mean()) if len(arrs[i]) else np.nan,
                     "mean_j": float(arrs[j].mean()) if len(arrs[j]) else np.nan,
@@ -2198,6 +2162,8 @@ def _stat_test_n(arrays, labels):
                     "sem_j": (float(arrs[j].std(ddof=1) / np.sqrt(len(arrs[j])))
                               if len(arrs[j]) > 1 else np.nan),
                     "cohens_d": None,
+                    "hedges_g": None, "hedges_g_ci_low": None,
+                    "hedges_g_ci_high": None,
                     "n_needed_80": None, "n_needed_90": None,
                 })
         return omnibus, pairwise
@@ -2233,7 +2199,16 @@ def _stat_test_n(arrays, labels):
                 p = kruskal(*valid_arrs).pvalue
                 test_name = "Kruskal-Wallis"
         if np.isfinite(p):
-            omnibus = {"test": test_name, "p": float(p), "stars": _star(p)}
+            # Same n<3 validity guard as the pairwise rows: if any group has
+            # fewer than 3 replicates, report the p but blank the stars and
+            # flag it underpowered.
+            underpowered = any(len(a) < 3 for a in valid_arrs)
+            omnibus = {
+                "test": test_name, "p": float(p),
+                "stars": "" if underpowered else _star(p),
+                "note": ("n<3 replicates - underpowered, not interpretable"
+                         if underpowered else ""),
+            }
     except Exception:
         pass
 
@@ -2266,18 +2241,31 @@ def _stat_test_n(arrays, labels):
                 # replicates PER GROUP would be needed to detect this
                 # observed effect at 80% / 90% power (α=0.05, two-sided).
                 d_eff = _cohens_d_pooled(a, b)
+                g_eff, g_lo, g_hi = _hedges_g_ci(a, b)
+                # Validity guard: with < 3 replicates per group the test is
+                # uninterpretable (n=2 has 1 d.o.f.).  Keep the p-value for
+                # reference but DON'T advertise significance — blank the stars
+                # and flag the comparison as underpowered.
+                underpowered = (len(a) < 3 or len(b) < 3)
+                note = ("n<3 replicates - underpowered, not interpretable"
+                        if underpowered else "")
                 pairwise.append({
                     "i": i, "j": j,
                     "label_i": labels[i], "label_j": labels[j],
                     "test": test_name,
                     "p": float(p) if np.isfinite(p) else np.nan,
-                    "stars": _star(p) if np.isfinite(p) else "",
+                    "stars": ("" if underpowered else
+                              (_star(p) if np.isfinite(p) else "")),
+                    "note": note,
                     "n_i": int(len(a)), "n_j": int(len(b)),
                     "mean_i": float(a.mean()) if len(a) else np.nan,
                     "mean_j": float(b.mean()) if len(b) else np.nan,
                     "sem_i": float(a.std(ddof=1) / np.sqrt(len(a))) if len(a) > 1 else np.nan,
                     "sem_j": float(b.std(ddof=1) / np.sqrt(len(b))) if len(b) > 1 else np.nan,
                     "cohens_d":    d_eff,
+                    "hedges_g":    g_eff,
+                    "hedges_g_ci_low":  g_lo,
+                    "hedges_g_ci_high": g_hi,
                     "n_needed_80": _n_per_group_for_power(d_eff, 0.80),
                     "n_needed_90": _n_per_group_for_power(d_eff, 0.90),
                 })
