@@ -2652,13 +2652,16 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             params_list.append(p)
         return params_list
 
-    def _launch_batch(self, params_list: "list[dict]"):
+    def _launch_batch(self, params_list: "list[dict]") -> bool:
         """Spawn the batch worker over an already-built params list (one or
-        many jobs concatenated).  Shared by 'Start' and 'Run queue'."""
+        many jobs concatenated).  Shared by 'Start' and 'Run queue'.
+        Returns True if the worker actually started, False if it bailed
+        (empty list / backend validation failed) so callers can keep the
+        queue intact."""
         if not params_list:
-            return
+            return False
         if not self._validate_selected_backend():
-            return
+            return False
         self._switch_to_tab(TAB_ANALYSIS)
         self._start_elapsed_timer()
         try:
@@ -2700,9 +2703,15 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
 
         self.btn_run.setText("Stop")
         self.statusBar().showMessage(f"Batch: 0 / {len(params_list)} runs")
+        return True
 
     def _start_batch_run(self):
-        """Immediate batch over the checked series (Start button, Batch mode)."""
+        """Start button (Batch mode).  If jobs are queued, run the WHOLE queue
+        — so the primary button 'just works' and the user can't run only the
+        first batch by mistake.  Otherwise run the current checked selection."""
+        if getattr(self, "_batch_queue", []):
+            self._on_batch_run_queue()
+            return
         params_list = self._collect_batch_params()
         if not params_list:
             QtWidgets.QMessageBox.warning(

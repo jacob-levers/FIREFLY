@@ -377,6 +377,8 @@ class BatchMixin:
         params_list = []
         for j in q:
             params_list.extend(j["params"])
-        self._batch_queue = []
-        self._refresh_batch_queue()
-        self._launch_batch(params_list)
+        # Clear the queue only if the worker actually started — otherwise a
+        # failed backend check / empty list would silently lose the queue.
+        if self._launch_batch(params_list):
+            self._batch_queue = []
+            self._refresh_batch_queue()
