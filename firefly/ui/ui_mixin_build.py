@@ -587,26 +587,24 @@ class BuildMixin:
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.s_max_lagtime = self._spin_int(20, 5, 100,
             tip="Maximum lag-time (in frames) used in the MSD curve.")
-        self.s_max_lagtime.setSuffix(" frames")
         _row = QtWidgets.QHBoxLayout(); _row.setContentsMargins(0, 0, 0, 0)
         self.lbl_max_lag_sec = QtWidgets.QLabel()
         self.lbl_max_lag_sec.setStyleSheet("color: gray;")
         _row.addWidget(self.s_max_lagtime, 1); _row.addWidget(self.lbl_max_lag_sec)
         _w = QtWidgets.QWidget(); _w.setLayout(_row)
-        gl.addRow("Max lag time", _w)
+        gl.addRow("Max lag time (frames)", _w)
 
         self.s_n_fit = self._spin_int(5, 2, 20,
             tip="Number of initial lag times used to fit D and α.\n"
                 "Fewer = more local (short-time D); more = more global.\n"
                 "Tip: dial this until the seconds readout matches your lab's MSD\n"
                 "fit window (e.g. 0.2 s).")
-        self.s_n_fit.setSuffix(" frames")
         _row2 = QtWidgets.QHBoxLayout(); _row2.setContentsMargins(0, 0, 0, 0)
         self.lbl_n_fit_sec = QtWidgets.QLabel()
         self.lbl_n_fit_sec.setStyleSheet("color: gray;")
         _row2.addWidget(self.s_n_fit, 1); _row2.addWidget(self.lbl_n_fit_sec)
         _w2 = QtWidgets.QWidget(); _w2.setLayout(_row2)
-        gl.addRow("N fit lags", _w2)
+        gl.addRow("N fit lags (frames)", _w2)
 
         # Live seconds readout: lag_frames × frame_interval.  The analysis works
         # in frames, but labs usually express the MSD fit window in seconds
