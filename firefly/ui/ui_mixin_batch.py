@@ -94,6 +94,24 @@ class BatchMixin:
                         display = f"{name}/{cname}"
                         candidates.append((display, cfull, name))
 
+        # Phase 1c — prefer the raw acquisition.  If a folder contains a `.czi`,
+        # drop sibling `.tif`/`.csv` files from that SAME folder: they're almost
+        # always derived from the CZI (e.g. MotionCorrected.tif, Processed.tif,
+        # an ImageJ Results.csv), not separate acquisitions, and queuing them
+        # would re-analyse the same recording 3-4×.  Folders with no `.czi`
+        # (pure TIFF or external-CSV datasets) are left untouched.
+        from collections import defaultdict as _dd
+        _by_folder: "dict[str|None, list]" = _dd(list)
+        for _c in candidates:
+            _by_folder[_c[2]].append(_c)
+        _filtered = []
+        for _grp in _by_folder.values():
+            if any(c[1].lower().endswith(".czi") for c in _grp):
+                _filtered.extend(c for c in _grp if c[1].lower().endswith(".czi"))
+            else:
+                _filtered.extend(_grp)
+        candidates = _filtered
+
         # Phase 2 — group by series key.  Files in a subfolder get a
         # `<subfolder>__<base_key>` key so same-named files in different
         # cells stay separate; top-level files keep the bare base key.
