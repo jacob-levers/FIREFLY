@@ -890,8 +890,8 @@ class BuildMixin:
 
         # GPU-acceleration entry point — Windows only.  When CUDA is NOT
         # installed we show the Set-up button right here, where the user picks
-        # the CUDA backend.  Once installed it's hidden and a muted status
-        # points to Settings, where install / uninstall / relocate now live.
+        # the CUDA backend.  Once installed it's hidden (install / uninstall /
+        # relocate live under Settings › GPU acceleration).
         self._cuda_btn = QtWidgets.QPushButton("Set up GPU acceleration…")
         self._cuda_btn.setToolTip(
             "Download the CUDA build of PyTorch (~2.5 GB) so FIREFLY can use\n"
@@ -899,11 +899,6 @@ class BuildMixin:
             "Manage it later under Settings › GPU acceleration.")
         self._cuda_btn.clicked.connect(self._on_cuda_button_clicked)
         gl.addRow("", self._cuda_btn)
-
-        self._cuda_status_lbl = QtWidgets.QLabel()
-        self._cuda_status_lbl.setWordWrap(True)
-        self._cuda_status_lbl.setStyleSheet("color: gray;")
-        gl.addRow("", self._cuda_status_lbl)
         self._refresh_cuda_perf_ui()
 
         layout.addWidget(sec)
@@ -912,15 +907,14 @@ class BuildMixin:
 
     def _refresh_cuda_perf_ui(self):
         """Performance-section GPU control state.  Show the Set-up button only
-        when CUDA isn't installed; once it is, hide the button and show a muted
-        status pointing to Settings (where management now lives).  Windows
-        only — both widgets stay hidden elsewhere.  Safe to call repeatedly
-        (after install / uninstall / relocate)."""
+        when CUDA isn't installed; once it is, hide it (install / uninstall /
+        relocate live under Settings › GPU acceleration).  Windows only — the
+        button stays hidden elsewhere.  Safe to call repeatedly (after install
+        / uninstall / relocate)."""
         if not hasattr(self, "_cuda_btn"):
             return
         if sys.platform != "win32":
             self._cuda_btn.setVisible(False)
-            self._cuda_status_lbl.setVisible(False)
             return
         try:
             from firefly import cuda_installer as _cu
@@ -928,11 +922,6 @@ class BuildMixin:
         except Exception:
             installed = False
         self._cuda_btn.setVisible(not installed)
-        self._cuda_status_lbl.setVisible(installed)
-        if installed:
-            self._cuda_status_lbl.setText(
-                "GPU acceleration: installed ✓  —  manage under "
-                "Settings › GPU acceleration")
 
     def _build_landing_page(self) -> QtWidgets.QWidget:
         """Full-window welcome screen, Minecraft-menu style.
