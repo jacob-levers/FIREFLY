@@ -2411,9 +2411,15 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 "analysis/diameter":        9,
                 "analysis/auto_minmass":    False,
                 "analysis/minmass":         2.0,
-                # Linking — slower diffusion in axons / dendrites
+                # Linking — slower diffusion in axons / dendrites.  memory=5
+                # bridges the multi-frame blink gaps typical of this (largely
+                # immobile, punctate) data so a molecule isn't fragmented into
+                # several short tracks that each α-classify to a different,
+                # noisy motion class.  Safe here because the molecules barely
+                # move, so re-linking across a short gap can't grab a different
+                # one.
                 "analysis/search_range":    4,
-                "analysis/memory":          2,
+                "analysis/memory":          5,
                 "analysis/min_track_len":   10,
                 "analysis/max_track_len":   0,
                 # Diffusion + motion classification
