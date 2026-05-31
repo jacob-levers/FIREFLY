@@ -307,3 +307,76 @@ class BatchMixin:
         that has at least one checked file.  Kept for callers that only
         need to count what's selected."""
         return [g["primary"] for g in self._batch_checked_series()]
+
+    # ── Batch queue (stack multiple jobs with their captured settings) ────────
+    def _on_batch_add_to_queue(self):
+        """Snapshot the current batch selection + sidebar settings as a queued
+        job.  Because the params capture the live widget values now, changing
+        the folder / preset afterwards and adding again gives a second job with
+        its own settings — that's the whole point of the queue."""
+        params_list = self._collect_batch_params()
+        if not params_list:
+            QtWidgets.QMessageBox.warning(
+                self, "Nothing to queue",
+                "Pick a folder and check at least one file first "
+                "(Import tab, Batch mode).")
+            return
+        folder = (os.path.basename(self.e_batch_folder.text().strip()
+                                   .rstrip("/\\")) or "(folder)")
+        preset = ""
+        try:
+            preset = self.c_preset.currentText()
+        except Exception:
+            pass
+        label = f"{folder} - {len(params_list)} run(s)"
+        if preset and preset != "- Current settings -":
+            label += f"  [{preset}]"
+        if not hasattr(self, "_batch_queue"):
+            self._batch_queue = []
+        self._batch_queue.append({"label": label, "params": params_list})
+        self._refresh_batch_queue()
+
+    def _refresh_batch_queue(self):
+        if not hasattr(self, "lst_batch_queue"):
+            return
+        q = getattr(self, "_batch_queue", [])
+        self.lst_batch_queue.clear()
+        total = 0
+        for j in q:
+            self.lst_batch_queue.addItem(j["label"])
+            total += len(j["params"])
+        self.lbl_batch_queue.setText(f"Queue: {len(q)} job(s), {total} run(s)")
+        for b in ("btn_batch_run_queue", "btn_batch_clear_queue",
+                  "btn_batch_remove_queue"):
+            w = getattr(self, b, None)
+            if w is not None:
+                w.setEnabled(len(q) > 0)
+
+    def _on_batch_clear_queue(self):
+        self._batch_queue = []
+        self._refresh_batch_queue()
+
+    def _on_batch_remove_queued(self):
+        row = self.lst_batch_queue.currentRow()
+        q = getattr(self, "_batch_queue", [])
+        if 0 <= row < len(q):
+            q.pop(row)
+            self._refresh_batch_queue()
+
+    def _on_batch_run_queue(self):
+        """Run every queued job back-to-back: concatenate their params lists
+        (each carries its own captured settings + output folder) and hand the
+        flat list to the batch worker, which already processes runs in
+        sequence."""
+        q = getattr(self, "_batch_queue", [])
+        if not q:
+            QtWidgets.QMessageBox.warning(
+                self, "Empty queue",
+                "Add at least one job to the queue first.")
+            return
+        params_list = []
+        for j in q:
+            params_list.extend(j["params"])
+        self._batch_queue = []
+        self._refresh_batch_queue()
+        self._launch_batch(params_list)

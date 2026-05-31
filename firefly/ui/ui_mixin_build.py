@@ -1426,6 +1426,42 @@ class BuildMixin:
             f"color: {_THEME['TXT_MUTED']};")
         bg.addWidget(self.lbl_batch_output_path)
 
+        # ── Job queue ─────────────────────────────────────────────────────
+        # Stack several batch jobs, each capturing the folder + settings that
+        # were active when it was added, then run them all back-to-back.
+        self.btn_batch_add_queue = QtWidgets.QPushButton(
+            "Add current selection to queue")
+        self.btn_batch_add_queue.setToolTip(
+            "Snapshot the checked files + the current settings/preset as a\n"
+            "queued job.  Change the folder and/or preset and add another to\n"
+            "stack a different job, then 'Run queue' to process them all in\n"
+            "sequence — each with its own captured settings and output folder.")
+        self.btn_batch_add_queue.clicked.connect(self._on_batch_add_to_queue)
+        bg.addWidget(self.btn_batch_add_queue)
+
+        self.lst_batch_queue = QtWidgets.QListWidget()
+        self.lst_batch_queue.setMaximumHeight(90)
+        self.lst_batch_queue.setToolTip("Queued jobs (run top-to-bottom).")
+        bg.addWidget(self.lst_batch_queue)
+
+        _qrow = QtWidgets.QHBoxLayout()
+        self.lbl_batch_queue = QtWidgets.QLabel("Queue: 0 job(s), 0 run(s)")
+        self.lbl_batch_queue.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        _qrow.addWidget(self.lbl_batch_queue)
+        _qrow.addStretch(1)
+        self.btn_batch_remove_queue = QtWidgets.QPushButton("Remove")
+        self.btn_batch_remove_queue.clicked.connect(self._on_batch_remove_queued)
+        self.btn_batch_clear_queue = QtWidgets.QPushButton("Clear")
+        self.btn_batch_clear_queue.clicked.connect(self._on_batch_clear_queue)
+        self.btn_batch_run_queue = QtWidgets.QPushButton("Run queue")
+        self.btn_batch_run_queue.clicked.connect(self._on_batch_run_queue)
+        for _b in (self.btn_batch_remove_queue, self.btn_batch_clear_queue,
+                   self.btn_batch_run_queue):
+            _qrow.addWidget(_b)
+        bg.addLayout(_qrow)
+        self._batch_queue = []
+        self._refresh_batch_queue()
+
         v.addWidget(self._batch_panel, stretch=1)
 
         # Start visible state: single mode shown, batch hidden

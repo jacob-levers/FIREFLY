@@ -2615,35 +2615,22 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self.statusBar().showMessage(
             "Running (external localisations)…" if is_loc else "Running…")
 
-    def _start_batch_run(self):
-        """Kick off batch analysis over the checked series.  Each series
-        contributes one analysis run; the loader uses the per-series
-        list of checked files (rather than auto-discovering siblings)."""
+    def _collect_batch_params(self) -> "list[dict]":
+        """Snapshot the currently-checked batch series + the current sidebar
+        settings into a per-run params list.  Returns [] if nothing is checked.
+        Used both by the immediate 'Start' (Batch mode) and by 'Add to queue'
+        — because the params capture the live widget values at call time, each
+        queued job keeps the settings/preset that were active when it was
+        added."""
         groups = self._batch_checked_series()
         if not groups:
-            QtWidgets.QMessageBox.warning(
-                self, "No files",
-                "On the Import tab, switch to Batch mode and pick a "
-                "folder + at least one file.")
-            self._switch_to_tab(TAB_IMPORT)
-            return
-        if not self._validate_selected_backend():
-            return
-        self._switch_to_tab(TAB_ANALYSIS)
-        self._start_elapsed_timer()
-
-        # Batch outputs go to <input_folder>/batch_results/<stem>/  — same
-        # convention as the Tk app.  Build a params dict per series.
-        # Pass the parent `batch_results/` only; the worker is responsible
-        # for wrapping each run in its own per-stem subfolder (see
-        # firefly_worker.py near `wrap_in_stem_folder`).  Pre-wrapping
-        # here produced batch_results/<stem>/<stem>/ — the double-enclosure
-        # bug.
+            return []
+        # Batch outputs go to <input_folder>/batch_results/<stem>/.  Pass the
+        # parent `batch_results/` only; the worker wraps each run in its own
+        # per-stem subfolder (avoids the batch_results/<stem>/<stem>/ double-
+        # enclosure bug).
         out_root = os.path.join(self.e_batch_folder.text().strip(),
                                 "batch_results")
-        # Resolve the GUI's csv_preset choice once — every CSV input in
-        # this batch shares the same preset (the user can re-run with a
-        # different preset if they need to mix formats).
         _csv_preset_choice = self.c_csv_preset.currentText()
         _csv_preset = ("auto" if _csv_preset_choice == "Auto-detect"
                        else _csv_preset_choice)
@@ -2651,42 +2638,34 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         for g in groups:
             fpath = g["primary"]
             p = self._build_params_for_file(fpath, out_root)
-            # Use the series key as the output-folder stem.  For files
-            # inside a subfolder this disambiguates same-named files
-            # across cells (e.g. Cell1/Loc.txt → Cell1__Loc/).  For
-            # top-level files it equals the basename stem so behaviour
-            # is unchanged.
             if g.get("key"):
                 p["stem_override"] = str(g["key"])
             if self._is_csv_input(fpath):
-                # External-localisations branch.  Like the single-file
-                # loc-table path: tell the worker to skip detection and load
-                # the CSV via load_external_locs.  Pixel size / frame
-                # interval come from the sidebar even when the override
-                # checkboxes are unticked (a CSV has no embedded image
-                # metadata to fall back on).
                 if not p.get("pixel_size"):
                     p["pixel_size"] = float(self.s_pixel_size.value())
                 if not p.get("frame_interval"):
                     p["frame_interval"] = float(self.s_frame_interval.value())
                 p["source"]     = "external_csv"
                 p["csv_preset"] = _csv_preset
-                # CSVs don't have multi-file splits — `series_files` is
-                # an image-loader concept only.  Leave it unset.
             else:
-                # Image-stack branch.  Override loader auto-discovery
-                # with the exact list of checked sister files for this
-                # series (palmTRACER's `-fileNNN` splits etc.).
                 p["series_files"] = list(g.get("files") or [])
             params_list.append(p)
+        return params_list
 
+    def _launch_batch(self, params_list: "list[dict]"):
+        """Spawn the batch worker over an already-built params list (one or
+        many jobs concatenated).  Shared by 'Start' and 'Run queue'."""
+        if not params_list:
+            return
+        if not self._validate_selected_backend():
+            return
+        self._switch_to_tab(TAB_ANALYSIS)
+        self._start_elapsed_timer()
         try:
             self._save_settings()
         except Exception:
             crash_reporter.log_exception("failed to save settings before run")
 
-        # Clear batch UI for new run.  batch_progress and batch_stage_label
-        # are aliased to the Analysis-tab widgets in the new layout.
         self.console_log.clear()
         self.batch_progress.setValue(0)
         self.batch_progress.setFormat("Starting…")
@@ -2707,13 +2686,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self._is_batch_run   = True
         self._is_compare_run = False
 
-        # Bounded queue — a 60 FPS live preview at ~590 KB/frame can
-        # push ~35 MB/s through this pipe.  If the GUI ever stalls for
-        # a few seconds the queue grows unbounded and pushes the
-        # system into swap (we had a user hard-freeze caused by that).
-        # 2000 messages is enough headroom for normal jitter; the
-        # worker drops preview/mass messages when full and keeps only
-        # the analysis-critical ones (log/progress/done/etc.).
+        # Bounded queue (see note in _start_single_run) — caps the live-preview
+        # pipe so a GUI stall can't push the system into swap.
         self._msg_queue    = multiprocessing.Queue(maxsize=2000)
         self._cancel_event = multiprocessing.Event()
         self._proc = multiprocessing.Process(
@@ -2725,8 +2699,19 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self._poll_timer.start()
 
         self.btn_run.setText("Stop")
-        self.statusBar().showMessage(
-            f"Batch: 0 / {len(groups)} series")
+        self.statusBar().showMessage(f"Batch: 0 / {len(params_list)} runs")
+
+    def _start_batch_run(self):
+        """Immediate batch over the checked series (Start button, Batch mode)."""
+        params_list = self._collect_batch_params()
+        if not params_list:
+            QtWidgets.QMessageBox.warning(
+                self, "No files",
+                "On the Import tab, switch to Batch mode and pick a "
+                "folder + at least one file.")
+            self._switch_to_tab(TAB_IMPORT)
+            return
+        self._launch_batch(params_list)
 
     def _start_compare_run(self):
         """Kick off a comparison over the configured groups."""
