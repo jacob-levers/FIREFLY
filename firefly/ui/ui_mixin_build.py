@@ -648,9 +648,11 @@ class BuildMixin:
             "When checked, drop tracks with D outside the [min, max] range.\n"
             "Useful for isolating a specific population for downstream analysis.")
         gl.addRow(self.c_filter_d_enabled)
-        self.s_filter_d_min = self._spin_dbl(0.0, 0.0, 10.0, 0.01, decimals=3,
-            tip="Minimum D (µm²/s). Tracks slower than this are excluded.")
-        self.s_filter_d_max = self._spin_dbl(1.0, 0.0, 10.0, 0.01, decimals=3,
+        self.s_filter_d_min = self._spin_dbl(0.0, 0.0, 10.0, 0.000001, decimals=7,
+            tip="Minimum D (µm²/s). Tracks slower than this are excluded.\n"
+                "7-decimal precision (down to 0.0000001) — sptPALM data is often\n"
+                "near-immobile (D ~1e-6 to 1e-3), so set fine thresholds here.")
+        self.s_filter_d_max = self._spin_dbl(1.0, 0.0, 10.0, 0.000001, decimals=7,
             tip="Maximum D (µm²/s). Tracks faster than this are excluded.")
         self.s_filter_d_min.setEnabled(False)
         self.s_filter_d_max.setEnabled(False)
