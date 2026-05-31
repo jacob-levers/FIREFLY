@@ -592,7 +592,7 @@ class BuildMixin:
         self.lbl_max_lag_sec.setStyleSheet("color: gray;")
         _row.addWidget(self.s_max_lagtime, 1); _row.addWidget(self.lbl_max_lag_sec)
         _w = QtWidgets.QWidget(); _w.setLayout(_row)
-        gl.addRow("Max lag time (frames)", _w)
+        gl.addRow("Max lag time", _w)
 
         self.s_n_fit = self._spin_int(5, 2, 20,
             tip="Number of initial lag times used to fit D and α.\n"
@@ -604,7 +604,7 @@ class BuildMixin:
         self.lbl_n_fit_sec.setStyleSheet("color: gray;")
         _row2.addWidget(self.s_n_fit, 1); _row2.addWidget(self.lbl_n_fit_sec)
         _w2 = QtWidgets.QWidget(); _w2.setLayout(_row2)
-        gl.addRow("N fit lags (frames)", _w2)
+        gl.addRow("N fit lags", _w2)
 
         # Live seconds readout: lag_frames × frame_interval.  The analysis works
         # in frames, but labs usually express the MSD fit window in seconds
@@ -798,7 +798,7 @@ class BuildMixin:
         # found next to each input file, applying it as a polygon ROI — so a
         # batch reuses ROIs drawn in ImageJ/Fiji without loading each by hand.
         self.c_roi_imagej_auto = QtWidgets.QCheckBox(
-            "Auto-detect sibling ImageJ ROI (RoiSet.zip / .roi)")
+            "Auto-detect ImageJ ROI")
         self.c_roi_imagej_auto.setChecked(True)
         self.c_roi_imagej_auto.setToolTip(
             "When a movie has an ImageJ ROI next to it (RoiSet.zip, a RoiSet/\n"
@@ -806,7 +806,9 @@ class BuildMixin:
             "polygon ROI automatically.  Lets a batch reuse ROIs drawn in\n"
             "ImageJ/Fiji without loading each one by hand.  A polygon you set\n"
             "explicitly in the ROI editor still takes precedence.")
-        gl.addRow("", self.c_roi_imagej_auto)
+        # Span the whole row (no label column) so the checkbox doesn't force
+        # the sidebar's scroll content wider than the viewport.
+        gl.addRow(self.c_roi_imagej_auto)
 
         # Grey out threshold-related controls when the mode doesn't use
         # them, AND show/hide the embedded ROI viewer on the Import tab

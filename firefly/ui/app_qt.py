@@ -2392,18 +2392,25 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             },
             "Drosophila Neurons": {
                 cls._BUILTIN_PRESETS_TAG: True,
-                # Imaging metadata
-                "analysis/override_px":     True,
-                "analysis/pixel_size":      0.106,
-                "analysis/override_fi":     True,
-                "analysis/frame_interval":  0.030,
-                # Preprocessing — narrower processes, smaller bg radius
+                # Imaging metadata — leave Override OFF so the values read
+                # from the CZI (e.g. 0.1 µm / 0.1 s on the lab's ZEN exports)
+                # are used; the numbers below are only fallbacks for files
+                # that carry no metadata.
+                "analysis/override_px":     False,
+                "analysis/pixel_size":      0.1,
+                "analysis/override_fi":     False,
+                "analysis/frame_interval":  0.1,
+                # Preprocessing — tight bg radius removes the structured
+                # neuron background (larger radii leave diffuse haze).
                 "analysis/bg_method":       "Uniform Filter",
                 "analysis/bg_radius":       15,
-                # Detection — typically sparser labelling than PC12
-                "analysis/diameter":        7,
+                # Detection — auto-tuned on lab fly-neuron sptPALM data:
+                # diameter 9 is the smallest with flat pixel-bias while spots
+                # stay round; minmass 2.0 keeps discrete blinks without
+                # detecting the dendritic structure.
+                "analysis/diameter":        9,
                 "analysis/auto_minmass":    False,
-                "analysis/minmass":         1.0,
+                "analysis/minmass":         2.0,
                 # Linking — slower diffusion in axons / dendrites
                 "analysis/search_range":    4,
                 "analysis/memory":          2,
