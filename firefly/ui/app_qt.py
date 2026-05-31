@@ -2428,7 +2428,9 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 "analysis/alpha_immobile":  0.5,
                 "analysis/alpha_confined":  0.9,
                 "analysis/alpha_directed":  1.1,
-                "analysis/mobile_d":        0.03,
+                # Mobile/immobile split at 0.021 µm²/s (log10 D = -1.6) to match
+                # the Hines thesis / Constals et al. 2015 Sx1a sptPALM threshold.
+                "analysis/mobile_d":        0.021,
                 "analysis/jdd_components":  2,
                 # ROI — small / branched cells; manual polygon is more robust
                 "analysis/roi_mode":        "Manual polygon",
