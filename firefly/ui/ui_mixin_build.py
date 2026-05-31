@@ -587,6 +587,7 @@ class BuildMixin:
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.s_max_lagtime = self._spin_int(20, 5, 100,
             tip="Maximum lag-time (in frames) used in the MSD curve.")
+        self.s_max_lagtime.setSuffix(" frames")
         _row = QtWidgets.QHBoxLayout(); _row.setContentsMargins(0, 0, 0, 0)
         self.lbl_max_lag_sec = QtWidgets.QLabel()
         self.lbl_max_lag_sec.setStyleSheet("color: gray;")
@@ -599,6 +600,7 @@ class BuildMixin:
                 "Fewer = more local (short-time D); more = more global.\n"
                 "Tip: dial this until the seconds readout matches your lab's MSD\n"
                 "fit window (e.g. 0.2 s).")
+        self.s_n_fit.setSuffix(" frames")
         _row2 = QtWidgets.QHBoxLayout(); _row2.setContentsMargins(0, 0, 0, 0)
         self.lbl_n_fit_sec = QtWidgets.QLabel()
         self.lbl_n_fit_sec.setStyleSheet("color: gray;")
