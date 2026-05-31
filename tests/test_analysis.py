@@ -187,8 +187,15 @@ def test_torch_agrees_with_trackpy(backend):
 
 
 # ── memory-safe loader allocation ────────────────────────────────────────────
-def test_alloc_stack_uses_ram_when_it_fits():
-    a = s._alloc_or_memmap_stack((4, 8, 8))
+def test_alloc_stack_uses_ram_when_it_fits(monkeypatch):
+    # Pin the RAM reserve to 0 so a ~1 KB array unconditionally "fits in RAM".
+    # Without this the allocator decides via (free_RAM - reserve), which can dip
+    # to ~0 on a memory-pressured machine and defensively memmap even a tiny
+    # array — making this test flaky.  We're testing the fits-in-RAM branch, not
+    # the host's spare memory.
+    from firefly.analysis import fa_memory
+    monkeypatch.setattr(fa_memory, "_user_ram_reserve_gb", lambda: 0.0)
+    a = fa_memory._alloc_or_memmap_stack((4, 8, 8))
     assert isinstance(a, np.ndarray) and not isinstance(a, np.memmap)
     assert a.shape == (4, 8, 8) and a.dtype == np.float32
 
