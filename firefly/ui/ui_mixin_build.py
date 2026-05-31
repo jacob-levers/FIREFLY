@@ -824,6 +824,10 @@ class BuildMixin:
             lambda _=None: self._push_roi_mask_params())
         self.s_roi_bg_sigma.valueChanged.connect(
             lambda _=None: self._push_roi_mask_params())
+        # When ImageJ ROI auto-detect is on, a sibling RoiSet/.roi overrides the
+        # Mode below — grey it (and its sub-controls) out to make that clear.
+        self.c_roi_imagej_auto.toggled.connect(self._on_roi_imagej_auto_toggled)
+        self._on_roi_imagej_auto_toggled(self.c_roi_imagej_auto.isChecked())
         layout.addWidget(sec)
 
         # ── Drift correction ──────────────────────────────────────────────
