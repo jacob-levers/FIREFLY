@@ -3300,6 +3300,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
 
         def _on_finished():
             _cleanup()
+            # Update the Performance-section control (hide the Set-up button,
+            # show the "installed — manage in Settings" status).
+            try:
+                self._refresh_cuda_perf_ui()
+            except Exception:
+                pass
             QtWidgets.QMessageBox.information(
                 self, "CUDA installed",
                 "CUDA acceleration installed successfully.\n\n"

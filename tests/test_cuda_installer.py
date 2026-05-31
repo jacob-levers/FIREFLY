@@ -1,6 +1,8 @@
 """Unit tests for the CUDA sidecar installer's pure logic (no network)."""
 import os
 
+import pytest
+
 from firefly import cuda_installer as cu
 
 
@@ -68,6 +70,55 @@ def test_is_installed_false_for_mismatched_abi(tmp_path, monkeypatch):
 
 def test_is_windows_returns_bool():
     assert isinstance(cu.is_windows(), bool)
+
+
+# ── configurable install location ─────────────────────────────────────────────
+def _fake_install(extracted_torch_dir):
+    os.makedirs(extracted_torch_dir, exist_ok=True)
+    open(os.path.join(extracted_torch_dir, "__init__.py"), "w").close()
+
+
+def test_sidecar_base_default_and_pointer_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(cu, "_firefly_app_dir", lambda: str(tmp_path))
+    # Default base lives under the fixed anchor.
+    assert cu.sidecar_base() == os.path.join(str(tmp_path), "torch-cuda")
+    # sidecar_dir is base/<cpXX>.
+    assert os.path.basename(cu.sidecar_dir()) == cu._current_py_tag()
+    # Pointer round-trips and overrides the default.
+    custom = os.path.join(str(tmp_path), "elsewhere", "torch-cuda")
+    cu.set_sidecar_base(custom)
+    assert cu.sidecar_base() == custom
+    assert cu.sidecar_dir().startswith(custom)
+    # Clearing reverts to default.
+    cu.set_sidecar_base(None)
+    assert cu.sidecar_base() == os.path.join(str(tmp_path), "torch-cuda")
+
+
+def test_move_install_relocates_tree_and_updates_pointer(tmp_path, monkeypatch):
+    monkeypatch.setattr(cu, "_firefly_app_dir", lambda: str(tmp_path / "anchor"))
+    _fake_install(os.path.join(cu.sidecar_dir(), "extracted", "torch"))
+    assert cu.is_installed()
+
+    dest_parent = str(tmp_path / "dest")
+    new_base = cu.move_install(dest_parent)
+
+    assert new_base == os.path.join(dest_parent, "torch-cuda")
+    assert cu.sidecar_base() == new_base                    # pointer updated
+    assert os.path.isfile(os.path.join(            # tree physically moved
+        new_base, cu._current_py_tag(), "extracted", "torch", "__init__.py"))
+    assert not os.path.exists(                              # old base gone
+        os.path.join(str(tmp_path / "anchor"), "torch-cuda"))
+    assert cu.is_installed()                                # still installed
+
+
+def test_move_install_rejects_nonempty_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(cu, "_firefly_app_dir", lambda: str(tmp_path / "anchor"))
+    _fake_install(os.path.join(cu.sidecar_dir(), "extracted", "torch"))
+    busy = os.path.join(str(tmp_path / "dest"), "torch-cuda", "junk")
+    os.makedirs(busy, exist_ok=True)
+    open(os.path.join(busy, "f.txt"), "w").close()
+    with pytest.raises(RuntimeError):
+        cu.move_install(str(tmp_path / "dest"))
 
 
 # ── wheel discovery (pure, no network) ────────────────────────────────────────

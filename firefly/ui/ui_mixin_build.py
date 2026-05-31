@@ -872,21 +872,51 @@ class BuildMixin:
                 "stack and free RAM are large.")
         gl.addRow("Chunk size (frames)", self.s_chunk_size)
 
-        # Manual GPU-acceleration entry point — Windows only.  When CUDA
-        # is already installed the button uninstalls; otherwise it kicks
-        # off the same downloader the first-launch prompt uses.
+        # GPU-acceleration entry point — Windows only.  When CUDA is NOT
+        # installed we show the Set-up button right here, where the user picks
+        # the CUDA backend.  Once installed it's hidden and a muted status
+        # points to Settings, where install / uninstall / relocate now live.
         self._cuda_btn = QtWidgets.QPushButton("Set up GPU acceleration…")
         self._cuda_btn.setToolTip(
-            "Download the CUDA build of PyTorch (~2.5 GB) to "
-            "%LOCALAPPDATA%\\FIREFLY\\torch-cuda so FIREFLY can use your "
-            "NVIDIA GPU for ~5–10× faster localisation.")
+            "Download the CUDA build of PyTorch (~2.5 GB) so FIREFLY can use\n"
+            "your NVIDIA GPU for ~5–10× faster localisation.\n"
+            "Manage it later under Settings › GPU acceleration.")
         self._cuda_btn.clicked.connect(self._on_cuda_button_clicked)
-        self._cuda_btn.setVisible(sys.platform == "win32")
         gl.addRow("", self._cuda_btn)
+
+        self._cuda_status_lbl = QtWidgets.QLabel()
+        self._cuda_status_lbl.setWordWrap(True)
+        self._cuda_status_lbl.setStyleSheet("color: gray;")
+        gl.addRow("", self._cuda_status_lbl)
+        self._refresh_cuda_perf_ui()
 
         layout.addWidget(sec)
 
         layout.addStretch(1)
+
+    def _refresh_cuda_perf_ui(self):
+        """Performance-section GPU control state.  Show the Set-up button only
+        when CUDA isn't installed; once it is, hide the button and show a muted
+        status pointing to Settings (where management now lives).  Windows
+        only — both widgets stay hidden elsewhere.  Safe to call repeatedly
+        (after install / uninstall / relocate)."""
+        if not hasattr(self, "_cuda_btn"):
+            return
+        if sys.platform != "win32":
+            self._cuda_btn.setVisible(False)
+            self._cuda_status_lbl.setVisible(False)
+            return
+        try:
+            from firefly import cuda_installer as _cu
+            installed = _cu.is_installed()
+        except Exception:
+            installed = False
+        self._cuda_btn.setVisible(not installed)
+        self._cuda_status_lbl.setVisible(installed)
+        if installed:
+            self._cuda_status_lbl.setText(
+                "GPU acceleration: installed ✓  —  manage under "
+                "Settings › GPU acceleration")
 
     def _build_landing_page(self) -> QtWidgets.QWidget:
         """Full-window welcome screen, Minecraft-menu style.

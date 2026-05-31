@@ -2959,9 +2959,149 @@ class _PreferencesDialog(QtWidgets.QDialog):
         self._pages.addWidget(fig_page)
         self._add_rail_entry("Figure defaults")
 
+        # ── Page: GPU acceleration (Windows only) ───────────────────────
+        # CUDA install/uninstall/relocate lives here now (it used to be a
+        # single toggle button buried in the Performance section).
+        import sys as _sys
+        if _sys.platform == "win32":
+            self._build_gpu_page()
+
         # Connect rail → stack
         self._rail.currentRowChanged.connect(self._pages.setCurrentIndex)
         self._rail.setCurrentRow(0)
+
+    # ── GPU acceleration page ────────────────────────────────────────────
+    def _build_gpu_page(self) -> None:
+        page = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(page)
+        v.setContentsMargins(24, 24, 24, 24); v.setSpacing(14)
+        v.addWidget(self._heading("GPU acceleration"))
+
+        # Cache the (slow) nvidia-smi probe once per dialog.
+        self._gpu_name = None
+        try:
+            from firefly import cuda_installer as _cu
+            self._gpu_name = _cu.detect_nvidia_gpu()
+        except Exception:
+            pass
+
+        self._gpu_status = QtWidgets.QLabel()
+        self._gpu_status.setWordWrap(True)
+        self._gpu_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(self._gpu_status)
+
+        btn_row = QtWidgets.QHBoxLayout(); btn_row.setSpacing(8)
+        self._gpu_install_btn = QtWidgets.QPushButton("Install")
+        self._gpu_install_btn.clicked.connect(self._on_gpu_install)
+        self._gpu_uninstall_btn = QtWidgets.QPushButton("Uninstall")
+        self._gpu_uninstall_btn.clicked.connect(self._on_gpu_uninstall)
+        self._gpu_move_btn = QtWidgets.QPushButton("Change location…")
+        self._gpu_move_btn.clicked.connect(self._on_gpu_change_location)
+        for b in (self._gpu_install_btn, self._gpu_uninstall_btn,
+                  self._gpu_move_btn):
+            btn_row.addWidget(b)
+        btn_row.addStretch(1)
+        v.addLayout(btn_row)
+
+        v.addWidget(self._restart_hint(
+            "Installing or removing CUDA takes effect after restarting FIREFLY. "
+            "The CUDA build of PyTorch is ~2.5 GB."))
+        v.addStretch(1)
+
+        self._pages.addWidget(page)
+        self._add_rail_entry("GPU acceleration")
+        self._refresh_gpu_status()
+
+    def _refresh_gpu_status(self) -> None:
+        try:
+            from firefly import cuda_installer as _cu
+        except Exception:
+            self._gpu_status.setText("CUDA installer module unavailable.")
+            for b in (self._gpu_install_btn, self._gpu_uninstall_btn,
+                      self._gpu_move_btn):
+                b.setEnabled(False)
+            return
+        installed = _cu.is_installed()
+        gpu = self._gpu_name or "no NVIDIA GPU detected"
+        lines = [f"GPU: {gpu}"]
+        if installed:
+            ver = _cu.installed_torch_version() or "unknown version"
+            lines.append(f"Status: installed — PyTorch {ver}")
+            lines.append(f"Location: {_cu.sidecar_dir()}")
+        else:
+            lines.append("Status: not installed (FIREFLY is using the bundled "
+                         "CPU build)")
+            lines.append(f"Location: {_cu.sidecar_base()}")
+        self._gpu_status.setText("\n".join(lines))
+        self._gpu_install_btn.setText("Reinstall" if installed else "Install")
+        self._gpu_uninstall_btn.setEnabled(installed)
+        # Relocation is allowed even before install (records where future
+        # installs land); only blocked if the installer module is missing.
+        self._gpu_move_btn.setEnabled(True)
+
+    def _on_gpu_install(self) -> None:
+        # Close Preferences first so the installer's own progress dialog isn't
+        # blocked behind this application-modal window, then kick it off.
+        self.accept()
+        QtCore.QTimer.singleShot(0, self._main._run_cuda_install)
+
+    def _on_gpu_uninstall(self) -> None:
+        from firefly import cuda_installer as _cu
+        reply = QtWidgets.QMessageBox.question(
+            self, "Remove CUDA acceleration?",
+            f"Remove the CUDA build of PyTorch at\n{_cu.sidecar_dir()}\n\n"
+            "FIREFLY will fall back to the bundled CPU build. You can "
+            "reinstall any time.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            _cu.uninstall()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Removal failed", str(exc))
+            return
+        QtWidgets.QMessageBox.information(
+            self, "CUDA removed",
+            "CUDA acceleration removed. Restart FIREFLY to drop back to the "
+            "bundled CPU build.")
+        self._refresh_gpu_status()
+        if hasattr(self._main, "_refresh_cuda_perf_ui"):
+            self._main._refresh_cuda_perf_ui()
+
+    def _on_gpu_change_location(self) -> None:
+        from firefly import cuda_installer as _cu
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Choose a folder for the CUDA install",
+            _cu.sidecar_base())
+        if not folder:
+            return
+        moving = _cu.is_installed()
+        verb = "Move the existing install" if moving else "Use"
+        reply = QtWidgets.QMessageBox.question(
+            self, "Change CUDA location?",
+            f"{verb} CUDA folder under:\n{folder}\\torch-cuda\n\n"
+            + ("This moves ~2.5 GB and may take a moment on a different drive."
+               if moving else "Future installs will go here."),
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes)
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        QtWidgets.QApplication.setOverrideCursor(
+            QtGui.QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            new_base = _cu.move_install(folder)
+        except Exception as exc:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.warning(self, "Couldn't change location", str(exc))
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        QtWidgets.QMessageBox.information(
+            self, "Location updated", f"CUDA location is now:\n{new_base}")
+        self._refresh_gpu_status()
 
     def _heading(self, txt: str) -> QtWidgets.QLabel:
         lbl = QtWidgets.QLabel(txt)

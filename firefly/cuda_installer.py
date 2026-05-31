@@ -144,21 +144,95 @@ def _sidecar_abi_ok(extracted: str) -> bool:
         return False
 
 
+def _firefly_app_dir() -> str:
+    """FIXED per-user FIREFLY config dir — %LOCALAPPDATA%\\FIREFLY on Windows,
+    ~/.firefly elsewhere.  This anchor never moves, so the location pointer
+    below is always discoverable even after the sidecar is relocated."""
+    if is_windows():
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "FIREFLY")
+    return os.path.join(os.path.expanduser("~"), ".firefly")
+
+
+def _location_pointer_path() -> str:
+    """JSON file recording a user-chosen sidecar base.  Lives at the fixed
+    anchor so both the frozen .exe and a source run read the same value."""
+    return os.path.join(_firefly_app_dir(), "cuda_location.json")
+
+
+def _default_sidecar_base() -> str:
+    return os.path.join(_firefly_app_dir(), "torch-cuda")
+
+
+def sidecar_base() -> str:
+    """The 'torch-cuda' root that holds the per-interpreter (cpXX) installs.
+
+    Defaults to %LOCALAPPDATA%\\FIREFLY\\torch-cuda but can be relocated by the
+    user (see move_install); the chosen path is persisted in a pointer file at
+    the fixed anchor so it survives restarts and is honoured by every build."""
+    try:
+        p = _location_pointer_path()
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            base = data.get("base") if isinstance(data, dict) else None
+            if base and isinstance(base, str):
+                return base
+    except Exception:
+        pass
+    return _default_sidecar_base()
+
+
+def set_sidecar_base(new_base: Optional[str]) -> None:
+    """Persist (or clear, when None) the user-chosen sidecar base location."""
+    try:
+        os.makedirs(_firefly_app_dir(), exist_ok=True)
+    except Exception:
+        pass
+    p = _location_pointer_path()
+    if not new_base:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+        return
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"base": str(new_base)}, fh)
+
+
+def move_install(new_parent: str) -> str:
+    """Relocate the whole CUDA sidecar tree under `new_parent` (a 'torch-cuda'
+    folder is created inside it), update the pointer, and return the new base.
+
+    The pointer is updated ONLY after the move succeeds, so a failed/interrupted
+    move never leaves FIREFLY pointing at a half-moved install.  If nothing is
+    installed yet this just records the location for future installs."""
+    old_base = sidecar_base()
+    new_base = os.path.abspath(os.path.join(new_parent, "torch-cuda"))
+    if os.path.abspath(old_base) == new_base:
+        return old_base
+    if os.path.exists(new_base):
+        if os.listdir(new_base):
+            raise RuntimeError(
+                f"Target already exists and is not empty:\n{new_base}")
+        os.rmdir(new_base)
+    if os.path.isdir(old_base):
+        os.makedirs(os.path.dirname(new_base), exist_ok=True)
+        shutil.move(old_base, new_base)   # moves every cpXX install at once
+    else:
+        os.makedirs(new_base, exist_ok=True)
+    set_sidecar_base(new_base)
+    return new_base
+
+
 def sidecar_dir() -> str:
-    """Per-interpreter sidecar root, e.g.
-    %LOCALAPPDATA%\\FIREFLY\\torch-cuda\\cp313 on Windows,
-    ~/.firefly/torch-cuda/cp313 elsewhere (dev/testing only).
+    """Per-interpreter sidecar dir, e.g. <sidecar_base>/cp313.
 
     Version-namespaced by interpreter ABI tag so a CUDA wheel installed under
     one Python version is never picked up by a build on another — that
     cross-version collision is what broke `import torch` after the 3.13 bump.
     Parent dirs are created on demand."""
-    if is_windows():
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        path = os.path.join(base, "FIREFLY", "torch-cuda", _current_py_tag())
-    else:
-        path = os.path.join(os.path.expanduser("~"), ".firefly",
-                            "torch-cuda", _current_py_tag())
+    path = os.path.join(sidecar_base(), _current_py_tag())
     try:
         os.makedirs(path, exist_ok=True)
     except Exception:
@@ -183,6 +257,23 @@ def is_installed() -> bool:
         return _sidecar_abi_ok(extracted)
     except Exception:
         return False
+
+
+def installed_torch_version() -> Optional[str]:
+    """Version string (e.g. '2.12.0+cu130') of the torch in the sidecar, read
+    from its version.py.  Works even before a restart (when the sidecar isn't
+    yet importable).  None if not installed / unreadable."""
+    try:
+        vp = os.path.join(sidecar_extracted_dir(), "torch", "version.py")
+        if os.path.isfile(vp):
+            with open(vp, "r", encoding="utf-8") as fh:
+                txt = fh.read()
+            m = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", txt)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
 
 
 # ── User-declined flag ────────────────────────────────────────────────────────
