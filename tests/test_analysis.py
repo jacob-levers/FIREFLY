@@ -299,3 +299,40 @@ def test_twoway_needs_two_timepoints():
     df = df[df["timepoint"] == "Pre"]            # only one time point
     res, msg = tw.compute_twoway_anova(df, ["auc_msd"])
     assert res is None and "time point" in msg
+
+
+def test_alpha_unidentifiable_for_immobile_no_boundary_wall():
+    """Regression: a jitter-dominated (immobile) track has a flat MSD, so the
+    anomalous-exponent fit can't identify alpha — curve_fit used to park it at
+    the upper bound, producing an unphysical 'wall' in the alpha histogram.
+    Such tracks must now report alpha = NaN and classify as 'Immobile', and NO
+    track may sit pinned at the alpha bound."""
+    rng = np.random.default_rng(0)
+    px, dt, sigma_loc = 0.1, 0.1, 0.3
+    rows = []
+    # 50 immobile molecules: fixed position + per-frame localisation jitter.
+    for pid in range(50):
+        cx, cy = rng.uniform(20, 200, 2)
+        for f in range(15):
+            rows.append((pid, f, cx + rng.normal(0, sigma_loc),
+                         cy + rng.normal(0, sigma_loc), 100.0))
+    # 30 mobile Brownian molecules.
+    for pid in range(50, 80):
+        x = np.cumsum(rng.normal(0, 1.5, 15)); y = np.cumsum(rng.normal(0, 1.5, 15))
+        for f in range(15):
+            rows.append((pid, f, x[f] + rng.normal(0, sigma_loc),
+                         y[f] + rng.normal(0, sigma_loc), 100.0))
+    tracks = pd.DataFrame(rows, columns=["particle", "frame", "x", "y", "mass"])
+    _imsd, _emsd, diff = s.compute_msd_and_fit(
+        tracks, px, dt, max_lagtime=10, n_fit=5, workers=1)
+
+    a = diff["alpha"]
+    # No unphysical wall: nothing pinned at/above the (now 2.0) bound, and
+    # never above 2.0.
+    assert (a.dropna() < 1.99).all(), "alpha still pinned at the upper bound"
+    # Immobile molecules: many alpha become NaN and are classified Immobile.
+    assert a.isna().sum() > 0
+    assert (diff["motion"] == "Immobile").sum() > 0
+    # Mobile molecules retain a finite, physical alpha (~1 for Brownian).
+    assert a.notna().sum() > 0
+    assert 0.0 <= a.dropna().median() <= 1.6

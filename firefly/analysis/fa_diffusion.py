@@ -89,6 +89,7 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     D = alpha = np.nan
     msd0 = np.nan        # localisation-error offset (4·sigma²) == PALM-Tracer "MSD(0)"
     mse  = np.nan        # mean squared residual of the fit
+    immobile = False     # set when alpha can't be measured (jitter-dominated track)
     n_ok = int(ok.sum())
     t_ok, m_ok = t[ok], m[ok]
     if n_ok >= 4:
@@ -100,16 +101,37 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
         except Exception:
             d_seed, off_seed = 0.01, max(0.0, float(m_ok[0]))
         try:
+            # alpha upper bound 2.0 — physically alpha ∈ [0, 2] (2 = ballistic);
+            # anything above is non-physical and only ever appears as a fitting
+            # artefact.
             popt, _ = curve_fit(msd_anomalous, t_ok, m_ok,
                                 p0=[d_seed, 1.0, off_seed],
-                                bounds=([0, 0, 0], [np.inf, 3.0, np.inf]),
+                                bounds=([0, 0, 0], [np.inf, 2.0, np.inf]),
                                 maxfev=5000)
             D, alpha, msd0 = float(popt[0]), float(popt[1]), float(popt[2])
             _resid = m_ok - msd_anomalous(t_ok, *popt)
             mse = float(np.mean(_resid ** 2))
+            # ── Identifiability guard ──────────────────────────────────────
+            # For a near-immobile / jitter-dominated track the measured MSD is
+            # essentially the flat localisation floor (offset): the dynamic
+            # 4·D·t^alpha term ≈ 0, so alpha is UNCONSTRAINED and curve_fit
+            # parks it at a bound — the unphysical spike pinned at the maximum
+            # that an alpha histogram shows as a "wall".  When alpha is pinned
+            # at a bound, or the dynamic rise is a negligible fraction of the
+            # MSD across the fit window, alpha simply cannot be measured: drop
+            # it (NaN) and treat the track as Immobile (classified by its
+            # displacement, not by a meaningless exponent).  Genuinely mobile
+            # tracks (dynamics well above the floor) are unaffected.
+            t_hi     = float(t_ok[-1])
+            dyn      = 4.0 * D * (t_hi ** alpha)          # moving part at the longest fit lag
+            total    = dyn + max(msd0, 0.0)               # ≈ MSD(t_hi)
+            dyn_frac = (dyn / total) if total > 0 else 0.0
+            if alpha <= 1e-3 or alpha >= 2.0 - 1e-3 or dyn_frac < 0.10:
+                alpha = np.nan
+                immobile = True
         except Exception:
             pass
-    if not np.isfinite(D) and n_ok >= 3:
+    if not np.isfinite(D) and not immobile and n_ok >= 3:
         # Fallback for very short tracks (or a non-converging joint fit): the
         # legacy two-step estimate (linear D + log-log alpha).  Less accurate
         # near the localisation floor but always returns something.
@@ -125,7 +147,15 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             mse = float(np.mean(_resid ** 2))
         except Exception: pass
 
-    motion = classify_motion(alpha, alpha_thresholds) if np.isfinite(alpha) else "Unknown"
+    # Motion class: a measurable alpha → threshold classification; an
+    # unmeasurable alpha on a jitter-dominated track → "Immobile"; a complete
+    # fit failure → "Unknown".
+    if np.isfinite(alpha):
+        motion = classify_motion(alpha, alpha_thresholds)
+    elif immobile:
+        motion = "Immobile"
+    else:
+        motion = "Unknown"
 
     # Two distinct radial-spread metrics, both useful and named explicitly:
     #   mean_radial_displacement_um  = ⟨|r − r̄|⟩       (1st moment)
