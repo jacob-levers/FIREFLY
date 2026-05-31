@@ -102,16 +102,31 @@ except ImportError:
     HAS_TIFFFILE = False
 
 
-def _parse_czi_metadata(xml_str):
+def _parse_czi_metadata(xml):
+    """Extract pixel size (µm) and frame interval (s) from CZI metadata.
+
+    Accepts the metadata as an ElementTree Element (what aicspylibczi's
+    `czi.meta` returns), an XML string (czifile's `metadata()`), or bytes.
+    Earlier this only accepted a string, so the aicspylibczi path silently
+    failed (ET.fromstring on an Element raises) and every CZI reported no
+    pixel size / frame interval even though ZEN/Fiji read them fine.
+    """
     meta = {"pixel_size_um": None, "frame_interval_s": None}
-    if not xml_str:
+    if xml is None:
         return meta
     try:
-        root = ET.fromstring(xml_str)
+        if isinstance(xml, (bytes, bytearray)):
+            xml = xml.decode("utf-8", "replace")
+        root = ET.fromstring(xml) if isinstance(xml, str) else xml
+    except Exception:
+        return meta
+
+    # ── Pixel size: Scaling/Items/Distance Id="X"|"Y", Value in metres ──
+    try:
         for dist in root.iter("Distance"):
             if dist.get("Id", "") in ("X", "Y"):
                 el = dist.find("Value")
-                if el is not None:
+                if el is not None and el.text:
                     try:
                         val = float(el.text)
                         if 1e-9 < val < 1e-3:
@@ -119,22 +134,54 @@ def _parse_czi_metadata(xml_str):
                             break
                     except (TypeError, ValueError):
                         pass
-        for tag in ("TimeIncrement", "Interval"):
+    except Exception:
+        pass
+
+    # ── Frame interval ──────────────────────────────────────────────────
+    # Prefer <FrameTime> (seconds) — what ZEN writes for time-lapse and what
+    # Fiji surfaces.  Fall back to a unit-aware <TimeSpan>/<Interval> (ZEN
+    # stores these in ms), then the legacy <TimeIncrement>/<Increment>.
+    def _set_fi(v):
+        if v is not None and 1e-6 < v < 3600:
+            meta["frame_interval_s"] = round(v, 6)
+            return True
+        return False
+
+    try:
+        ft = root.find(".//FrameTime")
+        if ft is not None and ft.text:
+            _set_fi(float(ft.text))                      # already seconds
+    except (TypeError, ValueError):
+        pass
+
+    if meta["frame_interval_s"] is None:
+        _UNIT = {"ms": 1e-3, "µs": 1e-6, "us": 1e-6, "s": 1.0, "sec": 1.0}
+        for node in list(root.iter("TimeSpan")) + list(root.iter("Interval")):
+            try:
+                vel = node.find("Value")
+                if vel is None or not vel.text:
+                    continue
+                v = float(vel.text)
+                if v <= 0:
+                    continue
+                unit = (node.findtext("DefaultUnitFormat") or "s").strip().lower()
+                if _set_fi(v * _UNIT.get(unit, 1.0)):
+                    break
+            except (TypeError, ValueError):
+                continue
+
+    if meta["frame_interval_s"] is None:
+        for tag in ("TimeIncrement", "Increment"):
             el = root.find(f".//{tag}")
             if el is not None:
-                text = el.text or (
-                    el.find("Value").text
-                    if el.find("Value") is not None else None)
+                text = el.text or (el.find("Value").text
+                                   if el.find("Value") is not None else None)
                 if text:
                     try:
-                        val = float(text)
-                        if 1e-6 < val < 3600:
-                            meta["frame_interval_s"] = round(val, 6)
+                        if _set_fi(float(text)):
                             break
                     except (TypeError, ValueError):
                         pass
-    except Exception:
-        pass
     return meta
 
 
