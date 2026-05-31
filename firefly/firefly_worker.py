@@ -813,6 +813,34 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     if p.get("roi_polygon"):
         roi_mode = "polygon"
 
+    # Auto-detect a sibling ImageJ ROI (RoiSet.zip / a RoiSet/ folder / *.roi)
+    # next to the input file and use it as a polygon ROI — so a batch picks up
+    # ROIs drawn in ImageJ/Fiji without loading each one by hand.  Skipped for
+    # external-CSV inputs, when a polygon was already set for this file, or when
+    # the user explicitly chose a different ROI mode.  A local copy of `p` is
+    # used so the detected polygon never leaks to the next file in a batch.
+    if (not external_csv
+            and not p.get("roi_polygon")
+            and bool(p.get("roi_imagej_autodetect", True))
+            and roi_mode in ("none", "auto", "manual", "polygon")):
+        try:
+            from firefly.analysis import fa_roi as _far
+            _roi_path = _far.find_sibling_imagej_roi(
+                os.path.dirname(fpath),
+                os.path.splitext(os.path.basename(fpath))[0])
+            if _roi_path:
+                _polys = _far.load_roi_polygons_any(_roi_path)
+                if _polys:
+                    p = dict(p)
+                    p["roi_polygon"] = [poly.tolist() for poly in _polys]
+                    roi_mode = "polygon"
+                    _log(f"  NOTE: auto-detected ImageJ ROI "
+                         f"'{os.path.basename(_roi_path)}' "
+                         f"({len(_polys)} region(s)) — using as polygon ROI.  "
+                         f"Set roi_imagej_autodetect=False to disable.")
+        except Exception as _exc:
+            _log(f"  WARN: ImageJ ROI auto-detect failed: {_exc}")
+
     # Auto-detect a microscope-exported sister ROI image (e.g.
     # `<base>_green.tif`).  When `roi_mode == "auto_sister"` we ONLY use
     # the sister TIFF, falling back to no-ROI if missing.  When

@@ -794,6 +794,20 @@ class BuildMixin:
         vbg.addWidget(self.sld_roi_bg_sigma)
         gl.addRow("Background scale σ", wbg)
 
+        # Auto-pair a sibling ImageJ ROI (RoiSet.zip / a RoiSet/ folder / .roi)
+        # found next to each input file, applying it as a polygon ROI — so a
+        # batch reuses ROIs drawn in ImageJ/Fiji without loading each by hand.
+        self.c_roi_imagej_auto = QtWidgets.QCheckBox(
+            "Auto-detect sibling ImageJ ROI (RoiSet.zip / .roi)")
+        self.c_roi_imagej_auto.setChecked(True)
+        self.c_roi_imagej_auto.setToolTip(
+            "When a movie has an ImageJ ROI next to it (RoiSet.zip, a RoiSet/\n"
+            "folder of .roi files, or <name>.roi / <name>.zip), use it as a\n"
+            "polygon ROI automatically.  Lets a batch reuse ROIs drawn in\n"
+            "ImageJ/Fiji without loading each one by hand.  A polygon you set\n"
+            "explicitly in the ROI editor still takes precedence.")
+        gl.addRow("", self.c_roi_imagej_auto)
+
         # Grey out threshold-related controls when the mode doesn't use
         # them, AND show/hide the embedded ROI viewer on the Import tab
         # when "Manual polygon" is selected.
@@ -2124,6 +2138,9 @@ class BuildMixin:
             # prefer it over the intensity-based ROI when present.
             "roi_sister_suffix":      "_green",
             "roi_sister_autodetect":  True,
+            # ImageJ ROI auto-pairing — find a sibling RoiSet.zip / RoiSet
+            # folder / .roi next to each file and apply it as a polygon ROI.
+            "roi_imagej_autodetect":  bool(self.c_roi_imagej_auto.isChecked()),
             # Per-file polygon ROI lookup.  If this file has a saved
             # polygon, it's sent regardless of the ROI-mode setting and
             # the worker treats it as if mode were "polygon".  Files

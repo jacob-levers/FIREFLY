@@ -1498,132 +1498,15 @@ class _RoiDialog(QtWidgets.QDialog):
         return self._result_polygons
 
 
-def _load_imagej_roi_polygons(path: str) -> list:
-    """Read an ImageJ / palmTRACER `.roi` or `.zip` file and return a
-    list of polygon vertex arrays (each (N, 2) in image-pixel coords,
-    [y, x] ordering as napari expects for Shapes layers).
-
-    Lines / points / text ROIs are filtered out — only closed polygons
-    (FreeRoi, Polygon, Rectangle, Oval, Traced) survive.
-
-    Raises whatever roifile raises on parse error.  Returns [] if the
-    file contained nothing polygon-shaped.
-    """
-    import roifile
-    import numpy as np
-    rois = roifile.ImagejRoi.fromfile(path)
-    if not isinstance(rois, list):
-        rois = [rois]
-    polys = []
-    for roi in rois:
-        try:
-            # `.coordinates()` returns an (N, 2) ndarray of (x, y)
-            # pairs in pixel coords.  napari Shapes expect (y, x), so
-            # we swap the columns.
-            coords = roi.coordinates()
-            if coords is None:
-                continue
-            coords = np.asarray(coords, dtype=float)
-            if coords.ndim != 2 or coords.shape[1] != 2 or coords.shape[0] < 3:
-                continue
-            yx = np.column_stack([coords[:, 1], coords[:, 0]])
-            polys.append(yx)
-        except Exception:
-            # Skip any single ROI that fails to parse rather than aborting
-            # the whole file.
-            continue
-    return polys
-
-
-def _load_tif_mask_polygons(path: str,
-                            simplify_tol: float = 0.5) -> list:
-    """Read a raster ROI mask (`.tif` / `.tiff`) and convert it into a
-    list of polygon vertex arrays (each (N, 2) in [y, x] pixel coords,
-    matching what napari Shapes layers expect).
-
-    palmTRACER exports its drawn ROIs as binary / labeled TIFF masks,
-    not as vector ImageJ ROIs — so the standard `.roi` loader can't
-    read them.  We:
-
-      1. Load the image (first plane if it's a stack).
-      2. If the mask has multiple non-zero label values, treat each label
-         as a separate ROI.  Otherwise threshold > 0 → one ROI.
-      3. Pull the outer contour of each connected region with
-         `skimage.measure.find_contours`.
-      4. Light Douglas-Peucker simplification (≤ 0.5 px by default) so
-         the user sees tens of vertices, not thousands of jagged pixel
-         steps — the test still passes through the same Path.contains_points
-         filter, so accuracy isn't affected.
-
-    Returns [] if the file decodes but contains no non-zero pixels.
-    """
-    import numpy as np
-    from skimage import io as _skio
-    from skimage import measure as _skmeasure
-    from skimage.morphology import label as _sklabel
-
-    img = _skio.imread(path)
-    img = np.asarray(img)
-    if img.ndim == 3:
-        # Stack or multi-channel: collapse on the leading axis.  Most
-        # palmTRACER ROI .tif exports are single-plane greyscale, but
-        # some saves end up as (1, H, W) or (H, W, 3) — handle both by
-        # reducing to a 2-D mask via "any non-zero across the extra dim".
-        if img.shape[-1] in (3, 4) and img.shape[0] > 4:
-            img = img[..., 0]
-        else:
-            img = img.max(axis=0)
-    if img.ndim != 2:
-        return []
-
-    polys: list = []
-    unique = np.unique(img)
-    # Treat as labelled image only if there are multiple distinct
-    # non-zero values (more than ~3 different labels).  Otherwise it's
-    # a binary mask — relabel connected components ourselves.
-    nonzero_labels = unique[unique != 0]
-    if nonzero_labels.size >= 3:
-        labels_arr = img.astype(np.int32, copy=False)
-        label_values = nonzero_labels
-    else:
-        binary = img > 0
-        if not binary.any():
-            return []
-        labels_arr = _sklabel(binary, connectivity=2)
-        label_values = np.unique(labels_arr)
-        label_values = label_values[label_values != 0]
-
-    for lv in label_values:
-        region_mask = (labels_arr == lv)
-        # find_contours wants a real-valued image; use the mask cast
-        # to float and find the 0.5 level set — the standard trick
-        # for getting clean integer-aligned region boundaries.
-        contours = _skmeasure.find_contours(
-            region_mask.astype(np.float32), 0.5)
-        for c in contours:
-            if c.shape[0] < 3:
-                continue
-            if simplify_tol > 0:
-                try:
-                    c = _skmeasure.approximate_polygon(c, simplify_tol)
-                except Exception:
-                    pass
-            if c.shape[0] >= 3:
-                polys.append(c.astype(float))   # already (y, x)
-    return polys
-
-
-def _load_any_roi_file(path: str) -> list:
-    """Dispatch ROI loading by file extension.
-
-    Supports the two formats palmTRACER actually writes:
-      • `.roi` / `.zip`  — ImageJ binary ROI (vector polygons)
-      • `.tif` / `.tiff` — raster ROI mask exported by palmTRACER
-    """
-    ext = os.path.splitext(path.lower())[1]
-    if ext in (".tif", ".tiff"):
-        return _load_tif_mask_polygons(path)
-    return _load_imagej_roi_polygons(path)
+# ROI-file parsers now live in firefly.analysis.fa_roi (Qt-free, so the
+# analysis worker can reuse them for sibling-ROI auto-detect).  Re-exported
+# here so existing GUI imports (`from ...ui_widgets import _load_any_roi_file`,
+# etc.) keep working unchanged.
+from firefly.analysis.fa_roi import (        # noqa: E402,F401
+    _load_imagej_roi_polygons,
+    _load_tif_mask_polygons,
+    _load_any_roi_file,
+)
 
 
 class _RoiViewer(QtWidgets.QWidget):

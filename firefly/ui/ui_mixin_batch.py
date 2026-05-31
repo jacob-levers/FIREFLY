@@ -80,6 +80,12 @@ class BatchMixin:
                 except OSError:
                     continue
                 for cname in child_names:
+                    # Skip hidden / macOS AppleDouble (`._*`) and `.DS_Store`
+                    # stubs — same guard the top-level loop applies.  Without
+                    # it, Mac-exported folders surface 4 KB `._<name>.czi`
+                    # ghosts that then get flagged corrupt and clutter the list.
+                    if cname.startswith("."):
+                        continue
                     cfull = os.path.join(full, cname)
                     if (os.path.isfile(cfull)
                         and self._looks_like_input_file(cname)):

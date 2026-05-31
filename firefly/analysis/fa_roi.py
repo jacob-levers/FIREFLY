@@ -4,6 +4,9 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 """
 from __future__ import annotations
 
+import glob
+import os
+
 from firefly.analysis.fa_constants import _tqdm
 
 import numpy as np
@@ -407,3 +410,136 @@ def apply_roi_mask(locs, mask):
     print(f"  ROI filter ({mode_str}): kept {len(filtered):,} / {len(locs):,} "
           f"localisations  ({n_removed:,} outside ROI removed)")
     return filtered
+
+
+# ── ROI-file parsers (Qt-free; re-exported from ui_widgets) ───────────────────
+# These were originally in firefly.ui.ui_widgets, but the analysis worker needs
+# them too and must not import PySide6.  They live here (pure stdlib + skimage)
+# and ui_widgets re-imports them for the GUI "Load ROI…" path.
+def _load_imagej_roi_polygons(path: str) -> list:
+    """Read an ImageJ / palmTRACER `.roi` or `.zip` file and return a list of
+    polygon vertex arrays (each (N, 2) in image-pixel [y, x] order, as napari
+    Shapes layers expect).  Lines / points / text ROIs are filtered out — only
+    closed polygons (FreeRoi, Polygon, Rectangle, Oval, Traced) survive.
+    Returns [] if the file contained nothing polygon-shaped."""
+    import roifile
+    rois = roifile.ImagejRoi.fromfile(path)
+    if not isinstance(rois, list):
+        rois = [rois]
+    polys = []
+    for roi in rois:
+        try:
+            coords = roi.coordinates()
+            if coords is None:
+                continue
+            coords = np.asarray(coords, dtype=float)
+            if coords.ndim != 2 or coords.shape[1] != 2 or coords.shape[0] < 3:
+                continue
+            polys.append(np.column_stack([coords[:, 1], coords[:, 0]]))  # -> (y,x)
+        except Exception:
+            continue
+    return polys
+
+
+def _load_tif_mask_polygons(path: str, simplify_tol: float = 0.5) -> list:
+    """Read a raster ROI mask (`.tif`/`.tiff`, e.g. palmTRACER's mask export)
+    and convert each connected region to a polygon (N, 2) in [y, x] pixel
+    coords.  Returns [] if the file has no non-zero pixels."""
+    from skimage import io as _skio
+    from skimage import measure as _skmeasure
+    from skimage.morphology import label as _sklabel
+
+    img = np.asarray(_skio.imread(path))
+    if img.ndim == 3:
+        if img.shape[-1] in (3, 4) and img.shape[0] > 4:
+            img = img[..., 0]
+        else:
+            img = img.max(axis=0)
+    if img.ndim != 2:
+        return []
+
+    polys: list = []
+    nonzero = np.unique(img)[np.unique(img) != 0]
+    if nonzero.size >= 3:
+        labels_arr, label_values = img.astype(np.int32, copy=False), nonzero
+    else:
+        binary = img > 0
+        if not binary.any():
+            return []
+        labels_arr = _sklabel(binary, connectivity=2)
+        label_values = np.unique(labels_arr)
+        label_values = label_values[label_values != 0]
+
+    for lv in label_values:
+        for c in _skmeasure.find_contours((labels_arr == lv).astype(np.float32), 0.5):
+            if c.shape[0] < 3:
+                continue
+            if simplify_tol > 0:
+                try:
+                    c = _skmeasure.approximate_polygon(c, simplify_tol)
+                except Exception:
+                    pass
+            if c.shape[0] >= 3:
+                polys.append(c.astype(float))   # already (y, x)
+    return polys
+
+
+def _load_any_roi_file(path: str) -> list:
+    """Dispatch ROI loading by extension: `.tif`/`.tiff` → raster mask,
+    otherwise ImageJ binary `.roi`/`.zip`."""
+    ext = os.path.splitext(path.lower())[1]
+    if ext in (".tif", ".tiff"):
+        return _load_tif_mask_polygons(path)
+    return _load_imagej_roi_polygons(path)
+
+
+def _not_appledouble(p: str) -> bool:
+    """Skip macOS AppleDouble `._*` stubs and `.DS_Store`."""
+    b = os.path.basename(p)
+    return not (b.startswith("._") or b == ".DS_Store")
+
+
+def find_sibling_imagej_roi(directory: str, stem: str):
+    """Locate an ImageJ ROI for a movie at <directory>/<stem>.<ext>.
+
+    Preference: RoiSet.zip → a RoiSet/ folder of .roi → <stem>.zip/.roi →
+    the single .zip/.roi in the folder.  AppleDouble `._*` files are ignored.
+    Returns a path (file or RoiSet folder) or None."""
+    try:
+        cand = os.path.join(directory, "RoiSet.zip")
+        if os.path.isfile(cand):
+            return cand
+        rs_dir = os.path.join(directory, "RoiSet")
+        if os.path.isdir(rs_dir) and any(
+                _not_appledouble(p)
+                for p in glob.glob(os.path.join(rs_dir, "*.roi"))):
+            return rs_dir
+        for ext in (".zip", ".roi"):
+            cand = os.path.join(directory, f"{stem}{ext}")
+            if os.path.isfile(cand):
+                return cand
+        for pat in ("*.zip", "*.roi"):
+            hits = [p for p in glob.glob(os.path.join(directory, pat))
+                    if _not_appledouble(p)]
+            if len(hits) == 1:
+                return hits[0]
+    except Exception:
+        pass
+    return None
+
+
+def load_roi_polygons_any(path: str) -> list:
+    """Load polygons from a `.roi`/`.zip` file, a `.tif` mask, OR a folder of
+    `.roi` files (all unioned).  Used by both the GUI and the worker's
+    sibling-ROI auto-detect."""
+    if os.path.isdir(path):
+        polys: list = []
+        for f in sorted(glob.glob(os.path.join(path, "*.roi"))):
+            if not _not_appledouble(f):
+                continue
+            try:
+                polys.extend(_load_imagej_roi_polygons(f))
+            except Exception:
+                continue
+        return polys
+    return _load_any_roi_file(path)

@@ -1742,6 +1742,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("analysis/roi_threshold",   self.s_roi_threshold,   "spin",  float),
             ("analysis/roi_mask_mode",   self.c_roi_mask_mode,   "combo"),
             ("analysis/roi_bg_sigma",    self.s_roi_bg_sigma,    "spin",  float),
+            ("analysis/roi_imagej_autodetect", self.c_roi_imagej_auto, "check", _bool_cast),
 
             # ── Drift correction ──────────────────────────────────────────
             ("analysis/drift_correct",   self.c_drift_correct,   "check", _bool_cast),
