@@ -209,6 +209,10 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
     ax.set_xlim(-0.35, len(tp_order) - 0.65)   # pad so end markers aren't clipped
     ax.set_xlabel("Time point")
     ax.set_ylabel(ylabel)
+    # Plain group key (names + colour swatch only — the stats are the centred
+    # labels below).  Anchored bottom-left so it stays clear of those labels.
+    ax.legend(frameon=False, loc="lower left", fontsize=8, title="Group",
+              title_fontsize=8)
 
     # Centred p/g labels, stacked above the highest line, coloured to match.
     if change:
