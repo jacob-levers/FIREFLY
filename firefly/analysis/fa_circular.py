@@ -2145,6 +2145,45 @@ def _paired_hedges_g(pre, post):
     return float(J * dz)
 
 
+def _paired_hedges_g_ci(pre, post, n_boot=2000, seed=0):
+    """Paired effect size d_z (Hedges-corrected) with a percentile bootstrap
+    95% CI, resampling the matched PAIRS.  Returns (g, lo, hi) or
+    (None, None, None)."""
+    pre = np.asarray(pre, dtype=float)
+    post = np.asarray(post, dtype=float)
+    m = np.isfinite(pre) & np.isfinite(post)
+    pre, post = pre[m], post[m]
+    g = _paired_hedges_g(pre, post)
+    if g is None:
+        return (None, None, None)
+    n = len(pre)
+
+    def _dz(p0, p1):
+        d = p1 - p0
+        sd = float(np.std(d, ddof=1))
+        if not np.isfinite(sd) or sd == 0:
+            return None
+        J = 1.0 - 3.0 / (4.0 * (len(d) - 1) - 1.0)
+        return J * float(np.mean(d)) / sd
+
+    try:
+        rng = np.random.default_rng(seed)
+        boot = np.empty(n_boot, dtype=float)
+        k = 0
+        for _ in range(n_boot):
+            idx = rng.integers(0, n, n)            # resample pairs
+            v = _dz(pre[idx], post[idx])
+            if v is not None and np.isfinite(v):
+                boot[k] = v
+                k += 1
+        if k >= max(20, n_boot // 10):
+            lo, hi = np.percentile(boot[:k], [2.5, 97.5])
+            return (g, float(lo), float(hi))
+    except Exception:
+        pass
+    return (g, None, None)
+
+
 def _n_per_group_for_power(d, power=0.80, alpha=0.05, n_max=500):
     """Smallest n PER GROUP for a two-sample, two-sided t-test to reach
     `power` at significance `alpha`, given Cohen's d.
