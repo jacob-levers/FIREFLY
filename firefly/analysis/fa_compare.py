@@ -18,6 +18,7 @@ from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_
                           _motion_fractions, _track_lengths)
 from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
                          _stat_test, _stat_test_n, _hedges_g_ci,
+                         _paired_test, _paired_hedges_g,
                          _p_stars, compute_per_track_mean_angle,
                          compute_circular_comparison_tests)
 from firefly.analysis import fa_twoway
@@ -198,6 +199,40 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
             ax.text(x[ti], cluster_top + 0.06 * span, txt,
                     ha="center", va="bottom", fontsize=7.5, color=sig_col,
                     linespacing=1.25)
+
+    # Per-group PRE→POST change: same cells imaged at both time points, so this
+    # is a PAIRED test (paired-t / Wilcoxon) with the paired effect size d_z —
+    # the "Δ" label on each line, colour-matched to its group.  Only for the
+    # 2-time-point case (the change is only well-defined between two points).
+    if len(tp_order) == 2:
+        tp0, tp1 = tp_order
+        for gi, grp in enumerate(group_order):
+            col = (group_colors or {}).get(grp) \
+                or _TP_SERIES_COLORS[gi % len(_TP_SERIES_COLORS)]
+            s0 = summary_df.loc[(summary_df["group"] == grp)
+                                & (summary_df["timepoint"] == tp0)].set_index("cell")[metric]
+            s1 = summary_df.loc[(summary_df["group"] == grp)
+                                & (summary_df["timepoint"] == tp1)].set_index("cell")[metric]
+            common = s0.index.intersection(s1.index)
+            if len(common) < 2:
+                continue
+            pre = s0.loc[common].to_numpy(dtype=float)
+            post = s1.loc[common].to_numpy(dtype=float)
+            p, stars = _paired_test(pre, post)
+            if not np.isfinite(p):
+                continue
+            g = _paired_hedges_g(pre, post)
+            p_str = (f"p = {p:.1e}" if p < 0.001 else f"p = {p:.3f}")
+            txt = f"Δ {p_str}  {stars}"
+            if g is not None and np.isfinite(g):
+                txt += f",  g = {g:+.2f}"
+            # place on the line midpoint, with a panel-coloured box so the
+            # text stays legible where it crosses the line
+            ym = 0.5 * (float(np.nanmean(pre)) + float(np.nanmean(post)))
+            ax.text(0.5, ym, txt, ha="center", va="center", fontsize=7,
+                    color=col,
+                    bbox=dict(facecolor=palette.get("PNL", "#161b22"),
+                              edgecolor="none", alpha=0.75, pad=1.5))
 
 
 def compare_groups(groups,

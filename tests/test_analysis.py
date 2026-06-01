@@ -326,6 +326,25 @@ def test_find_stem_ignores_appledouble_sidecars(tmp_path):
     assert "._" not in fp._find_stem(str(tmp_path))
 
 
+# ── paired (within-group, across-time) stats for interaction plots ───────────
+def test_paired_test_and_effect_size():
+    from firefly.analysis.fa_circular import _paired_test, _paired_hedges_g
+    rng = np.random.default_rng(0)
+    pre = rng.normal(2.5, 0.4, 12)
+    post = pre - 0.5 + rng.normal(0, 0.1, 12)     # consistent paired drop
+    p, stars = _paired_test(pre, post)
+    assert p < 0.05 and stars in ("*", "**", "***")
+    g = _paired_hedges_g(pre, post)
+    assert g is not None and g < 0            # post < pre → negative effect
+    # no real change → not significant
+    post0 = pre + rng.normal(0, 0.05, 12)
+    p0, _ = _paired_test(pre, post0)
+    assert p0 > 0.05
+    # degenerate guards
+    assert _paired_hedges_g([1.0], [2.0]) is None
+    assert not np.isfinite(_paired_test([1.0, 1.0], [1.0, 1.0])[0])
+
+
 def test_alpha_unidentifiable_for_immobile_no_boundary_wall():
     """Regression: a jitter-dominated (immobile) track has a flat MSD, so the
     anomalous-exponent fit can't identify alpha — curve_fit used to park it at

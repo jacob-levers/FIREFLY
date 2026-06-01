@@ -2087,6 +2087,64 @@ def _hedges_g_ci(a, b, n_boot=2000, seed=0):
     return (g, None, None)
 
 
+def _paired_test(pre, post):
+    """Two-sided PAIRED test on matched per-cell values (the same cell measured
+    at two time points).  Paired t-test when the differences look normal,
+    Wilcoxon signed-rank otherwise.  `pre` and `post` must be aligned 1-D
+    arrays (same cell at the same index).  Returns (p, stars)."""
+    pre = np.asarray(pre, dtype=float)
+    post = np.asarray(post, dtype=float)
+    m = np.isfinite(pre) & np.isfinite(post)
+    pre, post = pre[m], post[m]
+    if len(pre) < 2:
+        return (np.nan, "")
+    diff = post - pre
+    if np.allclose(diff, 0.0):
+        return (np.nan, "")
+    try:
+        from scipy.stats import ttest_rel, wilcoxon, shapiro
+        normal = True
+        if 3 <= len(diff) <= 5000:
+            try:
+                if shapiro(diff).pvalue < 0.05:
+                    normal = False
+            except Exception:
+                pass
+        if normal:
+            p = ttest_rel(pre, post).pvalue
+        else:
+            p = wilcoxon(pre, post).pvalue
+        if not np.isfinite(p):
+            return (np.nan, "")
+        if p < 0.001: stars = "***"
+        elif p < 0.01: stars = "**"
+        elif p < 0.05: stars = "*"
+        else: stars = "ns"
+        return (float(p), stars)
+    except Exception:
+        return (np.nan, "")
+
+
+def _paired_hedges_g(pre, post):
+    """Within-subject (paired) effect size: d_z = mean(diff) / SD(diff), with
+    the small-sample Hedges correction J = 1 − 3/(4·(n−1) − 1).  This is the
+    paired analogue of Hedges' g — it uses the SD of the per-cell differences,
+    so it accounts for the PRE/POST correlation.  Returns g or None."""
+    pre = np.asarray(pre, dtype=float)
+    post = np.asarray(post, dtype=float)
+    m = np.isfinite(pre) & np.isfinite(post)
+    diff = post[m] - pre[m]
+    n = len(diff)
+    if n < 2:
+        return None
+    sd = float(np.std(diff, ddof=1))
+    if not np.isfinite(sd) or sd == 0:
+        return None
+    dz = float(np.mean(diff)) / sd
+    J = 1.0 - 3.0 / (4.0 * (n - 1) - 1.0)
+    return float(J * dz)
+
+
 def _n_per_group_for_power(d, power=0.80, alpha=0.05, n_max=500):
     """Smallest n PER GROUP for a two-sample, two-sided t-test to reach
     `power` at significance `alpha`, given Cohen's d.
