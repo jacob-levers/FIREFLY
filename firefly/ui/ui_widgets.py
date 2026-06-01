@@ -2562,9 +2562,12 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
     changed = QtCore.Signal()
     delete_requested = QtCore.Signal(object)   # self
 
-    # Default colour palette — cycled through for new cards
+    # Default colour palette — cycled through for new cards.  12 distinct
+    # hues so every card up to COMPARE_MAX_GROUPS gets its own swatch before
+    # the palette repeats.
     _DEFAULT_COLORS = ["#3b6ed8", "#f78166", "#56d364", "#d2a8ff",
-                       "#ffa657", "#79c0ff"]
+                       "#ffa657", "#79c0ff", "#e3b341", "#ff7b72",
+                       "#39c5cf", "#bc8cff", "#7ee787", "#ffa198"]
 
     def __init__(self, index: int, label: str = "", color: str = "",
                  timepoint: str = "", parent=None):

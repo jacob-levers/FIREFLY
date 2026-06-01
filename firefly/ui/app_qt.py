@@ -1226,7 +1226,11 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         ("turning_angles", "Turning-angle distribution"),
         ("radial_dist",    "Radial distribution of |θ|"),
     ]
-    COMPARE_MAX_GROUPS = 6
+    # Raised from 6 to 12: the group × time-point design needs one card per
+    # (group, time point) cell, so counts climb fast (e.g. 3 groups × 3 time
+    # points = 9).  Cards live in a scrollable container, so the higher cap is
+    # purely a guard rail against accidental runaway, not a layout limit.
+    COMPARE_MAX_GROUPS = 12
 
 
 
