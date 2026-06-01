@@ -157,14 +157,15 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                               & (summary_df["timepoint"] == tp),
                               metric]
 
-    # Per-group change across time (first→last time point, paired by cell) —
-    # folded into the legend label.  Well-defined for ≥2 time points; for >2
-    # it summarises the overall trend (the full per-segment / RM tests live in
-    # the two-way ANOVA report).
-    change_txt = {}
+    # Per-group change across time (first→last time point, paired by cell).
+    # Shown as a compact, line-coloured "p = … / g = …" label, CENTRED between
+    # the time points (so its position reads as the PRE-vs-POST comparison).
+    change = []   # (text, colour, line-centre height)
     if len(tp_order) >= 2:
         tp_a, tp_b = tp_order[0], tp_order[-1]
-        for grp in group_order:
+        for gi, grp in enumerate(group_order):
+            col = (group_colors or {}).get(grp) \
+                or _TP_SERIES_COLORS[gi % len(_TP_SERIES_COLORS)]
             s0 = _cells(grp, tp_a).set_axis(
                 summary_df.loc[(summary_df["group"] == grp)
                                & (summary_df["timepoint"] == tp_a), "cell"])
@@ -180,11 +181,11 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
             if not np.isfinite(p):
                 continue
             g = _paired_hedges_g(a, b)
-            p_str = (f"p={p:.1e}" if p < 0.001 else f"p={p:.3f}")
-            t = f"Δ {tp_a}→{tp_b}: {p_str} {stars}"
+            p_str = (f"p = {p:.1e}" if p < 0.001 else f"p = {p:.3f}")
+            t = f"{p_str}  {stars}"
             if g is not None and np.isfinite(g):
-                t += f", g={g:+.2f}"
-            change_txt[grp] = t
+                t += f"    g = {g:+.2f}"
+            change.append((t, col, 0.5 * (float(np.nanmean(a)) + float(np.nanmean(b)))))
 
     for gi, grp in enumerate(group_order):
         col = (group_colors or {}).get(grp) \
@@ -201,18 +202,26 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                            vals, color=col, s=12, alpha=0.6, zorder=2)
             else:
                 means.append(np.nan); sems.append(0.0)
-        lbl = str(grp)
-        if grp in change_txt:
-            lbl = f"{grp}\n{change_txt[grp]}"
         ax.errorbar(x, means, yerr=sems, color=col, marker="o", ms=5,
-                    lw=1.8, capsize=3, label=lbl, zorder=3)
+                    lw=1.8, capsize=3, label=str(grp), zorder=3)
     ax.set_xticks(x)
     ax.set_xticklabels(tp_order)
     ax.set_xlim(-0.35, len(tp_order) - 0.65)   # pad so end markers aren't clipped
     ax.set_xlabel("Time point")
     ax.set_ylabel(ylabel)
-    ax.legend(frameon=False, loc="best", fontsize=7.5,
-              title="Group  (Δ = within-group change)", title_fontsize=8)
+
+    # Centred p/g labels, stacked above the highest line, coloured to match.
+    if change:
+        x_mid = (len(tp_order) - 1) / 2.0          # data x at the centre
+        ymin, ymax = ax.get_ylim()
+        span = (ymax - ymin) or 1.0
+        top = max(h for _, _, h in change)
+        ax.set_ylim(ymin, max(ymax, top + (0.10 + 0.085 * len(change)) * span))
+        y = top + 0.09 * span
+        for t, col, _h in change:           # stack upward
+            ax.text(x_mid, y, t, ha="center", va="bottom", fontsize=8,
+                    color=col, fontweight="bold")
+            y += 0.085 * span
 
 
 def compare_groups(groups,
