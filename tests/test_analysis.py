@@ -239,6 +239,74 @@ def test_roi_mask_not_wiped_for_small_structure():
     assert 0.0 < float(mask.mean()) < 1.0
 
 
+# ── auto-threshold (estimate_minmass) ────────────────────────────────────────
+def _bimodal_spot_stack(n_bright=8, n_dim=40, amp_bright=500.0, amp_dim=70.0,
+                        H=160, W=160, F=24, seed=0):
+    """Frames with a bright real-spot population and a dim spurious-spot
+    population on a noisy background — a clean bimodal mass distribution."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:H, 0:W]
+    frames = []
+    for _ in range(F):
+        im = rng.poisson(30, (H, W)).astype(np.float32)
+        for amp, k in ((amp_bright, n_bright), (amp_dim, n_dim)):
+            for _ in range(k):
+                cx, cy = rng.uniform(8, W - 8), rng.uniform(8, H - 8)
+                im = im + amp * np.exp(
+                    -(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * 1.3 ** 2)))
+        frames.append(im.astype(np.float32))
+    return np.stack(frames)
+
+
+def _quiet_estimate(stack, **kw):
+    import io, contextlib, logging
+    logging.getLogger("trackpy").setLevel(logging.ERROR)
+    from firefly.analysis import fa_localize as L
+    with contextlib.redirect_stdout(io.StringIO()):
+        return L.estimate_minmass(stack, backend="trackpy", workers=2, **kw)
+
+
+def test_estimate_minmass_lands_between_noise_and_signal():
+    """The chosen minmass must sit between the dim-noise and bright-signal
+    mass clusters, recovering ~the bright-spot count."""
+    import io, contextlib, logging
+    from firefly.analysis import fa_localize as L
+    from firefly.analysis.fa_preprocess import preprocess_stack
+    stack = _bimodal_spot_stack()
+    mm, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
+                               frame_sample=20)
+    assert diag["method"].startswith("gmm"), diag["method"]
+    lo, hi = diag["gmm_means"]               # log10 component means
+    assert lo < np.log10(mm) < hi, "cutoff not between the two clusters"
+    # Apply it: should keep ~8 bright spots/frame, drop the 40 dim ones.
+    logging.getLogger("trackpy").setLevel(logging.ERROR)
+    with contextlib.redirect_stdout(io.StringIO()):
+        pp = preprocess_stack(stack, workers=2)
+        kept = L.localise_particles(pp, diameter=7, minmass=mm,
+                                    percentile=64, backend="trackpy", workers=2)
+    per_frame = len(kept) / len(stack)
+    assert 5 <= per_frame <= 12, f"expected ~8 bright spots/frame, got {per_frame:.1f}"
+
+
+def test_estimate_minmass_sensitivity_ordering():
+    stack = _bimodal_spot_stack(seed=1)
+    strict = _quiet_estimate(stack, diameter=7, sensitivity="strict", frame_sample=20)[0]
+    bal    = _quiet_estimate(stack, diameter=7, sensitivity="balanced", frame_sample=20)[0]
+    lenient = _quiet_estimate(stack, diameter=7, sensitivity="lenient", frame_sample=20)[0]
+    assert strict >= bal >= lenient, (strict, bal, lenient)
+
+
+def test_estimate_minmass_noise_only_falls_back():
+    """A noise-only stack (no real spots) must not crash and should return a
+    finite, clamped threshold via a fallback path."""
+    rng = np.random.default_rng(2)
+    stack = rng.poisson(30, (20, 128, 128)).astype(np.float32)
+    mm, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
+                               frame_sample=20)
+    assert np.isfinite(mm) and mm >= 0.05
+    assert diag["method"] is not None
+
+
 # ── two-factor (group × time point) mixed ANOVA ──────────────────────────────
 def _paired_twofactor_df(interaction=True, seed=0):
     """Synthetic paired 2-group × 2-time-point cell-level scalars.  When

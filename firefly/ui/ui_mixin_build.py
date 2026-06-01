@@ -464,22 +464,25 @@ class BuildMixin:
                 "too big merges adjacent ones.")
         gl.addRow("Diameter (px, odd)", self.s_diameter)
 
-        # Auto minmass: when checked, pipeline auto-detects from first chunk.
-        # Default OFF — the auto-detect formula in sptpalm_analysis can
-        # under-shoot on some data (giving e.g. 0.04 when 1.0+ is needed),
-        # which on a GPU backend produces 100k+ "spots" per chunk and
-        # tanks throughput.  Users with known data should set minmass
-        # manually; auto-detect is for exploratory runs on new data.
-        self.c_auto_minmass = QtWidgets.QCheckBox("Auto-detect")
+        # Auto minmass: when checked, the threshold is computed PER FILE from
+        # the candidate spot-mass distribution (a 2-component Gaussian mixture
+        # that splits the dim-noise and bright-real-spot populations, with a
+        # count-knee cross-check) — the automated version of "set minmass at
+        # the valley of the mass histogram".  Default ON: because every frame
+        # is min-max normalised, a single manual threshold doesn't transfer
+        # between files, so per-file auto is the right default.
+        self.c_auto_minmass = QtWidgets.QCheckBox("Auto (per-file)")
         self.c_auto_minmass.setToolTip(
-            "When checked, the pipeline picks the detection threshold from\n"
-            "the first chunk's 99th-percentile pixel value × diameter²/8.\n"
-            "Heuristic — works on many datasets but may under-shoot; manual\n"
-            "tuning is more reliable.\n\n"
-            "Equivalent to PALM-Tracer's 'Threshold' field but measured on\n"
-            "the integrated raw intensity (trackpy 'mass') rather than on\n"
-            "the wavelet domain.")
-        self.c_auto_minmass.setChecked(False)
+            "Recommended.  Computes the detection threshold separately for each\n"
+            "file from its own data: it harvests every candidate spot, splits\n"
+            "the dim-noise and bright-signal populations by integrated mass\n"
+            "(Gaussian-mixture valley + count-knee), and sets the cutoff in the\n"
+            "gap.  Robust across .czi/.tif with different brightness — no need\n"
+            "to eyeball a value per dataset.\n\n"
+            "An audit histogram ({stem}_minmass_hist.png) is saved per file so\n"
+            "you can check the chosen cutoff.  Use the Strict/Balanced/Lenient\n"
+            "selector to bias it globally; untick to enter a value by hand.")
+        self.c_auto_minmass.setChecked(True)
         self.s_minmass = self._spin_dbl(1.0, 0.0, 100.0, 0.05, decimals=2,
             tip="Detection threshold — minimum integrated intensity\n"
                 "(trackpy 'mass') for a spot to be kept.\n\n"
@@ -528,10 +531,23 @@ class BuildMixin:
             finally: self._minmass_sync_guard = False
         self.sld_minmass.valueChanged.connect(_on_slider)
         self.s_minmass.valueChanged.connect(_on_spin)
-        self.c_auto_minmass.toggled.connect(
-            lambda checked: (self.s_minmass.setEnabled(not checked),
-                             self.sld_minmass.setEnabled(not checked)))
-        self.s_minmass.setEnabled(True)
+
+        # Sensitivity for the per-file auto threshold: nudges the computed
+        # noise/signal boundary by ±1σ.  Balanced = the boundary itself.
+        self.c_minmass_sensitivity = QtWidgets.QComboBox()
+        self.c_minmass_sensitivity.addItems(["Strict", "Balanced", "Lenient"])
+        self.c_minmass_sensitivity.setCurrentText("Balanced")
+        self.c_minmass_sensitivity.setToolTip(
+            "Bias the auto threshold without per-file eyeballing:\n"
+            "• Strict   — higher cutoff, fewer but cleaner spots\n"
+            "• Balanced — the computed noise/signal boundary (recommended)\n"
+            "• Lenient  — lower cutoff, keeps more (dimmer) spots")
+
+        def _on_auto_toggled(checked):
+            self.s_minmass.setEnabled(not checked)
+            self.sld_minmass.setEnabled(not checked)
+            self.c_minmass_sensitivity.setEnabled(checked)
+        self.c_auto_minmass.toggled.connect(_on_auto_toggled)
 
         wmm = QtWidgets.QWidget()
         vmm = QtWidgets.QVBoxLayout(wmm)
@@ -543,7 +559,15 @@ class BuildMixin:
         row.addWidget(self.s_minmass, 1)
         vmm.addLayout(row)
         vmm.addWidget(self.sld_minmass)
+        srow = QtWidgets.QHBoxLayout()
+        srow.setContentsMargins(0, 0, 0, 0)
+        srow.addWidget(QtWidgets.QLabel("Sensitivity"))
+        srow.addWidget(self.c_minmass_sensitivity, 1)
+        vmm.addLayout(srow)
         gl.addRow("Threshold", wmm)
+
+        # Apply the initial enabled/disabled state (auto is on by default).
+        _on_auto_toggled(self.c_auto_minmass.isChecked())
 
         # Push spinbox / combo edits into the live preview.  Background
         # widgets are wired here too because the preview re-preprocesses
@@ -2145,6 +2169,7 @@ class BuildMixin:
             "diameter":          int(self.s_diameter.value()),
             "auto_minmass":      bool(self.c_auto_minmass.isChecked()),
             "minmass":           float(self.s_minmass.value()),
+            "minmass_sensitivity": self.c_minmass_sensitivity.currentText().lower(),
             "search_range":      int(self.s_search_range.value()),
             "memory":            int(self.s_memory.value()),
             "min_track_len":     int(self.s_min_track_len.value()),

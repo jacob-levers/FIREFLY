@@ -1906,6 +1906,290 @@ def _resolve_backend(name: str | None):
         f"available here: {list_available_backends()}.")
 
 
+def _gmm_crossover(means, sds, weights):
+    """Return the log-mass value where the two 1-D Gaussian components have
+    equal posterior weight, restricted to the interval between their means
+    (the noise/signal boundary).  Solves w0·N(x|m0,s0) = w1·N(x|m1,s1)."""
+    (m0, s0, w0), (m1, s1, w1) = sorted(zip(means, sds, weights))
+    s0 = max(float(s0), 1e-6); s1 = max(float(s1), 1e-6)
+    lo, hi = float(m0), float(m1)
+    if hi <= lo:
+        return lo
+    # Quadratic a x² + b x + c = 0 from log-likelihood-ratio = 0.
+    a = 1.0 / (2 * s0 * s0) - 1.0 / (2 * s1 * s1)
+    b = m1 / (s1 * s1) - m0 / (s0 * s0)
+    c = (m0 * m0) / (2 * s0 * s0) - (m1 * m1) / (2 * s1 * s1) \
+        + np.log((max(w0, 1e-9) * s1) / (max(w1, 1e-9) * s0))
+    roots = []
+    if abs(a) < 1e-12:
+        if abs(b) > 1e-12:
+            roots = [-c / b]
+    else:
+        disc = b * b - 4 * a * c
+        if disc >= 0:
+            sq = np.sqrt(disc)
+            roots = [(-b + sq) / (2 * a), (-b - sq) / (2 * a)]
+    between = [r for r in roots if lo <= r <= hi]
+    if between:
+        return float(between[0])
+    # Degenerate (root outside the means): fall back to the midpoint.
+    return float(0.5 * (lo + hi))
+
+
+def _knee_minmass(masses, n=60):
+    """Knee of the count-vs-threshold survival curve, in log10(mass).  As the
+    cutoff rises the surviving-spot count drops steeply through the noise then
+    flattens over the real spots; the knee (point of maximum downward
+    curvature) is what manual eyeballing approximates.  Returns a log10 value
+    or None."""
+    lm = np.log10(masses[masses > 0])
+    if lm.size < 50:
+        return None
+    grid = np.linspace(lm.min(), lm.max(), n)
+    counts = np.array([(lm >= g).sum() for g in grid], dtype=float)
+    if counts.max() <= 0:
+        return None
+    x = (grid - grid.min()) / (float(np.ptp(grid)) or 1.0)
+    y = counts / counts.max()
+    # Distance below the chord from first to last point (kneedle, convex-down).
+    chord = y[0] + (y[-1] - y[0]) * x
+    diff = chord - y
+    k = int(np.argmax(diff))
+    if diff[k] <= 1e-3:
+        return None
+    return float(grid[k])
+
+
+def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
+                     sensitivity="balanced", frame_sample=80,
+                     bg_radius=50, bg_method="uniform_filter",
+                     workers=N_CPUS, log_cb=None):
+    """Estimate a robust per-file detection `minmass` from the candidate
+    spot-mass distribution.
+
+    This automates the standard SMLM workflow (trackpy: "set minmass at the
+    valley of the mass histogram"; ThunderSTORM: noise-relative cutoff): we
+    harvest every candidate spot at a permissive cutoff on a representative
+    frame sample, then split the noise (dim) and signal (bright) populations on
+    log10(mass) with a 2-component Gaussian mixture, place the cutoff at the
+    component crossover, and cross-check it against the count-vs-threshold knee.
+
+    Because masses are harvested through the SAME backend the real run uses,
+    the returned `minmass` is already in the units that run will filter on
+    (including the Torch mass scaling).
+
+    Returns (minmass: float, diagnostics: dict).
+    """
+    def _log(msg):
+        if log_cb:
+            log_cb(msg)
+        else:
+            print(msg)
+
+    if diameter % 2 == 0:
+        diameter += 1
+    n = len(stack)
+    diag = {"method": None, "n_candidates": 0, "sensitivity": sensitivity,
+            "backend": backend, "gmm_crossover": None, "knee": None,
+            "frame_sample": 0}
+
+    # Hard clamp range for the returned value.
+    MM_MIN, MM_MAX = 0.05, 1e6
+
+    try:
+        idx = np.unique(np.linspace(0, n - 1, min(frame_sample, n)).astype(int))
+        diag["frame_sample"] = int(idx.size)
+        sample = np.asarray(stack[idx]) if not isinstance(stack, np.ndarray) \
+            else stack[idx]
+        sample_pp = preprocess_stack(sample, bg_radius=bg_radius,
+                                     bg_method=bg_method, workers=workers)
+        impl = _resolve_backend(backend)
+        df = impl.localise(sample_pp, diameter=diameter, minmass=0.0,
+                           percentile=percentile, workers=workers,
+                           chunk_size=len(sample_pp))
+        masses = np.asarray(df["mass"].values, dtype=float)
+        masses = masses[np.isfinite(masses) & (masses > 0)]
+        diag["n_candidates"] = int(masses.size)
+
+        # Reservoir cap for speed on dense data.
+        if masses.size > 200_000:
+            rng = np.random.default_rng(0)
+            masses = rng.choice(masses, 200_000, replace=False)
+
+        if masses.size < 200:
+            # Too few candidates → noise-relative floor.
+            med = float(np.median(masses)) if masses.size else MM_MIN
+            mad = float(np.median(np.abs(masses - med))) if masses.size else 0.0
+            mm = med + 3.0 * 1.4826 * mad
+            diag["method"] = "noise_floor_lowN"
+            mm = float(np.clip(mm, MM_MIN, MM_MAX))
+            _log(f"  Auto-threshold: only {masses.size} candidates → noise floor "
+                 f"minmass = {mm:.4g}")
+            diag["minmass"] = mm
+            return mm, diag
+
+        lm = np.log10(masses)
+        # Stash a downsampled copy of the log-masses for the audit plot.  The
+        # leading underscore marks it private — the worker pops it before the
+        # diagnostics dict is JSON-serialised.
+        if lm.size > 20000:
+            _rng = np.random.default_rng(1)
+            diag["_log_masses"] = _rng.choice(lm, 20000, replace=False)
+        else:
+            diag["_log_masses"] = lm.copy()
+        knee = _knee_minmass(masses)
+        diag["knee"] = None if knee is None else float(knee)
+
+        cross = None
+        try:
+            from sklearn.mixture import GaussianMixture
+            gm = GaussianMixture(n_components=2, n_init=3, random_state=0)
+            gm.fit(lm.reshape(-1, 1))
+            means = gm.means_.ravel()
+            sds = np.sqrt(gm.covariances_.ravel())
+            weights = gm.weights_.ravel()
+            order = np.argsort(means)
+            m_lo, m_hi = means[order]
+            s_lo = sds[order][0]
+            w_min = float(weights.min())
+            diag["gmm_means"] = [float(means[order][0]), float(means[order][1])]
+            diag["gmm_sds"] = [float(sds[order][0]), float(sds[order][1])]
+            diag["gmm_weights"] = [float(weights[order][0]), float(weights[order][1])]
+            if (m_hi - m_lo) >= 0.3 and w_min >= 0.02:
+                cross = _gmm_crossover(means, sds, weights)
+                diag["method"] = "gmm"
+                diag["sigma_noise"] = float(s_lo)
+            else:
+                diag["method"] = "gmm_unimodal"
+        except Exception as e:
+            diag["method"] = f"gmm_failed:{type(e).__name__}"
+
+        if cross is None:
+            # GMM unimodal/failed → Otsu on the log-mass histogram, else floor.
+            try:
+                from skimage.filters import threshold_otsu
+                cross = float(threshold_otsu(lm, nbins=256))
+                diag["method"] = (diag["method"] or "") + "+otsu"
+                # crude noise sigma for the sensitivity shift
+                diag.setdefault("sigma_noise",
+                                float(np.std(lm[lm <= cross]) or 0.1))
+            except Exception:
+                med = float(np.median(masses))
+                mad = float(np.median(np.abs(masses - med)))
+                mm = float(np.clip(med + 3.0 * 1.4826 * mad, MM_MIN, MM_MAX))
+                diag["method"] = "noise_floor"
+                diag["minmass"] = mm
+                _log(f"  Auto-threshold: unimodal → noise floor minmass = {mm:.4g}")
+                return mm, diag
+
+        diag["gmm_crossover"] = float(cross)
+
+        # Sensitivity shift in log-space by ±1σ of the noise component.
+        sig = float(diag.get("sigma_noise", 0.1)) or 0.1
+        shift = {"strict": +1.0, "balanced": 0.0, "lenient": -1.0}.get(
+            str(sensitivity).lower(), 0.0)
+        thresh_log = cross + shift * sig
+        mm = float(10.0 ** thresh_log)
+
+        # Mandatory knee cross-check.
+        if knee is not None and abs(knee - cross) > 0.4:
+            _log(f"  Auto-threshold: GMM crossover (10^{cross:.2f}) and knee "
+                 f"(10^{knee:.2f}) disagree by >0.4 dex; keeping GMM, both logged.")
+
+        mm = float(np.clip(mm, MM_MIN, MM_MAX))
+        diag["minmass"] = mm
+        _log(f"  Auto-threshold [{diag['method']}, {sensitivity}]: "
+             f"minmass = {mm:.4g}  (from {diag['n_candidates']} candidates over "
+             f"{diag['frame_sample']} frames)")
+        return mm, diag
+
+    except _Cancelled:
+        raise
+    except Exception as e:
+        # Last-ditch fallback: the legacy peak×d²/8 heuristic on a sample frame.
+        try:
+            f = stack[min(5, n - 1)]
+            pp = _preprocess_fast(np.asarray(f), bg_radius=bg_radius)
+            peak = float(np.percentile(pp, 99))
+            mm = float(np.clip(peak * (diameter ** 2) / 8.0, MM_MIN, MM_MAX))
+        except Exception:
+            mm = 1.0
+        diag["method"] = f"fallback_heuristic:{type(e).__name__}"
+        diag["minmass"] = mm
+        _log(f"  Auto-threshold failed ({type(e).__name__}: {e}); "
+             f"fallback minmass = {mm:.4g}")
+        return mm, diag
+
+
+def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
+    """Write an audit figure for the auto-threshold: the log10(mass) histogram
+    of candidate spots, the fitted noise/signal Gaussian components, the knee,
+    and the chosen cutoff — so the per-file threshold is inspectable.  Returns
+    the path on success, else None."""
+    lm = diagnostics.get("_log_masses")
+    if lm is None or len(lm) < 10:
+        return None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from firefly.analysis.fa_theme import _theme_palette
+        pal = _theme_palette(theme)
+        lm = np.asarray(lm, dtype=float)
+
+        fig, ax = plt.subplots(figsize=(6.4, 4.2), facecolor=pal["BG"])
+        ax.set_facecolor(pal["PNL"])
+        counts, edges, _ = ax.hist(lm, bins=80, color=pal["BAR_FILL"],
+                                   edgecolor=pal["GRD"], linewidth=0.3)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        binw = float(edges[1] - edges[0])
+        n = lm.size
+
+        means = diagnostics.get("gmm_means")
+        sds = diagnostics.get("gmm_sds")
+        wts = diagnostics.get("gmm_weights")
+        if means and sds and wts:
+            xs = np.linspace(lm.min(), lm.max(), 400)
+            cols = [pal["MUT"], pal["SIG"]]
+            labels = ["noise component", "signal component"]
+            for (m, s, w, c, lab) in zip(means, sds, wts, cols, labels):
+                s = max(s, 1e-6)
+                pdf = (w / (s * np.sqrt(2 * np.pi))
+                       * np.exp(-0.5 * ((xs - m) / s) ** 2))
+                ax.plot(xs, pdf * n * binw, color=c, lw=2.0, label=lab)
+
+        chosen = diagnostics.get("minmass")
+        if chosen and chosen > 0:
+            ax.axvline(np.log10(chosen), color="#FFD33D", lw=2.4,
+                       label=f"chosen minmass = {chosen:.3g}")
+        knee = diagnostics.get("knee")
+        if knee is not None:
+            ax.axvline(knee, color=pal["TXT"], ls=":", lw=1.2, alpha=0.7,
+                       label="count knee")
+
+        ax.set_xlabel("log₁₀( candidate spot mass )", color=pal["TXT"])
+        ax.set_ylabel("count", color=pal["TXT"])
+        title = "Auto-threshold audit"
+        if stem:
+            title += f" — {stem}"
+        sub = (f"{diagnostics.get('method','?')} · {diagnostics.get('sensitivity','?')} · "
+               f"{diagnostics.get('n_candidates','?')} candidates · "
+               f"{diagnostics.get('backend','?')} backend")
+        fig.suptitle(title, color=pal["TXT"], fontsize=12, fontweight="bold", y=0.99)
+        ax.set_title(sub, color=pal["MUT"], fontsize=8.5, pad=6)
+        for sp in ax.spines.values():
+            sp.set_edgecolor(pal["GRD"])
+        ax.tick_params(colors=pal["TXT"])
+        ax.legend(frameon=False, fontsize=8, labelcolor=pal["TXT"], loc="best")
+        fig.tight_layout()
+        fig.savefig(path, dpi=150, facecolor=pal["BG"], bbox_inches="tight")
+        plt.close(fig)
+        return path
+    except Exception as exc:
+        print(f"  Auto-threshold audit plot skipped ({type(exc).__name__}: {exc})")
+        return None
+
+
 def localise_particles(stack, diameter=7, minmass=0.1, percentile=64,
                        workers=N_CPUS, chunk_size=500, preview_cb=None,
                        backend="auto", **backend_kwargs):

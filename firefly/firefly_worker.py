@@ -595,10 +595,28 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     else:
         _prog(20, "Localising…")
 
-    # "Auto-detect minmass": pass None and let the pipeline pick a
-    # data-dependent threshold from the first chunk's 99th percentile.
-    minmass_arg = (None if p.get("auto_minmass", False)
-                   else float(p["minmass"]))
+    # Detection threshold (minmass).  When "auto" is on, compute a robust
+    # per-file value up front from the candidate spot-mass distribution (GMM
+    # noise/signal valley + knee cross-check) so each .czi/.tif gets its own
+    # threshold; otherwise use the manual value.  CSV inputs have no image to
+    # threshold.
+    mm_diag = None
+    if external_csv:
+        minmass_arg = None
+    elif p.get("auto_minmass", False):
+        from firefly.analysis.fa_localize import estimate_minmass
+        minmass_arg, mm_diag = estimate_minmass(
+            stack,
+            diameter=int(p["diameter"]),
+            percentile=64,
+            backend=p["backend"],
+            sensitivity=p.get("minmass_sensitivity", "balanced"),
+            bg_radius=int(p.get("bg_radius", 10)),
+            bg_method=p.get("bg_method", "uniform_filter"),
+            workers=int(p["workers"]),
+            log_cb=_log)
+    else:
+        minmass_arg = float(p["minmass"])
 
     # Real-time mass histogram: each chunk's mass values get pushed into
     # the GUI via the msg queue so the user can spot a bad minmass early.
@@ -1676,6 +1694,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "width":            int(stack_w),
                 "height":           int(stack_h),
                 "source":           "firefly",
+                # Detection threshold actually used (per-file when auto).
+                "auto_minmass":     bool(p.get("auto_minmass", False)),
+                "minmass_used":     (float(minmass_arg)
+                                     if minmass_arg is not None else None),
+                "minmass_method":   (mm_diag.get("method") if mm_diag else "manual"),
+                "minmass_sensitivity": (mm_diag.get("sensitivity") if mm_diag else None),
+                "minmass_n_candidates": (mm_diag.get("n_candidates") if mm_diag else None),
+                "backend":          p.get("backend"),
                 # Path to the original input file/folder — Post-process
                 # tab uses this to reload a background image.  Stored as
                 # absolute path so the source location survives folder moves.
@@ -1684,6 +1710,18 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         extras_saved.append("params")
     except Exception as exc:
         _log(f"  WARN: params save failed: {exc}")
+
+    # Auto-threshold audit histogram (always written when auto picked a value).
+    if mm_diag is not None and mm_diag.get("_log_masses") is not None:
+        try:
+            from firefly.analysis.fa_localize import render_minmass_audit
+            render_minmass_audit(
+                mm_diag,
+                os.path.join(extras_dir, f"{stem}_minmass_hist.png"),
+                theme=p.get("theme", "Dark"), stem=stem)
+            extras_saved.append("minmass_hist")
+        except Exception as exc:
+            _log(f"  WARN: auto-threshold audit save failed: {exc}")
 
     _log(f"  Saved (firefly_extras/): {', '.join(extras_saved)}")
 
