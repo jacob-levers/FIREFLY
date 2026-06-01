@@ -908,7 +908,7 @@ def compare_groups(groups,
         fig.savefig(pdf_path, bbox_inches="tight", facecolor=fig.get_facecolor())
         summary_df.to_csv(csv_path, index=False)
         if len(stats_df):
-            stats_df.to_csv(stats_csv, index=False)
+            _write_prism_ttests(stats_csv, stats_df)
         print(f"  Saved: {png_path}")
         print(f"  Saved: {pdf_path}")
         print(f"  Saved: {csv_path}")
@@ -1127,17 +1127,105 @@ def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
                               pair_warn, pal)
 
 
+# ── Prism-style ("tabular results") formatting helpers ───────────────────────
+def _prism_p(p):
+    """Format a p-value the way Prism prints it: '<0.0001', else 4 decimals."""
+    if p is None or not np.isfinite(p):
+        return "n/a"
+    if p < 0.0001:
+        return "<0.0001"
+    return f"{p:.4f}"
+
+
+def _prism_summary(p):
+    """Prism's 'P value summary' stars: ns / * / ** / *** / **** ."""
+    if p is None or not np.isfinite(p):
+        return "n/a"
+    if p < 0.0001: return "****"
+    if p < 0.001:  return "***"
+    if p < 0.01:   return "**"
+    if p < 0.05:   return "*"
+    return "ns"
+
+
+def _prism_sig(p):
+    return "Yes" if (p is not None and np.isfinite(p) and p < 0.05) else "No"
+
+
+def _fnum(v, fmt="{:.5g}"):
+    return fmt.format(v) if (v is not None and np.isfinite(v)) else ""
+
+
+def _f(v):
+    """Coerce to a finite float or None (tolerates blanks/strings from the CSV)."""
+    try:
+        x = float(v)
+        return x if np.isfinite(x) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_prism_ttests(path, stats_df):
+    """Write the per-metric group comparisons in Prism unpaired-t-test
+    'tabular results' style (one sectioned block per metric)."""
+    import csv as _csv
+    with open(path, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["Group comparisons  (per metric)"])
+        w.writerow(["Test", "Welch's t-test (normal) / Mann-Whitney (non-normal); "
+                    "Bonferroni-adjusted across pairs within a metric"])
+        w.writerow([])
+        for metric in dict.fromkeys(stats_df["metric"].tolist()):
+            block = stats_df[stats_df["metric"] == metric]
+            pairs = block[block["comparison"] != "omnibus"]
+            if not len(pairs):
+                continue
+            w.writerow([f"=====  {metric}  ====="])
+            w.writerow(["Table Analyzed", metric])
+            omn = block[block["comparison"] == "omnibus"]
+            if len(omn):
+                r = omn.iloc[0]
+                w.writerow(["Omnibus test", r.get("test", "")])
+                w.writerow(["    P value", _prism_p(_f(r.get("p_value")))])
+                w.writerow(["    P value summary", _prism_summary(_f(r.get("p_value")))])
+            w.writerow([])
+            for _, r in pairs.iterrows():
+                la, lb = r.get("label_a", "A"), r.get("label_b", "B")
+                p = _f(r.get("p_value")); padj = _f(r.get("p_value_bonferroni"))
+                ma, mb = _f(r.get("mean_a")), _f(r.get("mean_b"))
+                w.writerow([f"{la}  vs  {lb}"])
+                w.writerow(["    " + str(r.get("test", "t test")), ""])
+                w.writerow(["    P value", _prism_p(p)])
+                w.writerow(["    P value summary", _prism_summary(p)])
+                w.writerow(["    Significantly different (P<0.05)?", _prism_sig(p)])
+                w.writerow(["    Adjusted P value (Bonferroni)", _prism_p(padj)])
+                w.writerow(["    Adjusted summary", _prism_summary(padj)])
+                w.writerow(["How big is the difference?", ""])
+                w.writerow([f"    Mean of {la}", _fnum(ma)])
+                w.writerow([f"    Mean of {lb}", _fnum(mb)])
+                if ma is not None and mb is not None:
+                    w.writerow([f"    Difference between means ({la} - {lb})",
+                                _fnum(ma - mb)])
+                w.writerow(["    SEM of " + str(la), _fnum(_f(r.get("sem_a")))])
+                w.writerow(["    SEM of " + str(lb), _fnum(_f(r.get("sem_b")))])
+                w.writerow(["    Effect size (Cohen's d)", _fnum(_f(r.get("cohens_d")), "{:.3f}")])
+                w.writerow(["Data analyzed", ""])
+                w.writerow([f"    Sample size, {la}", r.get("n_a", "")])
+                w.writerow([f"    Sample size, {lb}", r.get("n_b", "")])
+                w.writerow(["    n/group for 80% power",
+                            r.get("n_per_group_for_80pct_power", "")])
+                w.writerow([])
+            w.writerow([])
+
+
 def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
                       group_order, tp_order, pair_warn):
-    """Write the group × time-point ANOVA report as SEPARATE clean tables
-    (settings, scalar ANOVA, Holm-corrected simple effects, per-time-point
-    curve drill-downs) instead of stacking them into one ragged sheet.
-
-    `path` is the legacy "{stem}_twoway_anova.csv"; sibling names are derived
-    from its stem.  Prints each file it writes."""
-    base = path[:-4] if path.lower().endswith(".csv") else path
-    if base.endswith("_twoway_anova"):
-        base = base[:-len("_twoway_anova")]
+    """Write the group × time-point ANOVA report in GraphPad-Prism "tabular
+    results" style: per metric, a sectioned vertical sheet with the Source-of-
+    Variation summary, the full ANOVA table (SS / DF / MS / F / P), the
+    Geisser-Greenhouse epsilon, then the Holm-Šídák multiple comparisons —
+    matching how the lab's Prism files lay out an analysis."""
+    import csv as _csv
 
     def _g(df, **eq):
         m = pd.Series(True, index=df.index)
@@ -1145,64 +1233,128 @@ def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
             m &= (df[k] == v)
         return df[m]
 
-    # per group×timepoint cell counts
+    n_cells = summary_df["cell"].nunique() if "cell" in summary_df else 0
     count_bits = []
     for grp in group_order:
-        cells = [f"{tp}:{_g(summary_df, group=grp, timepoint=tp)['cell'].nunique()}"
+        cells = [f"{tp}={_g(summary_df, group=grp, timepoint=tp)['cell'].nunique()}"
                  for tp in tp_order]
-        count_bits.append(f"{grp} [{', '.join(cells)}]")
+        count_bits.append(f"{grp} ({', '.join(cells)})")
 
-    written = []
+    # Effect → (Prism row name, which p-value to use).  Between-subjects (Group)
+    # is unaffected by sphericity, so it uses the uncorrected p; the within and
+    # interaction effects use the Greenhouse-Geisser-corrected p.
+    eff_map = {
+        "Interaction": ("Time point x Group (Interaction)", "p_GG"),
+        "timepoint":   ("Time point (within-subjects)",      "p_GG"),
+        "group":       ("Group (between-subjects)",          "p_unc"),
+    }
+    eff_order = ["Interaction", "timepoint", "group"]
 
-    # 1) Settings — a clean two-column table.
-    settings = [
-        ("model", twoway_msg or ""),
-        ("groups", ", ".join(map(str, group_order))),
-        ("time_points", ", ".join(map(str, tp_order))),
-        ("cells_per_group_timepoint", " ; ".join(count_bits)),
-        ("pairing", pair_warn or "all cells paired across every time point"),
-        ("alpha", "0.05"),
-        ("effect_size", "np2 = partial eta-squared"),
-        ("sphericity",
-         "Greenhouse-Geisser (p_GG); for 2 time points GG=uncorrected"),
-        ("curve_note",
-         "MSD/LogD tested via scalar summary (auc_msd / median_D / "
-         "mob_immob_ratio) PLUS a per-time-point group×(lag|bin) drill-down; "
-         "pingouin cannot fit 1-between + 2-within in one model"),
-    ]
-    sp = base + "_twoway_settings.csv"
-    pd.DataFrame(settings, columns=["setting", "value"]).to_csv(sp, index=False)
-    written.append(sp)
+    def _pick_p(r, pk):
+        # GG-corrected p; fall back to uncorrected when pingouin leaves p_GG
+        # blank (it does so for a 2-level within factor, where GG=uncorrected).
+        p = r.get(pk)
+        if (p is None or not np.isfinite(p)) and pk == "p_GG":
+            p = r.get("p_unc")
+        return p
 
-    # 2) Scalar mixed-ANOVA table.
-    anova = twoway_df[twoway_df["section"] == "anova"]
-    if len(anova):
-        cols = ["metric", "effect", "F", "df1", "df2", "p_unc", "p_GG", "np2", "eps"]
-        ap = base + "_twoway_anova_scalar.csv"
-        anova.reindex(columns=cols).to_csv(ap, index=False)
-        written.append(ap)
+    metrics = list(dict.fromkeys(twoway_df["metric"].tolist()))
 
-    # 3) Holm-corrected simple effects.
-    post = twoway_df[twoway_df["section"] == "posthoc"]
-    if len(post):
-        cols = ["metric", "contrast", "at", "level_A", "level_B", "paired",
-                "p", "p_holm", "stars"]
-        pp = base + "_twoway_simple_effects.csv"
-        post.reindex(columns=cols).to_csv(pp, index=False)
-        written.append(pp)
+    with open(path, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["Two-way mixed-effects ANOVA  (repeated measures on Time point)"])
+        w.writerow(["Model", twoway_msg or ""])
+        w.writerow(["Groups (between-subjects)", ", ".join(map(str, group_order))])
+        w.writerow(["Time points (within-subjects)", ", ".join(map(str, tp_order))])
+        w.writerow(["Subjects", "biological replicate (cell), paired across time points"])
+        w.writerow(["Cells per group (per time point)", " ; ".join(count_bits)])
+        w.writerow(["Pairing", pair_warn or "all cells present at every time point"])
+        w.writerow(["Sphericity correction", "Geisser-Greenhouse (applied to within-subjects "
+                    "and interaction p-values; for 2 time points it equals the uncorrected p)"])
+        w.writerow([])
 
-    # 4) Per-time-point curve drill-downs (one file per graph kind).
-    for kind in ("msd", "logd"):
-        if kind in drilldown:
-            ddf, _dmsg = drilldown[kind]
-            cols = ["graph", "timepoint", "effect", "F", "df1", "df2",
-                    "p_unc", "p_GG", "np2", "eps"]
-            dp = base + f"_twoway_drilldown_{kind}.csv"
-            ddf.reindex(columns=cols).to_csv(dp, index=False)
-            written.append(dp)
+        for m in metrics:
+            a = _g(twoway_df, metric=m, section="anova")
+            if not len(a):
+                continue
+            arows = {r["effect"]: r for _, r in a.iterrows()}
+            w.writerow([f"=====  {m}  ====="])
+            w.writerow(["Table Analyzed", m])
+            w.writerow(["Alpha", "0.05"])
+            w.writerow([])
+            # Source-of-Variation summary
+            w.writerow(["Source of Variation", "P value", "P value summary",
+                        "Significant? (P<0.05)"])
+            for e in eff_order:
+                if e not in arows:
+                    continue
+                name, pk = eff_map[e]
+                p = _pick_p(arows[e], pk)
+                w.writerow([name, _prism_p(p), _prism_summary(p), _prism_sig(p)])
+            w.writerow([])
+            # Full ANOVA table
+            w.writerow(["ANOVA table", "SS", "DF", "MS", "F (DFn, DFd)", "P value"])
+            for e in eff_order:
+                if e not in arows:
+                    continue
+                r = arows[e]; name, pk = eff_map[e]
+                f_str = (f"F ({_fnum(r.get('df1'),'{:.0f}')}, "
+                         f"{_fnum(r.get('df2'),'{:.0f}')}) = {_fnum(r.get('F'),'{:.4g}')}")
+                w.writerow([name, _fnum(r.get("SS")), _fnum(r.get("df1"), "{:.0f}"),
+                            _fnum(r.get("MS")), f_str, _prism_p(_pick_p(r, pk))])
+            w.writerow([])
+            # epsilon + effect size
+            eps = arows.get("timepoint", {}).get("eps") if "timepoint" in arows else None
+            w.writerow(["Geisser-Greenhouse's epsilon", _fnum(eps, "{:.4f}")])
+            inter_np2 = arows.get("Interaction", {}).get("np2") if "Interaction" in arows else None
+            w.writerow(["Partial eta squared (Interaction)", _fnum(inter_np2, "{:.4f}")])
+            w.writerow(["Number of subjects (cells)", n_cells])
+            w.writerow([])
 
-    for p in written:
-        print(f"  Saved: {p}")
+            # Multiple comparisons — Prism shows the simple effects (groups
+            # compared at each time point).  Keep only those interaction
+            # contrasts (an 'at' time point set); the bare main-effect rows
+            # would just duplicate the ANOVA above.
+            post = _g(twoway_df, metric=m, section="posthoc")
+            def _has_at(v):
+                # pingouin marks main-effect rows with "-" in the time column;
+                # keep only real time-point levels (the interaction simple effects).
+                return v not in (None, "", "-") and str(v) not in ("nan", "-")
+            simple = post[post["at"].map(_has_at)] if len(post) else post
+            if len(simple):
+                w.writerow(["Multiple comparisons (groups at each time point, Holm-Šídák)",
+                            "P value (uncorrected)", "Adjusted P value",
+                            "Summary", "Significant?"])
+                for _, r in simple.iterrows():
+                    name = f"{r.get('level_A')} vs {r.get('level_B')}  @ {r.get('at')}"
+                    padj = r.get("p_holm"); pu = r.get("p")
+                    keyp = padj if padj is not None else pu
+                    w.writerow([name, _prism_p(pu), _prism_p(padj),
+                                _prism_summary(keyp), _prism_sig(keyp)])
+                w.writerow([])
+            w.writerow([])
+
+        # Per-time-point curve drill-downs, Prism-style per time point.
+        for kind in ("msd", "logd"):
+            if kind not in drilldown:
+                continue
+            ddf, dmsg = drilldown[kind]
+            w.writerow([f"=====  Curve drill-down: {kind.upper()}  ====="])
+            w.writerow(["Model", dmsg])
+            w.writerow([])
+            for tp in dict.fromkeys(ddf["timepoint"].tolist()):
+                sub = ddf[ddf["timepoint"] == tp]
+                w.writerow([f"Time point: {tp}", "SS", "DF", "MS",
+                            "F (DFn, DFd)", "P value"])
+                for _, r in sub.iterrows():
+                    pk = "p_GG" if r.get("effect") in ("Interaction", "lag", "bin") else "p_unc"
+                    f_str = (f"F ({_fnum(r.get('df1'),'{:.0f}')}, "
+                             f"{_fnum(r.get('df2'),'{:.0f}')}) = {_fnum(r.get('F'),'{:.4g}')}")
+                    w.writerow([r.get("effect"), "", _fnum(r.get("df1"), "{:.0f}"),
+                                "", f_str, _prism_p(r.get(pk))])
+                w.writerow([])
+
+    print(f"  Saved: {path}")
 
 
 def _twoway_table_page(pdf, title, subtitle, df, cols, pal):

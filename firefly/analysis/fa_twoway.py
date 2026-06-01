@@ -194,6 +194,7 @@ def compute_twoway_anova(df, metrics=None):
                 pgg = float(_stats.f.sf(float(r["F"]), d1, d2))
             rows.append({
                 "metric": m, "section": "anova", "effect": src,
+                "SS": _f(r.get("SS")), "MS": _f(r.get("MS")),
                 "F": _f(r.get("F")), "df1": _f(r.get("DF1")), "df2": _f(r.get("DF2")),
                 "p_unc": _f(_col(r, "p_unc", "p-unc")), "p_GG": _f(pgg),
                 "np2": _f(r.get("np2")), "eps": _f(r.get("eps")),
