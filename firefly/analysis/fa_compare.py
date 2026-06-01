@@ -18,134 +18,11 @@ from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_
                           _motion_fractions, _track_lengths)
 from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
                          _stat_test, _stat_test_n, _hedges_g_ci,
-                         _paired_test, _paired_hedges_g, _paired_hedges_g_ci,
+                         _paired_test, _paired_hedges_g,
                          _p_stars, compute_per_track_mean_angle,
                          compute_circular_comparison_tests)
 
 
-# Human-readable names for the scalar metrics shown in the effect-size forest.
-_FOREST_METRIC_LABELS = {
-    "auc_msd":             "AUC (MSD)",
-    "mob_immob_ratio":     "Mobile/Immobile",
-    "median_D":            "median D",
-    "median_alpha":        "median α",
-    "mean_track_length_s": "track length",
-}
-
-
-def _build_effect_size_rows(summary_df, metrics, group_order, tp_order):
-    """Collect Hedges' g (+95% CI) for every well-defined comparison: the
-    between-group effect at each time point (independent g) and each group's
-    PRE→POST change (paired d_z).  Returns a list of row dicts for the forest
-    plot, grouped by metric."""
-    rows = []
-    two_groups = len(group_order) == 2
-    two_tps = len(tp_order) == 2
-    for m in metrics:
-        if m not in summary_df.columns:
-            continue
-        mlabel = _FOREST_METRIC_LABELS.get(m, m)
-        # between-group effect at each time point
-        if two_groups:
-            g0, g1 = group_order
-            for tp in tp_order:
-                a = summary_df.loc[(summary_df["group"] == g0)
-                                   & (summary_df["timepoint"] == tp),
-                                   m].to_numpy(dtype=float)
-                b = summary_df.loc[(summary_df["group"] == g1)
-                                   & (summary_df["timepoint"] == tp),
-                                   m].to_numpy(dtype=float)
-                g, lo, hi = _hedges_g_ci(a, b)
-                if g is None:
-                    continue
-                rows.append({"metric": mlabel, "kind": "between", "group": None,
-                             "label": f"{g0} vs {g1}  @ {tp}",
-                             "g": g, "lo": lo, "hi": hi})
-        # within-group PRE→POST change (paired)
-        if two_tps:
-            tp0, tp1 = tp_order
-            for grp in group_order:
-                s0 = summary_df.loc[(summary_df["group"] == grp)
-                                    & (summary_df["timepoint"] == tp0)].set_index("cell")[m]
-                s1 = summary_df.loc[(summary_df["group"] == grp)
-                                    & (summary_df["timepoint"] == tp1)].set_index("cell")[m]
-                common = s0.index.intersection(s1.index)
-                if len(common) < 2:
-                    continue
-                g, lo, hi = _paired_hedges_g_ci(
-                    s0.loc[common].to_numpy(dtype=float),
-                    s1.loc[common].to_numpy(dtype=float))
-                if g is None:
-                    continue
-                rows.append({"metric": mlabel, "kind": "change", "group": grp,
-                             "label": f"{grp}:  {tp0}→{tp1}",
-                             "g": g, "lo": lo, "hi": hi})
-    return rows
-
-
-def _render_effect_size_forest(rows, group_colors, palette, theme="Dark"):
-    """Forest plot: one row per comparison, x = Hedges' g with a 95%-CI
-    whisker, grouped by metric.  Between-group effects are drawn in a neutral
-    accent; each group's PRE→POST change in that group's colour."""
-    import matplotlib.pyplot as plt
-    pal = palette
-    if not rows:
-        return None
-    # y positions: stack metrics top-to-bottom with a gap between metric blocks
-    ys, ylabels, colors, blocks = [], [], [], []
-    y = 0.0
-    last_metric = None
-    accent = pal.get("ACCENT", "#79c0ff")
-    for r in rows:
-        if last_metric is not None and r["metric"] != last_metric:
-            y -= 0.8        # gap between metric blocks
-            blocks.append((y + 0.4, r["metric"]))
-        if last_metric is None or r["metric"] != last_metric:
-            blocks.append((y, r["metric"]))
-        last_metric = r["metric"]
-        ys.append(y)
-        ylabels.append(r["label"])
-        colors.append(accent if r["kind"] == "between"
-                      else (group_colors or {}).get(r["group"], accent))
-        y -= 1.0
-
-    n = len(rows)
-    fig, ax = plt.subplots(figsize=(7.2, max(2.4, 0.42 * n + 1.2)),
-                           facecolor=pal["BG"])
-    ax.set_facecolor(pal["PNL"])
-    ax.axvline(0.0, color=pal["GRD"], lw=1.0, ls="--")
-    for yi, r, c in zip(ys, rows, colors):
-        lo, hi = r.get("lo"), r.get("hi")
-        if lo is not None and hi is not None:
-            ax.plot([lo, hi], [yi, yi], color=c, lw=1.6, alpha=0.9, zorder=2)
-            ax.plot([lo, lo], [yi - 0.12, yi + 0.12], color=c, lw=1.4)
-            ax.plot([hi, hi], [yi - 0.12, yi + 0.12], color=c, lw=1.4)
-        ax.scatter([r["g"]], [yi], color=c, s=34, zorder=3,
-                   edgecolor=pal["BG"], linewidth=0.6)
-    ax.set_yticks(ys)
-    ax.set_yticklabels(ylabels, fontsize=8)
-    ax.set_ylim(min(ys) - 0.8, max(ys) + 0.8)
-    ax.set_xlabel("Hedges' g   (0 = no effect;  |g|≈0.2 small · 0.5 medium · 0.8 large)",
-                  fontsize=8)
-    ax.set_title("Effect sizes  (Hedges' g, 95% CI)", fontsize=12,
-                 fontweight="bold", color=pal["TXT"])
-    # faint metric-block labels on the right
-    seen = set()
-    for yb, mlabel in blocks:
-        if mlabel in seen:
-            continue
-        seen.add(mlabel)
-        ax.text(1.005, yb, mlabel, transform=ax.get_yaxis_transform(),
-                ha="left", va="center", fontsize=8, fontweight="bold",
-                color=pal["TXT_MUTED"] if "TXT_MUTED" in pal else pal["GRD"])
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    for spine in ax.spines.values():
-        spine.set_edgecolor(pal["GRD"])
-    ax.tick_params(colors=pal["TXT"])
-    ax.grid(axis="x", color=pal["GRD"], alpha=0.3)
-    fig.tight_layout()
-    return fig
 from firefly.analysis import fa_twoway
 
 
@@ -1002,23 +879,12 @@ def compare_groups(groups,
     # drill-down because pingouin can't fit 1-between + 2-within in one model.
     twoway_df, twoway_msg, pair_warn = None, None, None
     drilldown = {}
-    forest_fig = None
     if two_factor:
         paired_df, pair_warn, _dropped = fa_twoway.validate_pairing(summary_df)
         if pair_warn:
             print(f"  Two-way pairing: {pair_warn}")
         twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df)
         print(f"  Two-way ANOVA: {twoway_msg}")
-        # Effect-size forest (Hedges' g + 95% CI) over the paired cell set.
-        try:
-            _scalar_metrics = ["auc_msd", "mob_immob_ratio", "median_D",
-                               "median_alpha", "mean_track_length_s"]
-            _fs_rows = _build_effect_size_rows(
-                paired_df if paired_df is not None and len(paired_df) else summary_df,
-                _scalar_metrics, group_order, tp_order)
-            forest_fig = _render_effect_size_forest(_fs_rows, group_colors, pal, theme)
-        except Exception as exc:
-            print(f"  Effect-size forest skipped ({type(exc).__name__}: {exc})")
         # Build per-cell curve records, restricted to the paired cell set.
         paired_cells = (set(zip(paired_df["group"], paired_df["cell"]))
                         if paired_df is not None and len(paired_df) else set())
@@ -1074,18 +940,6 @@ def compare_groups(groups,
             except Exception as exc:
                 print(f"  Two-way CSV skipped ({type(exc).__name__}: {exc})")
 
-        # ── Effect-size forest plot (standalone PNG + PDF) ───────────────────
-        if forest_fig is not None:
-            for ext in ("png", "pdf"):
-                fp = os.path.join(output_dir, f"{output_stem}_effect_sizes.{ext}")
-                try:
-                    forest_fig.savefig(fp, dpi=200, bbox_inches="tight",
-                                       facecolor=forest_fig.get_facecolor())
-                    print(f"  Saved: {fp}")
-                except Exception as exc:
-                    print(f"  Effect-size forest {ext} skipped "
-                          f"({type(exc).__name__}: {exc})")
-
         # ── Combined PDF report (figure + parameters + folders + stats) ──────
         if pdf_report:
             report_path = os.path.join(output_dir, f"{output_stem}_report.pdf")
@@ -1094,8 +948,7 @@ def compare_groups(groups,
                                   labels, colors, summary_df, stats_df,
                                   panels=panels, theme=theme, palette=pal,
                                   twoway_df=twoway_df, twoway_msg=twoway_msg,
-                                  drilldown=drilldown, pair_warn=pair_warn,
-                                  forest_fig=forest_fig)
+                                  drilldown=drilldown, pair_warn=pair_warn)
                 print(f"  Saved: {report_path}")
             except Exception as exc:
                 print(f"  PDF report skipped ({type(exc).__name__}: {exc})")
@@ -1184,10 +1037,9 @@ def compare_groups(groups,
 def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
                       summary_df, stats_df, panels, theme, palette,
                       twoway_df=None, twoway_msg=None, drilldown=None,
-                      pair_warn=None, forest_fig=None):
+                      pair_warn=None):
     """Multi-page PDF: cover + figure, parameters & folders, statistics, and
-    (in two-factor mode) the group × time-point ANOVA tables + effect-size
-    forest."""
+    (in two-factor mode) the group × time-point ANOVA tables."""
     from matplotlib.backends.backend_pdf import PdfPages
     import matplotlib.pyplot as plt
 
@@ -1195,11 +1047,6 @@ def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
     with PdfPages(path) as pdf:
         # ── Page 1: the comparison figure itself ──────────────────────────────
         pdf.savefig(fig, facecolor=fig.get_facecolor(), bbox_inches="tight")
-
-        # ── Page 1b: effect-size forest (two-factor mode) ─────────────────────
-        if forest_fig is not None:
-            pdf.savefig(forest_fig, facecolor=forest_fig.get_facecolor(),
-                        bbox_inches="tight")
 
         # ── Page 2: cover / parameters ────────────────────────────────────────
         page2 = plt.figure(figsize=(8.5, 11), facecolor=pal["BG"])

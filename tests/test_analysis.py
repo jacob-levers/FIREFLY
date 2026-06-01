@@ -345,29 +345,6 @@ def test_paired_test_and_effect_size():
     assert not np.isfinite(_paired_test([1.0, 1.0], [1.0, 1.0])[0])
 
 
-def test_effect_size_forest_rows():
-    """The forest builder emits a between-group effect at each time point and a
-    paired change per group, for every scalar metric present."""
-    from firefly.analysis import fa_compare as fc
-    rng = np.random.default_rng(0)
-    rows = []
-    for grp, base in [("A", 2.0), ("B", 2.6)]:
-        for ci in range(8):
-            pre = base + rng.normal(0, 0.3)
-            post = pre - 0.4 + rng.normal(0, 0.1)
-            rows += [{"group": grp, "timepoint": "PRE", "cell": f"{grp}{ci}",
-                      "mob_immob_ratio": pre},
-                     {"group": grp, "timepoint": "POST", "cell": f"{grp}{ci}",
-                      "mob_immob_ratio": post}]
-    df = pd.DataFrame(rows)
-    fr = fc._build_effect_size_rows(df, ["mob_immob_ratio"], ["A", "B"],
-                                    ["PRE", "POST"])
-    kinds = [r["kind"] for r in fr]
-    # 2 between-group (PRE, POST) + 2 changes (A, B) = 4 rows
-    assert kinds.count("between") == 2 and kinds.count("change") == 2
-    assert all(r["g"] is not None for r in fr)
-
-
 def test_alpha_unidentifiable_for_immobile_no_boundary_wall():
     """Regression: a jitter-dominated (immobile) track has a flat MSD, so the
     anomalous-exponent fit can't identify alpha — curve_fit used to park it at
