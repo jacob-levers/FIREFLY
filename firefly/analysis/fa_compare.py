@@ -17,7 +17,7 @@ from scipy import stats as _stats
 from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_THRESHOLD_DEFAULT,
                           _motion_fractions, _track_lengths)
 from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
-                         _stat_test, _stat_test_n,
+                         _stat_test, _stat_test_n, _hedges_g_ci,
                          _p_stars, compute_per_track_mean_angle,
                          compute_circular_comparison_tests)
 from firefly.analysis import fa_twoway
@@ -165,6 +165,39 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
     ax.set_xlabel("Time point")
     ax.set_ylabel(ylabel)
     ax.legend(frameon=False, loc="best", fontsize=8, title="Group")
+
+    # Per-time-point significance: at each time point the two groups are
+    # independent cells (the pairing is across time, not within), so this is
+    # the same two-sample Welch-t / Mann-Whitney + Hedges' g shown on the flat
+    # comparison bars — a "simple effect" at that time point.  Only annotated
+    # for the 2-group case; the omnibus group/time/interaction tests live in
+    # the two-way ANOVA report.
+    if len(group_order) == 2:
+        sig_col = palette.get("SIG", palette.get("TXT", "#e0e0e0"))
+        ymin, ymax = ax.get_ylim()
+        span = (ymax - ymin) or 1.0
+        ax.set_ylim(ymin, ymax + 0.20 * span)   # headroom for the labels
+        for ti, tp in enumerate(tp_order):
+            a = summary_df.loc[(summary_df["group"] == group_order[0])
+                               & (summary_df["timepoint"] == tp),
+                               metric].to_numpy(dtype=float)
+            b = summary_df.loc[(summary_df["group"] == group_order[1])
+                               & (summary_df["timepoint"] == tp),
+                               metric].to_numpy(dtype=float)
+            a = a[np.isfinite(a)]; b = b[np.isfinite(b)]
+            p, stars = _stat_test(a, b)
+            if not np.isfinite(p):
+                continue
+            g, _lo, _hi = _hedges_g_ci(a, b)
+            p_str = (f"p = {p:.1e}" if p < 0.001 else f"p = {p:.3f}")
+            txt = f"{p_str}  {stars}"
+            if g is not None and np.isfinite(g):
+                txt += f"\ng = {g:+.2f}"
+            cluster_top = float(np.nanmax(np.concatenate([a, b]))) \
+                if (len(a) or len(b)) else ymax
+            ax.text(x[ti], cluster_top + 0.06 * span, txt,
+                    ha="center", va="bottom", fontsize=7.5, color=sig_col,
+                    linespacing=1.25)
 
 
 def compare_groups(groups,
