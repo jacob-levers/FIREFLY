@@ -308,6 +308,24 @@ def test_twoway_needs_two_timepoints():
     assert res is None and "time point" in msg
 
 
+# ── loader robustness: macOS AppleDouble sidecars on exFAT drives ────────────
+def test_find_stem_ignores_appledouble_sidecars(tmp_path):
+    """On exFAT/SMB volumes macOS writes a binary `._<name>` sidecar next to
+    every file.  `._<stem>_params.json` sorts before the real file and used
+    to be picked as the stem (then json.load choked on the binary blob).
+    _find_stem must skip dotfiles and return the real stem."""
+    from firefly.analysis import fa_palmtracer as fp
+    stem = "20250319_Cell_D1_Pre"
+    # real params file
+    (tmp_path / f"{stem}_params.json").write_text('{"pixel_size_um": 0.106}')
+    # AppleDouble sidecar: binary, sorts first, 0xb0 byte at pos 37
+    (tmp_path / f"._{stem}_params.json").write_bytes(
+        b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02\x00\x00\x00"
+        b"\xb0\x00\x00\x00\x02")
+    assert fp._find_stem(str(tmp_path)) == stem
+    assert "._" not in fp._find_stem(str(tmp_path))
+
+
 def test_alpha_unidentifiable_for_immobile_no_boundary_wall():
     """Regression: a jitter-dominated (immobile) track has a flat MSD, so the
     anomalous-exponent fit can't identify alpha — curve_fit used to park it at

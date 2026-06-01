@@ -15,13 +15,28 @@ import numpy as np
 import pandas as pd
 
 
+def _listdir_visible(path):
+    """os.listdir minus dotfiles.  Crucially this drops the AppleDouble
+    sidecars (`._<name>`) that macOS sprays next to every real file on
+    exFAT / FAT / SMB volumes (e.g. an external drive).  Those `._` files
+    are binary resource-fork blobs; left in, `_find_stem`'s `endswith`
+    match would pick `._<stem>_params.json` (it sorts before the real file
+    because '.' < '0'-'9'), derive a bogus '._<stem>' stem, and then
+    json.load the binary sidecar — UnicodeDecodeError, whole folder skipped.
+    Also skips '.DS_Store' and any other dotfile."""
+    try:
+        return [f for f in os.listdir(path) if not f.startswith(".")]
+    except OSError:
+        return []
+
+
 def _find_stem(data_dir):
     """Find the experiment stem from filenames like {stem}_params.json or
     {stem}_diffusion_summary.csv inside an analysis output folder's data/ dir."""
-    for f in sorted(os.listdir(data_dir)):
+    for f in sorted(_listdir_visible(data_dir)):
         if f.endswith("_params.json"):
             return f[:-len("_params.json")]
-    for f in sorted(os.listdir(data_dir)):
+    for f in sorted(_listdir_visible(data_dir)):
         if f.endswith("_diffusion_summary.csv"):
             return f[:-len("_diffusion_summary.csv")]
     raise FileNotFoundError(f"No analysis CSVs found in {data_dir}")
@@ -29,9 +44,8 @@ def _find_stem(data_dir):
 
 def _is_palmtracer_folder(folder):
     """Return True if `folder` contains raw PALM-Tracer output."""
-    try:
-        names = os.listdir(folder)
-    except OSError:
+    names = _listdir_visible(folder)
+    if not names:
         return False
     # PALM-Tracer files have no stem prefix (e.g. 'locPALMTracer.txt')
     has_loc = any(n.lower() == "locpalmtracer.txt" or n.lower() == "locpalmtracer.csv"
