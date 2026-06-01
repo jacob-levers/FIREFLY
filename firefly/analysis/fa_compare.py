@@ -211,35 +211,8 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
     ax.set_xlim(-0.35, len(tp_order) - 0.65)   # pad so end markers aren't clipped
     ax.set_xlabel("Time point")
     ax.set_ylabel(ylabel)
-    ax.legend(frameon=False, loc="best", fontsize=7.5, title="Group  (Δ = within-group change)",
-              title_fontsize=8)
-
-    # Between-group difference at each time point (independent samples — the
-    # pairing is across time, not within).  Same Welch-t / Mann-Whitney +
-    # Hedges' g as the flat bars.  Drawn above each cluster, only for the
-    # 2-group case; the omnibus tests live in the two-way ANOVA report.
-    if len(group_order) == 2:
-        sig_col = palette.get("SIG", palette.get("TXT", "#e0e0e0"))
-        ymin, ymax = ax.get_ylim()
-        span = (ymax - ymin) or 1.0
-        ax.set_ylim(ymin, ymax + 0.18 * span)   # headroom for the labels
-        for ti, tp in enumerate(tp_order):
-            a = _cells(group_order[0], tp).to_numpy(dtype=float)
-            b = _cells(group_order[1], tp).to_numpy(dtype=float)
-            a = a[np.isfinite(a)]; b = b[np.isfinite(b)]
-            p, stars = _stat_test(a, b)
-            if not np.isfinite(p):
-                continue
-            g, _lo, _hi = _hedges_g_ci(a, b)
-            p_str = (f"p = {p:.1e}" if p < 0.001 else f"p = {p:.3f}")
-            txt = f"{p_str}  {stars}"
-            if g is not None and np.isfinite(g):
-                txt += f"\ng = {g:+.2f}"
-            cluster_top = float(np.nanmax(np.concatenate([a, b]))) \
-                if (len(a) or len(b)) else ymax
-            ax.text(x[ti], cluster_top + 0.06 * span, txt,
-                    ha="center", va="bottom", fontsize=7.5, color=sig_col,
-                    linespacing=1.25)
+    ax.legend(frameon=False, loc="best", fontsize=7.5,
+              title="Group  (Δ = within-group change)", title_fontsize=8)
 
 
 def compare_groups(groups,
