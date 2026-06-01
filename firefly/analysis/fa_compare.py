@@ -209,23 +209,26 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
     ax.set_xlim(-0.35, len(tp_order) - 0.65)   # pad so end markers aren't clipped
     ax.set_xlabel("Time point")
     ax.set_ylabel(ylabel)
-    # Plain group key (names + colour swatch only — the stats are the centred
-    # labels below).  Anchored bottom-left so it stays clear of those labels.
-    ax.legend(frameon=False, loc="lower left", fontsize=8, title="Group",
-              title_fontsize=8)
+    # Plain group key (names + colour swatch only — stats are the centred labels
+    # above).  Bottom-CENTRE: the dots cluster at the PRE/POST edges, so the
+    # horizontal centre is the clearest spot for both the legend and the labels.
+    ax.legend(frameon=False, loc="lower center", fontsize=8, title="Group",
+              title_fontsize=8, ncol=len(group_order))
 
-    # Centred p/g labels, stacked above the highest line, coloured to match.
+    # Centred p/g labels, stacked in a clear band ABOVE all the data.  Anchor to
+    # the current top (which already sits above the highest point), then expand
+    # the y-axis so the band never lands on a dot or a line.
     if change:
         x_mid = (len(tp_order) - 1) / 2.0          # data x at the centre
         ymin, ymax = ax.get_ylim()
         span = (ymax - ymin) or 1.0
-        top = max(h for _, _, h in change)
-        ax.set_ylim(ymin, max(ymax, top + (0.10 + 0.085 * len(change)) * span))
-        y = top + 0.09 * span
-        for t, col, _h in change:           # stack upward
+        n = len(change)
+        ax.set_ylim(ymin, ymax + (0.05 + 0.075 * n) * span)
+        y = ymax + 0.03 * span
+        for t, col, _h in change:           # stack upward, above all data
             ax.text(x_mid, y, t, ha="center", va="bottom", fontsize=8,
                     color=col, fontweight="bold")
-            y += 0.085 * span
+            y += 0.075 * span
 
 
 def compare_groups(groups,
