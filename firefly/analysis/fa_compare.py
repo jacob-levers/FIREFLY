@@ -140,17 +140,58 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
     """Group × time-point interaction plot: x = TIME POINTS (in the order the
     user assigned them), one mean±SEM line per group drawn in that group's
     assigned colour — a time-course view.  Cell-level points are jittered
-    behind each mean."""
+    behind each mean.
+
+    Significance is shown two ways, neither of which sits on the lines:
+      * the BETWEEN-group difference at each time point — a label above each
+        time-point cluster (independent Welch-t / Mann-Whitney + Hedges' g);
+      * each group's CHANGE across time (first→last time point, paired by
+        cell) — folded into that group's legend entry, so it never overlaps
+        the data and stays one line per group no matter how many time points.
+    """
     x = np.arange(len(tp_order))
     rng = np.random.default_rng(2)
+
+    def _cells(grp, tp):
+        return summary_df.loc[(summary_df["group"] == grp)
+                              & (summary_df["timepoint"] == tp),
+                              metric]
+
+    # Per-group change across time (first→last time point, paired by cell) —
+    # folded into the legend label.  Well-defined for ≥2 time points; for >2
+    # it summarises the overall trend (the full per-segment / RM tests live in
+    # the two-way ANOVA report).
+    change_txt = {}
+    if len(tp_order) >= 2:
+        tp_a, tp_b = tp_order[0], tp_order[-1]
+        for grp in group_order:
+            s0 = _cells(grp, tp_a).set_axis(
+                summary_df.loc[(summary_df["group"] == grp)
+                               & (summary_df["timepoint"] == tp_a), "cell"])
+            s1 = _cells(grp, tp_b).set_axis(
+                summary_df.loc[(summary_df["group"] == grp)
+                               & (summary_df["timepoint"] == tp_b), "cell"])
+            common = s0.index.intersection(s1.index)
+            if len(common) < 2:
+                continue
+            a = s0.loc[common].to_numpy(dtype=float)
+            b = s1.loc[common].to_numpy(dtype=float)
+            p, stars = _paired_test(a, b)
+            if not np.isfinite(p):
+                continue
+            g = _paired_hedges_g(a, b)
+            p_str = (f"p={p:.1e}" if p < 0.001 else f"p={p:.3f}")
+            t = f"Δ {tp_a}→{tp_b}: {p_str} {stars}"
+            if g is not None and np.isfinite(g):
+                t += f", g={g:+.2f}"
+            change_txt[grp] = t
+
     for gi, grp in enumerate(group_order):
         col = (group_colors or {}).get(grp) \
             or _TP_SERIES_COLORS[gi % len(_TP_SERIES_COLORS)]
         means, sems = [], []
         for ti, tp in enumerate(tp_order):
-            vals = summary_df.loc[(summary_df["group"] == grp)
-                                  & (summary_df["timepoint"] == tp),
-                                  metric].to_numpy(dtype=float)
+            vals = _cells(grp, tp).to_numpy(dtype=float)
             vals = vals[np.isfinite(vals)]
             if len(vals):
                 means.append(float(np.mean(vals)))
@@ -160,33 +201,31 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                            vals, color=col, s=12, alpha=0.6, zorder=2)
             else:
                 means.append(np.nan); sems.append(0.0)
+        lbl = str(grp)
+        if grp in change_txt:
+            lbl = f"{grp}\n{change_txt[grp]}"
         ax.errorbar(x, means, yerr=sems, color=col, marker="o", ms=5,
-                    lw=1.8, capsize=3, label=str(grp), zorder=3)
+                    lw=1.8, capsize=3, label=lbl, zorder=3)
     ax.set_xticks(x)
     ax.set_xticklabels(tp_order)
     ax.set_xlim(-0.35, len(tp_order) - 0.65)   # pad so end markers aren't clipped
     ax.set_xlabel("Time point")
     ax.set_ylabel(ylabel)
-    ax.legend(frameon=False, loc="best", fontsize=8, title="Group")
+    ax.legend(frameon=False, loc="best", fontsize=7.5, title="Group  (Δ = within-group change)",
+              title_fontsize=8)
 
-    # Per-time-point significance: at each time point the two groups are
-    # independent cells (the pairing is across time, not within), so this is
-    # the same two-sample Welch-t / Mann-Whitney + Hedges' g shown on the flat
-    # comparison bars — a "simple effect" at that time point.  Only annotated
-    # for the 2-group case; the omnibus group/time/interaction tests live in
-    # the two-way ANOVA report.
+    # Between-group difference at each time point (independent samples — the
+    # pairing is across time, not within).  Same Welch-t / Mann-Whitney +
+    # Hedges' g as the flat bars.  Drawn above each cluster, only for the
+    # 2-group case; the omnibus tests live in the two-way ANOVA report.
     if len(group_order) == 2:
         sig_col = palette.get("SIG", palette.get("TXT", "#e0e0e0"))
         ymin, ymax = ax.get_ylim()
         span = (ymax - ymin) or 1.0
-        ax.set_ylim(ymin, ymax + 0.20 * span)   # headroom for the labels
+        ax.set_ylim(ymin, ymax + 0.18 * span)   # headroom for the labels
         for ti, tp in enumerate(tp_order):
-            a = summary_df.loc[(summary_df["group"] == group_order[0])
-                               & (summary_df["timepoint"] == tp),
-                               metric].to_numpy(dtype=float)
-            b = summary_df.loc[(summary_df["group"] == group_order[1])
-                               & (summary_df["timepoint"] == tp),
-                               metric].to_numpy(dtype=float)
+            a = _cells(group_order[0], tp).to_numpy(dtype=float)
+            b = _cells(group_order[1], tp).to_numpy(dtype=float)
             a = a[np.isfinite(a)]; b = b[np.isfinite(b)]
             p, stars = _stat_test(a, b)
             if not np.isfinite(p):
@@ -201,46 +240,6 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
             ax.text(x[ti], cluster_top + 0.06 * span, txt,
                     ha="center", va="bottom", fontsize=7.5, color=sig_col,
                     linespacing=1.25)
-
-    # Per-group PRE→POST change: same cells imaged at both time points, so this
-    # is a PAIRED test (paired-t / Wilcoxon) with the paired effect size d_z —
-    # the "Δ" label on each line, colour-matched to its group.  Only for the
-    # 2-time-point case (the change is only well-defined between two points).
-    if len(tp_order) == 2:
-        tp0, tp1 = tp_order
-        for gi, grp in enumerate(group_order):
-            col = (group_colors or {}).get(grp) \
-                or _TP_SERIES_COLORS[gi % len(_TP_SERIES_COLORS)]
-            s0 = summary_df.loc[(summary_df["group"] == grp)
-                                & (summary_df["timepoint"] == tp0)].set_index("cell")[metric]
-            s1 = summary_df.loc[(summary_df["group"] == grp)
-                                & (summary_df["timepoint"] == tp1)].set_index("cell")[metric]
-            common = s0.index.intersection(s1.index)
-            if len(common) < 2:
-                continue
-            pre = s0.loc[common].to_numpy(dtype=float)
-            post = s1.loc[common].to_numpy(dtype=float)
-            p, stars = _paired_test(pre, post)
-            if not np.isfinite(p):
-                continue
-            g = _paired_hedges_g(pre, post)
-            p_str = (f"p = {p:.1e}" if p < 0.001 else f"p = {p:.3f}")
-            txt = f"Δ {p_str}  {stars}"
-            if g is not None and np.isfinite(g):
-                txt += f",  g = {g:+.2f}"
-            # Stagger the labels horizontally and lift each ABOVE its own line
-            # so the line no longer runs through the text.  x is spread around
-            # the midpoint; y is the line's interpolated height at that x plus
-            # a small offset.
-            y0, y1 = float(np.nanmean(pre)), float(np.nanmean(post))
-            n_g = len(group_order)
-            xlab = 0.5 + (gi - (n_g - 1) / 2.0) * 0.24
-            xlab = min(max(xlab, 0.12), 0.88)
-            yline = y0 + (y1 - y0) * xlab           # line height at xlab
-            ax.text(xlab, yline + 0.045 * span, txt,
-                    ha="center", va="bottom", fontsize=7, color=col,
-                    bbox=dict(facecolor=palette.get("BG", "#0d1117"),
-                              edgecolor="none", alpha=0.6, pad=1.0))
 
 
 def compare_groups(groups,
