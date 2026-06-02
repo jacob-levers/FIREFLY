@@ -621,3 +621,18 @@ def test_vacf_brownian_vs_directed():
     vd = s.compute_vacf(drv, dt, px, max_lag=8)
     assert vd is not None
     assert vd["persistence"] > 0.6                  # strong directional memory
+
+
+def test_msd_fit_rejects_bad_calibration():
+    """compute_msd_and_fit raises a clear ValueError on non-positive pixel
+    size / frame interval instead of silently returning garbage D/alpha."""
+    tracks = _synthetic_brownian_tracks(n_tracks=5, n_frames=20, sigma_px=2.0)
+    import pytest
+    with pytest.raises(ValueError, match="pixel_size"):
+        s.compute_msd_and_fit(tracks, 0.0, 0.05)
+    with pytest.raises(ValueError, match="pixel_size"):
+        s.compute_msd_and_fit(tracks, float("nan"), 0.05)
+    with pytest.raises(ValueError, match="frame_interval"):
+        s.compute_msd_and_fit(tracks, 0.1, -1.0)
+    with pytest.raises(ValueError, match="max_lagtime"):
+        s.compute_msd_and_fit(tracks, 0.1, 0.05, max_lagtime=0)

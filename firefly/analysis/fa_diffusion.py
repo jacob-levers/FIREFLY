@@ -206,6 +206,19 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     Single parallel pass that computes both MSD and diffusion fits.
     Replaces tp.imsd + tp.emsd + separate fit loop — all in one go.
     """
+    # Fail loudly on nonsensical calibration: a zero/negative/NaN pixel size or
+    # frame interval would silently collapse every displacement (or invert the
+    # time axis) and yield meaningless D/alpha rather than an obvious error.
+    if not (np.isfinite(pixel_size) and pixel_size > 0):
+        raise ValueError(
+            f"pixel_size must be a positive, finite number (got {pixel_size!r})")
+    if not (np.isfinite(frame_interval) and frame_interval > 0):
+        raise ValueError(
+            f"frame_interval must be a positive, finite number "
+            f"(got {frame_interval!r})")
+    if max_lagtime < 1:
+        raise ValueError(f"max_lagtime must be >= 1 (got {max_lagtime!r})")
+
     lag_times  = np.arange(1, max_lagtime + 1) * frame_interval
     grouped    = tracks.groupby("particle")
     pid_list   = list(grouped.groups.keys())
