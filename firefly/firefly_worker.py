@@ -906,6 +906,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             from firefly.sptpalm_analysis import build_roi_mask_advanced
             roi_mask = None
+            # These are populated ONLY by the threshold-projection branch
+            # below; the sister-TIFF and polygon paths leave them unset.
+            # Initialise here so the shared roi_mask.png save block can't hit
+            # an UnboundLocalError (it previously assumed only polygon or
+            # threshold mode existed).
+            mode_hint = None
+            bg_sigma  = None
+            info      = None
 
             # ── Sister TIFF ROI (microscope export, e.g. _green.tif) ─
             if roi_mode == "sister" and roi_sister_path is not None:
@@ -1136,16 +1144,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                                 f"{100.0 * float(roi_mask.mean()):.1f}% "
                                 f"of frame"
                             )
-                        else:
-                            # bg_sigma + info are only set in the
-                            # threshold branch above.  We KNOW we're in
-                            # that branch here (roi_mode != "polygon").
+                        elif mode_hint is not None and info is not None:
+                            # Threshold-projection branch — full provenance.
                             title = (
                                 f"ROI applied — {bg_label}  |  "
                                 f"projection={mode_hint}, "
                                 f"σ_bg={bg_sigma:.0f}, "
                                 f"t={info['threshold']:.3f}, "
                                 f"{100.0 * info['fraction']:.1f}% of frame"
+                            )
+                        else:
+                            # Sister-TIFF (or any other) ROI: we only know the
+                            # kept fraction, not a threshold / σ_bg.
+                            title = (
+                                f"ROI applied — {bg_label}  |  "
+                                f"{100.0 * float(roi_mask.mean()):.1f}% of frame"
                             )
                         ax.set_title(title, color="#e6edf3", fontsize=9)
                         ax.set_xticks([]); ax.set_yticks([])
