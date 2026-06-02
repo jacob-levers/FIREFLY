@@ -796,10 +796,17 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
                            .groupby("particle", sort=False)):
         xy = grp[["x", "y"]].values * pixel_size_um
         n = len(xy)
-        if n < max(max_lagtime + 2, 6):
+        if n < 6:
             continue
+        # The per-track lag range is capped at n//2 regardless of max_lagtime,
+        # so gate on the number of *usable* lags (>=4 for a stable log-log
+        # moment fit), NOT on max_lagtime+2.  The old max_lagtime+2 gate was
+        # over-restrictive and inconsistent: it demanded >=12 frames (for the
+        # default max_lagtime=10) yet only ever used n//2 lags, so a 10-frame
+        # track — which yields 4 valid lags — was needlessly rejected.  Short
+        # single-molecule tracks (sptPALM) now contribute an MSS slope.
         lag_arr = list(range(1, min(max_lagtime + 1, n // 2)))
-        if len(lag_arr) < 3:
+        if len(lag_arr) < 4:
             continue
         # log-time axis is the same for all four moments → centre it once.
         log_t   = np.log(np.array(lag_arr, dtype=float) * frame_interval)
@@ -819,6 +826,8 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
                                     np.log(moments[qi] + 1e-15))
         mss_slope = _ols_slope(q_ctr, q_denom, gammas)
         results.append({"particle": int(pid), "mss_slope": float(mss_slope)})
+    print(f"  MSS: {len(results):,}/{n_tracks:,} tracks long enough "
+          f"(>= 10 frames) for a moment-scaling slope")
     return pd.DataFrame(results)
 
 

@@ -866,3 +866,16 @@ def test_auto_threshold_knee_floor_is_noop_on_clean_bimodal_data():
                                 workers=2, log_cb=lambda m: None)
     assert diag["method"].startswith("gmm")
     assert not diag.get("knee_floor_applied")
+
+
+def test_mss_computes_for_short_tracks():
+    """MSS now uses tracks down to 10 frames (>=4 usable lags) instead of
+    demanding max_lagtime+2=12 — so short single-molecule (sptPALM) tracks
+    contribute a slope instead of an empty 'tracks too short' panel."""
+    ten = _synthetic_brownian_tracks(n_tracks=150, n_frames=10, sigma_px=2.0)
+    nine = _synthetic_brownian_tracks(n_tracks=150, n_frames=9, sigma_px=2.0)
+    mss10 = s.compute_mss(ten, 0.1, 0.05)
+    mss9  = s.compute_mss(nine, 0.1, 0.05)
+    assert len(mss10) == 150            # 10-frame tracks now qualify
+    assert len(mss9) == 0               # 9 frames -> only 3 lags -> still skipped
+    assert 0.3 <= float(mss10["mss_slope"].median()) <= 0.65   # ~0.5 Brownian
