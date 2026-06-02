@@ -363,6 +363,8 @@ manifest at the root:
 │   ├── <stem>_ensemble_msd.csv
 │   ├── <stem>_cluster_stats.csv       # one row per DBSCAN cluster
 │   ├── <stem>_jdd.json                # JDD fit (D values + fractions)
+│   ├── <stem>_van_hove.json           # van Hove distribution + non-Gaussian α₂
+│   ├── <stem>_vacf.json               # velocity autocorrelation + persistence
 │   ├── <stem>_dwell_times.csv
 │   ├── <stem>_turning_angles.csv
 │   ├── <stem>_mobile_fraction.csv     # sliding-window mobile fraction
@@ -392,6 +394,32 @@ with one row per series.
 ├── compare_<labels>_stats.csv      # statistical tests (pairwise)
 └── compare_<labels>_report.pdf     # 4-page PDF: figure + cover + tables
 ```
+
+---
+
+## Motion & population metrics
+
+Beyond per-track D and α, each run reports several ensemble metrics that
+capture structure the per-track averages hide:
+
+- **Localisation precision (`loc_sigma_nm`)** — derived per track from the
+  static offset of the MSD fit (`MSD(t) = 4·D·t^α + 4σ²`), so
+  `σ = √(MSD₀/4)`. Reported in nm in `diffusion_summary.csv`; a direct read
+  of the positional noise floor without a separate immobile-bead calibration.
+- **van Hove + non-Gaussian parameter α₂** (`<stem>_van_hove.json`) — the
+  pooled single-frame displacement distribution and
+  `α₂ = ⟨r⁴⟩ / (2⟨r²⟩²) − 1`. α₂ ≈ 0 for a homogeneous Brownian ensemble and
+  grows positive with heterogeneity (e.g. a mobile + trapped mixture) or
+  anomalous transport — one scalar for *population* structure.
+- **Velocity autocorrelation (VACF)** (`<stem>_vacf.json`) — normalised
+  ensemble velocity autocorrelation; the reported `persistence` (lag-1 value)
+  is ≈ 0 for Brownian motion, positive for directed/persistent transport, and
+  negative for caged/anti-persistent motion.
+
+> **α identifiability:** for effectively immobile tracks the dynamic term of
+> the MSD fit is unconstrained, so α is reported as `NaN` and the motion class
+> as *Immobile* rather than pinning α at the fit bound — this avoids a
+> spurious pile-up of α values at the upper limit.
 
 ---
 
