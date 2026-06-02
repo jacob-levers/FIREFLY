@@ -553,3 +553,44 @@ def test_van_hove_non_gaussian_parameter():
     hetero = pd.DataFrame(rows, columns=cols)
     vh_het = fd.compute_van_hove(hetero, 0.1)
     assert vh_het["non_gaussian_alpha2"] > 0.3
+
+
+def test_jdd_recovers_two_populations():
+    """Jump-distance-distribution fit recovers two diffusion coefficients from
+    a 2-population mixture (slow + fast Brownian)."""
+    rng = np.random.default_rng(3)
+    px, dt = 0.1, 0.05
+    D1 = (1.0 * px) ** 2 / (2 * dt)          # slow  -> 0.1 µm²/s
+    D2 = (4.0 * px) ** 2 / (2 * dt)          # fast  -> 1.6 µm²/s
+    rows = []
+    for pid, sig in [(p, 1.0) for p in range(150)] + \
+                    [(p, 4.0) for p in range(150, 300)]:
+        x = np.cumsum(rng.normal(0, sig, 50)); y = np.cumsum(rng.normal(0, sig, 50))
+        for f in range(50):
+            rows.append((pid, f, x[f], y[f]))
+    tracks = pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+    jdd = s.compute_jdd(tracks, px, dt, n_components=2)
+    assert jdd is not None
+    Ds = sorted(jdd["D_values"])
+    assert 0.5 * D1 <= Ds[0] <= 2.0 * D1, f"slow D off: {Ds[0]:.3f} (true {D1:.3f})"
+    assert 0.5 * D2 <= Ds[1] <= 2.0 * D2, f"fast D off: {Ds[1]:.3f} (true {D2:.3f})"
+
+
+def test_mss_slope_brownian_near_half():
+    """The moment-scaling-spectrum slope is ~0.5 for normal (Brownian)
+    diffusion (1.0 = ballistic, <0.5 = subdiffusive)."""
+    tracks = _synthetic_brownian_tracks(n_tracks=200, n_frames=60, sigma_px=2.0)
+    mss = s.compute_mss(tracks, 0.1, 0.05, max_lagtime=10)
+    assert mss is not None and len(mss) > 0
+    assert 0.35 <= float(mss["mss_slope"].median()) <= 0.65
+
+
+def test_turning_angles_symmetric_for_brownian():
+    """Brownian motion has no directional bias: signed turning angles are
+    symmetric about 0 (mean ~0) and span the full (-180, 180]."""
+    tracks = _synthetic_brownian_tracks(n_tracks=150, n_frames=40, sigma_px=2.0)
+    ang = s.compute_turning_angles(tracks)
+    ang = np.asarray(ang, float)
+    assert ang.size > 500
+    assert ang.min() >= -180.001 and ang.max() <= 180.001
+    assert abs(float(np.mean(ang))) < 10.0          # no net turning bias
