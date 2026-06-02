@@ -425,6 +425,24 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
             for D, frac in zip(D_values, fractions)]
     pdf_total = np.sum(pdfs, axis=0)
 
+    # ── Goodness of fit on the CDF (for objective model selection) ────────
+    # Residuals of the fitted vs empirical CDF; R²/RMSE describe fit quality,
+    # AIC/BIC penalise the extra free parameters of richer mixtures so the
+    # user can justify 1- vs 2- vs 3-population models (lower AIC/BIC = better,
+    # but only worth the extra component if it drops by ≳10).
+    cdf_fit = model(r_sorted, *popt)
+    resid   = cdf_emp - cdf_fit
+    n_obs   = len(r_sorted)
+    k       = len(popt)
+    ss_res  = float(np.sum(resid ** 2))
+    ss_tot  = float(np.sum((cdf_emp - cdf_emp.mean()) ** 2))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    rmse      = float(np.sqrt(ss_res / n_obs))
+    # Gaussian-error AIC/BIC from the residual sum of squares.
+    _mse = max(ss_res / n_obs, 1e-300)
+    aic  = float(n_obs * np.log(_mse) + 2 * k)
+    bic  = float(n_obs * np.log(_mse) + k * np.log(n_obs))
+
     return {
         "jumps":         jumps,
         "D_values":      D_values,
@@ -436,7 +454,12 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
         "pdf_total":     pdf_total,
         "cdf_r":         r_sorted,
         "cdf_empirical": cdf_emp,
-        "cdf_fit":       model(r_sorted, *popt),
+        "cdf_fit":       cdf_fit,
+        "r_squared":     float(r_squared) if np.isfinite(r_squared) else np.nan,
+        "rmse":          rmse,
+        "aic":           aic,
+        "bic":           bic,
+        "n_params":      k,
     }
 
 

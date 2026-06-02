@@ -729,3 +729,26 @@ def test_aggregate_run_summaries(tmp_path):
     assert iso["nongauss_alpha2"] == 0.7 and iso["n_qc_flags"] == 1
     # empty root -> empty frame, no crash
     assert len(s.aggregate_run_summaries(str(tmp_path / "Control" / "B1R1" / "nope"))) == 0
+
+
+def test_jdd_goodness_of_fit_prefers_correct_model():
+    """JDD now reports R²/RMSE/AIC/BIC.  For a genuine 2-population mixture the
+    2-component model should fit better (higher R²) and be preferred by BIC
+    (lower) over the 1-component model."""
+    rng = np.random.default_rng(7)
+    px, dt = 0.1, 0.05
+    rows = []
+    for pid, sig in [(p, 1.0) for p in range(160)] + \
+                    [(p, 4.5) for p in range(160, 320)]:
+        x = np.cumsum(rng.normal(0, sig, 40)); y = np.cumsum(rng.normal(0, sig, 40))
+        for f in range(40):
+            rows.append((pid, f, x[f], y[f]))
+    tracks = pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+    j1 = s.compute_jdd(tracks, px, dt, n_components=1)
+    j2 = s.compute_jdd(tracks, px, dt, n_components=2)
+    assert j1 is not None and j2 is not None
+    for j in (j1, j2):
+        assert set(["r_squared", "rmse", "aic", "bic", "n_params"]) <= set(j)
+    assert j2["r_squared"] > j1["r_squared"]      # 2 fits the mixture better
+    assert j2["bic"] < j1["bic"]                  # and BIC prefers it
+    assert 0.0 <= j2["r_squared"] <= 1.0
