@@ -15,7 +15,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats as _stats
 from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_THRESHOLD_DEFAULT,
-                          _motion_fractions, _track_lengths)
+                          _motion_fractions, _track_lengths,
+                          compute_van_hove, compute_vacf)
 from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
                          _stat_test, _stat_test_n, _hedges_g_ci,
                          _paired_test, _paired_hedges_g,
@@ -327,6 +328,22 @@ def compare_groups(groups,
         stem = summary["stem"]
         cell, _matched = (fa_twoway.derive_subject_key(stem, timepoint_tokens)
                           if two_factor else (stem, True))
+        # van Hove non-Gaussian alpha2 and VACF persistence are both
+        # dimensionless ratios (scale- and time-invariant), so we can compute
+        # them per replicate straight from the (pixel-unit) tracks with
+        # px=1/dt=1 and get the identical value — no dependence on the saved
+        # JSON extras or on the per-folder calibration.
+        trk = summary["tracks"]
+        try:
+            _vh = compute_van_hove(trk, 1.0) if trk is not None else None
+            nongauss_alpha2 = float(_vh["non_gaussian_alpha2"]) if _vh else np.nan
+        except Exception:
+            nongauss_alpha2 = np.nan
+        try:
+            _vc = compute_vacf(trk, 1.0, 1.0) if trk is not None else None
+            vacf_persistence = float(_vc["persistence"]) if _vc else np.nan
+        except Exception:
+            vacf_persistence = np.nan
         return {
             "group":            group_label,
             "timepoint":        timepoint,
@@ -340,6 +357,8 @@ def compare_groups(groups,
             "median_alpha":     float(d["alpha"].median()) if d is not None and "alpha" in d.columns else np.nan,
             "mean_track_length_s": float(_track_lengths(summary["tracks"], fi).mean())
                                    if summary["tracks"] is not None else np.nan,
+            "nongauss_alpha2":  nongauss_alpha2,
+            "vacf_persistence": vacf_persistence,
         }
     for gi, summaries in enumerate(all_summaries):
         for s in summaries:

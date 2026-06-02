@@ -636,3 +636,18 @@ def test_msd_fit_rejects_bad_calibration():
         s.compute_msd_and_fit(tracks, 0.1, -1.0)
     with pytest.raises(ValueError, match="max_lagtime"):
         s.compute_msd_and_fit(tracks, 0.1, 0.05, max_lagtime=0)
+
+
+def test_alpha2_and_persistence_are_scale_time_invariant():
+    """alpha2 (moment ratio) and VACF persistence (normalised) are
+    dimensionless — invariant to pixel size and frame interval.  This is what
+    lets Compare compute them per replicate with px=1/dt=1 from pixel-unit
+    tracks and still get the calibrated value."""
+    tracks = _synthetic_brownian_tracks(n_tracks=150, n_frames=40, sigma_px=2.0)
+    a_unit = s.compute_van_hove(tracks, 1.0)["non_gaussian_alpha2"]
+    a_cal  = s.compute_van_hove(tracks, 0.137)["non_gaussian_alpha2"]
+    assert abs(a_unit - a_cal) < 1e-9
+
+    p_unit = s.compute_vacf(tracks, 1.0, 1.0)["persistence"]
+    p_cal  = s.compute_vacf(tracks, 0.042, 0.137)["persistence"]
+    assert abs(p_unit - p_cal) < 1e-9
