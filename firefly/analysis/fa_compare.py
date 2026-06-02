@@ -829,6 +829,20 @@ def compare_groups(groups,
         except (TypeError, ValueError):
             return ""
 
+    # Population-heterogeneity (non-Gaussian alpha2) and directionality (VACF
+    # persistence) are per-replicate scalars in summary_df; test them across
+    # groups (flat mode) so they appear in the stats table and CSV even though
+    # they have no dedicated figure panel.  The two-way report covers the
+    # two-factor case separately.
+    if not two_factor:
+        for _m in ("nongauss_alpha2", "vacf_persistence"):
+            if _m in summary_df.columns and _m not in stats_records:
+                arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
+                        .dropna().to_numpy() for lbl in labels]
+                if sum(len(a) for a in arrs) >= 2:
+                    omn, pw = _stat_test_n(arrs, labels)
+                    stats_records[_m] = {"omnibus": omn, "pairwise": pw}
+
     stats_rows = []
     for metric, rec in stats_records.items():
         omn = rec.get("omnibus")

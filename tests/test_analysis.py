@@ -752,3 +752,52 @@ def test_jdd_goodness_of_fit_prefers_correct_model():
     assert j2["r_squared"] > j1["r_squared"]      # 2 fits the mixture better
     assert j2["bic"] < j1["bic"]                  # and BIC prefers it
     assert 0.0 <= j2["r_squared"] <= 1.0
+
+
+def _write_run_folder(root, group, stem, n_tracks=25, n_frames=30, sigma_px=2.0,
+                      seed=0):
+    """Write a minimal FIREFLY run folder under root/group/stem/firefly_extras."""
+    import json as _json
+    rng = np.random.default_rng(seed)
+    d = os.path.join(root, group, stem, "firefly_extras")
+    os.makedirs(d)
+    rows, drows = [], []
+    for pid in range(n_tracks):
+        t = np.cumsum(rng.normal(0, sigma_px, (n_frames, 2)), axis=0)
+        for f in range(n_frames):
+            rows.append((pid, f, t[f, 0], t[f, 1]))
+        D = float(abs(rng.normal(0.05, 0.02)))
+        drows.append((pid, D, float(rng.uniform(0.7, 1.1)),
+                      "Brownian" if D > 0.04 else "Immobile"))
+    pd.DataFrame(rows, columns=["particle", "frame", "x", "y"]).to_csv(
+        os.path.join(d, f"{stem}_trajectories.csv"), index=False)
+    pd.DataFrame(drows, columns=["particle", "D", "alpha", "motion"]).to_csv(
+        os.path.join(d, f"{stem}_diffusion_summary.csv"), index=False)
+    pd.DataFrame({"lag_frame": np.arange(1, 11),
+                  "msd_um2": np.linspace(0.01, 0.1, 10)}).to_csv(
+        os.path.join(d, f"{stem}_ensemble_msd.csv"), index=False)
+    with open(os.path.join(d, f"{stem}_params.json"), "w") as fp:
+        _json.dump({"pixel_size_um": 0.1, "frame_interval_s": 0.05}, fp)
+    return os.path.join(root, group, stem)
+
+
+def test_compare_groups_reports_alpha2_and_persistence_stats(tmp_path):
+    """compare_groups runs end-to-end on synthetic run folders and the returned
+    stats include the new per-replicate metrics (alpha2, VACF persistence)."""
+    import matplotlib; matplotlib.use("Agg")
+    from firefly.analysis.fa_compare import compare_groups
+    root = str(tmp_path)
+    g1 = [_write_run_folder(root, "Control", f"C{i}", sigma_px=2.0, seed=i)
+          for i in range(3)]
+    g2 = [_write_run_folder(root, "Iso", f"I{i}", sigma_px=3.5, seed=10 + i)
+          for i in range(3)]
+    groups = [{"folders": g1, "label": "Control", "color": "#4a90d9"},
+              {"folders": g2, "label": "Iso", "color": "#e05252"}]
+    fig, summary_df, stats = compare_groups(
+        groups, output_dir=str(tmp_path / "out"), pdf_report=False)
+    # per-replicate scalars present
+    assert {"nongauss_alpha2", "vacf_persistence"} <= set(summary_df.columns)
+    assert len(summary_df) == 6
+    # and they were tested across groups
+    assert "nongauss_alpha2" in stats and "vacf_persistence" in stats
+    assert "omnibus" in stats["nongauss_alpha2"]
