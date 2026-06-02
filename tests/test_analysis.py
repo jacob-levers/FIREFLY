@@ -520,3 +520,36 @@ def test_loc_precision_from_msd_offset():
     assert diff["loc_sigma_nm"].notna().all()
     med = diff["loc_sigma_nm"].median()
     assert 22.0 <= med <= 40.0, f"loc precision off: {med:.1f} nm (true 30)"
+
+
+def test_van_hove_non_gaussian_parameter():
+    """Van Hove alpha2 ~ 0 for a homogeneous Brownian ensemble and clearly
+    positive for a heterogeneous mix (mobile + immobile) — the population-
+    heterogeneity signal the per-track averages miss."""
+    rng = np.random.default_rng(0)
+
+    def brownian(n, sigma_step, start_pid=0):
+        rows = []
+        for pid in range(start_pid, start_pid + n):
+            x = np.cumsum(rng.normal(0, sigma_step, 40))
+            y = np.cumsum(rng.normal(0, sigma_step, 40))
+            for f in range(40):
+                rows.append((pid, f, x[f], y[f], 100.0))
+        return rows
+
+    cols = ["particle", "frame", "x", "y", "mass"]
+    homo = pd.DataFrame(brownian(300, 2.0), columns=cols)
+    vh_homo = fd.compute_van_hove(homo, 0.1)
+    assert vh_homo is not None
+    assert abs(vh_homo["non_gaussian_alpha2"]) < 0.15
+    assert vh_homo["n_displacements"] > 1000
+
+    rows = brownian(150, 2.0)
+    for pid in range(150, 300):              # add a near-immobile population
+        cx, cy = rng.uniform(0, 50, 2)
+        for f in range(40):
+            rows.append((pid, f, cx + rng.normal(0, 0.1),
+                         cy + rng.normal(0, 0.1), 100.0))
+    hetero = pd.DataFrame(rows, columns=cols)
+    vh_het = fd.compute_van_hove(hetero, 0.1)
+    assert vh_het["non_gaussian_alpha2"] > 0.3

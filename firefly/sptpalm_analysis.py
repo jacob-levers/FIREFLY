@@ -335,7 +335,8 @@ from firefly.analysis.fa_linking import (
 # fa_diffusion extracted; re-exported here.
 from firefly.analysis.fa_diffusion import (
     msd_linear, classify_motion, _msd_and_fit_one, compute_msd_and_fit,
-    compute_jdd, compute_turning_angles, compute_mobile_fraction_over_time,
+    compute_jdd, compute_turning_angles, compute_van_hove,
+    compute_mobile_fraction_over_time,
     compute_dwell_times, compute_mss, _msd_auc, _mob_immob_ratio,
     _motion_fractions, _track_lengths, ALPHA_THRESHOLDS_DEFAULT,
     MOBILE_D_THRESHOLD_DEFAULT,

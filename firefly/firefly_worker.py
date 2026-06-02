@@ -427,6 +427,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     from firefly.sptpalm_analysis import (
         load_file, preprocess_and_localise_adaptive, link_trajectories,
         compute_msd_and_fit, compute_jdd, compute_turning_angles,
+        compute_van_hove,
         compute_circular_statistics, save_circular_statistics_pdf,
         compute_per_track_mean_angle, _circ_lin_correlation,
         compute_mobile_fraction_over_time, compute_clusters,
@@ -1317,6 +1318,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     jdd = compute_jdd(tracks, px, fi,
                       n_components=int(p.get("jdd_components", 2)))
     ta  = compute_turning_angles(tracks)
+    try:
+        van_hove = compute_van_hove(tracks, px, lag_frames=1)
+    except Exception:
+        van_hove = None
     mf  = compute_mobile_fraction_over_time(
         tracks, diff_df, fi,
         d_threshold=float(p.get("mobile_d_threshold", 0.05)))
@@ -1463,6 +1468,22 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             extras_saved.append("JDD")
     except Exception as exc:
         _log(f"  WARN: JDD save failed: {exc}")
+    try:
+        if van_hove is not None:
+            import json as _json
+            # Compact payload: the histogram + scalars for plotting, but NOT
+            # the (potentially huge) raw displacement arrays.
+            vh = {k: v for k, v in van_hove.items()
+                  if k not in ("displacements_um", "dx_um", "dy_um")}
+            vh = {k: (v.tolist() if hasattr(v, "tolist") else v)
+                  for k, v in vh.items()}
+            with open(os.path.join(extras_dir,
+                                    f"{stem}_van_hove.json"), "w") as _fp:
+                _json.dump(vh, _fp, indent=2, default=str)
+            extras_saved.append(
+                f"van Hove (alpha2={van_hove['non_gaussian_alpha2']:.3f})")
+    except Exception as exc:
+        _log(f"  WARN: van Hove save failed: {exc}")
     try:
         if dwell_df is not None and len(dwell_df):
             dwell_df.to_csv(

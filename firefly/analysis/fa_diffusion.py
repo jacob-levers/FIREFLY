@@ -413,6 +413,76 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
     }
 
 
+def compute_van_hove(tracks, pixel_size_um, lag_frames=1, n_bins=80):
+    """Self-part van Hove displacement distribution + non-Gaussian parameter.
+
+    Pools the per-axis displacements (x and y) at the given frame lag across
+    every track — using only consecutive, same-particle pairs whose frame gap
+    is exactly `lag_frames`, so memory-bridged gaps don't leak in.
+
+    For simple Brownian motion the van Hove distribution is Gaussian; a single
+    heavy-tailed deviation is the classic signature of a *heterogeneous*
+    population (e.g. mobile + trapped molecules) or anomalous transport.  The
+    2D non-Gaussian parameter
+
+        alpha2 = <r^4> / (2 <r^2>^2) - 1
+
+    is 0 for a Gaussian/Brownian ensemble and grows positive with heterogeneity
+    — a single scalar that complements the per-track D/alpha by capturing
+    *population* structure the averages hide.
+
+    Returns a dict (displacement samples in µm, a symmetric density histogram,
+    the best-fit Gaussian sigma, alpha2, and counts) or None if too few pairs.
+    """
+    if tracks is None or len(tracks) < 2:
+        return None
+    srt = (tracks.reset_index(drop=True)
+                 .sort_values(["particle", "frame"], kind="stable"))
+    pid = srt["particle"].to_numpy()
+    fr  = srt["frame"].to_numpy()
+    x   = srt["x"].to_numpy() * pixel_size_um
+    y   = srt["y"].to_numpy() * pixel_size_um
+    L = int(max(1, lag_frames))
+    if len(srt) <= L:
+        return None
+    same = pid[L:] == pid[:-L]
+    consec = (fr[L:] - fr[:-L]) == L
+    mask = same & consec
+    dx = (x[L:] - x[:-L])[mask]
+    dy = (y[L:] - y[:-L])[mask]
+    if dx.size < 50:
+        return None
+
+    disp = np.concatenate([dx, dy])          # per-axis, symmetric about 0
+    r2 = dx ** 2 + dy ** 2                    # 2D squared displacement
+    m2 = float(np.mean(r2))
+    m4 = float(np.mean(r2 ** 2))
+    alpha2 = float(m4 / (2.0 * m2 * m2) - 1.0) if m2 > 0 else np.nan
+    sigma = float(np.std(disp))
+
+    lim = float(np.percentile(np.abs(disp), 99.5))
+    if not (lim > 0):
+        lim = max(sigma * 4.0, 1e-3)
+    edges = np.linspace(-lim, lim, n_bins + 1)
+    pdf, _ = np.histogram(disp, bins=edges, density=True)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    # Reference Gaussian with the same sigma (for overlay / comparison).
+    gauss = (np.exp(-centers ** 2 / (2.0 * sigma ** 2))
+             / (sigma * np.sqrt(2.0 * np.pi))) if sigma > 0 else centers * 0.0
+    return {
+        "displacements_um":    disp,
+        "dx_um":               dx,
+        "dy_um":               dy,
+        "bin_centers_um":      centers,
+        "pdf":                 pdf,
+        "gaussian_pdf":        gauss,
+        "gaussian_sigma_um":   sigma,
+        "non_gaussian_alpha2": alpha2,
+        "lag_frames":          L,
+        "n_displacements":     int(dx.size),
+    }
+
+
 def compute_turning_angles(tracks):
     """For each track with ≥3 points, compute step-to-step **signed** turning
     angles in degrees, in the range (-180°, +180°].
