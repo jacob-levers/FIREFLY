@@ -744,30 +744,51 @@ def compute_dwell_times(tracks, diff_df, frame_interval):
     return dwell_df, tau
 
 
+def _ols_slope(x_centered, denom, y):
+    """OLS slope of y on x, given pre-centred x and its Σ(x-x̄)² denominator.
+    Identical to np.polyfit(x, y, 1)[0] but avoids the lstsq overhead when the
+    same x-axis is reused many times."""
+    yc = y - y.mean()
+    return float(np.dot(x_centered, yc) / denom)
+
+
 def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
     n_tracks = tracks["particle"].nunique()
     print(f"  MSS analysis      : {n_tracks:,} tracks")
-    q_values = [1, 2, 3, 4]
+    q_values = np.array([1.0, 2.0, 3.0, 4.0])
+    # q-axis is constant across every track → pre-centre it once for the
+    # final slope-of-gammas fit.
+    q_ctr   = q_values - q_values.mean()
+    q_denom = float(np.dot(q_ctr, q_ctr))
     results = []
-    for pid, grp in (tracks.reset_index(drop=True)
-                          .sort_values("frame").groupby("particle")):
+    # Group with contiguous rows (sort by particle THEN frame) so groupby
+    # doesn't gather scattered rows, and frames within a track are ordered.
+    for pid, grp in (tracks.sort_values(["particle", "frame"], kind="stable")
+                           .groupby("particle", sort=False)):
         xy = grp[["x", "y"]].values * pixel_size_um
         n = len(xy)
         if n < max(max_lagtime + 2, 6):
             continue
-        gammas = []
         lag_arr = list(range(1, min(max_lagtime + 1, n // 2)))
         if len(lag_arr) < 3:
             continue
-        for q in q_values:
-            moments = []
-            for lag in lag_arr:
-                r = np.sqrt(np.sum((xy[lag:] - xy[:-lag]) ** 2, axis=1))
-                moments.append(np.mean(r ** q))
-            log_t = np.log(np.array(lag_arr, dtype=float) * frame_interval)
-            log_m = np.log(np.array(moments) + 1e-15)
-            gammas.append(np.polyfit(log_t, log_m, 1)[0])
-        mss_slope = np.polyfit(q_values, gammas, 1)[0]
+        # log-time axis is the same for all four moments → centre it once.
+        log_t   = np.log(np.array(lag_arr, dtype=float) * frame_interval)
+        t_ctr   = log_t - log_t.mean()
+        t_denom = float(np.dot(t_ctr, t_ctr))
+        # r depends only on the lag, NOT on q — compute it once per lag and
+        # raise to each power (was recomputed 4× per lag before).
+        moments = np.empty((4, len(lag_arr)))
+        for li, lag in enumerate(lag_arr):
+            d = xy[lag:] - xy[:-lag]
+            r = np.sqrt(d[:, 0] ** 2 + d[:, 1] ** 2)
+            for qi in range(4):
+                moments[qi, li] = np.mean(r ** q_values[qi])
+        gammas = np.empty(4)
+        for qi in range(4):
+            gammas[qi] = _ols_slope(t_ctr, t_denom,
+                                    np.log(moments[qi] + 1e-15))
+        mss_slope = _ols_slope(q_ctr, q_denom, gammas)
         results.append({"particle": int(pid), "mss_slope": float(mss_slope)})
     return pd.DataFrame(results)
 
