@@ -801,3 +801,18 @@ def test_compare_groups_reports_alpha2_and_persistence_stats(tmp_path):
     # and they were tested across groups
     assert "nongauss_alpha2" in stats and "vacf_persistence" in stats
     assert "omnibus" in stats["nongauss_alpha2"]
+
+
+def test_jdd_and_mss_reject_bad_calibration():
+    """compute_jdd / compute_mss validate calibration like compute_msd_and_fit
+    (no silent garbage on zero/NaN pixel size or frame interval)."""
+    import pytest
+    tracks = _synthetic_brownian_tracks(n_tracks=20, n_frames=30, sigma_px=2.0)
+    with pytest.raises(ValueError, match="pixel_size"):
+        s.compute_jdd(tracks, 0.0, 0.05)
+    with pytest.raises(ValueError, match="frame_interval"):
+        s.compute_jdd(tracks, 0.1, float("nan"))
+    with pytest.raises(ValueError, match="pixel_size"):
+        s.compute_mss(tracks, -1.0, 0.05)
+    with pytest.raises(ValueError, match="frame_interval"):
+        s.compute_mss(tracks, 0.1, 0.0)

@@ -199,6 +199,15 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
                                radius_of_gyration_um=rg)
 
 
+def _require_positive_finite(name, val):
+    """Raise a clear ValueError if a calibration value isn't a positive, finite
+    number.  Used by the analysis entry points so a bad pixel size / frame
+    interval fails loudly instead of silently producing meaningless results."""
+    if not (np.isfinite(val) and val > 0):
+        raise ValueError(
+            f"{name} must be a positive, finite number (got {val!r})")
+
+
 def compute_msd_and_fit(tracks, pixel_size, frame_interval,
                         max_lagtime=20, n_fit=5, workers=N_CPUS,
                         alpha_thresholds=ALPHA_THRESHOLDS_DEFAULT):
@@ -209,13 +218,8 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     # Fail loudly on nonsensical calibration: a zero/negative/NaN pixel size or
     # frame interval would silently collapse every displacement (or invert the
     # time axis) and yield meaningless D/alpha rather than an obvious error.
-    if not (np.isfinite(pixel_size) and pixel_size > 0):
-        raise ValueError(
-            f"pixel_size must be a positive, finite number (got {pixel_size!r})")
-    if not (np.isfinite(frame_interval) and frame_interval > 0):
-        raise ValueError(
-            f"frame_interval must be a positive, finite number "
-            f"(got {frame_interval!r})")
+    _require_positive_finite("pixel_size", pixel_size)
+    _require_positive_finite("frame_interval", frame_interval)
     if max_lagtime < 1:
         raise ValueError(f"max_lagtime must be >= 1 (got {max_lagtime!r})")
 
@@ -334,6 +338,8 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
     -------
     dict or None (if too few jumps to fit)
     """
+    _require_positive_finite("pixel_size_um", pixel_size_um)
+    _require_positive_finite("frame_interval_s", frame_interval_s)
     print(f"  JDD analysis      : {n_components} component(s)  "
           f"|  {tracks['particle'].nunique():,} tracks")
     dt = frame_interval_s
@@ -774,6 +780,8 @@ def _ols_slope(x_centered, denom, y):
 
 
 def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
+    _require_positive_finite("pixel_size_um", pixel_size_um)
+    _require_positive_finite("frame_interval", frame_interval)
     n_tracks = tracks["particle"].nunique()
     print(f"  MSS analysis      : {n_tracks:,} tracks")
     q_values = np.array([1.0, 2.0, 3.0, 4.0])
