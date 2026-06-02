@@ -165,8 +165,20 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     mean_radial = float(np.mean(np.sqrt(sq_dists)))
     rg          = float(np.sqrt(np.mean(sq_dists)))
 
+    # Localisation precision from the fitted MSD offset.  Static localisation
+    # error adds a constant 4·sigma² to the 2D MSD (sigma = 1D per-axis
+    # precision), which is exactly the `offset` term of the joint fit.  So
+    # sigma = sqrt(MSD0 / 4); report it in nm.  This is an always-available,
+    # per-track estimate of the effective localisation precision — and because
+    # the offset is modelled jointly, the fitted D is already free of this
+    # static-error inflation.  NaN when the offset isn't a usable positive.
+    if np.isfinite(msd0) and msd0 > 0:
+        loc_sigma_nm = float(np.sqrt(msd0 / 4.0) * 1000.0)
+    else:
+        loc_sigma_nm = np.nan
+
     return pid, msd_vals, dict(particle=pid, D=D, alpha=alpha, motion=motion,
-                               MSD0=msd0, MSE=mse,
+                               MSD0=msd0, MSE=mse, loc_sigma_nm=loc_sigma_nm,
                                mean_radial_displacement_um=mean_radial,
                                radius_of_gyration_um=rg)
 
@@ -201,7 +213,7 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
             np.full(max_lagtime, np.nan, dtype=float),
             index=np.arange(1, max_lagtime + 1))
         diff_empty = pd.DataFrame(columns=[
-            "particle", "D", "alpha", "motion", "MSD0", "MSE",
+            "particle", "D", "alpha", "motion", "MSD0", "MSE", "loc_sigma_nm",
             "mean_radial_displacement_um", "radius_of_gyration_um"])
         return imsd_empty, emsd_empty, diff_empty
 

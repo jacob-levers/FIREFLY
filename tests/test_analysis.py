@@ -499,3 +499,24 @@ def test_tif_series_streams_into_combined_stack(tmp_path):
     combined = np.asarray(combined)
     assert combined.shape == (18, 8, 8) and combined.dtype == np.float32
     assert np.array_equal(combined, expected)
+
+
+def test_loc_precision_from_msd_offset():
+    """sigma_loc = sqrt(MSD0/4) recovers the known localisation precision from
+    the fitted MSD offset.  Best-determined for immobile/slow tracks where the
+    offset dominates — use jitter-only molecules with 30 nm precision."""
+    rng = np.random.default_rng(1)
+    px, dt, sig_px = 0.1, 0.05, 0.3          # 0.3 px = 30 nm true precision
+    rows = []
+    for pid in range(300):
+        cx, cy = rng.uniform(20, 200, 2)
+        for f in range(40):
+            rows.append((pid, f, cx + rng.normal(0, sig_px),
+                         cy + rng.normal(0, sig_px), 100.0))
+    tracks = pd.DataFrame(rows, columns=["particle", "frame", "x", "y", "mass"])
+    _i, _e, diff = s.compute_msd_and_fit(tracks, px, dt, max_lagtime=10,
+                                         n_fit=5, workers=1)
+    assert "loc_sigma_nm" in diff.columns
+    assert diff["loc_sigma_nm"].notna().all()
+    med = diff["loc_sigma_nm"].median()
+    assert 22.0 <= med <= 40.0, f"loc precision off: {med:.1f} nm (true 30)"
