@@ -1832,6 +1832,9 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         "n_locs":       int(len(locs))         if locs    is not None else 0,
         "median_d":     None,
         "median_alpha": None,
+        "median_loc_sigma_nm": None,
+        "nongauss_alpha2": None,
+        "vacf_persistence": None,
         "motion_counts": {},
         "mobile_fraction": None,
         "n_clusters":   0,
@@ -1855,6 +1858,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 d_thresh = float(p.get("mobile_d_threshold", 0.05))
                 summary["mobile_fraction"] = float(
                     (diff_df["D"] > d_thresh).mean())
+            if "loc_sigma_nm" in diff_df.columns:
+                _ls = diff_df["loc_sigma_nm"].dropna()
+                if len(_ls):
+                    summary["median_loc_sigma_nm"] = float(_ls.median())
+        if van_hove is not None:
+            try:
+                summary["nongauss_alpha2"] = float(
+                    van_hove["non_gaussian_alpha2"])
+            except Exception:
+                pass
+        if vacf is not None:
+            try:
+                summary["vacf_persistence"] = float(vacf["persistence"])
+            except Exception:
+                pass
         if cluster_stats_df is not None and len(cluster_stats_df):
             summary["n_clusters"] = int(len(cluster_stats_df))
         if dwell_tau is not None:
@@ -1937,6 +1955,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     except Exception:
         pass
     summary["qc"] = qc
+
+    # ── Persist the headline metrics as a single machine-readable file ───
+    # Everything the GUI results panel shows (counts, median D/alpha, loc
+    # precision, alpha2, persistence, mobile fraction, QC flags) in one JSON,
+    # so a batch of N runs can be aggregated by globbing
+    # firefly_extras/*_summary_metrics.json — no need to re-open each CSV.
+    try:
+        import json as _json
+        _sm = dict(summary)
+        _sm["stem"] = stem
+        with open(os.path.join(extras_dir,
+                               f"{stem}_summary_metrics.json"), "w") as _fp:
+            _json.dump(_sm, _fp, indent=2, default=str)
+    except Exception as exc:
+        _log(f"  WARN: summary-metrics save failed: {exc}")
 
     return {
         "stem":        stem,

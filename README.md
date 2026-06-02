@@ -372,6 +372,7 @@ manifest at the root:
 │   ├── <stem>_mobile_fraction.csv     # sliding-window mobile fraction
 │   ├── <stem>_drift.csv               # (if drift correction enabled)
 │   ├── <stem>_params.json             # parameter snapshot for Compare
+│   ├── <stem>_summary_metrics.json    # headline metrics + QC flags (1 file)
 │   └── <stem>_roi_mask.png            # ROI preview (if enabled)
 └── figures/
     ├── <stem>_sptpalm_figure.png      # combined 17-panel figure
@@ -384,7 +385,10 @@ manifest at the root:
 
 **Batch mode** wraps the above per-series under
 `<input_folder>/batch_results/<stem>/` and adds a `batch_summary.csv`
-with one row per series.
+with one row per series. Each run also writes a self-contained
+`firefly_extras/<stem>_summary_metrics.json` (counts, median D/α,
+localisation precision, α₂, VACF persistence, mobile fraction and QC
+flags), so a whole experiment can be aggregated by globbing those files.
 
 **Compare mode** writes:
 
