@@ -448,3 +448,26 @@ def test_alpha_unidentifiable_for_immobile_no_boundary_wall():
     # Mobile molecules retain a finite, physical alpha (~1 for Brownian).
     assert a.notna().sum() > 0
     assert 0.0 <= a.dropna().median() <= 1.6
+
+
+def test_tif_series_streams_into_combined_stack(tmp_path):
+    """Multi-file TIF series must load by STREAMING each source into the
+    combined stack in chunks (so the whole source file is never held in RAM,
+    which used to inflate the peak and demote big series to disk memmap).  The
+    streamed result must equal a plain concatenation."""
+    tifffile = pytest.importorskip("tifffile")
+    from firefly.analysis import fa_loaders as L
+    parts, paths = [], []
+    for fi in range(3):
+        arr = np.zeros((6, 8, 8), np.uint16)
+        for fr in range(6):
+            arr[fr] = fi * 100 + fr            # unique per (file, frame)
+        name = "mov.tif" if fi == 0 else f"mov-file{fi+1:03d}.tif"
+        p = str(tmp_path / name)
+        tifffile.imwrite(p, arr)
+        paths.append(p); parts.append(arr)
+    expected = np.concatenate(parts).astype(np.float32)
+    combined, _px, _fi = L.load_tif(paths[0], files=paths)
+    combined = np.asarray(combined)
+    assert combined.shape == (18, 8, 8) and combined.dtype == np.float32
+    assert np.array_equal(combined, expected)

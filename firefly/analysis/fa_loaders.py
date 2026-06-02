@@ -922,6 +922,43 @@ def _probe_tif_shape_and_count(path: str):
     return n, (int(H), int(W))
 
 
+def _stream_tif_into(path, dest, offset, stop_event=None, chunk=1000):
+    """Read a TIF's frames in `chunk`-page blocks straight into
+    `dest[offset:offset+n]` (a RAM array OR a np.memmap), so the WHOLE source
+    file is never materialised at once.  This is what lets a multi-file series
+    whose *final* stack fits in RAM stay on the fast in-RAM path instead of
+    demoting to a disk memmap over a brief per-file spike.
+
+    Returns (n_frames_written, px_um, fi_s).  Raises on layouts it can't
+    stream cleanly (multi-dim OME, shape drift) so the caller can fall back to
+    a full `_load_single_tif` + copy.
+    """
+    with tifffile.TiffFile(path) as tif:
+        px_um, fi_s = _parse_ome_metadata(tif)
+        n_pages = len(tif.pages)
+        local = 0
+        for start in range(0, n_pages, chunk):
+            if stop_event is not None and stop_event.is_set():
+                raise _Cancelled()
+            end = min(start + chunk, n_pages)
+            try:
+                block = tif.asarray(key=range(start, end), maxworkers=N_CPUS)
+            except TypeError:
+                block = tif.asarray(key=range(start, end))
+            if block.ndim == 2:
+                block = block[np.newaxis]
+            elif block.ndim == 4:
+                block = block[:, 0] if block.shape[1] == 1 else block.mean(axis=1)
+            if block.ndim != 3:
+                raise ValueError(f"unexpected chunk ndim {block.ndim}")
+            n_here = block.shape[0]
+            dest[offset + local: offset + local + n_here] = block.astype(
+                dest.dtype, copy=False)
+            local += n_here
+            del block
+    return local, px_um, fi_s
+
+
 def _tif_series_nat_key(filepath):
     """Sort key for sibling TIFFs of a single acquisition.
 
@@ -1031,8 +1068,15 @@ def load_tif(path, stop_event=None, files=None):
     use_memmap = False
     free_gb    = None
     reserve_gb = _user_ram_reserve_gb()
-    max_source_gb = (max(n_per_file) * bytes_per_frame) / 1e9
-    peak_gb       = total_gb + max_source_gb
+    # Each source is STREAMED into the combined array in _STREAM_CHUNK-frame
+    # blocks (see the copy loop), so the transient on top of the combined
+    # stack is just one chunk — not a whole source file.  Basing the RAM-vs-
+    # memmap decision on this realistic peak keeps a series whose final stack
+    # fits in RAM on the fast in-RAM path (the old `+ largest source` term
+    # demoted big multi-file series to disk memmap over a brief spike).
+    _STREAM_CHUNK = 1000
+    chunk_gb = (min(_STREAM_CHUNK, max(n_per_file)) * bytes_per_frame) / 1e9
+    peak_gb  = total_gb + chunk_gb
     try:
         import psutil as _psutil
         free_gb = _psutil.virtual_memory().available / 1e9
@@ -1067,7 +1111,7 @@ def load_tif(path, stop_event=None, files=None):
         _register_temp_stack_path(tmp_path)
         free_disp = f"{free_gb:.1f}" if free_gb is not None else "?"
         print(f"  Peak RAM needed: {peak_gb:.1f} GB (combined "
-              f"{total_gb:.1f} GB + largest source {max_source_gb:.1f} GB). "
+              f"{total_gb:.1f} GB + stream chunk {chunk_gb:.1f} GB). "
               f"Free: {free_disp} GB, reserve: {reserve_gb:.1f} GB. "
               f"→ disk memmap at {tmp_path} "
               f"(override reserve via FIREFLY_USER_RAM_RESERVE_GB).",
@@ -1077,12 +1121,15 @@ def load_tif(path, stop_event=None, files=None):
     else:
         free_disp = f"{free_gb:.1f}" if free_gb is not None else "?"
         print(f"  Peak RAM needed: {peak_gb:.1f} GB (combined "
-              f"{total_gb:.1f} GB + largest source {max_source_gb:.1f} GB). "
+              f"{total_gb:.1f} GB + stream chunk {chunk_gb:.1f} GB). "
               f"Free: {free_disp} GB, reserve: {reserve_gb:.1f} GB. "
               f"→ in-RAM allocation (fast path).", flush=True)
         combined = np.empty((n_total, H, W), dtype=np.float32)
 
-    # Load each file, copy into the destination slice, free immediately.
+    # Stream each file directly into the destination slice in chunks so the
+    # whole source is never held in RAM (the per-file spike that used to demote
+    # large series to disk memmap).  Fall back to a full load + copy for any
+    # file the streamer can't handle.
     px_um_out = None
     fi_s_out  = None
     offset = 0
@@ -1090,16 +1137,31 @@ def load_tif(path, stop_event=None, files=None):
     for i, fpath in enumerate(series):
         print(f"  [{i+1}/{len(series)}] {os.path.basename(fpath)}",
               flush=True)
-        st, px, fi = _load_single_tif(fpath, stop_event)
+        try:
+            n_written, px, fi = _stream_tif_into(
+                fpath, combined, offset, stop_event, chunk=_STREAM_CHUNK)
+        except _Cancelled:
+            raise
+        except Exception as exc:
+            print(f"  (chunked stream failed — {exc}; full-load fallback)",
+                  flush=True)
+            st, px, fi = _load_single_tif(fpath, stop_event)
+            combined[offset:offset + st.shape[0]] = st.astype(
+                combined.dtype, copy=False)
+            n_written = st.shape[0]
+            del st
         if i == 0:
             px_um_out = px
             fi_s_out  = fi
-        combined[offset:offset + st.shape[0]] = st
-        offset += st.shape[0]
-        del st
+        offset += n_written
         _gc.collect()
+    # Defensive: trim if the probed total over-counted (shouldn't, but a
+    # mid-series shape change could leave trailing unwritten frames).
+    if offset < combined.shape[0]:
+        combined = combined[:offset]
     if use_memmap:
-        combined.flush()
+        try:    combined.flush()
+        except Exception: pass
     print(f"  Combined shape: {combined.shape}  (T x Y x X)", flush=True)
     if px_um_out is not None: print(f"  Pixel size  : {px_um_out} µm  (from file metadata)")
     if fi_s_out is not None:  print(f"  Frame interval: {fi_s_out} s  (from file metadata)")
