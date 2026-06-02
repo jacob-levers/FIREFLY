@@ -30,9 +30,12 @@ headless test suite (`pytest -q`). Grouped by theme below.
 - **`aggregate_run_summaries()` + CLI `--aggregate`** — fold a whole tree of run
   summaries into one `run_summaries.csv` (one row per run, condition inferred
   from the parent folder).
-- **Compare** — reports per-replicate α₂ and VACF persistence and statistically
-  tests them across groups (omnibus + pairwise), in the summary CSV, stats CSV
-  and PDF report.
+- **Compare** — reports per-replicate α₂ and VACF persistence, adds two new
+  comparison panels (population heterogeneity α₂; directional persistence) with
+  SuperPlot dots + omnibus/pairwise stats, and includes them in the summary
+  CSV, stats CSV and PDF report.
+- **Results panel** — the post-run stats panel now shows localisation
+  precision, non-Gaussian α₂ and VACF persistence alongside median D/α.
 
 ### Performance (results numerically identical)
 - **MSS ~1.8×** — displacement computed once per lag instead of once per moment

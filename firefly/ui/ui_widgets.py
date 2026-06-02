@@ -1191,6 +1191,12 @@ class _ResultsPanel(QtWidgets.QFrame):
                 self._add_stat_row(r, "Stuck tracks  (D < 1e-3)",
                                    _fmt_pct(sf),
                                    value_colour=col); r += 1
+            dn = qc.get("drift_total_nm")
+            if dn is not None:
+                col = (_THEME['WARN'] if dn > 500 else _THEME['TXT'])
+                self._add_stat_row(r, "Drift corrected (total)",
+                                   f"{dn:.0f} nm",
+                                   value_colour=col); r += 1
 
             # Flag list — each flag is a colour-coded, word-wrapped message.
             # Rendered in the dedicated _flags_layout (a QVBoxLayout) so the

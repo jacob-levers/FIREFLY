@@ -1165,6 +1165,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             _log(f"  WARN: ROI mask failed — {roi_exc}.  Continuing without ROI.")
 
     # ── Drift correction (optional) ───────────────────────────────────────
+    drift_df = None
     if p.get("drift_correct", False) and len(locs) > 0:
         _log(f"\n── Drift correction ───────────────")
         _prog(40, "Correcting drift…")
@@ -1914,6 +1915,20 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             avg_locs_pf = float(n_locs) / float(n_frames)
         link_ratio = (float(n_tracked) / n_locs) if n_locs else None
 
+        # Total spatial extent of the corrected drift over the movie (nm) — a
+        # QC read on how much stage/sample drift was present.  Only available
+        # when drift correction ran.
+        drift_total_nm = None
+        if drift_df is not None and len(drift_df) > 1:
+            try:
+                ddx = drift_df["dx"].to_numpy(dtype=float)
+                ddy = drift_df["dy"].to_numpy(dtype=float)
+                span = float(np.hypot(ddx.max() - ddx.min(),
+                                      ddy.max() - ddy.min()))
+                drift_total_nm = span * float(px) * 1000.0
+            except Exception:
+                drift_total_nm = None
+
         qc.update({
             "n_locs":              n_locs,
             "n_tracked_locs":      n_tracked,
@@ -1922,6 +1937,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             "median_track_length": median_len,
             "gap_fraction":        gap_frac,
             "stuck_fraction":      stuck_frac,
+            "drift_total_nm":      drift_total_nm,
         })
 
         # Threshold-based flags — surface as warnings in the GUI
@@ -1951,6 +1967,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "msg": f"{gap_frac*100:.1f}% of tracks contain gaps.  "
                        "OK for blinking PALM probes; suspicious for "
                        "constitutive markers."})
+        if drift_total_nm is not None and drift_total_nm > 500:
+            flags.append({"level": "info",
+                "msg": f"{drift_total_nm:.0f} nm of sample drift was corrected "
+                       "over the acquisition — large drift can still leave "
+                       "residual blur; inspect the drift trace if D looks high."})
         qc["flags"] = flags
     except Exception:
         pass
