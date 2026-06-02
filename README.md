@@ -189,11 +189,13 @@ Four modes:
 
 ### Figures
 
-- Single-sample combined figure with 15 panels (A–O): max projection,
+- Single-sample combined figure with 17 panels (A–Q): max projection,
   trajectories, MSD curves, log₁₀(D) distribution, motion-class
   breakdown, anomalous-exponent distribution, position density, mobile
   fraction over time, JDD with multi-population fit, cluster map,
-  dwell-time histogram, MSS slope, radial distribution, and more.
+  dwell-time histogram, MSS slope, radial distribution, van Hove
+  displacement distribution (with non-Gaussian α₂), velocity
+  autocorrelation (with persistence index), and more.
 - Multi-group comparison figure (10 panels: ensemble MSD, log₁₀(D)
   distribution, mobile fraction, motion-class fractions, track-length
   CDF, JDD overlay, dwell-time CDF, turning-angle distribution, radial
@@ -372,7 +374,7 @@ manifest at the root:
 │   ├── <stem>_params.json             # parameter snapshot for Compare
 │   └── <stem>_roi_mask.png            # ROI preview (if enabled)
 └── figures/
-    ├── <stem>_sptpalm_figure.png      # combined 15-panel figure
+    ├── <stem>_sptpalm_figure.png      # combined 17-panel figure
     ├── <stem>_sptpalm_figure.pdf      # vector copy (optional)
     └── panels/                        # per-panel exports (optional)
         ├── <stem>_panel_A.png

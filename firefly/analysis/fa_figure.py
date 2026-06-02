@@ -70,6 +70,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 turning_angles=None, mobile_frac_df=None,
                 cluster_labels=None, cluster_locs=None,
                 dwell_df=None, dwell_tau=None, return_pdf_bytes=False,
+                van_hove=None, vacf=None,
                 want_panels=None):
     # want_panels controls the per-panel PNG export, which is expensive:
     # each panel is produced by a full-figure savefig() cropped to that
@@ -547,6 +548,61 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.tick_params(axis="y", which="both", left=False)
         ax.grid(True, ls=":", alpha=0.4)
     sax(ax, "O", "Radial Distribution  (signed turning angles)")
+
+    # P — van Hove displacement distribution (left slot of row 5)
+    # The pooled single-frame step distribution with a same-σ Gaussian
+    # reference overlaid.  Heavy (non-Gaussian) tails => a heterogeneous
+    # population; the non-Gaussian parameter α₂ quantifies the deviation
+    # (α₂ ≈ 0 for Brownian, > 0 for mixed mobile/trapped).
+    ax = fig.add_subplot(gs[5, 0])
+    if van_hove is None or van_hove.get("pdf") is None:
+        ax.text(0.5, 0.5, "Insufficient data", transform=ax.transAxes,
+                ha="center", va="center", color=TXT, fontsize=11)
+        ax.set_xticks([]); ax.set_yticks([])
+    else:
+        c   = np.asarray(van_hove["bin_centers_um"], float)
+        pdf = np.asarray(van_hove["pdf"], float)
+        g   = np.asarray(van_hove["gaussian_pdf"], float)
+        a2  = van_hove.get("non_gaussian_alpha2", float("nan"))
+        ax.fill_between(c, pdf, step="mid", color=ACC, alpha=0.35)
+        ax.plot(c, pdf, drawstyle="steps-mid", color=ACC, lw=1.2,
+                label="van Hove")
+        ax.plot(c, g, color=_kde_col, lw=1.3, ls="--", label="Gaussian")
+        ax.set_yscale("log")
+        _pos = pdf[pdf > 0]
+        if _pos.size:
+            ax.set_ylim(_pos.min() * 0.5, pdf.max() * 2.0)
+        ax.set_xlabel("Δx, Δy  (µm)"); ax.set_ylabel("P(Δ)  (log)")
+        ax.legend(fontsize=8, framealpha=0.3, loc="upper right")
+        ax.text(0.03, 0.95, f"α₂ = {a2:.3f}", transform=ax.transAxes,
+                ha="left", va="top", color=TXT, fontsize=9,
+                bbox=dict(boxstyle="round", fc=PNL, ec=GRD, alpha=0.7))
+        ax.grid(True, ls=":", alpha=0.4)
+    sax(ax, "P", "van Hove  (single-frame displacements)")
+
+    # Q — velocity autocorrelation function (right slot of row 5)
+    # Normalised ensemble VACF vs lag.  Flat-at-zero => Brownian (no
+    # directional memory); positive decay => persistent/directed motion;
+    # a negative lag-1 dip => caged / anti-persistent motion.
+    ax = fig.add_subplot(gs[5, 2])
+    if vacf is None or vacf.get("vacf") is None:
+        ax.text(0.5, 0.5, "Insufficient data", transform=ax.transAxes,
+                ha="center", va="center", color=TXT, fontsize=11)
+        ax.set_xticks([]); ax.set_yticks([])
+    else:
+        lags = np.asarray(vacf["lags_frames"], float)
+        cv   = np.asarray(vacf["vacf"], float)
+        pers = vacf.get("persistence", float("nan"))
+        ax.axhline(0.0, color=GRD, lw=1.0, ls=":")
+        ax.plot(lags, cv, marker="o", ms=4, color=ACC, lw=1.3)
+        ax.set_xlabel("lag  (frames)"); ax.set_ylabel("VACF  (normalised)")
+        ax.set_xlim(left=0)
+        ax.text(0.97, 0.95, f"persistence = {pers:.3f}",
+                transform=ax.transAxes, ha="right", va="top", color=TXT,
+                fontsize=9,
+                bbox=dict(boxstyle="round", fc=PNL, ec=GRD, alpha=0.7))
+        ax.grid(True, ls=":", alpha=0.4)
+    sax(ax, "Q", "Velocity Autocorrelation")
 
     md = diff_df["D"].dropna().median()
     ma = diff_df["alpha"].dropna().median()

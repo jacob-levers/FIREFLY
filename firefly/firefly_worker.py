@@ -1370,6 +1370,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
         cluster_labels=cluster_labels, cluster_locs=cluster_xy,
         dwell_df=dwell_df, dwell_tau=dwell_tau,
+        van_hove=van_hove, vacf=vacf,
         return_pdf_bytes=want_pdf, want_panels=want_panels)
     del proj_sample
 
