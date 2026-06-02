@@ -260,15 +260,13 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     PROCESS_POOL_THRESHOLD = 5000
     use_processes = n_tracks >= PROCESS_POOL_THRESHOLD
 
-    # Pre-extract per-track arrays ONCE so we don't pay get_group twice
-    # per particle (the old code called get_group inside both .submit
-    # args, doubling the dict lookup + DataFrame slice cost).
-    per_track_inputs = []
-    for pid in pid_list:
-        g = grouped.get_group(pid)
-        xy = g[["x", "y"]].values * pixel_size
-        fr = g["frame"].values
-        per_track_inputs.append((xy, fr, pid))
+    # Pre-extract per-track arrays ONCE.  Iterating the groupby in a single
+    # pass is markedly faster than calling get_group(pid) per particle in a
+    # loop (which re-does the group lookup each time).  Results carry their
+    # own particle id, so the iteration order is irrelevant downstream.
+    per_track_inputs = [
+        (g[["x", "y"]].values * pixel_size, g["frame"].values, pid)
+        for pid, g in grouped]
 
     if use_processes:
         from concurrent.futures import ProcessPoolExecutor
