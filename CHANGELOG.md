@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `improve/auto-enhance` branch
+## v2.9.0
 
 A self-contained round of analysis, performance and robustness improvements
 made on a dedicated branch (main untouched). Every change is covered by the
