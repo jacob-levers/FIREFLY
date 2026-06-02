@@ -594,3 +594,30 @@ def test_turning_angles_symmetric_for_brownian():
     assert ang.size > 500
     assert ang.min() >= -180.001 and ang.max() <= 180.001
     assert abs(float(np.mean(ang))) < 10.0          # no net turning bias
+
+
+def test_vacf_brownian_vs_directed():
+    """Velocity autocorrelation: ~0 at lag 1 for Brownian (uncorrelated steps),
+    strongly positive for directed motion (a persistent drift)."""
+    rng = np.random.default_rng(11)
+    px, dt = 0.1, 0.05
+    # Brownian ensemble
+    brn = _synthetic_brownian_tracks(n_tracks=200, n_frames=40, sigma_px=2.0)
+    vb = s.compute_vacf(brn, dt, px, max_lag=8)
+    assert vb is not None
+    assert abs(vb["vacf"][0] - 1.0) < 1e-9          # normalised
+    assert abs(vb["persistence"]) < 0.15            # uncorrelated steps
+
+    # Directed: constant drift + small noise -> highly persistent velocity
+    rows = []
+    for pid in range(120):
+        ang = rng.uniform(0, 2 * np.pi)
+        vx, vy = 3.0 * np.cos(ang), 3.0 * np.sin(ang)
+        x = y = 0.0
+        for f in range(40):
+            x += vx + rng.normal(0, 0.4); y += vy + rng.normal(0, 0.4)
+            rows.append((pid, f, x, y))
+    drv = pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+    vd = s.compute_vacf(drv, dt, px, max_lag=8)
+    assert vd is not None
+    assert vd["persistence"] > 0.6                  # strong directional memory

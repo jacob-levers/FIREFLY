@@ -499,6 +499,70 @@ def compute_van_hove(tracks, pixel_size_um, lag_frames=1, n_bins=80):
     }
 
 
+def compute_vacf(tracks, frame_interval_s, pixel_size_um, max_lag=10):
+    """Ensemble velocity autocorrelation function (VACF) + directional persistence.
+
+    For each track the per-frame velocity is the consecutive step vector
+    v(t) = [r(t+1) - r(t)] / dt (only gapless, same-particle steps).  The VACF
+    at lag tau is the ensemble average of v(t)·v(t+tau) normalised by the
+    zero-lag value, so VACF(0) = 1 by construction.
+
+        VACF(tau) = <v(t)·v(t+tau)> / <v(t)·v(t)>
+
+    For ideal Brownian motion successive steps are uncorrelated, so VACF(tau>=1)
+    ~ 0.  Persistent / directed motion gives a positive VACF that decays over a
+    characteristic persistence time; anti-persistent (caged) motion gives a
+    negative VACF(1).  The lag-1 value is reported as `persistence` — a compact
+    directionality index that complements the turning-angle distribution.
+
+    Returns a dict (lags in frames & seconds, normalised VACF, persistence,
+    step count) or None if too few velocity pairs.
+    """
+    if tracks is None or len(tracks) < 3:
+        return None
+    dt = float(frame_interval_s) if frame_interval_s and frame_interval_s > 0 else 1.0
+    srt = (tracks.reset_index(drop=True)
+                 .sort_values(["particle", "frame"], kind="stable"))
+    max_lag = int(max(1, max_lag))
+    # numerator[tau] = sum over tracks & t of v(t)·v(t+tau); counts[tau] = #pairs
+    num = np.zeros(max_lag + 1)
+    cnt = np.zeros(max_lag + 1, dtype=np.int64)
+    for _pid, g in srt.groupby("particle", sort=False):
+        fr = g["frame"].to_numpy()
+        x  = g["x"].to_numpy() * pixel_size_um
+        y  = g["y"].to_numpy() * pixel_size_um
+        if len(fr) < 3:
+            continue
+        # per-frame velocities from consecutive (gap == 1) steps only
+        gap1 = (fr[1:] - fr[:-1]) == 1
+        vx = (x[1:] - x[:-1]) / dt
+        vy = (y[1:] - y[:-1]) / dt
+        nv = len(vx)
+        for tau in range(0, max_lag + 1):
+            if tau >= nv:
+                break
+            # both the step at i and the step at i+tau must be real (gap==1)
+            ok = gap1[:nv - tau] & gap1[tau:]
+            if not ok.any():
+                continue
+            dot = vx[:nv - tau][ok] * vx[tau:][ok] + vy[:nv - tau][ok] * vy[tau:][ok]
+            num[tau] += float(dot.sum())
+            cnt[tau] += int(ok.sum())
+    if cnt[0] < 20 or num[0] <= 0:
+        return None
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean_dot = np.where(cnt > 0, num / np.maximum(cnt, 1), np.nan)
+        vacf = mean_dot / mean_dot[0]
+    lags = np.arange(0, max_lag + 1)
+    return {
+        "lags_frames":   lags,
+        "lags_s":        lags * dt,
+        "vacf":          vacf,
+        "persistence":   float(vacf[1]) if max_lag >= 1 and cnt[1] > 0 else np.nan,
+        "n_velocities":  int(cnt[0]),
+    }
+
+
 def compute_turning_angles(tracks):
     """For each track with ≥3 points, compute step-to-step **signed** turning
     angles in degrees, in the range (-180°, +180°].

@@ -428,6 +428,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         load_file, preprocess_and_localise_adaptive, link_trajectories,
         compute_msd_and_fit, compute_jdd, compute_turning_angles,
         compute_van_hove,
+        compute_vacf,
         compute_circular_statistics, save_circular_statistics_pdf,
         compute_per_track_mean_angle, _circ_lin_correlation,
         compute_mobile_fraction_over_time, compute_clusters,
@@ -1322,6 +1323,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         van_hove = compute_van_hove(tracks, px, lag_frames=1)
     except Exception:
         van_hove = None
+    try:
+        vacf = compute_vacf(tracks, fi, px, max_lag=10)
+    except Exception:
+        vacf = None
     mf  = compute_mobile_fraction_over_time(
         tracks, diff_df, fi,
         d_threshold=float(p.get("mobile_d_threshold", 0.05)))
@@ -1484,6 +1489,19 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 f"van Hove (alpha2={van_hove['non_gaussian_alpha2']:.3f})")
     except Exception as exc:
         _log(f"  WARN: van Hove save failed: {exc}")
+
+    try:
+        if vacf is not None:
+            import json as _json
+            vc = {k: (v.tolist() if hasattr(v, "tolist") else v)
+                  for k, v in vacf.items()}
+            with open(os.path.join(extras_dir,
+                                    f"{stem}_vacf.json"), "w") as _fp:
+                _json.dump(vc, _fp, indent=2, default=str)
+            extras_saved.append(
+                f"VACF (persistence={vacf['persistence']:.3f})")
+    except Exception as exc:
+        _log(f"  WARN: VACF save failed: {exc}")
     try:
         if dwell_df is not None and len(dwell_df):
             dwell_df.to_csv(
