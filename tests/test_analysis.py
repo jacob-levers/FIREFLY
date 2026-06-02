@@ -879,3 +879,15 @@ def test_mss_computes_for_short_tracks():
     assert len(mss10) == 150            # 10-frame tracks now qualify
     assert len(mss9) == 0               # 9 frames -> only 3 lags -> still skipped
     assert 0.3 <= float(mss10["mss_slope"].median()) <= 0.65   # ~0.5 Brownian
+
+
+def test_mss_handles_frame_as_index_and_column():
+    """Regression: trackpy.link leaves 'frame' as both an index level and a
+    column; compute_mss must not raise the pandas 'ambiguous' ValueError
+    (it did after the MSS perf rewrite dropped reset_index)."""
+    tracks = _synthetic_brownian_tracks(n_tracks=60, n_frames=15, sigma_px=2.0)
+    tracks = tracks.set_index("frame", drop=False)   # mimic real linker output
+    assert "frame" in tracks.columns and tracks.index.name == "frame"
+    mss = s.compute_mss(tracks, 0.1, 0.05)
+    assert len(mss) == 60                            # computed, did not crash
+    assert 0.3 <= float(mss["mss_slope"].median()) <= 0.65

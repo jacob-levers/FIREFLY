@@ -792,7 +792,11 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
     results = []
     # Group with contiguous rows (sort by particle THEN frame) so groupby
     # doesn't gather scattered rows, and frames within a track are ordered.
-    for pid, grp in (tracks.sort_values(["particle", "frame"], kind="stable")
+    # reset_index(drop=True) FIRST: trackpy.link leaves `frame` as both an
+    # index level AND a column, which makes sort_values(["particle","frame"])
+    # raise "ambiguous" — the same guard compute_jdd/van_hove/vacf use.
+    for pid, grp in (tracks.reset_index(drop=True)
+                           .sort_values(["particle", "frame"], kind="stable")
                            .groupby("particle", sort=False)):
         xy = grp[["x", "y"]].values * pixel_size_um
         n = len(xy)
