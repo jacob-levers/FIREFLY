@@ -651,3 +651,52 @@ def test_alpha2_and_persistence_are_scale_time_invariant():
     p_unit = s.compute_vacf(tracks, 1.0, 1.0)["persistence"]
     p_cal  = s.compute_vacf(tracks, 0.042, 0.137)["persistence"]
     assert abs(p_unit - p_cal) < 1e-9
+
+
+# ── CZI metadata parsing (regression for the Element/FrameTime fix) ──────────
+def _czi_xml(frametime=None, timespan_ms=None, px_x_m=None):
+    """Build minimal ZEN-style CZI metadata XML."""
+    scaling = ""
+    if px_x_m is not None:
+        scaling = (f"<Scaling><Items>"
+                   f'<Distance Id="X"><Value>{px_x_m}</Value></Distance>'
+                   f'<Distance Id="Y"><Value>{px_x_m}</Value></Distance>'
+                   f"</Items></Scaling>")
+    ft = f"<FrameTime>{frametime}</FrameTime>" if frametime is not None else ""
+    ts = ("<TimeSpan><Value>%s</Value><DefaultUnitFormat>ms</DefaultUnitFormat>"
+          "</TimeSpan>" % timespan_ms) if timespan_ms is not None else ""
+    return f"<ImageDocument><Metadata>{scaling}{ft}{ts}</Metadata></ImageDocument>"
+
+
+def test_czi_metadata_frametime_and_pixel_size():
+    from firefly.analysis.fa_loaders import _parse_czi_metadata
+    m = _parse_czi_metadata(_czi_xml(frametime=0.05, px_x_m=1.04e-7))
+    assert abs(m["pixel_size_um"] - 0.104) < 1e-6
+    assert abs(m["frame_interval_s"] - 0.05) < 1e-9
+
+
+def test_czi_metadata_accepts_element_and_bytes():
+    """The aicspylibczi path passes an ElementTree Element, not a string —
+    this was the bug fixed this session."""
+    import xml.etree.ElementTree as ET
+    from firefly.analysis.fa_loaders import _parse_czi_metadata
+    xml = _czi_xml(frametime=0.02, px_x_m=1.6e-7)
+    el = ET.fromstring(xml)
+    m_el = _parse_czi_metadata(el)                 # Element input
+    m_by = _parse_czi_metadata(xml.encode("utf-8"))  # bytes input
+    for m in (m_el, m_by):
+        assert abs(m["pixel_size_um"] - 0.16) < 1e-6
+        assert abs(m["frame_interval_s"] - 0.02) < 1e-9
+
+
+def test_czi_metadata_timespan_ms_fallback():
+    """With no <FrameTime>, a ms <TimeSpan> is converted to seconds."""
+    from firefly.analysis.fa_loaders import _parse_czi_metadata
+    m = _parse_czi_metadata(_czi_xml(timespan_ms=30.0, px_x_m=1.0e-7))
+    assert abs(m["frame_interval_s"] - 0.03) < 1e-9
+
+
+def test_czi_metadata_handles_garbage():
+    from firefly.analysis.fa_loaders import _parse_czi_metadata
+    assert _parse_czi_metadata(None) == {"pixel_size_um": None, "frame_interval_s": None}
+    assert _parse_czi_metadata("not xml at all <<<") == {"pixel_size_um": None, "frame_interval_s": None}
