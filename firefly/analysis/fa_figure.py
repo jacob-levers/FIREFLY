@@ -419,10 +419,12 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.legend(fontsize=8, framealpha=0.6,
                   facecolor=PNL, edgecolor=GRD, labelcolor=TXT,
                   loc="upper right")
+        _r2 = jdd.get("r_squared")
+        _r2str = f"  |  R²={_r2:.3f}" if _r2 is not None and np.isfinite(_r2) else ""
         sax(ax, "K",
             f"Jump Distance Distribution  "
             f"({jdd['n_components']}-population fit  |  "
-            f"{jdd['n_jumps']:,} jumps)")
+            f"{jdd['n_jumps']:,} jumps{_r2str})")
     else:
         ax.text(0.5, 0.5, "JDD not computed", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=12)
