@@ -700,3 +700,32 @@ def test_czi_metadata_handles_garbage():
     from firefly.analysis.fa_loaders import _parse_czi_metadata
     assert _parse_czi_metadata(None) == {"pixel_size_um": None, "frame_interval_s": None}
     assert _parse_czi_metadata("not xml at all <<<") == {"pixel_size_um": None, "frame_interval_s": None}
+
+
+def test_aggregate_run_summaries(tmp_path):
+    """aggregate_run_summaries globs per-run summary_metrics.json into one row
+    per run, infers the condition from the parent folder, and flattens the
+    nested motion_counts / qc blocks."""
+    import json
+    def _write(group, stem, **kw):
+        d = tmp_path / group / stem / "firefly_extras"
+        d.mkdir(parents=True)
+        payload = {"stem": stem, "n_tracks": kw["nt"], "median_d": kw["md"],
+                   "nongauss_alpha2": kw["a2"], "vacf_persistence": kw["p"],
+                   "motion_counts": {"Immobile": kw["imm"], "Brownian": kw["brn"]},
+                   "qc": {"link_ratio": 0.4, "median_track_length": 12.0,
+                          "flags": [{"level": "warn", "msg": "x"}]}}
+        (d / f"{stem}_summary_metrics.json").write_text(json.dumps(payload))
+    _write("Control",    "B1R1", nt=900, md=0.05, a2=0.2, p=0.0,  imm=400, brn=500)
+    _write("Isoflurane", "B2R1", nt=850, md=0.02, a2=0.7, p=-0.1, imm=700, brn=150)
+
+    df = s.aggregate_run_summaries(str(tmp_path))
+    assert len(df) == 2
+    assert set(df["group"]) == {"Control", "Isoflurane"}
+    assert {"n_tracks", "median_d", "nongauss_alpha2", "vacf_persistence",
+            "motion_Immobile", "motion_Brownian", "link_ratio",
+            "n_qc_flags"} <= set(df.columns)
+    iso = df.set_index("group").loc["Isoflurane"]
+    assert iso["nongauss_alpha2"] == 0.7 and iso["n_qc_flags"] == 1
+    # empty root -> empty frame, no crash
+    assert len(s.aggregate_run_summaries(str(tmp_path / "Control" / "B1R1" / "nope"))) == 0

@@ -517,3 +517,59 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
         "MSD_1":         _os.path.join(out_dir, f"{stem}_trcPALMTracer-1-MSD.csv"),
         "MSD_AllROI":    _os.path.join(out_dir, f"{stem}_trcPALMTracer-AllROI-MSD.csv"),
     }
+
+
+def aggregate_run_summaries(root, pattern="*_summary_metrics.json"):
+    """Collect every per-run ``<stem>_summary_metrics.json`` under *root* into
+    one tidy DataFrame — one row per run — for batch/experiment-level analysis.
+
+    Each run's headline metrics (n_tracks, median D/alpha, localisation
+    precision, non-Gaussian alpha2, VACF persistence, mobile fraction, ...) are
+    flattened to columns.  Nested blocks are unpacked too: ``motion_counts``
+    becomes ``motion_<class>`` columns and a handful of QC scalars are pulled up
+    (with ``n_qc_flags`` counting the warnings).  The immediate parent folder
+    name is recorded as ``group`` — convenient when runs are organised by
+    condition (e.g. ``Control/`` vs ``Isoflurane/``).
+
+    Returns an empty DataFrame if no summary files are found.
+    """
+    import glob as _glob
+
+    paths = sorted(_glob.glob(os.path.join(root, "**", pattern),
+                              recursive=True))
+    rows = []
+    for path in paths:
+        try:
+            with open(path) as fp:
+                data = json.load(fp)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        # Layout written by FIREFLY: <group>/<run_dir>/firefly_extras/<file>.
+        # The run directory holds firefly_extras/; its parent names the
+        # condition/group (e.g. Control vs Isoflurane).
+        extras_dir = os.path.dirname(path)
+        run_dir    = os.path.dirname(extras_dir)
+        row = {
+            "group":  os.path.basename(os.path.dirname(run_dir)),
+            "stem":   data.get("stem")
+                      or os.path.basename(path).replace("_summary_metrics.json", ""),
+            "path":   path,
+        }
+        for k, v in data.items():
+            if k == "motion_counts" and isinstance(v, dict):
+                for cls, cnt in v.items():
+                    row[f"motion_{cls}"] = cnt
+            elif k == "qc" and isinstance(v, dict):
+                for qk in ("link_ratio", "avg_locs_per_frame",
+                           "median_track_length", "gap_fraction",
+                           "stuck_fraction"):
+                    if qk in v:
+                        row[qk] = v[qk]
+                flags = v.get("flags")
+                row["n_qc_flags"] = len(flags) if isinstance(flags, list) else 0
+            elif not isinstance(v, (dict, list)):
+                row[k] = v
+        rows.append(row)
+    return pd.DataFrame(rows)

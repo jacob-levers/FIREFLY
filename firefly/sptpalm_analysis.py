@@ -680,7 +680,7 @@ def main():
 from firefly.analysis.fa_palmtracer import (
     _find_stem, _is_palmtracer_folder, _read_palmtracer_table,
     load_summary_from_palmtracer, load_summary_from_folder,
-    save_palmtracer_csvs,
+    save_palmtracer_csvs, aggregate_run_summaries,
 )
 
 
