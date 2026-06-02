@@ -503,12 +503,34 @@ def parse_args():
                    help="ROI masking mode. "
                         "mean     = one mask from mean projection (default). "
                         "perframe = separate mask computed per frame.")
+    p.add_argument("--aggregate", action="store_true", default=False,
+                   help="Treat INPUT as a folder: collect every "
+                        "firefly_extras/<stem>_summary_metrics.json beneath it "
+                        "into one CSV (one row per run, condition inferred from "
+                        "the parent folder) and exit.  Combine with "
+                        "--output-dir to choose where the CSV is written.")
     return p.parse_args()
 
 
 def main():
     args    = parse_args()
     t_start = time.perf_counter()
+
+    # ── Aggregate mode: fold a tree of per-run summaries into one CSV ────
+    if args.aggregate:
+        if not os.path.isdir(args.input):
+            sys.exit(f"ERROR: --aggregate expects a folder, got: {args.input}")
+        df = aggregate_run_summaries(args.input)
+        if df.empty:
+            sys.exit("No *_summary_metrics.json files found under: "
+                     f"{args.input}")
+        out = args.output_dir or os.path.join(args.input, "run_summaries.csv")
+        if os.path.isdir(out):
+            out = os.path.join(out, "run_summaries.csv")
+        df.to_csv(out, index=False)
+        groups = ", ".join(sorted(map(str, df["group"].unique())))
+        print(f"Aggregated {len(df)} run(s) across [{groups}] -> {out}")
+        return
 
     if not os.path.isfile(args.input):
         sys.exit(f"ERROR: File not found: {args.input}")
