@@ -65,15 +65,31 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     whose frame difference exactly equals the requested lag are included.
     """
     msd_vals = np.full(max_lagtime, np.nan)
-    for lag_idx, lag in enumerate(range(1, max_lagtime + 1)):
-        if lag >= len(xy_um):
-            break
-        # Only use pairs where the actual frame separation equals lag
-        frame_diff = frames[lag:] - frames[:-lag]
-        valid      = frame_diff == lag
-        if valid.sum() > 0:
-            d = xy_um[lag:][valid] - xy_um[:-lag][valid]
-            msd_vals[lag_idx] = np.mean(d[:, 0] ** 2 + d[:, 1] ** 2)
+    n_pts = len(xy_um)
+    # Fast path: a gapless track (consecutive frame numbers — the common case,
+    # and the ONLY case when memory=0) needs no per-lag frame-difference mask,
+    # so we skip that work and slice directly.  Numerically identical to the
+    # masked path below (which still handles memory-bridged gaps).
+    gapless = (n_pts >= 2
+               and int(frames[-1] - frames[0]) == n_pts - 1)
+    if gapless:
+        x = xy_um[:, 0]; y = xy_um[:, 1]
+        for lag_idx, lag in enumerate(range(1, max_lagtime + 1)):
+            if lag >= n_pts:
+                break
+            dx = x[lag:] - x[:-lag]
+            dy = y[lag:] - y[:-lag]
+            msd_vals[lag_idx] = np.mean(dx * dx + dy * dy)
+    else:
+        for lag_idx, lag in enumerate(range(1, max_lagtime + 1)):
+            if lag >= n_pts:
+                break
+            # Only use pairs where the actual frame separation equals lag
+            frame_diff = frames[lag:] - frames[:-lag]
+            valid      = frame_diff == lag
+            if valid.sum() > 0:
+                d = xy_um[lag:][valid] - xy_um[:-lag][valid]
+                msd_vals[lag_idx] = np.mean(d[:, 0] ** 2 + d[:, 1] ** 2)
 
     # Fit using the first n_fit lag times.  ONE consistent model —
     #     MSD(t) = 4·D·t^alpha + offset
