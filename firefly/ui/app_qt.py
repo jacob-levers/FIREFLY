@@ -1225,6 +1225,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         ("dwell_cdf",      "Dwell-time CDF"),
         ("turning_angles", "Turning-angle distribution"),
         ("radial_dist",    "Radial distribution of |θ|"),
+        ("van_hove",       "Population heterogeneity (α₂)"),
+        ("vacf",           "Directional persistence (VACF)"),
     ]
     # Raised from 6 to 12: the group × time-point design needs one card per
     # (group, time point) cell, so counts climb fast (e.g. 3 groups × 3 time

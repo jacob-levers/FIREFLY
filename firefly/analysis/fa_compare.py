@@ -274,7 +274,7 @@ def compare_groups(groups,
     if panels is None:
         panels = {"msd", "auc", "logd_dist", "mob_immob", "motion_classes",
                   "track_length", "jdd", "dwell_cdf", "turning_angles",
-                  "radial_dist"}
+                  "radial_dist", "van_hove", "vacf"}
 
     n_groups = len(groups)
     # `group_factor` is the raw group label of each card (the between-subjects
@@ -380,7 +380,8 @@ def compare_groups(groups,
     # ── Render the figure ────────────────────────────────────────────────────
     panel_order = ["msd", "auc", "logd_dist", "mob_immob",
                    "motion_classes", "track_length",
-                   "jdd", "dwell_cdf", "turning_angles", "radial_dist"]
+                   "jdd", "dwell_cdf", "turning_angles", "radial_dist",
+                   "van_hove", "vacf"]
     enabled = [p for p in panel_order if p in panels]
     n_plots = len(enabled)
     if n_plots == 0:
@@ -804,6 +805,38 @@ def compare_groups(groups,
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
             ax.set_title("Radial Distribution")
+
+    # ── van Hove non-Gaussian α₂ (population heterogeneity) ───────────────────
+    if "van_hove" in panels and "nongauss_alpha2" in summary_df.columns:
+        ax = _next_ax()
+        if two_factor:
+            _interaction_plot(ax, summary_df, "nongauss_alpha2", group_order,
+                              tp_order, group_colors, pal,
+                              ylabel="Non-Gaussian α₂")
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, "nongauss_alpha2"]
+                    .dropna().to_numpy() for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal,
+                             ylabel="Non-Gaussian α₂",
+                             record_stats=stats_records,
+                             metric_name="nongauss_alpha2")
+        ax.set_title("Population heterogeneity (α₂)")
+
+    # ── VACF persistence (directional memory) ─────────────────────────────────
+    if "vacf" in panels and "vacf_persistence" in summary_df.columns:
+        ax = _next_ax()
+        if two_factor:
+            _interaction_plot(ax, summary_df, "vacf_persistence", group_order,
+                              tp_order, group_colors, pal,
+                              ylabel="VACF persistence (lag 1)")
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, "vacf_persistence"]
+                    .dropna().to_numpy() for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal,
+                             ylabel="VACF persistence (lag 1)",
+                             record_stats=stats_records,
+                             metric_name="vacf_persistence")
+        ax.set_title("Directional persistence (VACF lag 1)")
 
     # ── Suptitle: Group A (n=…) vs Group B (n=…) [vs Group C …] ───────────────
     parts = [f"{labels[i]}  (n={len(all_summaries[i])})" for i in range(n_groups)]
