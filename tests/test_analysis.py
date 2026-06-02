@@ -296,6 +296,34 @@ def test_estimate_minmass_sensitivity_ordering():
     assert strict >= bal >= lenient, (strict, bal, lenient)
 
 
+def test_estimate_minmass_continuous_uses_quantile():
+    """Dense data with a single continuous mass distribution (no noise/signal
+    valley — the typical PC12 case) must use the calibrated mass-quantile cut,
+    NOT fall back to a histogram-shape method, and the cutoff must sit inside
+    the bulk of the candidate masses."""
+    rng = np.random.default_rng(3)
+    H = W = 160
+    yy, xx = np.mgrid[0:H, 0:W]
+    frames = []
+    for _ in range(24):
+        im = rng.poisson(30, (H, W)).astype(np.float32)
+        for _ in range(60):                      # many similar-brightness spots
+            cx, cy = rng.uniform(8, W - 8), rng.uniform(8, H - 8)
+            amp = rng.uniform(200, 600)          # broad, unimodal range
+            im = im + amp * np.exp(
+                -(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * 1.3 ** 2)))
+        frames.append(im.astype(np.float32))
+    stack = np.stack(frames)
+    mm, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
+                               frame_sample=20)
+    assert diag["method"].startswith("mass_quantile"), diag["method"]
+    lo, hi = np.percentile(diag["_log_masses"], [5, 95])
+    assert lo < np.log10(mm) < hi, "quantile cut outside the candidate bulk"
+    strict = _quiet_estimate(stack, diameter=7, sensitivity="strict", frame_sample=20)[0]
+    lenient = _quiet_estimate(stack, diameter=7, sensitivity="lenient", frame_sample=20)[0]
+    assert strict >= mm >= lenient
+
+
 def test_estimate_minmass_noise_only_falls_back():
     """A noise-only stack (no real spots) must not crash and should return a
     finite, clamped threshold via a fallback path."""

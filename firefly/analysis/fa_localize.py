@@ -2064,41 +2064,33 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         except Exception as e:
             diag["method"] = f"gmm_failed:{type(e).__name__}"
 
-        if cross is None:
-            # GMM unimodal/failed → Otsu on the log-mass histogram, else floor.
-            try:
-                from skimage.filters import threshold_otsu
-                cross = float(threshold_otsu(lm, nbins=256))
-                diag["method"] = (diag["method"] or "") + "+otsu"
-                # crude noise sigma for the sensitivity shift
-                diag.setdefault("sigma_noise",
-                                float(np.std(lm[lm <= cross]) or 0.1))
-            except Exception:
-                med = float(np.median(masses))
-                mad = float(np.median(np.abs(masses - med)))
-                mm = float(np.clip(med + 3.0 * 1.4826 * mad, MM_MIN, MM_MAX))
-                diag["method"] = "noise_floor"
-                diag["minmass"] = mm
-                _log(f"  Auto-threshold: unimodal → noise floor minmass = {mm:.4g}")
-                return mm, diag
-
-        diag["gmm_crossover"] = float(cross)
-
-        # Sensitivity shift in log-space by ±1σ of the noise component.
-        sig = float(diag.get("sigma_noise", 0.1)) or 0.1
-        shift = {"strict": +1.0, "balanced": 0.0, "lenient": -1.0}.get(
-            str(sensitivity).lower(), 0.0)
-        thresh_log = cross + shift * sig
-        mm = float(10.0 ** thresh_log)
-
-        # Mandatory knee cross-check.
-        if knee is not None and abs(knee - cross) > 0.4:
-            _log(f"  Auto-threshold: GMM crossover (10^{cross:.2f}) and knee "
-                 f"(10^{knee:.2f}) disagree by >0.4 dex; keeping GMM, both logged.")
+        sens = str(sensitivity).lower()
+        if cross is not None:
+            # Genuine noise/signal bimodality (clean, sparse data with a real
+            # noise floor): cut at the valley, shifted ±1σ_noise.
+            diag["gmm_crossover"] = float(cross)
+            sig = float(diag.get("sigma_noise", 0.1)) or 0.1
+            shift = {"strict": +1.0, "balanced": 0.0, "lenient": -1.0}.get(sens, 0.0)
+            mm = float(10.0 ** (cross + shift * sig))
+            diag["method"] = "gmm_valley"
+            if knee is not None and abs(knee - cross) > 0.4:
+                _log(f"  Auto-threshold: GMM valley (10^{cross:.2f}) and knee "
+                     f"(10^{knee:.2f}) disagree by >0.4 dex; both logged.")
+        else:
+            # Continuous / unimodal mass distribution — the typical case for
+            # dense sptPALM (e.g. PC12): there is NO valley to find.  Cut at a
+            # calibrated quantile of the candidate masses.  Per-frame
+            # normalisation pins the brightness scale, so this reproduces an
+            # expert-chosen threshold (Balanced ≈ p30 ≈ the value users dial in
+            # by hand) and adapts to each file's own distribution.
+            q = {"strict": 0.40, "balanced": 0.30, "lenient": 0.20}.get(sens, 0.30)
+            mm = float(np.quantile(masses, q))
+            diag["method"] = f"mass_quantile_p{int(round(q * 100))}"
+            diag["quantile"] = q
 
         mm = float(np.clip(mm, MM_MIN, MM_MAX))
         diag["minmass"] = mm
-        _log(f"  Auto-threshold [{diag['method']}, {sensitivity}]: "
+        _log(f"  Auto-threshold [{diag['method']}, {sens}]: "
              f"minmass = {mm:.4g}  (from {diag['n_candidates']} candidates over "
              f"{diag['frame_sample']} frames)")
         return mm, diag
@@ -2148,7 +2140,11 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
         means = diagnostics.get("gmm_means")
         sds = diagnostics.get("gmm_sds")
         wts = diagnostics.get("gmm_weights")
-        if means and sds and wts:
+        # Only overlay the fitted noise/signal components when the cut was
+        # actually placed at their valley.  For the quantile method (no real
+        # bimodality) the components would be misleading, so we hide them.
+        if (means and sds and wts
+                and diagnostics.get("method") == "gmm_valley"):
             xs = np.linspace(lm.min(), lm.max(), 400)
             cols = [pal["MUT"], pal["SIG"]]
             labels = ["noise component", "signal component"]
