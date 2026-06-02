@@ -1070,9 +1070,9 @@ class _ResultsPanel(QtWidgets.QFrame):
         """Populate the stats grid from a worker `summary` dict.
 
         Expected keys (all optional; missing keys are skipped):
-            n_tracks, n_locs, median_d, median_alpha,
-            motion_counts (dict), mobile_fraction, n_clusters,
-            dwell_tau_s, frames, px_um, fi_s
+            n_tracks, n_locs, median_d, median_alpha, mobile_fraction,
+            median_loc_sigma_nm, nongauss_alpha2, vacf_persistence,
+            motion_counts (dict), n_clusters, dwell_tau_s, frames, px_um, fi_s
         """
         self._clear_stats()
         if not summary:
@@ -1100,6 +1100,18 @@ class _ResultsPanel(QtWidgets.QFrame):
         if mf is not None:
             self._add_stat_row(r, "Mobile fraction (D > threshold)",
                                _fmt_pct(mf)); r += 1
+        ls = summary.get("median_loc_sigma_nm")
+        if ls is not None:
+            self._add_stat_row(r, "Localisation precision  σ",
+                               f"{ls:.1f} nm"); r += 1
+        a2 = summary.get("nongauss_alpha2")
+        if a2 is not None:
+            self._add_stat_row(r, "Non-Gaussian  α₂",
+                               f"{a2:.3f}"); r += 1
+        vp = summary.get("vacf_persistence")
+        if vp is not None:
+            self._add_stat_row(r, "VACF persistence",
+                               f"{vp:.3f}"); r += 1
 
         # Motion-class breakdown ─────────────────────────────────────
         motion_counts = summary.get("motion_counts") or {}
