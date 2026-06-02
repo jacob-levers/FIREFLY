@@ -2088,6 +2088,27 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
             diag["method"] = f"mass_quantile_p{int(round(q * 100))}"
             diag["quantile"] = q
 
+        # ── Noise/signal knee floor ──────────────────────────────────────────
+        # Robustness guard against under-thresholding on dense, noise-dominated
+        # data.  The mass-quantile keeps a FIXED fraction of candidates (p30 →
+        # 70%); when the candidate pool is mostly noise that quantile lands down
+        # in the noise floor and admits thousands of spurious spots.  The
+        # count-vs-threshold knee marks where the survival curve bends from
+        # noise (steep) to signal (flat) — exactly what manual thresholding
+        # targets — and is an independent estimate of the noise/signal boundary.
+        # Never cut below it: this only ever RAISES a too-low threshold up to
+        # the knee, never above it, so a correctly-placed cut (already ≥ knee,
+        # e.g. a clean GMM valley) is unaffected.
+        if knee is not None:
+            mm_knee = float(10.0 ** knee)
+            if mm_knee > mm * 1.02:        # meaningfully higher → cut was in noise
+                _log(f"  Auto-threshold: chosen cut {mm:.4g} is below the "
+                     f"noise/signal knee {mm_knee:.4g} (would admit noise) — "
+                     f"raising to the knee.")
+                mm = mm_knee
+                diag["knee_floor_applied"] = True
+                diag["method"] = (diag.get("method") or "") + "+knee_floor"
+
         mm = float(np.clip(mm, MM_MIN, MM_MAX))
         diag["minmass"] = mm
         _log(f"  Auto-threshold [{diag['method']}, {sens}]: "

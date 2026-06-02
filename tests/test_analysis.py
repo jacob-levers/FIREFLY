@@ -816,3 +816,53 @@ def test_jdd_and_mss_reject_bad_calibration():
         s.compute_mss(tracks, -1.0, 0.05)
     with pytest.raises(ValueError, match="frame_interval"):
         s.compute_mss(tracks, 0.1, 0.0)
+
+
+# ── Auto-threshold (estimate_minmass) knee floor ─────────────────────────────
+def _noisy_blink_stack(n_frames=18, H=192, W=192, n_spots=120, noise=30.0,
+                       amp=(10, 60), sigma=1.0, seed=0):
+    """Dense, low-contrast frames whose blink brightness overlaps the noise —
+    the regime where the mass distribution is unimodal and the auto-threshold
+    falls back to the mass-quantile branch."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:H, 0:W]
+    stack = np.zeros((n_frames, H, W), dtype=np.float32)
+    for f in range(n_frames):
+        img = rng.normal(100, noise, (H, W)).astype(np.float32)
+        for _ in range(n_spots):
+            cx, cy = rng.uniform(5, W - 5), rng.uniform(5, H - 5)
+            img += rng.uniform(*amp) * np.exp(
+                -((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma * sigma))
+        stack[f] = img
+    return stack
+
+
+def test_auto_threshold_knee_floor_engages_on_noise_dominated_data():
+    """On dense/noise-dominated data the mass-quantile cut sits in the noise;
+    the knee floor must raise it to the noise/signal knee (the fix for the
+    'auto threshold detects everything' failure)."""
+    from firefly.analysis.fa_localize import estimate_minmass
+    import pytest
+    stack = _noisy_blink_stack(seed=1)
+    mm, diag = estimate_minmass(stack, diameter=7, backend="trackpy",
+                                sensitivity="balanced", bg_radius=10,
+                                workers=2, log_cb=lambda m: None)
+    assert "quantile" in diag["method"]              # hit the fallback branch
+    assert diag["knee"] is not None
+    assert diag.get("knee_floor_applied") is True     # floor engaged
+    # cut was raised exactly to the knee, and is strictly above the raw p30
+    assert mm == pytest.approx(10 ** diag["knee"], rel=1e-6)
+
+
+def test_auto_threshold_knee_floor_is_noop_on_clean_bimodal_data():
+    """When a clean noise/signal valley exists (GMM), the chosen cut already
+    sits above the knee, so the floor must NOT fire — no regression."""
+    from firefly.analysis.fa_localize import estimate_minmass
+    # Bright, well-separated blinks → clean bimodal mass distribution.
+    stack = _noisy_blink_stack(n_spots=20, noise=12.0, amp=(120, 260),
+                               sigma=1.4, seed=0)
+    mm, diag = estimate_minmass(stack, diameter=7, backend="trackpy",
+                                sensitivity="balanced", bg_radius=10,
+                                workers=2, log_cb=lambda m: None)
+    assert diag["method"].startswith("gmm")
+    assert not diag.get("knee_floor_applied")
