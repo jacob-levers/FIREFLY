@@ -7,6 +7,7 @@ scipy
 matplotlib
 scikit-image
 trackpy
+numba>=0.60     # accelerates trackpy's locate/refine engine — WITHOUT it trackpy falls back to a pure-Python engine that is ~5-10x slower, which dominates the auto-threshold candidate harvest. Version floats so pip matches the resolved numpy (numba 0.60 → numpy<2.1; 0.61+ → numpy 2.x).
 joblib
 tqdm
 czifile
