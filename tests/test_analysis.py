@@ -1366,4 +1366,12 @@ def test_streaming_gpu_batch_matches_unbatched():
     batched = _run(256)       # 8 sub-chunks per backend call
     assert len(unbatched) > 0
     assert unbatched.shape == batched.shape
-    assert np.array_equal(unbatched, batched), "GPU batching changed detections"
+    # Same detections — same spots, same frames — but NOT necessarily bitwise
+    # equal: batching changes the float32 reduction order inside torch
+    # (quantile/sum are non-associative), so positions/masses can differ by a
+    # few ×1e-6.  Assert agreement to float tolerance, not bit-exactness, or the
+    # test is machine-dependent (passes only where the reduction order matches).
+    # `frame` is integer and must match exactly.
+    assert np.array_equal(unbatched[:, 2], batched[:, 2]), "frame indices changed"
+    assert np.allclose(unbatched, batched, rtol=0, atol=1e-3), \
+        "GPU batching changed detections beyond float32 rounding"
