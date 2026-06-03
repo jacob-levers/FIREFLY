@@ -543,10 +543,29 @@ class BuildMixin:
             "• Balanced — the computed noise/signal boundary (recommended)\n"
             "• Lenient  — lower cutoff, keeps more (dimmer) spots")
 
+        # Advanced override: directly cap the MEASURED spurious-fragment rate
+        # of the linkability sweep.  0 % = off (use the Strict/Balanced/Lenient
+        # selector instead).  When set, the estimator picks the most permissive
+        # threshold whose measured 1–2-frame-fragment rate stays at/below this.
+        self.s_minmass_false_rate = QtWidgets.QDoubleSpinBox()
+        self.s_minmass_false_rate.setRange(0.0, 50.0)
+        self.s_minmass_false_rate.setDecimals(1)
+        self.s_minmass_false_rate.setSingleStep(1.0)
+        self.s_minmass_false_rate.setValue(0.0)
+        self.s_minmass_false_rate.setSuffix(" %")
+        self.s_minmass_false_rate.setSpecialValueText("off (use Sensitivity)")
+        self.s_minmass_false_rate.setToolTip(
+            "Advanced — max false-track rate (linkability sweep only):\n"
+            "Directly caps the measured fraction of 1–2-frame spurious\n"
+            "fragments among surviving detections.  The estimator then picks\n"
+            "the most permissive threshold meeting that ceiling, overriding\n"
+            "the Sensitivity selector.  0 % = off.")
+
         def _on_auto_toggled(checked):
             self.s_minmass.setEnabled(not checked)
             self.sld_minmass.setEnabled(not checked)
             self.c_minmass_sensitivity.setEnabled(checked)
+            self.s_minmass_false_rate.setEnabled(checked)
         self.c_auto_minmass.toggled.connect(_on_auto_toggled)
 
         wmm = QtWidgets.QWidget()
@@ -564,6 +583,11 @@ class BuildMixin:
         srow.addWidget(QtWidgets.QLabel("Sensitivity"))
         srow.addWidget(self.c_minmass_sensitivity, 1)
         vmm.addLayout(srow)
+        frow = QtWidgets.QHBoxLayout()
+        frow.setContentsMargins(0, 0, 0, 0)
+        frow.addWidget(QtWidgets.QLabel("Max false-track rate"))
+        frow.addWidget(self.s_minmass_false_rate, 1)
+        vmm.addLayout(frow)
         gl.addRow("Threshold", wmm)
 
         # Apply the initial enabled/disabled state (auto is on by default).
@@ -2160,6 +2184,10 @@ class BuildMixin:
             "auto_minmass":      bool(self.c_auto_minmass.isChecked()),
             "minmass":           float(self.s_minmass.value()),
             "minmass_sensitivity": self.c_minmass_sensitivity.currentText().lower(),
+            # Advanced linkability override: percent → fraction; 0 = off.
+            "minmass_max_false_track_rate": (
+                (self.s_minmass_false_rate.value() / 100.0)
+                if self.s_minmass_false_rate.value() > 0 else None),
             "search_range":      int(self.s_search_range.value()),
             "memory":            int(self.s_memory.value()),
             "min_track_len":     int(self.s_min_track_len.value()),

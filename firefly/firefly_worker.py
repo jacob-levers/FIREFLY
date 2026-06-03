@@ -607,6 +607,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         minmass_arg = None
     elif p.get("auto_minmass", False):
         from firefly.analysis.fa_localize import estimate_minmass
+        _mftr = p.get("minmass_max_false_track_rate")
+        try:
+            _mftr = float(_mftr) if _mftr not in (None, "", 0, 0.0) else None
+        except (TypeError, ValueError):
+            _mftr = None
         minmass_arg, mm_diag = estimate_minmass(
             stack,
             diameter=int(p["diameter"]),
@@ -616,7 +621,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             bg_radius=int(p.get("bg_radius", 10)),
             bg_method=p.get("bg_method", "uniform_filter"),
             workers=int(p["workers"]),
-            log_cb=_log)
+            log_cb=_log,
+            search_range=int(p.get("search_range", 5)),
+            memory=int(p.get("memory", 3)),
+            link_min_len=max(4, int(p.get("min_track_len", 4) or 4)),
+            max_false_track_rate=_mftr)
     else:
         minmass_arg = float(p["minmass"])
 
@@ -1758,6 +1767,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "minmass_method":   (mm_diag.get("method") if mm_diag else "manual"),
                 "minmass_sensitivity": (mm_diag.get("sensitivity") if mm_diag else None),
                 "minmass_n_candidates": (mm_diag.get("n_candidates") if mm_diag else None),
+                # Linkability-sweep diagnostics (None on the static fallback).
+                "minmass_n_good":   (mm_diag.get("n_good") if mm_diag else None),
+                "minmass_spurious_rate": (mm_diag.get("spurious_rate") if mm_diag else None),
+                "minmass_score":    (mm_diag.get("score") if mm_diag else None),
+                "minmass_noise_floor": (mm_diag.get("noise_floor") if mm_diag else None),
                 "backend":          p.get("backend"),
                 # Path to the original input file/folder — Post-process
                 # tab uses this to reload a background image.  Stored as

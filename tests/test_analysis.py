@@ -273,9 +273,11 @@ def test_estimate_minmass_lands_between_noise_and_signal():
     from firefly.analysis import fa_localize as L
     from firefly.analysis.fa_preprocess import preprocess_stack
     stack = _bimodal_spot_stack()
+    # link_min_len huge → nothing qualifies as a track → the linkability sweep
+    # is inconclusive and we exercise the STATIC estimator under test.
     mm, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
-                               frame_sample=20)
-    assert diag["method"].startswith("gmm"), diag["method"]
+                               frame_sample=20, link_min_len=999)
+    assert "gmm" in (diag.get("static_method") or diag["method"]), diag
     lo, hi = diag["gmm_means"]               # log10 component means
     assert lo < np.log10(mm) < hi, "cutoff not between the two clusters"
     # Apply it: should keep ~8 bright spots/frame, drop the 40 dim ones.
@@ -290,9 +292,9 @@ def test_estimate_minmass_lands_between_noise_and_signal():
 
 def test_estimate_minmass_sensitivity_ordering():
     stack = _bimodal_spot_stack(seed=1)
-    strict = _quiet_estimate(stack, diameter=7, sensitivity="strict", frame_sample=20)[0]
-    bal    = _quiet_estimate(stack, diameter=7, sensitivity="balanced", frame_sample=20)[0]
-    lenient = _quiet_estimate(stack, diameter=7, sensitivity="lenient", frame_sample=20)[0]
+    strict = _quiet_estimate(stack, diameter=7, sensitivity="strict", frame_sample=20, link_min_len=999)[0]
+    bal    = _quiet_estimate(stack, diameter=7, sensitivity="balanced", frame_sample=20, link_min_len=999)[0]
+    lenient = _quiet_estimate(stack, diameter=7, sensitivity="lenient", frame_sample=20, link_min_len=999)[0]
     assert strict >= bal >= lenient, (strict, bal, lenient)
 
 
@@ -315,12 +317,12 @@ def test_estimate_minmass_continuous_uses_quantile():
         frames.append(im.astype(np.float32))
     stack = np.stack(frames)
     mm, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
-                               frame_sample=20)
-    assert diag["method"].startswith("mass_quantile"), diag["method"]
+                               frame_sample=20, link_min_len=999)
+    assert "mass_quantile" in (diag.get("static_method") or diag["method"]), diag
     lo, hi = np.percentile(diag["_log_masses"], [5, 95])
     assert lo < np.log10(mm) < hi, "quantile cut outside the candidate bulk"
-    strict = _quiet_estimate(stack, diameter=7, sensitivity="strict", frame_sample=20)[0]
-    lenient = _quiet_estimate(stack, diameter=7, sensitivity="lenient", frame_sample=20)[0]
+    strict = _quiet_estimate(stack, diameter=7, sensitivity="strict", frame_sample=20, link_min_len=999)[0]
+    lenient = _quiet_estimate(stack, diameter=7, sensitivity="lenient", frame_sample=20, link_min_len=999)[0]
     assert strict >= mm >= lenient
 
 
@@ -333,6 +335,142 @@ def test_estimate_minmass_noise_only_falls_back():
                                frame_sample=20)
     assert np.isfinite(mm) and mm >= 0.05
     assert diag["method"] is not None
+
+
+# ── linkability-optimised auto-threshold (the primary engine) ────────────────
+def _linkable_spot_stack(n_real=10, n_blip=55, F=44, H=160, W=160,
+                         amp_real=520.0, amp_blip=(120.0, 320.0), step=1.4,
+                         noise=30.0, sigma=1.3, seed=0):
+    """`n_real` emitters Brownian-walking across F CONSECUTIVE frames (they
+    persist → link into long tracks) plus `n_blip` random per-frame blips
+    (new positions every frame → cannot link).  The blip brightnesses PARTIALLY
+    OVERLAP the real spots, so a fixed mass-quantile cut admits many blips —
+    only temporal linkability cleanly separates them."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:H, 0:W]
+    pos = rng.uniform(18, W - 18, size=(n_real, 2))
+    frames = []
+    for _ in range(F):
+        im = rng.poisson(noise, (H, W)).astype(np.float32)
+        pos = np.clip(pos + rng.normal(0, step, size=pos.shape), 8, W - 8)
+        for cx, cy in pos:
+            im += amp_real * np.exp(
+                -(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma ** 2)))
+        for _ in range(n_blip):
+            bx, by = rng.uniform(8, W - 8), rng.uniform(8, H - 8)
+            a = rng.uniform(*amp_blip)
+            im += a * np.exp(
+                -(((xx - bx) ** 2 + (yy - by) ** 2) / (2 * sigma ** 2)))
+        frames.append(im.astype(np.float32))
+    return np.stack(frames)
+
+
+def _count_tracks(stack, mm, diameter=7, search_range=5, memory=1, L=4):
+    """Detect at `mm` and link the full stack; return (good, spurious) track
+    counts (≥L frames vs ≤2 frames)."""
+    import io, contextlib, logging
+    from firefly.analysis.fa_preprocess import preprocess_stack
+    from firefly.analysis import fa_localize as Lz
+    from firefly.analysis.fa_linking import link_trajectories
+    logging.getLogger("trackpy").setLevel(logging.ERROR)
+    with contextlib.redirect_stdout(io.StringIO()):
+        pp = preprocess_stack(stack, workers=2)
+        locs = Lz.localise_particles(pp, diameter=diameter, minmass=mm,
+                                     percentile=64, backend="trackpy", workers=2)
+        linked = link_trajectories(locs, search_range=search_range,
+                                   memory=memory, min_len=1)
+    lens = linked.groupby("particle")["frame"].count()
+    return int((lens >= L).sum()), int((lens <= 2).sum())
+
+
+def test_estimate_minmass_linkability_path_selected():
+    """On a stack with persistent (linkable) real spots and non-linkable blips
+    of OVERLAPPING brightness, the estimator must use the linkability sweep
+    (not the static fallback) and recover roughly the real-spot count."""
+    stack = _linkable_spot_stack(seed=0)
+    mm, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
+                               search_range=5, memory=1, link_min_len=4)
+    assert diag["method"] == "linkability", diag.get("method")
+    assert "sweep" in diag and len(diag["sweep"]) >= 3
+    assert np.isfinite(mm) and mm >= diag["noise_floor"]
+    assert diag.get("n_good", 0) >= 5, diag.get("n_good")
+
+
+def test_estimate_minmass_linkability_beats_quantile_precision():
+    """The linkability cut must be at least as PURE as the static p30 quantile
+    cut — fewer spurious (≤2-frame) tracks at comparable real-track recall —
+    on data where the two mass populations overlap."""
+    from firefly.analysis.fa_localize import _static_minmass
+    stack = _linkable_spot_stack(seed=1)
+    mm_link, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
+                                    search_range=5, memory=1, link_min_len=4)
+    assert diag["method"] == "linkability", diag.get("method")
+    masses = 10.0 ** np.asarray(diag["_log_masses"], dtype=float)
+    mm_quant = _static_minmass(masses, "balanced", {}, lambda m: None)
+    g_link, s_link = _count_tracks(stack, mm_link)
+    g_quant, s_quant = _count_tracks(stack, mm_quant)
+    # Linkability keeps the real tracks but admits fewer spurious fragments.
+    assert g_link >= max(5, int(0.7 * g_quant)), (g_link, g_quant)
+    assert s_link <= s_quant, (s_link, s_quant)
+
+
+def test_pick_linkability_falls_back_when_no_linkage():
+    """Nothing links (N_good ≈ 0 at every threshold) → the sweep is
+    inconclusive and the picker returns None so the caller uses the static
+    estimator."""
+    from firefly.analysis.fa_localize import _pick_linkability_threshold
+    sweep = [dict(t=float(t), n_surv=100, N_good=0, good_fraction=0.0,
+                  spurious_rate=1.0, median_ep=float("nan"))
+             for t in np.geomspace(1, 50, 12)]
+    pick, info = _pick_linkability_threshold(sweep, "balanced", None, 1.0)
+    assert pick is None and info["reason"] == "no_linkage", info
+
+
+def test_pick_linkability_falls_back_when_no_spurious_population():
+    """good_fraction is high at every threshold (immobile-dominated / no
+    suppressible spurious population) → linkability cannot beat a static cut,
+    so the picker defers."""
+    from firefly.analysis.fa_localize import _pick_linkability_threshold
+    sweep = [dict(t=float(t), n_surv=100, N_good=10, good_fraction=0.95,
+                  spurious_rate=0.03, median_ep=0.1)
+             for t in np.geomspace(1, 50, 12)]
+    pick, info = _pick_linkability_threshold(sweep, "balanced", None, 1.0)
+    assert pick is None and info["reason"] == "no_spurious_population", info
+
+
+def test_pick_linkability_picks_purity_recall_balance():
+    """On a realistic sweep (spurious rate falls and good_fraction rises as the
+    threshold climbs, then real tracks start dropping) the picker lands at the
+    F1 balance — not the highest-N_good point inflated by fragmentation."""
+    from firefly.analysis.fa_localize import _pick_linkability_threshold
+    rows = [  # t, n_surv, N_good, good_fraction, spurious_rate
+        (1.0, 2000, 13, 0.25, 0.67),
+        (1.6, 1300, 14, 0.33, 0.64),
+        (2.1,  750, 13, 0.58, 0.42),
+        (2.6,  500, 13, 0.87, 0.13),   # ← the balance point
+        (3.1,  420, 12, 0.93, 0.06),
+        (3.5,  360, 26, 0.94, 0.06),   # N_good inflated by fragmentation
+        (3.8,  270, 34, 0.84, 0.14),   # …and spurious creeps back up
+    ]
+    sweep = [dict(t=t, n_surv=ns, N_good=ng, good_fraction=gf,
+                  spurious_rate=sr, median_ep=0.1)
+             for (t, ns, ng, gf, sr) in rows]
+    pick, info = _pick_linkability_threshold(sweep, "balanced", None, 0.5)
+    assert info["rule"] == "f1_purity_recall"
+    assert 2.0 <= pick <= 3.2, (pick, info)        # not the fragmented tail
+
+
+def test_estimate_minmass_max_false_track_rate_override():
+    """With a max-false-track-rate ceiling set, the chosen point's measured
+    spurious rate must respect it (override path), still finite and ≥ floor."""
+    stack = _linkable_spot_stack(seed=2)
+    mm, diag = _quiet_estimate(stack, diameter=7, sensitivity="balanced",
+                               search_range=5, memory=1, link_min_len=4,
+                               max_false_track_rate=0.10)
+    assert diag["method"] == "linkability", diag.get("method")
+    info = diag.get("link_info") or {}
+    assert info.get("rule") == "max_false_track_rate", info
+    assert np.isfinite(mm) and mm >= diag["noise_floor"]
 
 
 # ── two-factor (group × time point) mixed ANOVA ──────────────────────────────
@@ -863,10 +1001,12 @@ def test_auto_threshold_knee_floor_engages_on_noise_dominated_data():
     from firefly.analysis.fa_localize import estimate_minmass
     import pytest
     stack = _noisy_blink_stack(seed=1)
+    # link_min_len huge → force the static estimator (the knee-floor logic).
     mm, diag = estimate_minmass(stack, diameter=7, backend="trackpy",
                                 sensitivity="balanced", bg_radius=10,
-                                workers=2, log_cb=lambda m: None)
-    assert "quantile" in diag["method"]              # hit the fallback branch
+                                workers=2, log_cb=lambda m: None,
+                                link_min_len=999)
+    assert "quantile" in (diag.get("static_method") or diag["method"])
     assert diag["knee"] is not None
     assert diag.get("knee_floor_applied") is True     # floor engaged
     # cut was raised exactly to the knee, and is strictly above the raw p30
@@ -882,8 +1022,9 @@ def test_auto_threshold_knee_floor_is_noop_on_clean_bimodal_data():
                                sigma=1.4, seed=0)
     mm, diag = estimate_minmass(stack, diameter=7, backend="trackpy",
                                 sensitivity="balanced", bg_radius=10,
-                                workers=2, log_cb=lambda m: None)
-    assert diag["method"].startswith("gmm")
+                                workers=2, log_cb=lambda m: None,
+                                link_min_len=999)
+    assert "gmm" in (diag.get("static_method") or diag["method"])
     assert not diag.get("knee_floor_applied")
 
 

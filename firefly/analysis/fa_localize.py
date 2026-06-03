@@ -1960,23 +1960,335 @@ def _knee_minmass(masses, n=60):
     return float(grid[k])
 
 
+# ── Linkability-optimised auto-threshold ────────────────────────────────────
+# A human picks the detection threshold by eyeballing single-frame spot
+# brightness.  The signal a human CANNOT see is temporal linkability: a real
+# emitter persists and links into a coherent ≥L-frame trajectory, whereas noise
+# (shot noise, hot pixels, fixed-pattern flicker) makes 1-frame blips and
+# 2–3-frame spurious fragments that the linker cannot stitch into real tracks
+# (Jaqaman 2008).  We harvest every candidate at minmass=0 over a few
+# CONTIGUOUS frame windows (linking needs frame adjacency), then sweep the mass
+# threshold and pick the operating point that maximises real-track yield while
+# suppressing spurious fragments — a criterion no single-frame human inspection
+# can reproduce.
+
+def _contiguous_windows(n_frames, n_windows=4, win_len=120):
+    """Pick up to `n_windows` blocks of `win_len` CONSECUTIVE frames spread
+    across the movie.  Linking needs adjacent frames, so (unlike the static
+    estimator's evenly-spaced single frames) we sample contiguous runs and
+    spread them to average over photobleaching.  Returns a list of (start,
+    stop) half-open index pairs."""
+    n_frames = int(n_frames)
+    if n_frames <= 0:
+        return []
+    if n_frames < 250:
+        return [(0, n_frames)]
+    win_len = int(min(win_len, max(16, n_frames // n_windows)))
+    if n_windows <= 1 or win_len >= n_frames:
+        return [(0, min(win_len, n_frames))]
+    starts = np.linspace(0, n_frames - win_len, n_windows).astype(int)
+    wins = []
+    for s in starts:
+        s = int(s)
+        if wins and s < wins[-1][1]:          # merge accidental overlaps
+            continue
+        wins.append((s, s + win_len))
+    return wins
+
+
+def _harvest_windows(stack, windows, diameter, percentile,
+                     bg_radius, bg_method, workers):
+    """Detect every candidate at minmass=0 inside each contiguous window via
+    trackpy with `characterize=True` — this yields size / ecc / signal / ep for
+    the PSF-quality gate as well as mass / position for linking.  Trackpy and
+    the Torch backend are mass-calibrated to agree (`_TP_MASS_SCALE`), so a
+    threshold chosen here transfers to a Torch run.  `frame` is kept LOCAL to
+    each window (0..win_len) and tagged with `window_id`, so per-window linking
+    never bridges the gap between windows.  Returns a DataFrame with columns
+    x, y, frame, mass, window_id (+ size, ecc, ep, signal when available)."""
+    parts = []
+    for wid, (s, e) in enumerate(windows):
+        block = np.asarray(stack[s:e])
+        if block.size == 0:
+            continue
+        pp = preprocess_stack(block, bg_radius=bg_radius,
+                              bg_method=bg_method, workers=workers)
+        f = None
+        for kw in ({"engine": "numba"}, {}):
+            try:
+                f = tp.batch(pp, diameter, minmass=0.0, percentile=percentile,
+                             characterize=True, processes=1, **kw)
+                break
+            except Exception:
+                f = None
+        if f is None or len(f) == 0:
+            continue
+        f = f.copy()
+        f["window_id"] = wid
+        parts.append(f)
+    cols = ["x", "y", "frame", "mass", "size", "ecc", "ep", "signal",
+            "window_id"]
+    if not parts:
+        return pd.DataFrame(columns=cols)
+    H = pd.concat(parts, ignore_index=True)
+    return H[[c for c in cols if c in H.columns]]
+
+
+def _quality_pregate(H, diameter):
+    """Drop obvious non-spots before the linkability sweep: trackpy `size`
+    (radius of gyration) outside a diffraction-limited band, implausible
+    eccentricity, or a grossly large localisation error `ep`.  This sharpens
+    the sweep without doing the thresholding itself.  Refuses to fire if it
+    would nuke (almost) everything (mis-tuned bands on unusual data).  Returns
+    (filtered_df, n_dropped, info)."""
+    if H is None or len(H) == 0:
+        return H, 0, {}
+    n0 = len(H)
+    mask = np.ones(n0, dtype=bool)
+    info = {}
+    if "size" in H.columns:
+        sz = H["size"].to_numpy(dtype=float)
+        lo, hi = 0.5, float(diameter)          # generous band around the PSF
+        mask &= np.isfinite(sz) & (sz >= lo) & (sz <= hi)
+        info["size_band"] = [lo, hi]
+    if "ecc" in H.columns:
+        ec = H["ecc"].to_numpy(dtype=float)
+        mask &= ~(np.isfinite(ec) & (ec > 0.9))
+    if "ep" in H.columns:
+        ep = H["ep"].to_numpy(dtype=float)
+        mask &= ~(np.isfinite(ep) & (ep > float(diameter)))
+    filt = H[mask].reset_index(drop=True)
+    if len(filt) < max(50, 0.05 * n0):
+        return H, 0, {"pregate": "skipped_too_aggressive"}
+    return filt, int(n0 - len(filt)), info
+
+
+def _link_track_lengths(sub, search_range, memory):
+    """Link one window's surviving detections WITHOUT the stub filter and
+    return the array of per-track frame counts (so we can count both good
+    tracks and short spurious fragments).  Quiet — swallows the linker's
+    chatter."""
+    if sub is None or len(sub) < 2:
+        return np.array([], dtype=int)
+    import contextlib, io
+    from firefly.analysis.fa_linking import _link_via_trackpy
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            linked = _link_via_trackpy(
+                sub[["x", "y", "frame"]].copy(),
+                search_range=search_range, memory=memory)
+    except Exception:
+        return np.array([], dtype=int)
+    if linked is None or "particle" not in getattr(linked, "columns", []) \
+            or len(linked) == 0:
+        return np.array([], dtype=int)
+    return linked.groupby("particle")["frame"].count().to_numpy()
+
+
+def _sweep_thresholds(H, grid, search_range, memory, link_min_len):
+    """For each candidate threshold t: filter to mass≥t, link each window, and
+    measure track quality.  Returns a list of per-t dicts with n_surv, N_good
+    (tracks ≥ link_min_len), good_fraction (detections inside good tracks /
+    surviving), spurious_rate (detections in ≤2-frame fragments / surviving),
+    and median ep."""
+    if "window_id" in H.columns:
+        windows = sorted(int(w) for w in H["window_id"].unique())
+    else:
+        windows = [0]
+    has_ep = "ep" in H.columns
+    rows = []
+    for t in grid:
+        sub = H[H["mass"] >= t]
+        n_surv = int(len(sub))
+        if n_surv < 4:
+            rows.append(dict(t=float(t), n_surv=n_surv, N_good=0,
+                             good_fraction=0.0, spurious_rate=0.0,
+                             median_ep=float("nan")))
+            continue
+        n_good = good_det = spur_det = 0
+        for wid in windows:
+            w = sub[sub["window_id"] == wid] if "window_id" in sub.columns else sub
+            lens = _link_track_lengths(w, search_range, memory)
+            if lens.size == 0:
+                continue
+            good = lens[lens >= link_min_len]
+            spur = lens[lens <= 2]
+            n_good += int(good.size)
+            good_det += int(good.sum())
+            spur_det += int(spur.sum())
+        med_ep = (float(np.nanmedian(sub["ep"].to_numpy(dtype=float)))
+                  if has_ep else float("nan"))
+        rows.append(dict(t=float(t), n_surv=n_surv, N_good=int(n_good),
+                         good_fraction=float(good_det / n_surv),
+                         spurious_rate=float(spur_det / n_surv),
+                         median_ep=med_ep))
+    return rows
+
+
+def _pick_linkability_threshold(sweep, sensitivity, max_false_track_rate,
+                                noise_floor):
+    """Choose the operating threshold from the sweep table, or return None when
+    linkability is inconclusive (flat N_good curve → caller falls back to the
+    static estimator).  Returns (minmass_or_None, info)."""
+    if not sweep:
+        return None, {"reason": "empty_sweep"}
+    arr = lambda k: np.array([r[k] for r in sweep], dtype=float)
+    t, Ng, gf, sr = arr("t"), arr("N_good"), arr("good_fraction"), arr("spurious_rate")
+    ns = arr("n_surv")
+    order = np.argsort(t)
+    t, Ng, gf, sr, ns = t[order], Ng[order], gf[order], sr[order], ns[order]
+
+    # Guards — the sweep only adds value over the static estimator when real
+    # emitters link AND there is a suppressible spurious population to act on.
+    #   • Nothing links (sparse / non-persistent / wrong search range) →
+    #     N_good ≈ 0 at every threshold.  Defer to the static method.
+    #   • No spurious population: good_fraction is already high at the LOWEST
+    #     (most permissive) threshold, so even admitting everything yields
+    #     mostly-good tracks — linkability cannot beat a static cut, and the
+    #     N_good "knee" would be meaningless (the immobile-dominated case).
+    if np.nanmax(Ng) < 5:
+        return None, {"reason": "no_linkage", "N_good_max": float(np.nanmax(Ng))}
+    if np.nanmin(gf) > 0.8:
+        return None, {"reason": "no_spurious_population",
+                      "min_good_fraction": float(np.nanmin(gf))}
+
+    nf = float(noise_floor)
+
+    # Advanced override: lowest (most permissive) t whose MEASURED spurious
+    # fragment rate is within the user's ceiling, but never below the noise
+    # floor.  This directly controls the false-track rate.
+    if max_false_track_rate is not None:
+        r = float(max_false_track_rate)
+        ok = np.where((sr <= r) & (t >= nf))[0]
+        if ok.size:
+            return float(t[ok].min()), {
+                "rule": "max_false_track_rate", "r": r,
+                "spurious_at_pick": float(sr[ok][np.argmin(t[ok])])}
+
+    # Operating point = F1 balance of purity vs real-detection recall.
+    #   precision ≈ good_fraction (survivors that land in real ≥L tracks)
+    #   recall    ≈ good-detection count relative to its best over the grid
+    # F1 = 2·p·r/(p+r) peaks where the spurious population is suppressed WITHOUT
+    # yet cutting the real spots.  N_good is deliberately NOT maximised: at high
+    # thresholds real tracks fragment (gaps the linker can't bridge), inflating
+    # the track COUNT while recall actually falls — F1 on detection counts is
+    # immune to that gaming.
+    good_det = gf * ns
+    recall = good_det / (np.nanmax(good_det) or 1.0)
+    prec = gf
+    score = 2.0 * prec * recall / np.clip(prec + recall, 1e-9, None)
+    op = int(np.nanargmax(score))
+
+    # Knee of good_fraction vs log10(t), recorded only for the audit marker.
+    lt = np.log10(np.clip(t, 1e-9, None))
+    x = (lt - lt.min()) / (float(np.ptp(lt)) or 1.0)
+    y = gf / (np.nanmax(gf) or 1.0)
+    chord = y[0] + (y[-1] - y[0]) * x
+    knee = int(np.argmax(np.abs(chord - y)))
+
+    # Sensitivity = ±1 grid step along the precision/recall curve
+    # (Strict → higher cut/purer, Lenient → lower cut/more recall).
+    step = {"strict": +1, "balanced": 0, "lenient": -1}.get(
+        str(sensitivity).lower(), 0)
+    idx = int(np.clip(op + step, 0, len(t) - 1))
+    chosen = max(float(t[idx]), nf)
+    return chosen, {"rule": "f1_purity_recall", "op_index": int(op),
+                    "chosen_index": int(idx),
+                    "knee_index": int(knee), "sensitivity": str(sensitivity).lower(),
+                    "N_good_at_op": float(Ng[op]),
+                    "good_fraction_at_op": float(gf[op]),
+                    "spurious_at_op": float(sr[op]),
+                    "score_at_op": float(score[op])}
+
+
+def _static_minmass(masses, sensitivity, diag, log_fn):
+    """The original single-frame mass-distribution estimator (GMM noise/signal
+    valley → calibrated mass-quantile → count-vs-threshold knee floor).  Used
+    as the automatic, flagged FALLBACK when the linkability sweep is
+    inconclusive (immobile-dominated / sparse data).  Operates on a 1-D
+    `masses` array, mutates `diag` (writes `static_method`, knee, gmm_*), and
+    returns the chosen minmass."""
+    masses = np.asarray(masses, dtype=float)
+    masses = masses[np.isfinite(masses) & (masses > 0)]
+    lm = np.log10(masses)
+    knee = _knee_minmass(masses)
+    diag["knee"] = None if knee is None else float(knee)
+
+    cross = None
+    try:
+        from sklearn.mixture import GaussianMixture
+        gm = GaussianMixture(n_components=2, n_init=3, random_state=0)
+        gm.fit(lm.reshape(-1, 1))
+        means = gm.means_.ravel()
+        sds = np.sqrt(gm.covariances_.ravel())
+        weights = gm.weights_.ravel()
+        order = np.argsort(means)
+        m_lo, m_hi = means[order]
+        s_lo = sds[order][0]
+        w_min = float(weights.min())
+        diag["gmm_means"] = [float(means[order][0]), float(means[order][1])]
+        diag["gmm_sds"] = [float(sds[order][0]), float(sds[order][1])]
+        diag["gmm_weights"] = [float(weights[order][0]), float(weights[order][1])]
+        if (m_hi - m_lo) >= 0.3 and w_min >= 0.02:
+            cross = _gmm_crossover(means, sds, weights)
+            diag["static_method"] = "gmm"
+            diag["sigma_noise"] = float(s_lo)
+        else:
+            diag["static_method"] = "gmm_unimodal"
+    except Exception as e:
+        diag["static_method"] = f"gmm_failed:{type(e).__name__}"
+
+    sens = str(sensitivity).lower()
+    if cross is not None:
+        diag["gmm_crossover"] = float(cross)
+        sig = float(diag.get("sigma_noise", 0.1)) or 0.1
+        shift = {"strict": +1.0, "balanced": 0.0, "lenient": -1.0}.get(sens, 0.0)
+        mm = float(10.0 ** (cross + shift * sig))
+        diag["static_method"] = "gmm_valley"
+        if knee is not None and abs(knee - cross) > 0.4:
+            log_fn(f"  Auto-threshold: GMM valley (10^{cross:.2f}) and knee "
+                   f"(10^{knee:.2f}) disagree by >0.4 dex; both logged.")
+    else:
+        q = {"strict": 0.40, "balanced": 0.30, "lenient": 0.20}.get(sens, 0.30)
+        mm = float(np.quantile(masses, q))
+        diag["static_method"] = f"mass_quantile_p{int(round(q * 100))}"
+        diag["quantile"] = q
+
+    if knee is not None:
+        mm_knee = float(10.0 ** knee)
+        if mm_knee > mm * 1.02:
+            log_fn(f"  Auto-threshold: chosen cut {mm:.4g} is below the "
+                   f"noise/signal knee {mm_knee:.4g} (would admit noise) — "
+                   f"raising to the knee.")
+            mm = mm_knee
+            diag["knee_floor_applied"] = True
+            diag["static_method"] = (diag.get("static_method") or "") + "+knee_floor"
+    return mm
+
+
 def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                      sensitivity="balanced", frame_sample=80,
                      bg_radius=50, bg_method="uniform_filter",
-                     workers=N_CPUS, log_cb=None):
-    """Estimate a robust per-file detection `minmass` from the candidate
-    spot-mass distribution.
+                     workers=N_CPUS, log_cb=None,
+                     search_range=5, memory=3, link_min_len=4,
+                     max_false_track_rate=None):
+    """Estimate a robust per-file detection `minmass`, better than manual
+    eyeballing.
 
-    This automates the standard SMLM workflow (trackpy: "set minmass at the
-    valley of the mass histogram"; ThunderSTORM: noise-relative cutoff): we
-    harvest every candidate spot at a permissive cutoff on a representative
-    frame sample, then split the noise (dim) and signal (bright) populations on
-    log10(mass) with a 2-component Gaussian mixture, place the cutoff at the
-    component crossover, and cross-check it against the count-vs-threshold knee.
+    PRIMARY engine — linkability sweep: harvest every candidate at minmass=0
+    over a few contiguous frame windows (with trackpy PSF features), apply a
+    quality pre-gate, then sweep the mass threshold and link at each candidate.
+    Real emitters persist into ≥L-frame tracks; noise makes 1-frame blips and
+    2–3-frame fragments.  The operating point maximises good-track yield ×
+    purity, floored at the noise level — a temporal criterion a single-frame
+    human inspection cannot reproduce.  `Strict/Balanced/Lenient` shift it ±1
+    grid step; an optional `max_false_track_rate` caps the measured spurious
+    fragment rate directly.
 
-    Because masses are harvested through the SAME backend the real run uses,
-    the returned `minmass` is already in the units that run will filter on
-    (including the Torch mass scaling).
+    FALLBACK — static estimator (`_static_minmass`): on immobile-dominated or
+    sparse data the N_good curve is flat and the sweep is inconclusive, so we
+    fall back to the GMM-valley / mass-quantile / knee method and flag it in
+    `diag["method"]` as `static_fallback:<reason>`.
 
     Returns (minmass: float, diagnostics: dict).
     """
@@ -1997,123 +2309,107 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
     MM_MIN, MM_MAX = 0.05, 1e6
 
     try:
-        idx = np.unique(np.linspace(0, n - 1, min(frame_sample, n)).astype(int))
-        diag["frame_sample"] = int(idx.size)
-        sample = np.asarray(stack[idx]) if not isinstance(stack, np.ndarray) \
-            else stack[idx]
-        sample_pp = preprocess_stack(sample, bg_radius=bg_radius,
-                                     bg_method=bg_method, workers=workers)
-        impl = _resolve_backend(backend)
-        df = impl.localise(sample_pp, diameter=diameter, minmass=0.0,
-                           percentile=percentile, workers=workers,
-                           chunk_size=len(sample_pp))
-        masses = np.asarray(df["mass"].values, dtype=float)
+        # ── Harvest contiguous windows (mass + PSF features, link-ready) ──────
+        windows = _contiguous_windows(n)
+        diag["windows"] = [[int(s), int(e)] for s, e in windows]
+        diag["frame_sample"] = int(sum(e - s for s, e in windows))
+        H = _harvest_windows(stack, windows, diameter, percentile,
+                             bg_radius, bg_method, workers)
+        masses = (np.asarray(H["mass"].values, dtype=float)
+                  if len(H) else np.array([], dtype=float))
         masses = masses[np.isfinite(masses) & (masses > 0)]
         diag["n_candidates"] = int(masses.size)
 
-        # Reservoir cap for speed on dense data.
-        if masses.size > 200_000:
-            rng = np.random.default_rng(0)
-            masses = rng.choice(masses, 200_000, replace=False)
-
         if masses.size < 200:
-            # Too few candidates → noise-relative floor.
             med = float(np.median(masses)) if masses.size else MM_MIN
             mad = float(np.median(np.abs(masses - med))) if masses.size else 0.0
-            mm = med + 3.0 * 1.4826 * mad
+            mm = float(np.clip(med + 3.0 * 1.4826 * mad, MM_MIN, MM_MAX))
             diag["method"] = "noise_floor_lowN"
-            mm = float(np.clip(mm, MM_MIN, MM_MAX))
-            _log(f"  Auto-threshold: only {masses.size} candidates → noise floor "
-                 f"minmass = {mm:.4g}")
             diag["minmass"] = mm
+            _log(f"  Auto-threshold: only {masses.size} candidates → noise "
+                 f"floor minmass = {mm:.4g}")
             return mm, diag
 
-        lm = np.log10(masses)
-        # Stash a downsampled copy of the log-masses for the audit plot.  The
-        # leading underscore marks it private — the worker pops it before the
-        # diagnostics dict is JSON-serialised.
-        if lm.size > 20000:
-            _rng = np.random.default_rng(1)
-            diag["_log_masses"] = _rng.choice(lm, 20000, replace=False)
-        else:
-            diag["_log_masses"] = lm.copy()
-        knee = _knee_minmass(masses)
-        diag["knee"] = None if knee is None else float(knee)
+        # Reservoir-cap the masses used for the audit / static stats (NOT the
+        # link harvest H, whose per-frame density must stay intact for linking).
+        mstat = masses
+        if mstat.size > 200_000:
+            mstat = np.random.default_rng(0).choice(mstat, 200_000, replace=False)
+        lm = np.log10(mstat)
+        diag["_log_masses"] = (np.random.default_rng(1).choice(lm, 20000, replace=False)
+                               if lm.size > 20000 else lm.copy())
 
-        cross = None
+        # Shot-noise floor = the count-vs-threshold knee (the noise/signal
+        # boundary on the candidate-mass survival curve), which is robust when
+        # bright spots dominate the distribution.  median+3·MAD is NOT used here
+        # — with many bright detections it inflates above the real population
+        # and would cut the very spots we need to link.  Falls back to a low
+        # percentile when no knee is resolvable.
+        _knee_log = _knee_minmass(mstat)
+        diag["knee"] = None if _knee_log is None else float(_knee_log)
+        if _knee_log is not None:
+            noise_floor = float(10.0 ** _knee_log)
+        else:
+            noise_floor = float(np.percentile(mstat, 5))
+        diag["noise_floor"] = noise_floor
+
+        # ── Linkability sweep (primary) ──────────────────────────────────────
+        chosen = None
         try:
-            from sklearn.mixture import GaussianMixture
-            gm = GaussianMixture(n_components=2, n_init=3, random_state=0)
-            gm.fit(lm.reshape(-1, 1))
-            means = gm.means_.ravel()
-            sds = np.sqrt(gm.covariances_.ravel())
-            weights = gm.weights_.ravel()
-            order = np.argsort(means)
-            m_lo, m_hi = means[order]
-            s_lo = sds[order][0]
-            w_min = float(weights.min())
-            diag["gmm_means"] = [float(means[order][0]), float(means[order][1])]
-            diag["gmm_sds"] = [float(sds[order][0]), float(sds[order][1])]
-            diag["gmm_weights"] = [float(weights[order][0]), float(weights[order][1])]
-            if (m_hi - m_lo) >= 0.3 and w_min >= 0.02:
-                cross = _gmm_crossover(means, sds, weights)
-                diag["method"] = "gmm"
-                diag["sigma_noise"] = float(s_lo)
+            Hq, n_drop, qinfo = _quality_pregate(H, diameter)
+            diag["quality_dropped"] = int(n_drop)
+            mq = np.asarray(Hq["mass"].values, dtype=float)
+            mq = mq[np.isfinite(mq) & (mq > 0)]
+            if mq.size >= 200:
+                p2, p98 = np.percentile(mq, [2, 98])
+                # Span the grid DOWN to the shot-noise floor so real spots
+                # survive at every candidate threshold and can link; the lowest
+                # grid points (≈ floor) admit the spurious population so the
+                # sweep can measure and then suppress it.
+                lo = float(min(p2, noise_floor))
+                hi = float(p98)
+                if hi > lo:
+                    grid = np.unique(np.geomspace(lo, hi, 18))
+                    sweep = _sweep_thresholds(Hq, grid, int(search_range),
+                                              int(memory), int(link_min_len))
+                    pick, pinfo = _pick_linkability_threshold(
+                        sweep, sensitivity, max_false_track_rate, noise_floor)
+                    diag["link_info"] = pinfo
+                    if pick is not None:
+                        chosen = float(pick)
+                        diag["method"] = "linkability"
+                        diag["sweep"] = sweep
+                        _op = int(pinfo.get("op_index", 0))
+                        _op = max(0, min(_op, len(sweep) - 1))
+                        diag["n_good"] = int(sweep[_op]["N_good"])
+                        diag["good_fraction"] = float(sweep[_op]["good_fraction"])
+                        diag["spurious_rate"] = float(sweep[_op]["spurious_rate"])
+                        diag["score"] = float(pinfo.get("score_at_op", 0.0))
+                    else:
+                        diag["link_fallback_reason"] = pinfo.get("reason", "inconclusive")
+                else:
+                    diag["link_fallback_reason"] = "degenerate_grid"
             else:
-                diag["method"] = "gmm_unimodal"
+                diag["link_fallback_reason"] = "sparse_after_pregate"
+        except _Cancelled:
+            raise
         except Exception as e:
-            diag["method"] = f"gmm_failed:{type(e).__name__}"
+            diag["link_fallback_reason"] = f"error:{type(e).__name__}"
 
-        sens = str(sensitivity).lower()
-        if cross is not None:
-            # Genuine noise/signal bimodality (clean, sparse data with a real
-            # noise floor): cut at the valley, shifted ±1σ_noise.
-            diag["gmm_crossover"] = float(cross)
-            sig = float(diag.get("sigma_noise", 0.1)) or 0.1
-            shift = {"strict": +1.0, "balanced": 0.0, "lenient": -1.0}.get(sens, 0.0)
-            mm = float(10.0 ** (cross + shift * sig))
-            diag["method"] = "gmm_valley"
-            if knee is not None and abs(knee - cross) > 0.4:
-                _log(f"  Auto-threshold: GMM valley (10^{cross:.2f}) and knee "
-                     f"(10^{knee:.2f}) disagree by >0.4 dex; both logged.")
+        if chosen is None:
+            # ── Static fallback (flagged) ────────────────────────────────────
+            reason = diag.get("link_fallback_reason", "inconclusive")
+            mm = _static_minmass(mstat, sensitivity, diag, _log)
+            diag["method"] = f"static_fallback:{reason}"
+            diag["static_minmass"] = float(mm)
         else:
-            # Continuous / unimodal mass distribution — the typical case for
-            # dense sptPALM (e.g. PC12): there is NO valley to find.  Cut at a
-            # calibrated quantile of the candidate masses.  Per-frame
-            # normalisation pins the brightness scale, so this reproduces an
-            # expert-chosen threshold (Balanced ≈ p30 ≈ the value users dial in
-            # by hand) and adapts to each file's own distribution.
-            q = {"strict": 0.40, "balanced": 0.30, "lenient": 0.20}.get(sens, 0.30)
-            mm = float(np.quantile(masses, q))
-            diag["method"] = f"mass_quantile_p{int(round(q * 100))}"
-            diag["quantile"] = q
-
-        # ── Noise/signal knee floor ──────────────────────────────────────────
-        # Robustness guard against under-thresholding on dense, noise-dominated
-        # data.  The mass-quantile keeps a FIXED fraction of candidates (p30 →
-        # 70%); when the candidate pool is mostly noise that quantile lands down
-        # in the noise floor and admits thousands of spurious spots.  The
-        # count-vs-threshold knee marks where the survival curve bends from
-        # noise (steep) to signal (flat) — exactly what manual thresholding
-        # targets — and is an independent estimate of the noise/signal boundary.
-        # Never cut below it: this only ever RAISES a too-low threshold up to
-        # the knee, never above it, so a correctly-placed cut (already ≥ knee,
-        # e.g. a clean GMM valley) is unaffected.
-        if knee is not None:
-            mm_knee = float(10.0 ** knee)
-            if mm_knee > mm * 1.02:        # meaningfully higher → cut was in noise
-                _log(f"  Auto-threshold: chosen cut {mm:.4g} is below the "
-                     f"noise/signal knee {mm_knee:.4g} (would admit noise) — "
-                     f"raising to the knee.")
-                mm = mm_knee
-                diag["knee_floor_applied"] = True
-                diag["method"] = (diag.get("method") or "") + "+knee_floor"
+            mm = chosen
 
         mm = float(np.clip(mm, MM_MIN, MM_MAX))
         diag["minmass"] = mm
-        _log(f"  Auto-threshold [{diag['method']}, {sens}]: "
+        _log(f"  Auto-threshold [{diag['method']}, {str(sensitivity).lower()}]: "
              f"minmass = {mm:.4g}  (from {diag['n_candidates']} candidates over "
-             f"{diag['frame_sample']} frames)")
+             f"{diag['frame_sample']} frames in {len(windows)} window(s))")
         return mm, diag
 
     except _Cancelled:
@@ -2135,10 +2431,13 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
 
 
 def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
-    """Write an audit figure for the auto-threshold: the log10(mass) histogram
-    of candidate spots, the fitted noise/signal Gaussian components, the knee,
-    and the chosen cutoff — so the per-file threshold is inspectable.  Returns
-    the path on success, else None."""
+    """Write an audit figure for the auto-threshold.  Left panel: the
+    log10(mass) histogram of candidate spots, any fitted noise/signal Gaussian
+    components, the knee, and the chosen cutoff.  Right panel (only when the
+    linkability sweep ran): real-track yield (N_good), spurious-fragment rate
+    and good-fraction versus log-threshold, with the chosen operating point and
+    knee marked — so the per-file threshold is fully inspectable.  Returns the
+    path on success, else None."""
     lm = diagnostics.get("_log_masses")
     if lm is None or len(lm) < 10:
         return None
@@ -2150,11 +2449,19 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
         pal = _theme_palette(theme)
         lm = np.asarray(lm, dtype=float)
 
-        fig, ax = plt.subplots(figsize=(6.4, 4.2), facecolor=pal["BG"])
+        sweep = diagnostics.get("sweep")
+        has_sweep = bool(sweep) and len(sweep) >= 3
+        if has_sweep:
+            fig, (ax, ax2) = plt.subplots(
+                1, 2, figsize=(11.2, 4.4), facecolor=pal["BG"])
+        else:
+            fig, ax = plt.subplots(figsize=(6.4, 4.2), facecolor=pal["BG"])
+            ax2 = None
+
+        # ── Left: mass histogram ─────────────────────────────────────────────
         ax.set_facecolor(pal["PNL"])
         counts, edges, _ = ax.hist(lm, bins=80, color=pal["BAR_FILL"],
                                    edgecolor=pal["GRD"], linewidth=0.3)
-        centers = 0.5 * (edges[:-1] + edges[1:])
         binw = float(edges[1] - edges[0])
         n = lm.size
 
@@ -2162,10 +2469,9 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
         sds = diagnostics.get("gmm_sds")
         wts = diagnostics.get("gmm_weights")
         # Only overlay the fitted noise/signal components when the cut was
-        # actually placed at their valley.  For the quantile method (no real
-        # bimodality) the components would be misleading, so we hide them.
+        # actually placed at their valley (static GMM fallback).
         if (means and sds and wts
-                and diagnostics.get("method") == "gmm_valley"):
+                and str(diagnostics.get("static_method", "")).startswith("gmm_valley")):
             xs = np.linspace(lm.min(), lm.max(), 400)
             cols = [pal["MUT"], pal["SIG"]]
             labels = ["noise component", "signal component"]
@@ -2179,6 +2485,10 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
         if chosen and chosen > 0:
             ax.axvline(np.log10(chosen), color="#FFD33D", lw=2.4,
                        label=f"chosen minmass = {chosen:.3g}")
+        nf = diagnostics.get("noise_floor")
+        if nf and nf > 0:
+            ax.axvline(np.log10(nf), color=pal["MUT"], ls="--", lw=1.0,
+                       alpha=0.7, label="noise floor")
         knee = diagnostics.get("knee")
         if knee is not None:
             ax.axvline(knee, color=pal["TXT"], ls=":", lw=1.2, alpha=0.7,
@@ -2186,6 +2496,53 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
 
         ax.set_xlabel("log₁₀( candidate spot mass )", color=pal["TXT"])
         ax.set_ylabel("count", color=pal["TXT"])
+        for sp in ax.spines.values():
+            sp.set_edgecolor(pal["GRD"])
+        ax.tick_params(colors=pal["TXT"])
+        ax.legend(frameon=False, fontsize=8, labelcolor=pal["TXT"], loc="best")
+
+        # ── Right: linkability sweep ─────────────────────────────────────────
+        if has_sweep:
+            ax2.set_facecolor(pal["PNL"])
+            t = np.array([r["t"] for r in sweep], dtype=float)
+            lt = np.log10(np.clip(t, 1e-12, None))
+            Ng = np.array([r["N_good"] for r in sweep], dtype=float)
+            sr = np.array([r["spurious_rate"] for r in sweep], dtype=float)
+            gf = np.array([r["good_fraction"] for r in sweep], dtype=float)
+            o = np.argsort(lt)
+            lt, Ng, sr, gf = lt[o], Ng[o], sr[o], gf[o]
+
+            l1, = ax2.plot(lt, Ng, color=pal["SIG"], lw=2.0, marker="o",
+                           ms=3, label="real tracks (N_good)")
+            ax2.set_xlabel("log₁₀( mass threshold )", color=pal["TXT"])
+            ax2.set_ylabel("real tracks  (N_good)", color=pal["SIG"])
+            ax2.tick_params(colors=pal["TXT"])
+            for sp in ax2.spines.values():
+                sp.set_edgecolor(pal["GRD"])
+
+            axr = ax2.twinx()
+            axr.set_facecolor("none")
+            l2, = axr.plot(lt, sr, color="#FF6B6B", lw=1.6, ls="--",
+                           marker="s", ms=2.5, label="spurious-fragment rate")
+            l3, = axr.plot(lt, gf, color="#FFD33D", lw=1.4, ls=":",
+                           marker="^", ms=2.5, label="good fraction")
+            axr.set_ylabel("fragment rate / good fraction", color=pal["TXT"])
+            axr.tick_params(colors=pal["TXT"])
+            axr.set_ylim(0, 1.02)
+            for sp in axr.spines.values():
+                sp.set_edgecolor(pal["GRD"])
+
+            if chosen and chosen > 0:
+                ax2.axvline(np.log10(chosen), color="#FFD33D", lw=2.2,
+                            label="chosen")
+            info = diagnostics.get("link_info") or {}
+            ki = info.get("knee_index")
+            if isinstance(ki, int) and 0 <= ki < len(t):
+                ax2.axvline(np.log10(max(t[ki], 1e-12)), color=pal["TXT"],
+                            ls=":", lw=1.0, alpha=0.6, label="knee")
+            ax2.legend(handles=[l1, l2, l3], frameon=False, fontsize=7.5,
+                       labelcolor=pal["TXT"], loc="best")
+
         title = "Auto-threshold audit"
         if stem:
             title += f" — {stem}"
@@ -2193,12 +2550,8 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
                f"{diagnostics.get('n_candidates','?')} candidates · "
                f"{diagnostics.get('backend','?')} backend")
         fig.suptitle(title, color=pal["TXT"], fontsize=12, fontweight="bold", y=0.99)
-        ax.set_title(sub, color=pal["MUT"], fontsize=8.5, pad=6)
-        for sp in ax.spines.values():
-            sp.set_edgecolor(pal["GRD"])
-        ax.tick_params(colors=pal["TXT"])
-        ax.legend(frameon=False, fontsize=8, labelcolor=pal["TXT"], loc="best")
-        fig.tight_layout()
+        fig.text(0.5, 0.93, sub, color=pal["MUT"], fontsize=8.5, ha="center")
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
         fig.savefig(path, dpi=150, facecolor=pal["BG"], bbox_inches="tight")
         plt.close(fig)
         return path

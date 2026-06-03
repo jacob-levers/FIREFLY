@@ -1,5 +1,38 @@
 # Changelog
 
+## v2.11.0
+
+### Bulletproof auto-threshold — linkability-optimised detection
+The auto detection threshold (`minmass`) no longer relies only on single-frame
+spot brightness — the same information a human eyeballs. The new **primary
+engine measures temporal linkability**: real emitters persist and link into
+coherent ≥L-frame trajectories, whereas noise makes 1-frame blips and 2–3-frame
+fragments the linker cannot stitch (Jaqaman 2008). A criterion no single-frame
+inspection can reproduce.
+
+- **Per-file threshold sweep.** Harvest every candidate at `minmass=0` over a
+  few *contiguous* frame windows (with trackpy PSF features), apply a PSF
+  quality pre-gate (size / eccentricity / localisation error), then sweep the
+  mass threshold and re-link at each step. The operating point maximises an
+  **F1 balance of track purity vs real-detection recall** — immune to the
+  track-fragmentation that gamed a raw track-count objective — floored at the
+  count-knee noise level.
+- **Strict / Balanced / Lenient** shift the cut ±1 grid step; an optional,
+  advanced **“Max false-track rate (%)”** field directly caps the *measured*
+  spurious-fragment rate, overriding the selector.
+- **Graceful, flagged fallback.** When real spots don’t link or there’s no
+  suppressible spurious population (immobile-dominated / sparse data), the
+  estimator defers to the previous static GMM-valley / mass-quantile / knee
+  method and records `static_fallback:<reason>` so the audit shows why.
+- **Richer audit.** `{stem}_minmass_hist.png` gains a second panel: real-track
+  yield, spurious-fragment rate and good-fraction vs threshold, with the chosen
+  operating point and knee marked. `{stem}_params.json` records
+  `minmass_n_good`, `minmass_spurious_rate`, `minmass_score`,
+  `minmass_noise_floor`.
+
+Covered by new headless tests (linkability path selected, beats the quantile on
+overlapping populations, guard fallbacks, F1 operating-point). Full suite green.
+
 ## v2.9.0
 
 A self-contained round of analysis, performance and robustness improvements

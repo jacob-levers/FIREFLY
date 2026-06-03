@@ -1725,6 +1725,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("analysis/auto_minmass",    self.c_auto_minmass,    "check", _bool_cast),
             ("analysis/minmass",         self.s_minmass,         "spin",  float),
             ("analysis/minmass_sensitivity", self.c_minmass_sensitivity, "combo"),
+            ("analysis/minmass_max_false_track_rate", self.s_minmass_false_rate, "spin", float),
 
             # ── Linking ───────────────────────────────────────────────────
             ("analysis/search_range",    self.s_search_range,    "spin",  int),
@@ -1878,6 +1879,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             self.s_minmass.setEnabled(not _auto_mm)
             self.sld_minmass.setEnabled(not _auto_mm)
             self.c_minmass_sensitivity.setEnabled(_auto_mm)
+            self.s_minmass_false_rate.setEnabled(_auto_mm)
             on = self.c_filter_d_enabled.isChecked()
             self.s_filter_d_min.setEnabled(on)
             self.s_filter_d_max.setEnabled(on)
