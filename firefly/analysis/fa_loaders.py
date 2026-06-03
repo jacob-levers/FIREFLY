@@ -9,6 +9,7 @@ import glob
 import os
 import re
 import sys
+import threading
 import time
 import warnings
 import io as _io
@@ -959,6 +960,204 @@ def _stream_tif_into(path, dest, offset, stop_event=None, chunk=1000):
     return local, px_um, fi_s
 
 
+def _squeeze_tif_block(block):
+    """Normalise a tifffile `asarray` result to a 3-D (T, H, W) array using the
+    EXACT same rules as `_stream_tif_into` / `_load_single_tif`, so a frame read
+    lazily is byte-identical to the same frame in the eager combined stack:
+        2-D  page         → add a leading axis
+        4-D  (T, C, H, W) → channel-0 if singleton C, else mean over C
+    Anything else is left for the caller to reject."""
+    if block.ndim == 2:
+        block = block[np.newaxis]
+    elif block.ndim == 4:
+        block = block[:, 0] if block.shape[1] == 1 else block.mean(axis=1)
+    return block
+
+
+class LazyTiffStack:
+    """Read-only, array-like view over a multi-file TIF series that reads frames
+    from disk ON DEMAND instead of materialising the whole combined stack in RAM
+    (or writing a multi-GB disk memmap first).
+
+    Why: in STREAM (low-memory) localisation the pipeline only ever touches the
+    stack in small bounded slices (`stack[a:b]`, one projection-sample gather,
+    the auto-threshold windows).  Eagerly building the combined 16-GB stack — and
+    on a tight-RAM box, spilling it to a `firefly_stack_*.raw` memmap — costs
+    minutes of disk writes up front AND drops free RAM so far that the streaming
+    auto-tune throttles its worker count.  Reading the source TIFs directly keeps
+    free RAM high and skips the combined-stack write entirely.
+
+    Results are identical to the eager `load_tif` array: each source page is read
+    through `tifffile.asarray(key=...)`, squeezed via `_squeeze_tif_block`, and
+    cast to float32 — exactly what `_stream_tif_into` writes into the combined
+    array.  `asarray` decodes each page independently, so the value of frame *p*
+    does not depend on how frames are grouped into reads.
+
+    Supported access (everything the localisation pipeline uses):
+        len(s), s.shape, s.ndim, s.dtype, s.nbytes
+        s[a:b]      → (T', H, W) float32   (contiguous slice; the hot path)
+        s[i]        → (H, W)     float32   (single frame; auto-threshold fallback)
+        s[idx_arr]  → (k, H, W)  float32   (fancy gather; projection sample)
+    Reads are serialised with a lock and the per-file `TiffFile` handles are kept
+    open for the object's lifetime (closed on `.close()` / GC / `del`).
+    """
+
+    # Marker so downstream code (e.g. the RAM-strategy dispatcher) can detect a
+    # lazy stack and avoid any path that would materialise it whole.
+    _is_lazy_stack = True
+
+    def __init__(self, series, n_per_file, H, W, dtype=np.float32):
+        self._series = list(series)
+        self._n_per_file = [int(n) for n in n_per_file]
+        self._starts = np.cumsum([0] + self._n_per_file).astype(np.int64)
+        self._n_total = int(self._starts[-1])
+        self._H = int(H)
+        self._W = int(W)
+        self.dtype = np.dtype(dtype)
+        self._lock = threading.Lock()
+        self._tifs = [None] * len(self._series)
+
+    # ── numpy-like metadata ────────────────────────────────────────────────
+    @property
+    def shape(self):
+        return (self._n_total, self._H, self._W)
+
+    @property
+    def ndim(self):
+        return 3
+
+    @property
+    def nbytes(self):
+        return self._n_total * self._H * self._W * self.dtype.itemsize
+
+    def __len__(self):
+        return self._n_total
+
+    # ── handle management ──────────────────────────────────────────────────
+    def _tif(self, fi):
+        t = self._tifs[fi]
+        if t is None:
+            t = tifffile.TiffFile(self._series[fi])
+            self._tifs[fi] = t
+        return t
+
+    def close(self):
+        for i, t in enumerate(self._tifs):
+            if t is not None:
+                try:    t.close()
+                except Exception: pass
+                self._tifs[i] = None
+
+    def __del__(self):
+        try:    self.close()
+        except Exception: pass
+
+    # ── reads ──────────────────────────────────────────────────────────────
+    def _read_file_pages(self, fi, lo, hi):
+        """Local pages [lo, hi) of source file `fi` → (hi-lo, H, W) float32."""
+        tif = self._tif(fi)
+        mw = N_CPUS if (hi - lo) > 1 else 1
+        try:
+            block = tif.asarray(key=range(lo, hi), maxworkers=mw)
+        except TypeError:
+            block = tif.asarray(key=range(lo, hi))
+        block = _squeeze_tif_block(block)
+        if block.ndim != 3 or block.shape[1:] != (self._H, self._W):
+            raise ValueError(
+                f"lazy TIF read of {os.path.basename(self._series[fi])} "
+                f"pages [{lo},{hi}) gave shape {block.shape}, expected "
+                f"(*, {self._H}, {self._W})")
+        return np.ascontiguousarray(block, dtype=np.float32)
+
+    def _read_range(self, start, stop):
+        """Global frames [start, stop) → (stop-start, H, W) float32."""
+        start = max(0, int(start))
+        stop = min(self._n_total, int(stop))
+        if stop <= start:
+            return np.empty((0, self._H, self._W), dtype=np.float32)
+        out = np.empty((stop - start, self._H, self._W), dtype=np.float32)
+        with self._lock:
+            for fi in range(len(self._series)):
+                f0 = int(self._starts[fi])
+                f1 = int(self._starts[fi + 1])
+                if f1 <= start or f0 >= stop:
+                    continue
+                lo = max(start, f0) - f0
+                hi = min(stop, f1) - f0
+                dst = (f0 + lo) - start
+                out[dst:dst + (hi - lo)] = self._read_file_pages(fi, lo, hi)
+        return out
+
+    def _gather(self, idx):
+        """idx: 1-D int array of global frame indices (any order) → (k, H, W)."""
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        out = np.empty((idx.size, self._H, self._W), dtype=np.float32)
+        for k in range(idx.size):
+            i = int(idx[k])
+            if i < 0:
+                i += self._n_total
+            out[k] = self._read_range(i, i + 1)[0]
+        return out
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            start, stop, step = key.indices(self._n_total)
+            if step == 1:
+                return self._read_range(start, stop)
+            return self._gather(np.arange(start, stop, step))
+        if isinstance(key, (int, np.integer)):
+            i = int(key)
+            if i < 0:
+                i += self._n_total
+            if not (0 <= i < self._n_total):
+                raise IndexError(f"frame {key} out of range [0, {self._n_total})")
+            return self._read_range(i, i + 1)[0]
+        if isinstance(key, tuple):
+            # (frame-selector, *spatial) — read frames, then index spatially.
+            frames = self.__getitem__(key[0])
+            return frames[(slice(None),) + tuple(key[1:])]
+        # array-like fancy / boolean index over the frame axis.
+        idx = np.asarray(key)
+        if idx.dtype == bool:
+            idx = np.nonzero(idx)[0]
+        return self._gather(idx)
+
+    def __array__(self, dtype=None):
+        # Last-resort full materialisation (e.g. an explicit np.asarray(stack)).
+        # This defeats the point of a lazy stack, so it is loud — callers in the
+        # streaming path never hit this; if it fires, something tried to pull the
+        # whole stack into RAM and should be routed through STREAM instead.
+        print("  [warn] LazyTiffStack fully materialised via np.asarray — "
+              "this loads the entire series into RAM; STREAM mode should index "
+              "it in slices instead.", flush=True)
+        arr = self._read_range(0, self._n_total)
+        return arr.astype(dtype) if dtype is not None else arr
+
+
+def _lazy_tif_enabled() -> bool:
+    """STREAM-mode lazy TIF reading is ON by default; set FIREFLY_LAZY_TIF=0 to
+    force the eager combined-stack (RAM or disk-memmap) path."""
+    return os.environ.get("FIREFLY_LAZY_TIF", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _series_lazy_streamable(series, H, W):
+    """Cheap up-front check that every file in the series can be read lazily and
+    yields the expected per-frame (H, W).  Reads only page 0 of each file (the
+    same pages `_probe_tif_shape_and_count` already opened), so it is fast.
+    Returns True only if ALL files pass — otherwise the caller falls back to the
+    robust eager path (which has its own full-load fallback per file)."""
+    try:
+        for fpath in series:
+            with tifffile.TiffFile(fpath) as tif:
+                page0 = _squeeze_tif_block(tif.pages[0].asarray())
+                if page0.ndim != 3 or page0.shape[1:] != (int(H), int(W)):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
 def _tif_series_nat_key(filepath):
     """Sort key for sibling TIFFs of a single acquisition.
 
@@ -1085,6 +1284,34 @@ def load_tif(path, stop_event=None, files=None):
             use_memmap = True
     except Exception:
         pass
+
+    # ── Lazy path (preferred when the combined stack won't fit in RAM) ──────
+    # If we'd otherwise spill the combined stack to a multi-GB disk memmap,
+    # hand back a LazyTiffStack instead: it reads frames straight from the
+    # source TIFs on demand.  STREAM-mode localisation only ever indexes the
+    # stack in bounded slices, so this skips the minutes-long combined-stack
+    # write AND keeps free RAM high (so the streaming auto-tune doesn't throttle
+    # its workers).  Frames are byte-identical to the eager combined array.
+    # Falls back to the eager memmap path if the series isn't cleanly streamable
+    # or FIREFLY_LAZY_TIF=0.
+    if use_memmap and _lazy_tif_enabled() and _series_lazy_streamable(series, H, W):
+        px_um_out = fi_s_out = None
+        try:
+            with tifffile.TiffFile(series[0]) as _tif0:
+                px_um_out, fi_s_out = _parse_ome_metadata(_tif0)
+        except Exception:
+            pass
+        free_disp = f"{free_gb:.1f}" if free_gb is not None else "?"
+        print(f"  Peak RAM needed: {peak_gb:.1f} GB (combined {total_gb:.1f} GB"
+              f" + stream chunk {chunk_gb:.1f} GB). Free: {free_disp} GB, "
+              f"reserve: {reserve_gb:.1f} GB. → lazy on-demand TIF reading "
+              f"(no combined-stack write; set FIREFLY_LAZY_TIF=0 to disable).",
+              flush=True)
+        lazy = LazyTiffStack(series, n_per_file, H, W, dtype=np.float32)
+        print(f"  Combined shape: {lazy.shape}  (T x Y x X)  [lazy]", flush=True)
+        if px_um_out is not None: print(f"  Pixel size  : {px_um_out} µm  (from file metadata)")
+        if fi_s_out is not None:  print(f"  Frame interval: {fi_s_out} s  (from file metadata)")
+        return lazy, px_um_out, fi_s_out
 
     if use_memmap:
         import tempfile, shutil

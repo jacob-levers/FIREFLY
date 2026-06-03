@@ -658,6 +658,119 @@ def test_tif_series_streams_into_combined_stack(tmp_path):
     assert np.array_equal(combined, expected)
 
 
+def _write_tif_series(tmp_path, counts=(6, 7, 8), HW=(8, 8)):
+    """Write a multi-file TIF series with a unique value per (file, frame) so a
+    frame read lazily can be checked against its eager position byte-for-byte."""
+    tifffile = pytest.importorskip("tifffile")
+    H, W = HW
+    parts, paths = [], []
+    for fi, n in enumerate(counts):
+        arr = np.zeros((n, H, W), np.uint16)
+        for fr in range(n):
+            arr[fr] = fi * 100 + fr           # unique per (file, frame)
+        name = "mov.tif" if fi == 0 else f"mov-file{fi+1:03d}.tif"
+        p = str(tmp_path / name)
+        tifffile.imwrite(p, arr)
+        paths.append(p); parts.append(arr)
+    return paths, np.concatenate(parts).astype(np.float32), list(counts)
+
+
+def test_lazy_tiff_stack_is_byte_identical_to_eager(tmp_path):
+    """LazyTiffStack must return frames byte-identical to the eager combined
+    array for every access pattern the localisation pipeline uses: contiguous
+    slices (incl. file-boundary-spanning), single int (incl. negative), fancy
+    gather (the projection sample), and strided slices."""
+    from firefly.analysis import fa_loaders as L
+    paths, expected, counts = _write_tif_series(tmp_path)
+    n = sum(counts)
+    lazy = L.LazyTiffStack(paths, counts, 8, 8)
+    try:
+        assert lazy.shape == (n, 8, 8)
+        assert lazy.ndim == 3
+        assert lazy.dtype == np.float32
+        assert len(lazy) == n
+        assert lazy.nbytes == expected.nbytes
+        # full range
+        assert np.array_equal(lazy[:], expected)
+        # slices that start/stop inside a file AND span file boundaries
+        for a, b in [(0, 6), (5, 9), (6, 13), (4, 20), (0, n), (13, 21)]:
+            assert np.array_equal(lazy[a:b], expected[a:b]), (a, b)
+        # single frame, including the first frame of files 2 and 3 + negatives
+        for i in [0, 5, 6, 12, 13, n - 1, -1, -n]:
+            assert np.array_equal(lazy[i], expected[i]), i
+            assert lazy[i].shape == (8, 8)
+        # fancy gather, sorted-and-spread (projection sample) + unsorted
+        for idx in (np.linspace(0, n - 1, 5, dtype=int),
+                    np.array([0, 6, 13, 3, 20, 5])):
+            assert np.array_equal(lazy[idx], expected[idx])
+        # strided slice
+        assert np.array_equal(lazy[1:20:3], expected[1:20:3])
+    finally:
+        lazy.close()
+
+
+def test_load_tif_returns_lazy_under_memory_pressure(tmp_path, monkeypatch):
+    """When the combined stack won't fit in RAM, load_tif must hand back a
+    LazyTiffStack (no combined-stack write) whose frames equal the eager array,
+    and FIREFLY_LAZY_TIF=0 must restore the eager path."""
+    from firefly.analysis import fa_loaders as L
+    paths, expected, _counts = _write_tif_series(tmp_path, counts=(6, 6, 6))
+    # Force the "won't fit in RAM" decision by reserving an absurd amount of RAM.
+    monkeypatch.setenv("FIREFLY_USER_RAM_RESERVE_GB", "100000")
+    monkeypatch.setenv("FIREFLY_LAZY_TIF", "1")
+    lazy, _px, _fi = L.load_tif(paths[0], files=paths)
+    try:
+        assert getattr(lazy, "_is_lazy_stack", False), "expected a LazyTiffStack"
+        assert lazy.shape == (18, 8, 8)
+        assert np.array_equal(lazy[:], expected)
+        assert np.array_equal(lazy[5:13], expected[5:13])      # spans boundary
+    finally:
+        if hasattr(lazy, "close"):
+            lazy.close()
+    # Opt-out restores the eager (materialised) path.
+    monkeypatch.setenv("FIREFLY_LAZY_TIF", "0")
+    eager, _, _ = L.load_tif(paths[0], files=paths)
+    assert not getattr(eager, "_is_lazy_stack", False)
+    assert np.array_equal(np.asarray(eager), expected)
+
+
+def test_adaptive_forces_stream_for_lazy_stack(tmp_path):
+    """A lazy stack must be routed to STREAM, never FAST (which would pull every
+    frame into RAM).  Run the real adaptive localiser on a lazy-wrapped series
+    and confirm it produces the same localisations as the eager array."""
+    pytest.importorskip("trackpy")
+    import io, contextlib, logging, tifffile
+    logging.getLogger("trackpy").setLevel(logging.ERROR)
+    from firefly.analysis import fa_loaders as L
+    from firefly.analysis.fa_localize import preprocess_and_localise_adaptive
+    # Bright bimodal spots so trackpy reliably detects something; split the same
+    # frames across two TIF files and wrap them lazily.
+    full = _bimodal_spot_stack(H=64, W=64, F=24, seed=3).astype(np.uint16)
+    counts = [12, 12]
+    paths = []
+    off = 0
+    for fi, n in enumerate(counts):
+        name = "mov.tif" if fi == 0 else f"mov-file{fi+1:03d}.tif"
+        p = str(tmp_path / name)
+        tifffile.imwrite(p, full[off:off + n]); paths.append(p); off += n
+    eager = full.astype(np.float32)
+    lazy = L.LazyTiffStack(paths, counts, 64, 64)
+    try:
+        common = dict(diameter=7, minmass=5, percentile=64, bg_radius=10,
+                      workers=1, chunk_size=8, backend="trackpy")
+        with contextlib.redirect_stdout(io.StringIO()) as _buf:
+            locs_e = preprocess_and_localise_adaptive(eager, **common)[0]
+            locs_l = preprocess_and_localise_adaptive(lazy, **common)[0]
+    finally:
+        lazy.close()
+    # The lazy stack must have been routed through STREAM, never FAST.
+    assert "forcing STREAM (lazy on-demand stack)" in _buf.getvalue()
+    assert len(locs_e) == len(locs_l) and len(locs_l) > 0
+    for col in ("x", "y", "frame"):
+        np.testing.assert_allclose(
+            np.sort(locs_e[col].values), np.sort(locs_l[col].values), atol=1e-5)
+
+
 def test_loc_precision_from_msd_offset():
     """sigma_loc = sqrt(MSD0/4) recovers the known localisation precision from
     the fitted MSD offset.  Best-determined for immobile/slow tracks where the

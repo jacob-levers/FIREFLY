@@ -234,6 +234,14 @@ def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile
     use_fast, free_gb, needed_gb = _ram_strategy(stack, headroom=ram_headroom)
     reserve_gb = _user_ram_reserve_gb()
 
+    # A lazy on-demand stack (e.g. LazyTiffStack) must never take the FAST path:
+    # FAST preprocesses the whole stack at once, which would pull every frame
+    # off disk into RAM and defeat the point.  Force STREAM, which indexes it in
+    # bounded slices.
+    if getattr(stack, "_is_lazy_stack", False) and use_fast:
+        print("  RAM strategy : forcing STREAM (lazy on-demand stack)")
+        use_fast = False
+
     if use_fast:
         print(f"  RAM strategy : FAST (parallel)   — "
               f"{free_gb:.1f} GB free, {needed_gb:.1f} GB needed, "
