@@ -2012,15 +2012,6 @@ class BuildMixin:
         self.btn_ws_load_clusters.clicked.connect(self._ws_on_load_clusters)
         load_v.addWidget(self.btn_ws_load_clusters)
 
-        self.c_ws_auto = QtWidgets.QCheckBox("Auto-load after analysis")
-        self.c_ws_auto.setChecked(False)
-        self.c_ws_auto.setToolTip(
-            "When checked, the Workspace tab loads the stack + tracks\n"
-            "automatically after a Run-Analysis completes.\n"
-            "Off by default — large stacks can use a lot of GPU memory in\n"
-            "napari and slow the rest of FIREFLY down.")
-        load_v.addWidget(self.c_ws_auto)
-
         # Reset-view: re-centre + re-fit napari camera on all visible
         # layers.  One-click recovery after the user zooms / pans off
         # the sample and gets lost.

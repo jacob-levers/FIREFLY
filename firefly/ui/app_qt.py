@@ -1777,9 +1777,6 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("compare/stem",             self.e_cmp_stem,        "text"),
             ("compare/theme",            self.c_cmp_theme,       "combo"),
             ("compare/pdf_report",       self.c_cmp_pdf,         "check", _bool_cast),
-
-            # ── Workspace tab ─────────────────────────────────────────────
-            ("workspace/auto_load",      self.c_ws_auto,         "check", _bool_cast),
         ]
 
     def _restore_settings(self):
@@ -2856,11 +2853,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self.run_stage_label.setText("Done")
         self.progress_bar.setFormat("Complete")
         self.statusBar().showMessage(f"Analysis complete — output at {out_dir}")
-        # Optional: push the result into the Visualise tab's napari viewer
-        try:
-            self._ws_auto_load_after_run(payload)
-        except Exception:
-            pass
+        # Results are written to disk; to inspect them in the 3-D viewer, open
+        # the run from the Visualise tab ("Load analysis run…").  We deliberately
+        # do NOT auto-push into napari here — a large result can exhaust the GPU
+        # backend and hard-crash the app, and loading on demand is clearer.
 
     def _handle_file_done(self, payload: dict):
         """One series in a batch finished successfully — not the terminal msg.
