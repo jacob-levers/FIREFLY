@@ -24,6 +24,13 @@ class _Cancelled(Exception):
     pass
 
 
+# Bar-free progress format: the GUI log panel is plain text, so the animated
+# `|████░░░░|` glyph is just noise that re-renders on every tick.  Keep the
+# numbers that actually inform — label, percentage, count, and rate — and drop
+# the bar.  e.g.  "  Preprocessing: 100% (16000/16000) 1820 fr/s"
+_BAR_FORMAT = "{desc}: {percentage:3.0f}% ({n_fmt}/{total_fmt}) {rate_fmt}"
+
+
 def _tqdm(*args, **kwargs):
     """tqdm wrapper that writes to stdout (captured by the GUI log panel).
     Falls back to a no-op StringIO if stdout is somehow invalid."""
@@ -31,6 +38,8 @@ def _tqdm(*args, **kwargs):
     kwargs.setdefault("file", out)
     # Disable ANSI colour codes — the log panel is plain text.
     kwargs.setdefault("colour", None)
+    # Drop the fake `████` bar, keep the percentage / count / rate readout.
+    kwargs.setdefault("bar_format", _BAR_FORMAT)
     return tqdm(*args, **kwargs)
 
 
