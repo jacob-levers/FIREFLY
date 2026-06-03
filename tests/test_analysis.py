@@ -1185,3 +1185,42 @@ def test_streaming_localise_quiet_and_reproducible():
     assert len(a) > 0
     assert "Device    : cpu" not in log, "Torch per-call banner leaked into stream"
     assert a.shape == b.shape and np.array_equal(a, b), "streaming not reproducible"
+
+
+def test_streaming_gpu_batch_matches_unbatched():
+    """Decoupled GPU batching must not change detections: streaming with a large
+    GPU batch (one backend call per 256 frames) yields the SAME localisations as
+    the un-batched path (one call per 32-frame sub-chunk) on sparse data — the
+    percentile threshold is a frame-grouping-stable background estimate."""
+    import os, io, contextlib
+    from firefly.analysis.fa_localize import preprocess_and_localise_stream
+    rng = np.random.default_rng(5)
+    T, S = 300, 64
+    stack = rng.normal(100, 6, size=(T, S, S)).astype(np.float32)
+    yy, xx = np.mgrid[0:S, 0:S]
+    for fr in range(T):
+        for _ in range(5):
+            ex, ey = rng.uniform(8, 56, 2); amp = rng.uniform(500, 1000)
+            stack[fr] += amp * np.exp(-(((xx - ex) ** 2 + (yy - ey) ** 2)
+                                        / (2 * 1.6 ** 2)))
+
+    def _run(gpu_batch):
+        prev = os.environ.get("FIREFLY_GPU_BATCH")
+        os.environ["FIREFLY_GPU_BATCH"] = str(gpu_batch)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                locs, *_ = preprocess_and_localise_stream(
+                    stack, diameter=7, minmass=2.0, bg_radius=12, workers=4,
+                    chunk_size=32, backend="torch-cpu")
+        finally:
+            if prev is None:
+                os.environ.pop("FIREFLY_GPU_BATCH", None)
+            else:
+                os.environ["FIREFLY_GPU_BATCH"] = prev
+        return locs[["x", "y", "frame", "mass"]].to_numpy()
+
+    unbatched = _run(32)      # buffer flushes every sub-chunk
+    batched = _run(256)       # 8 sub-chunks per backend call
+    assert len(unbatched) > 0
+    assert unbatched.shape == batched.shape
+    assert np.array_equal(unbatched, batched), "GPU batching changed detections"

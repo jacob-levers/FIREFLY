@@ -255,6 +255,48 @@ def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile
             **backend_kwargs)
 
 
+def _resolve_gpu_batch(impl, stack, sub_chunk, n_frames, interactive=False):
+    """Frames per backend localise-call in streaming mode (≥ the preprocessing
+    `sub_chunk`).  Device-aware:
+
+      • CUDA   → up to 256, bounded by free VRAM (`mem_get_info`) so we don't OOM.
+      • MPS    → keep = sub_chunk.  Bigger batches empirically SLOW the Apple
+                 Silicon GPU (bandwidth-bound), so Apple users are left untouched.
+      • CPU / trackpy → up to 256 (the win there is amortising per-call setup).
+
+    `FIREFLY_GPU_BATCH` overrides everything.  Interactive (live-preview) runs cap
+    at 64 so the preview still scrolls smoothly.  Detection is unaffected by the
+    batch size (the percentile threshold is a frame-grouping-stable background
+    estimate), so this only changes throughput."""
+    sub_chunk = max(1, int(sub_chunk))
+    env = os.environ.get("FIREFLY_GPU_BATCH")
+    if env:
+        try:
+            return int(max(sub_chunk, min(int(env), n_frames)))
+        except Exception:
+            pass
+    dev = getattr(impl, "_forced_device", None)
+    if dev is None and hasattr(impl, "select_device"):
+        try:    dev = impl.select_device()
+        except Exception: dev = None
+    dev = str(dev or "").lower()
+    if "mps" in dev:
+        return sub_chunk
+    target = 64 if interactive else 256
+    if "cuda" in dev:
+        try:
+            import torch
+            free, _total = torch.cuda.mem_get_info()
+            frame_px = int(stack.shape[1]) * int(stack.shape[2])
+            # f32 input + bandpass / max-pool / refinement intermediates.
+            per_frame = frame_px * 4 * 12
+            vram_cap = int((free * 0.4) // max(per_frame, 1))
+            target = min(target, max(sub_chunk, vram_cap))
+        except Exception:
+            pass
+    return int(min(max(sub_chunk, target), n_frames))
+
+
 def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=64,
                                    bg_radius=50, bg_method="uniform_filter",
                                    workers=N_CPUS, chunk_size=500,
@@ -350,6 +392,21 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
         return np.stack([_f.result() for _f in
                          [_exe.submit(fn, f, bg_radius) for f in stack[a:b]]])
 
+    # ── GPU batch sizing ──────────────────────────────────────────────────────
+    # Preprocessing must stay in small RAM-bounded sub-chunks (that's why the RAM
+    # auto-tune shrank chunk_size), but the GPU/backend is far more efficient on
+    # bigger batches — at chunk_size 32 the backend is re-invoked hundreds of
+    # times per file, paying fixed per-call setup each time and starving the GPU.
+    # So we DECOUPLE the two: preprocess in `chunk_size` sub-chunks, accumulate
+    # them into a buffer, and localise once the buffer reaches `gpu_batch` frames.
+    # Detection is unchanged because the percentile threshold is a deterministic,
+    # frame-grouping-stable background estimate (see the Torch backend).
+    gpu_batch = _resolve_gpu_batch(_impl, stack, chunk_size, n_frames,
+                                   interactive=(preview_cb is not None))
+    if gpu_batch > chunk_size:
+        print(f"  GPU batch : {gpu_batch} frames/localise  "
+              f"(preprocess in {chunk_size}-frame sub-chunks)")
+
     # ── First chunk: preprocess now so we can auto-detect minmass ─────────────
     first_end  = min(chunk_size, n_frames)
     first_pp = _preprocess_block(0, first_end)
@@ -410,24 +467,15 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
         _thresh  = welford_mean + _BLINK_K * _std_est
         blink_count += (first_pp > _thresh[None]).sum(axis=0).astype(np.uint32)
 
-    # Localise first chunk (already preprocessed) — through the active backend
-    locs0 = _localise_chunk_via_backend(first_pp)
-    if len(locs0) > 0:
-        all_locs.append(locs0)
-    if mass_cb is not None and len(locs0) > 0 and "mass" in locs0.columns:
-        try:    mass_cb(np.asarray(locs0["mass"].values, dtype=np.float32))
-        except Exception: pass
-
-    # ── Live preview: emit EVERY frame of each chunk after localisation
-    # so the GUI's live view scrolls through the actual movie at 60 Hz
-    # rather than ticking once per chunk.  The GUI's repaint timer
-    # naturally drops in-between frames it can't paint in time, so we
-    # just fire-and-forget every frame — the message queue + per-frame
-    # cost is tiny next to localisation itself.
+    # ── Live preview: emit EVERY frame of each (buffered) batch after
+    # localisation so the GUI's live view scrolls through the actual movie
+    # rather than ticking once per chunk.  The GUI's repaint timer naturally
+    # drops in-between frames it can't paint in time, so we just fire-and-forget
+    # every frame — the message queue + per-frame cost is tiny next to
+    # localisation itself.  (`locs_chunk["frame"]` is GLOBAL here.)
     def _emit_chunk_previews(chunk_pp, locs_chunk, frame_offset):
         if preview_cb is None or len(chunk_pp) == 0:
             return
-        # Pre-index spots by frame for cheap per-frame lookups
         spots_by_frame = {}
         if len(locs_chunk) > 0 and "frame" in locs_chunk.columns:
             for f, sub in locs_chunk.groupby("frame"):
@@ -441,8 +489,63 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
             except Exception:
                 pass
 
-    _emit_chunk_previews(first_pp, locs0, frame_offset=0)
+    # ── GPU-batch accumulator: localise preprocessed sub-chunks in groups of
+    # ~gpu_batch frames instead of one backend call per sub-chunk. ─────────────
+    _buf = []                 # pending preprocessed sub-chunk arrays
+    _buf_start = [None]       # global frame index of _buf[0]  (mutable cell)
+    _gpu_batch_cur = [int(gpu_batch)]
 
+    def _localise_buffer(batch):
+        """Localise one accumulated buffer (frames LOCAL 0..len-1).  On a CUDA
+        out-of-memory error, permanently halve the batch target, split, and
+        retry — so a too-optimistic VRAM estimate degrades gracefully instead of
+        crashing the run."""
+        try:
+            return _localise_chunk_via_backend(batch)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and len(batch) > chunk_size:
+                _gpu_batch_cur[0] = max(int(chunk_size), len(batch) // 2)
+                try:
+                    import torch as _t
+                    if _t.cuda.is_available():
+                        _t.cuda.empty_cache()
+                except Exception:
+                    pass
+                mid = len(batch) // 2
+                a = _localise_buffer(batch[:mid])
+                b = _localise_buffer(batch[mid:])
+                if len(b):
+                    b = b.copy(); b["frame"] += mid
+                parts = [p for p in (a, b) if len(p)]
+                return (pd.concat(parts, ignore_index=True)
+                        if parts else a)
+            raise
+
+    def _flush():
+        if not _buf:
+            return
+        base = _buf_start[0]
+        batch = _buf[0] if len(_buf) == 1 else np.concatenate(_buf, axis=0)
+        locs = _localise_buffer(batch)
+        if len(locs) > 0:
+            locs = locs.copy()
+            locs["frame"] += base
+            all_locs.append(locs)
+            if mass_cb is not None and "mass" in locs.columns:
+                try:    mass_cb(np.asarray(locs["mass"].values, dtype=np.float32))
+                except Exception: pass
+        _emit_chunk_previews(batch, locs, frame_offset=base)
+        _buf.clear(); _buf_start[0] = None
+
+    def _add(pp, start):
+        if _buf_start[0] is None:
+            _buf_start[0] = start
+        _buf.append(pp)
+        if sum(len(b) for b in _buf) >= _gpu_batch_cur[0]:
+            _flush()
+
+    # First chunk into the buffer (accumulators already updated above).
+    _add(first_pp, 0)
     del first_pp
 
     # Remaining chunks
@@ -486,26 +589,17 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
             blink_count += (chunk_pp > _thresh[None]).sum(
                 axis=0).astype(np.uint32)
 
-        locs_i = _localise_chunk_via_backend(chunk_pp)
+        # Hand the preprocessed sub-chunk to the GPU-batch accumulator (it owns
+        # the reference now and frees it on flush — so no `del` here).
+        _add(chunk_pp, start)
 
-        if len(locs_i) > 0:
-            locs_i = locs_i.copy()
-            locs_i["frame"] += start
-            all_locs.append(locs_i)
-        if mass_cb is not None and len(locs_i) > 0 and "mass" in locs_i.columns:
-            try:    mass_cb(np.asarray(locs_i["mass"].values, dtype=np.float32))
-            except Exception: pass
-
-        # Live previews — multiple evenly-spaced frames within this chunk
-        _emit_chunk_previews(chunk_pp, locs_i, frame_offset=start)
-
-        del chunk_pp
-        # numpy chunk buffers are refcount-freed on `del`; a full cyclic GC
+        # numpy chunk buffers are refcount-freed on flush; a full cyclic GC
         # sweep every chunk (hundreds per file) is wasted work.  Sweep
-        # occasionally instead — enough to keep fragmentation in check under
-        # memory pressure without paying GC on every chunk.
+        # occasionally instead.
         if (i & 15) == 0:
             gc.collect()
+
+    _flush()                       # localise any frames still buffered
 
     _exe.shutdown(wait=True)
 
@@ -1546,13 +1640,18 @@ class TorchBackend(LocaliserBackend):
             signal = self._trackpy_bandpass(x, diameter, dev, dtype)
 
             # ── 2. Percentile threshold per chunk ───────────────────────────
-            # torch.quantile is exact for small inputs; for big tensors use
-            # sample-based estimate to bound memory.
+            # torch.quantile is exact for small inputs; for big tensors subsample
+            # to bound memory.  Use a DETERMINISTIC evenly-spaced stride rather
+            # than an unseeded random draw: (a) re-running the same file now
+            # yields identical detections (the old torch.randint made dense-data
+            # spot counts vary run-to-run), and (b) an evenly-spaced sample is a
+            # lower-variance, frame-grouping-stable estimator of the background
+            # percentile — so the threshold barely moves with the batch size,
+            # which is what keeps GPU-batched localisation detection-neutral.
             flat = signal.reshape(-1)
             if flat.numel() > 5_000_000:
-                idx = torch.randint(0, flat.numel(),
-                                    (5_000_000,), device=dev)
-                sample = flat[idx]
+                step = max(1, int(flat.numel() // 5_000_000))
+                sample = flat[::step][:5_000_000]
                 threshold = torch.quantile(sample, percentile / 100.0)
             else:
                 threshold = torch.quantile(flat, percentile / 100.0)
