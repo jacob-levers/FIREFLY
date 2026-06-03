@@ -862,6 +862,27 @@ class VisualiseMixin:
                 raise FileNotFoundError(
                     f"Missing {os.path.basename(tracks_path)}")
 
+            # Size guard — a very large run can SEGFAULT the GPU viewer (a
+            # native crash that takes the whole app down).  Unlike auto-load
+            # (which silently skips), the user explicitly asked to open this
+            # one, so warn and let them opt in rather than deciding for them.
+            n_locs, n_tracks, frames = self._ws_run_counts(run_dir)
+            risk = self._ws_load_risk(n_locs, n_tracks, frames)
+            if risk:
+                resp = QtWidgets.QMessageBox.warning(
+                    self, "Large run — may crash the viewer",
+                    f"This run is large ({risk}).\n\n"
+                    f"Loading it into the 3-D viewer can be very slow and may "
+                    f"crash the application on this machine (the GPU layer "
+                    f"can run out of memory).\n\nLoad it anyway?",
+                    QtWidgets.QMessageBox.StandardButton.Yes
+                    | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No)
+                if resp != QtWidgets.QMessageBox.StandardButton.Yes:
+                    self.statusBar().showMessage(
+                        "Load cancelled — run not opened in the viewer.", 5000)
+                    return
+
             # If we have a recorded input-file path that still exists, load
             # it as an image layer.  Otherwise just load the tracks (still
             # useful — user can drop the stack later).
@@ -880,6 +901,45 @@ class VisualiseMixin:
                 self, "Load failed",
                 f"Couldn't load run {os.path.basename(run_dir)}:\n\n{exc}")
 
+    # ── Viewer load-size safety guard ────────────────────────────────────────
+    # napari's Tracks/Points layers are drawn by Vispy on a native GPU backend
+    # (Metal on macOS, OpenGL elsewhere).  Pushing a very large result — hundreds
+    # of thousands of track vertices over many thousands of frames — can SEGFAULT
+    # that backend, which is a native crash Python's try/except cannot catch (it
+    # takes the whole app down).  We therefore estimate the load BEFORE touching
+    # napari and refuse / warn when it's dangerously large.
+    _WS_MAX_SAFE_LOCS   = 200_000     # total localisations (≈ track vertices)
+    _WS_MAX_SAFE_TRACKS = 20_000      # number of trajectories
+    _WS_MAX_SAFE_FRAMES = 8_000       # length of the time axis
+
+    def _ws_load_risk(self, n_locs=0, n_tracks=0, frames=0):
+        """Return a human-readable reason string if loading a run of this size
+        risks crashing the GPU viewer, else None."""
+        bits = []
+        if n_locs and n_locs > self._WS_MAX_SAFE_LOCS:
+            bits.append(f"{int(n_locs):,} localisations")
+        if n_tracks and n_tracks > self._WS_MAX_SAFE_TRACKS:
+            bits.append(f"{int(n_tracks):,} tracks")
+        if frames and frames > self._WS_MAX_SAFE_FRAMES:
+            bits.append(f"{int(frames):,} frames")
+        return " / ".join(bits) if bits else None
+
+    def _ws_run_counts(self, run_dir: str):
+        """Best-effort (n_locs, n_tracks, frames) for a run folder, read from
+        its summary_metrics.json (cheap) without loading any heavy data."""
+        try:
+            import json
+            extras = os.path.join(run_dir, "firefly_extras")
+            sm = [f for f in os.listdir(extras)
+                  if f.endswith("_summary_metrics.json")]
+            if sm:
+                d = json.load(open(os.path.join(extras, sm[0])))
+                return (int(d.get("n_locs", 0)), int(d.get("n_tracks", 0)),
+                        int(d.get("frames", 0)))
+        except Exception:
+            pass
+        return (0, 0, 0)
+
     def _ws_auto_load_after_run(self, payload: dict):
         """Called from _handle_done when a single-file run finishes.
         Loads the result into napari if the user has toggled auto-load."""
@@ -887,6 +947,25 @@ class VisualiseMixin:
             return
         out_dir = payload.get("out_dir")
         if not out_dir:
+            return
+        # Guard: refuse to auto-load a result big enough to crash the GPU
+        # viewer.  Auto-load is a convenience that fires unattended after every
+        # run, so a silent skip (with a clear note) is the right call — far
+        # better than the app vanishing.  The files are already saved; the user
+        # can still open it manually (which asks for confirmation).
+        _sm = payload.get("summary") or {}
+        risk = self._ws_load_risk(_sm.get("n_locs", 0),
+                                  _sm.get("n_tracks", 0),
+                                  _sm.get("frames", 0))
+        if risk:
+            msg = (f"Visualise: skipped auto-load — this result is large "
+                   f"({risk}) and could crash the 3-D viewer.  Open it "
+                   f"manually from the Visualise tab if you need it.")
+            try:
+                self.statusBar().showMessage(msg, 10000)
+                self.console_log.appendPlainText(f"\n  ⚠ {msg}")
+            except Exception:
+                pass
             return
         # Ensure the viewer is initialised before we try to use it
         if not self._workspace_initialised:
