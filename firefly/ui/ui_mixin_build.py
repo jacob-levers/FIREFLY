@@ -1707,17 +1707,64 @@ class BuildMixin:
         gl.addRow("Theme", self.c_cmp_theme)
         self.c_cmp_pdf = QtWidgets.QCheckBox(
             "Generate multi-page PDF report (figure + parameters + stats)")
+        self.c_cmp_pdf.setToolTip(
+            "Save a multi-page PDF alongside the comparison PNG: page 1 the\n"
+            "figure, then the analysis parameters and the full statistics\n"
+            "tables (per-panel tests and, when time points are set, the\n"
+            "two-way mixed-ANOVA results) in GraphPad-style tabular form.")
         self.c_cmp_pdf.setChecked(True)
         gl.addRow("", self.c_cmp_pdf)
         v.addWidget(sec)
 
-        # Comparison panels (which sub-panels to include in the figure)
+        # Comparison panels (which sub-panels to include in the figure).
+        # Per-panel hover help so it's clear what each comparison shows —
+        # especially the metric-based ones (AUC, mobile/immobile, α₂, VACF).
+        # When time points are set the bar panels become group × time-point
+        # interaction plots carrying the two-way-ANOVA p-values.
+        _cmp_panel_tips = {
+            "msd": "Ensemble-averaged mean-squared-displacement curve per group.\n"
+                   "Overall mobility — a steeper / higher curve = faster diffusion.",
+            "auc": "Area under each group's ensemble MSD curve — a single mobility\n"
+                   "summary per group (higher = more mobile). With time points this\n"
+                   "becomes a group × time interaction plot with the mixed-ANOVA p.",
+            "logd_dist": "Distribution of per-track log10 diffusion coefficients per\n"
+                   "group. Shifts or extra peaks reveal mobile / immobile sub-\n"
+                   "populations the means alone hide.",
+            "mob_immob": "Ratio of mobile to immobile tracks per group (split at the\n"
+                   "Mobile-D threshold). Higher = larger mobile fraction. With time\n"
+                   "points: group × time interaction plot with the mixed-ANOVA p.",
+            "motion_classes": "Fraction of tracks in each motion class\n"
+                   "(Immobile / Confined / Brownian / Directed, classified by the\n"
+                   "anomalous exponent α) per group.",
+            "track_length": "Distribution of track durations per group. Longer tracks\n"
+                   "mean better-sampled motion (less photobleaching / blinking drop-out).",
+            "track_count": "Number of tracks detected per group. Flags a group with\n"
+                   "anomalously many or few tracks — a detection-threshold or\n"
+                   "sample-quality difference rather than a biological one.",
+            "jdd": "Single-frame jump-distance distribution per group, fitted to\n"
+                   "mobile + immobile populations (an alternative to MSD for\n"
+                   "estimating diffusion coefficients and population fractions).",
+            "dwell_cdf": "Cumulative distribution of immobile dwell times per group —\n"
+                   "differences in binding / residence time.",
+            "turning_angles": "Distribution of step-to-step turning angles per group.\n"
+                   "A peak near 180° = caged / back-tracking motion; near 0° = directed.",
+            "radial_dist": "Polar (radial) view of turning-angle magnitudes |θ| per\n"
+                   "group — highlights directional asymmetry in the motion.",
+            "van_hove": "Non-Gaussian parameter α₂ of the van Hove displacement\n"
+                   "distribution per group. α₂ ≈ 0 → uniform / Brownian population;\n"
+                   "α₂ > 0 → a mixed / heterogeneous population (fast + slow movers).",
+            "vacf": "Velocity autocorrelation at lag 1 per group (directional\n"
+                   "persistence). ≈ 0 → Brownian, > 0 → directed / persistent,\n"
+                   "< 0 → caged / anti-persistent (bounces back).",
+        }
         panels_grp = QtWidgets.QGroupBox("Comparison panels to include")
         pg = QtWidgets.QGridLayout(panels_grp)
         self._cmp_panel_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
         for i, (key, label) in enumerate(self.COMPARE_PANELS):
             cb = QtWidgets.QCheckBox(label)
             cb.setChecked(True)
+            cb.setToolTip(_cmp_panel_tips.get(
+                key, f"Include the {label} panel in the comparison figure."))
             self._cmp_panel_checkboxes[key] = cb
             pg.addWidget(cb, i // 2, i % 2)
         v.addWidget(panels_grp)
