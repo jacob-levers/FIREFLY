@@ -2363,7 +2363,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 "analysis/bg_radius":       15,
                 # Detection — typical PALM PSF after preprocessing
                 "analysis/diameter":        7,
-                "analysis/auto_minmass":    False,
+                "analysis/auto_minmass":    True,
                 "analysis/minmass":         1.35,
                 # Linking — small per-step displacements at 50 fps.
                 # Memory=0 is correct for sptPALM: a fluorophore that
@@ -2376,18 +2376,18 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 "analysis/min_track_len":   8,
                 "analysis/max_track_len":   0,
                 # Diffusion + motion classification — standard sptPALM
-                "analysis/max_lagtime":     20,
+                "analysis/max_lagtime":     10,
                 "analysis/n_fit":           5,
                 "analysis/alpha_immobile":  0.5,
                 "analysis/alpha_confined":  0.9,
                 "analysis/alpha_directed":  1.1,
                 "analysis/mobile_d":        0.03,
                 "analysis/jdd_components":  2,
-                # ROI — Manual threshold against the max-projection;
-                # the wide background sigma (σ=100) deliberately picks
-                # up the whole cell footprint rather than individual
-                # nanodomains.
-                "analysis/roi_mode":        "Manual threshold",
+                # ROI — Sister TIFF mask with Li auto-threshold against
+                # the max-projection; the wide background sigma (σ=100)
+                # deliberately picks up the whole cell footprint rather
+                # than individual nanodomains.
+                "analysis/roi_mode":        "Sister TIFF",
                 "analysis/roi_auto_method": "Li",
                 "analysis/roi_threshold":   0.030,
                 "analysis/roi_mask_mode":   "Max",
