@@ -24,6 +24,14 @@ MC   = {"Immobile":"#e05252","Confined":"#f5a623","Brownian":"#4a90d9",
 
 MORD = ["Immobile","Confined","Brownian","Directed"]
 
+# Resolution floor for the log10(D) distribution panels.  Below this, the
+# fitted D of a flat-MSD (immobile) track is indistinguishable from zero — both
+# FIREFLY and PALM-Tracer drive it down to ~1e-14.  The D-distribution panels
+# clip to this floor and label the immobile fraction rather than rendering a
+# misleading spike at an arbitrary clip value.  1e-5 µm²/s is well below what
+# localisation precision can resolve at typical sptPALM frame rates.
+_D_RES_FLOOR = 1e-5
+
 
 def _draw_track(grp, color, ax, lw=0.8, alpha=0.6):
     """Draw one track with a tail-to-head alpha fade.
@@ -263,20 +271,41 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     dv = diff_df["D"].dropna()
     dv = dv[(dv>0) & (dv<dv.quantile(0.995))]
     if len(dv) > 5:
-        ld   = np.log10(dv)
+        # Resolution floor.  Genuinely immobile tracks have a flat MSD, so the
+        # fit (here and in PALM-Tracer alike) drives D toward zero — values run
+        # down to ~1e-14, far below anything localisation precision can resolve.
+        # Rather than pile them into a misleading spike at an arbitrary clip
+        # value with the bars/KDE disagreeing, we clip EVERYTHING consistently
+        # to a single floor and label the immobile fraction honestly.  This is a
+        # real immobile population (PALM-Tracer's own D export shows the same
+        # ~10-12% below resolution), not an artifact.
+        n_total = int(len(dv))
+        n_imm   = int((dv <= _D_RES_FLOOR).sum())
+        pct_imm = 100.0 * n_imm / n_total
+        ld   = np.log10(dv.clip(lower=_D_RES_FLOOR))
         bins = np.linspace(ld.min(), ld.max(), 40)
         for m in MORD:
             sub = diff_df[(diff_df["motion"]==m) & (diff_df["D"]>0)]
             if len(sub):
-                ax.hist(np.log10(sub["D"].clip(1e-6)),bins=bins,
+                ax.hist(np.log10(sub["D"].clip(lower=_D_RES_FLOOR)),bins=bins,
                         color=MC[m],alpha=0.7,label=m,edgecolor="none")
-        if len(ld) > 10:
-            kde = gaussian_kde(ld)
-            xk  = np.linspace(ld.min(), ld.max(), 300)
-            ax.plot(xk, kde(xk)*len(dv)*(bins[1]-bins[0]),
+        # KDE traces the RESOLVED (mobile) distribution only, so it isn't
+        # distorted by the hard pile-up at the floor.
+        mob = np.log10(dv[dv > _D_RES_FLOOR])
+        if len(mob) > 10:
+            kde = gaussian_kde(mob)
+            xk  = np.linspace(np.log10(_D_RES_FLOOR), ld.max(), 300)
+            ax.plot(xk, kde(xk)*len(mob)*(bins[1]-bins[0]),
                     "-",color=_kde_col,lw=2)
         ax.axvline(np.log10(dv.median()),color=ACC,ls="--",lw=1.5,
                    label=f"Median={dv.median():.4f}")
+        # Honest label for the floor pile-up.
+        if pct_imm >= 0.5:
+            ax.axvline(np.log10(_D_RES_FLOOR),color=TXT,ls=":",lw=1.0,alpha=0.5)
+            ax.text(0.02, 0.97,
+                    f"immobile / below\nresolution: {pct_imm:.0f}%",
+                    transform=ax.transAxes, fontsize=7, color=TXT,
+                    va="top", ha="left", alpha=0.9)
         ax.set_xlabel("log10(D)  [um2/s]",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
         ax.legend(fontsize=8,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)

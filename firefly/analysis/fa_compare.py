@@ -581,6 +581,12 @@ def compare_groups(groups,
                 if len(vals): all_logD.append(np.log10(vals))
             if not all_logD: continue
             pooled = np.concatenate(all_logD)
+            # Clip the sub-resolution (immobile) tail to the bin range so it
+            # piles into the first bin and stays IN the normalisation, instead
+            # of being silently dropped by np.histogram (which would inflate the
+            # mobile frequencies and hide an immobilising drug effect).  Both
+            # FIREFLY and PALM-Tracer produce this ~10-12% immobile floor.
+            pooled = np.clip(pooled, bins[0], bins[-1])
             counts, edges = np.histogram(pooled, bins=bins)
             centers = 0.5 * (edges[:-1] + edges[1:])
             frac = counts / counts.sum() if counts.sum() else counts
