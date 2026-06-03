@@ -2605,8 +2605,13 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         windows = _contiguous_windows(n)
         diag["windows"] = [[int(s), int(e)] for s, e in windows]
         diag["frame_sample"] = int(sum(e - s for s, e in windows))
+        _t_harvest = time.perf_counter()
+        _log(f"  Auto-threshold: harvesting candidate spots over "
+             f"{len(windows)} window(s) ({diag['frame_sample']} frames)…")
         H, _pp0 = _harvest_windows(stack, windows, diameter, percentile,
                                    bg_radius, bg_method, workers)
+        _log(f"  Auto-threshold: harvested {len(H):,} candidates in "
+             f"{time.perf_counter() - _t_harvest:.1f}s")
         masses = (np.asarray(H["mass"].values, dtype=float)
                   if len(H) else np.array([], dtype=float))
         masses = masses[np.isfinite(masses) & (masses > 0)]
@@ -2662,8 +2667,13 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                 hi = float(p98)
                 if hi > lo:
                     grid = np.unique(np.geomspace(lo, hi, 18))
+                    _t_sweep = time.perf_counter()
+                    _log(f"  Auto-threshold: linkability sweep "
+                         f"({len(grid)} thresholds × {len(windows)} window(s))…")
                     sweep = _sweep_thresholds(Hq, grid, int(search_range),
                                               int(memory), int(link_min_len))
+                    _log(f"  Auto-threshold: sweep done in "
+                         f"{time.perf_counter() - _t_sweep:.1f}s")
                     pick, pinfo = _pick_linkability_threshold(
                         sweep, sensitivity, max_false_track_rate, noise_floor)
                     diag["link_info"] = pinfo
