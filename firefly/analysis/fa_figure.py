@@ -337,6 +337,15 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                         color=MC[m],alpha=0.7,label=m,edgecolor="none")
         for xv,lb,ls in [(0.5,"a=0.5",":"),(1.0,"a=1 Brownian","--"),(2.0,"a=2 directed",":")]:
             ax.axvline(xv,color=GRD,ls=ls,lw=1.2,label=lb)
+        # Honest note: immobile / jitter-dominated tracks have a flat MSD, so no
+        # anomalous exponent can be fitted (alpha = NaN) — they are NOT in this
+        # histogram (they're counted as Immobile in the pie chart F instead).
+        n_tot = int(len(diff_df)); n_nan = int(diff_df["alpha"].isna().sum())
+        if n_tot and (100.0 * n_nan / n_tot) >= 0.5:
+            ax.text(0.02, 0.97,
+                    f"α unmeasurable: {100.0*n_nan/n_tot:.0f}%\n(immobile, excluded)",
+                    transform=ax.transAxes, fontsize=7, color=TXT,
+                    va="top", ha="left", alpha=0.9)
         ax.set_xlabel("Anomalous exponent alpha",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
         ax.legend(fontsize=7,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
