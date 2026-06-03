@@ -1227,6 +1227,36 @@ def test_sweep_thresholds_parallel_matches_serial():
                 or (np.isnan(a["median_ep"]) and np.isnan(b["median_ep"])))
 
 
+def test_harvest_windows_parallel_matches_serial(tmp_path):
+    """The process-pool harvest must be byte-identical to the serial harvest:
+    each window runs the identical single-process tp.batch, only scheduled
+    concurrently.  Both the candidate table H and window-0's pp0 must match."""
+    pytest.importorskip("trackpy")
+    import logging
+    logging.getLogger("trackpy").setLevel(logging.ERROR)
+    from firefly.analysis import fa_localize as L
+    stack = _bimodal_spot_stack(H=64, W=64, F=40, seed=5).astype(np.float32)
+    windows = L._contiguous_windows(len(stack))
+    common = dict(diameter=7, percentile=64, bg_radius=10,
+                  bg_method="uniform_filter", workers=2)
+    import os as _os
+    _prev = _os.environ.get("FIREFLY_HARVEST_PARALLEL")
+    try:
+        _os.environ["FIREFLY_HARVEST_PARALLEL"] = "1"          # process pool
+        H_par, pp0_par = L._harvest_windows(stack, windows, **common)
+        _os.environ["FIREFLY_HARVEST_PARALLEL"] = "0"          # serial
+        H_ser, pp0_ser = L._harvest_windows(stack, windows, **common)
+    finally:
+        if _prev is None:
+            _os.environ.pop("FIREFLY_HARVEST_PARALLEL", None)
+        else:
+            _os.environ["FIREFLY_HARVEST_PARALLEL"] = _prev
+    assert len(H_par) == len(H_ser) and len(H_par) > 0
+    pd.testing.assert_frame_equal(
+        H_par.reset_index(drop=True), H_ser.reset_index(drop=True))
+    assert np.array_equal(pp0_par, pp0_ser)
+
+
 def _drift_localisations(n_frames, gx, gy, poison_seg=None, seg_len=None, seed=0):
     """Localisations of a fixed structure shifted by a per-frame drift, with an
     optional fully-scrambled ('poisoned') segment."""

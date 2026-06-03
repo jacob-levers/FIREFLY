@@ -2141,6 +2141,22 @@ def _contiguous_windows(n_frames, n_windows=4, win_len=120):
     return wins
 
 
+def _harvest_locate_one(args):
+    """Process-pool worker: run the minmass=0 + characterize trackpy locate on
+    ONE preprocessed window.  This is the EXACT same single-process `tp.batch`
+    call (incl. the numba→default engine fallback) that the serial harvest runs
+    inline, so the per-window result is byte-identical — only where it executes
+    changes.  Module-level + tuple-arg so it pickles cleanly to a worker."""
+    pp, diameter, percentile = args
+    for kw in ({"engine": "numba"}, {}):
+        try:
+            return tp.batch(pp, diameter, minmass=0.0, percentile=percentile,
+                            characterize=True, processes=1, **kw)
+        except Exception:
+            continue
+    return None
+
+
 def _harvest_windows(stack, windows, diameter, percentile,
                      bg_radius, bg_method, workers):
     """Detect every candidate at minmass=0 inside each contiguous window via
@@ -2154,8 +2170,22 @@ def _harvest_windows(stack, windows, diameter, percentile,
     when available) and `pp0` is window 0's preprocessed frames (or None) — the
     Torch↔Trackpy mass-scale audit reuses these to skip re-preprocessing the
     same frames (preprocessing is per-frame independent, so `pp0[:k]` is
-    bit-identical to preprocessing the first k frames)."""
-    parts = []
+    bit-identical to preprocessing the first k frames).
+
+    The minmass=0 + characterize-everything locate is the auto-threshold tall
+    pole.  Windows are independent, so the per-window locate calls fan out across
+    a process pool (the analysis worker is non-daemon → nested pools are allowed;
+    threads wouldn't help because trackpy's numba locate holds the GIL).  Each
+    worker runs the identical single-process `tp.batch`, so the harvested
+    candidates are byte-identical to the serial path — proven by a regression
+    test.  Falls back to serial for a single window, when FIREFLY_HARVEST_PARALLEL
+    is off, or if the pool can't start."""
+    cols = ["x", "y", "frame", "mass", "size", "ecc", "ep", "signal",
+            "window_id"]
+    # Preprocess every window up front in the main process (thread-parallel and
+    # cheap next to the locate) so we can keep window 0's frames for the audit
+    # AND ship ready-to-locate arrays to the pool.
+    prepped = []                           # (wid, pp) in window order
     pp0 = None
     for wid, (s, e) in enumerate(windows):
         block = np.asarray(stack[s:e])
@@ -2165,21 +2195,32 @@ def _harvest_windows(stack, windows, diameter, percentile,
                               bg_method=bg_method, workers=workers, quiet=True)
         if wid == 0:
             pp0 = pp                       # retained for the mass-scale audit
-        f = None
-        for kw in ({"engine": "numba"}, {}):
-            try:
-                f = tp.batch(pp, diameter, minmass=0.0, percentile=percentile,
-                             characterize=True, processes=1, **kw)
-                break
-            except Exception:
-                f = None
+        prepped.append((wid, pp))
+    if not prepped:
+        return pd.DataFrame(columns=cols), pp0
+
+    args = [(pp, diameter, percentile) for _wid, pp in prepped]
+    frames = None
+    _parallel = os.environ.get("FIREFLY_HARVEST_PARALLEL", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+    if _parallel and len(prepped) >= 2 and N_CPUS > 1:
+        try:
+            with ProcessPoolExecutor(
+                    max_workers=min(len(prepped), N_CPUS)) as ex:
+                # ex.map preserves input order → window order is unchanged.
+                frames = list(ex.map(_harvest_locate_one, args))
+        except Exception:
+            frames = None                  # any pool failure → serial fallback
+    if frames is None:
+        frames = [_harvest_locate_one(a) for a in args]
+
+    parts = []
+    for (wid, _pp), f in zip(prepped, frames):
         if f is None or len(f) == 0:
             continue
         f = f.copy()
         f["window_id"] = wid
         parts.append(f)
-    cols = ["x", "y", "frame", "mass", "size", "ecc", "ep", "signal",
-            "window_id"]
     if not parts:
         return pd.DataFrame(columns=cols), pp0
     H = pd.concat(parts, ignore_index=True)
