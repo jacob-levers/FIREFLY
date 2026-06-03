@@ -614,10 +614,20 @@ def compare_groups(groups,
                              record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks)
         ax.set_title("Mobile/Immobile Ratio")
 
-    # ── 5. Motion class fractions (grouped bars, N groups) ────────────────────
+    # ── 5. Motion class fractions (stacked bars: x = population, colour = class) ─
     if "motion_classes" in panels:
         ax = _next_ax()
         classes = ["Immobile", "Confined", "Brownian", "Directed"]
+        # Fixed per-class colours so the legend reads the same across every
+        # comparison and on every theme: Immobile=red, Confined=yellow,
+        # Brownian=green, Directed=blue.
+        class_colors = ["#e45756", "#eeca3b", "#54a24b", "#4c78a8"]
+        def _txt_on(hexcol):
+            """Black or white label text, whichever contrasts with the fill."""
+            h = hexcol.lstrip("#")
+            r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+            return "#101010" if lum > 0.6 else "#ffffff"
         def _fracs(summaries):
             rows = []
             for s in summaries:
@@ -625,35 +635,46 @@ def compare_groups(groups,
                 rows.append([f.get(c, 0.0) for c in classes])
             return np.array(rows) if rows else np.zeros((0, len(classes)))
         per_group = [_fracs(ss) for ss in all_summaries]
-        x = np.arange(len(classes))
-        # Group-bar width: total slot ~0.8, divided across N groups
-        slot = 0.8
-        w = slot / n_groups
-        rng = np.random.default_rng(1)
-        for gi, (grp_label, color, fracs) in enumerate(zip(labels, colors, per_group)):
-            if not len(fracs): continue
-            x_off = (gi - (n_groups - 1) / 2) * w
-            ax.bar(x + x_off, fracs.mean(axis=0), w * 0.9,
-                   yerr=fracs.std(axis=0, ddof=1)/np.sqrt(len(fracs)) if len(fracs) > 1 else None,
-                   color=pal["BAR_FILL"], edgecolor=color, linewidth=1.5,
-                   ecolor=pal["SIG"], capsize=3, label=grp_label)
-            for ci in range(len(classes)):
-                ax.scatter(np.full(len(fracs), x[ci] + x_off)
-                           + rng.uniform(-w*0.25, w*0.25, len(fracs)),
-                           fracs[:, ci], color=color, s=12, zorder=3)
+        # Mean composition per group (each replicate's fractions sum to 1, so the
+        # per-group means also sum to ~1 → each stacked bar reaches the top).
+        means = np.array([fr.mean(axis=0) if len(fr) else np.zeros(len(classes))
+                          for fr in per_group])
+        x = np.arange(n_groups)
+        bottom = np.zeros(n_groups)
+        for ci, (cname, ccol) in enumerate(zip(classes, class_colors)):
+            seg = means[:, ci]
+            ax.bar(x, seg, 0.7, bottom=bottom,
+                   color=ccol, edgecolor=pal["BG"], linewidth=0.6, label=cname)
+            # Label each segment with its mean % when it's big enough to read.
+            for gi in range(n_groups):
+                if seg[gi] >= 0.06:
+                    ax.text(x[gi], bottom[gi] + seg[gi] / 2, f"{seg[gi]*100:.0f}%",
+                            ha="center", va="center", fontsize=7,
+                            color=_txt_on(ccol), zorder=4)
+            bottom += seg
         # Per-class one-way stats — only meaningful when each card is an
         # independent group.  In two-factor mode the cards are paired across
         # time points, so a one-way test across them is invalid; the two-way
         # ANOVA report covers it instead.
         if not two_factor:
             for ci, cname in enumerate(classes):
-                arrs = [fracs[:, ci] if len(fracs) else np.array([]) for fracs in per_group]
+                arrs = [fr[:, ci] if len(fr) else np.array([]) for fr in per_group]
                 omn, pw = _stat_test_n(arrs, labels)
                 stats_records[f"motion_frac_{cname}"] = {"omnibus": omn, "pairwise": pw}
-        ax.set_xticks(x); ax.set_xticklabels(classes, rotation=15)
+        ax.set_xticks(x)
+        ax.set_xticklabels(bar_xticks, rotation=15, ha="right")
+        # Headroom above the full (=1.0) stacks for an in-axes legend, so
+        # tight_layout reserves space for it (a below-axis legend would not be
+        # accounted for and could overlap the panel beneath).
+        ax.set_ylim(0, 1.42)
+        ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
         ax.set_ylabel("Fraction of tracks")
         ax.set_title("Motion Class Fractions")
-        ax.legend(frameon=False, loc="best", fontsize=8)
+        ax.legend(frameon=False, loc="upper center", ncol=2, fontsize=7.5,
+                  columnspacing=1.0, handlelength=1.1, handletextpad=0.4)
+        # This panel's legend maps colour→motion class (group identity is already
+        # on the x-axis), so exempt it from the shared-group-legend stripping pass.
+        ax._firefly_keep_legend = True
 
     # ── 6. Track length distribution (CDF, x clipped at 99th %ile) ────────────
     if "track_length" in panels:
@@ -969,6 +990,8 @@ def compare_groups(groups,
     # number so the axis ↔ legend mapping is explicit.
     from matplotlib.lines import Line2D
     for ax in axes[:n_plots]:
+        if getattr(ax, "_firefly_keep_legend", False):
+            continue  # panel carries its own colour key (e.g. motion classes)
         _lg = ax.get_legend()
         if _lg is not None:
             _lg.remove()
