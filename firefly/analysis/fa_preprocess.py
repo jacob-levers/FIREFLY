@@ -41,25 +41,33 @@ def _preprocess_rolling(frame, bg_radius=50, sigma=1.0):
 
 
 def preprocess_stack(stack, bg_radius=50, bg_method="uniform_filter",
-                     workers=N_CPUS):
+                     workers=N_CPUS, quiet=False):
+    """Preprocess every frame in parallel.  `quiet=True` suppresses the
+    method/workers/progress banner — used for the many small internal passes
+    (auto-threshold harvest windows, mass-scale audit) that would otherwise
+    repeat the same 3-line block over and over and clutter the console."""
     n = len(stack)
     fn = _preprocess_fast if bg_method == "uniform_filter" else _preprocess_rolling
 
-    print(f"  Background method : {bg_method}")
-    print(f"  Workers           : {workers} / {N_CPUS} CPU cores")
+    if not quiet:
+        print(f"  Background method : {bg_method}")
+        print(f"  Workers           : {workers} / {N_CPUS} CPU cores")
     t0 = time.perf_counter()
 
     if workers == 1:
         processed = [fn(f, bg_radius) for f in
-                     _tqdm(stack, desc="  Preprocessing", unit="fr", ncols=70)]
+                     _tqdm(stack, desc="  Preprocessing", unit="fr", ncols=70,
+                           disable=quiet)]
     else:
         with ThreadPoolExecutor(max_workers=workers) as _exe:
             _futs = [_exe.submit(fn, f, bg_radius) for f in stack]
             processed = [_f.result() for _f in
-                         _tqdm(_futs, desc="  Preprocessing", unit="fr", ncols=70)]
+                         _tqdm(_futs, desc="  Preprocessing", unit="fr", ncols=70,
+                               disable=quiet)]
 
     elapsed = time.perf_counter() - t0
-    print(f"  Done in {elapsed:.1f}s  ({elapsed/n*1000:.1f} ms/frame)")
+    if not quiet:
+        print(f"  Done in {elapsed:.1f}s  ({elapsed/n*1000:.1f} ms/frame)")
     return np.stack(processed)
 
 

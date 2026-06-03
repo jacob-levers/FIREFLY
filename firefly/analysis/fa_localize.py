@@ -354,10 +354,13 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     # than 1500-frame chunks.  Per-frame throughput dropped ~3× when we
     # tried the bigger chunks.  Sticking with the caller's chunk_size now.
     _impl = _resolve_backend(backend)
-    print(f"  Mode      : streaming preprocess + localise  (low memory)")
-    print(f"  Backend   : {_impl.name}")
-    print(f"  Diameter  : {diameter}px  |  bg_method: {bg_method}")
-    print(f"  Chunks    : {n_chunks} × ~{chunk_size} frames  |  workers: {workers_}")
+    # NOTE: the backend name + requested device are already printed by
+    # preprocess_and_localise_adaptive (the only production caller) — don't
+    # repeat them here.
+    print(f"  Mode      : streaming ({_impl.name}, low memory)  |  "
+          f"diameter {diameter}px, bg {bg_method}")
+    print(f"  Chunks    : {n_chunks} sub-chunks × ~{chunk_size} frames  "
+          f"|  workers: {workers_}")
     t0 = time.perf_counter()
 
     def _localise_chunk_via_backend(chunk_pp):
@@ -2151,7 +2154,7 @@ def _harvest_windows(stack, windows, diameter, percentile,
         if block.size == 0:
             continue
         pp = preprocess_stack(block, bg_radius=bg_radius,
-                              bg_method=bg_method, workers=workers)
+                              bg_method=bg_method, workers=workers, quiet=True)
         if wid == 0:
             pp0 = pp                       # retained for the mass-scale audit
         f = None
@@ -2513,10 +2516,11 @@ def _audit_mass_scale(stack, windows, H, diameter, percentile,
             if blk.size == 0:
                 return None
             pp = preprocess_stack(blk, bg_radius=bg_radius,
-                                  bg_method=bg_method, workers=workers)
+                                  bg_method=bg_method, workers=workers,
+                                  quiet=True)
         tdf = impl.localise(pp, diameter=diameter, minmass=0.0,
                             percentile=percentile, workers=workers,
-                            chunk_size=len(pp))
+                            chunk_size=len(pp), quiet=True)
         tm = np.asarray(tdf["mass"].values, dtype=float)
         tm = tm[np.isfinite(tm) & (tm > 0)]
         # Trackpy masses from the SAME physical frames (window 0, frame < cap).
