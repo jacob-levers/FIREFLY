@@ -584,12 +584,19 @@ class BuildMixin:
         vmm.addWidget(self.sld_minmass)
         srow = QtWidgets.QHBoxLayout()
         srow.setContentsMargins(0, 0, 0, 0)
-        srow.addWidget(QtWidgets.QLabel("Sensitivity"))
+        # These are plain inner labels (not QFormLayout row labels), so the
+        # auto tooltip-propagation can't reach them — give each its own tooltip
+        # (same text as the control) so hovering the NAME explains it too.
+        _sens_lbl = QtWidgets.QLabel("Sensitivity")
+        _sens_lbl.setToolTip(self.c_minmass_sensitivity.toolTip())
+        srow.addWidget(_sens_lbl)
         srow.addWidget(self.c_minmass_sensitivity, 1)
         vmm.addLayout(srow)
         frow = QtWidgets.QHBoxLayout()
         frow.setContentsMargins(0, 0, 0, 0)
-        frow.addWidget(QtWidgets.QLabel("Max false-track rate"))
+        _ftr_lbl = QtWidgets.QLabel("Max false-track rate")
+        _ftr_lbl.setToolTip(self.s_minmass_false_rate.toolTip())
+        frow.addWidget(_ftr_lbl)
         frow.addWidget(self.s_minmass_false_rate, 1)
         vmm.addLayout(frow)
         gl.addRow("Threshold", wmm)
