@@ -14,20 +14,31 @@ except Exception:
     def _threadpool_limits(limits=None, user_api=None):
         yield
 
+import contextlib
+import io
 import multiprocessing
 import os
 import sys
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import trackpy as tp
 from firefly.analysis.fa_constants import N_CPUS, _Cancelled, _tqdm
+from firefly.analysis.fa_linking import _link_via_trackpy
 from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
 from firefly.analysis.fa_preprocess import (preprocess_stack, _preprocess_fast,
                            _preprocess_rolling)
+
+# Silence trackpy's per-frame INFO chatter at module import so it's quiet in
+# BOTH the main process and any spawned sweep-worker processes (which import
+# this module but not sptpalm_analysis, where tp.quiet() is otherwise called).
+try:
+    tp.quiet()
+except Exception:
+    pass
 
 
 def _ram_strategy(stack, headroom: float = 0.75) -> tuple[bool, float, float]:
@@ -321,16 +332,27 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
             with _threadpool_limits(limits=N_CPUS):
                 return tp.batch(chunk_pp, diameter=diameter, minmass=minmass,
                                 percentile=percentile, processes=1)
+        # quiet=True: this backend is invoked once per sub-chunk in streaming
+        # mode, so its own per-call banner / per-chunk progress lines would
+        # duplicate the streaming loop's tqdm bar hundreds of times.
         return _impl.localise(chunk_pp, diameter=diameter, minmass=minmass,
                               percentile=percentile, workers=workers_,
-                              chunk_size=len(chunk_pp),
+                              chunk_size=len(chunk_pp), quiet=True,
                               **backend_kwargs)
+
+    # One preprocessing thread-pool for the WHOLE stream.  Spawning a fresh
+    # ThreadPoolExecutor per chunk (as before) paid thread-creation cost ~n_chunks
+    # times (hundreds per file); a single persistent pool removes that overhead
+    # without changing what gets computed.
+    _exe = ThreadPoolExecutor(max_workers=workers_)
+
+    def _preprocess_block(a, b):
+        return np.stack([_f.result() for _f in
+                         [_exe.submit(fn, f, bg_radius) for f in stack[a:b]]])
 
     # ── First chunk: preprocess now so we can auto-detect minmass ─────────────
     first_end  = min(chunk_size, n_frames)
-    with ThreadPoolExecutor(max_workers=workers_) as _exe:
-        first_pp = np.stack([_f.result() for _f in
-                             [_exe.submit(fn, f, bg_radius) for f in stack[:first_end]]])
+    first_pp = _preprocess_block(0, first_end)
 
     if minmass is None:
         # Auto-detect minmass.  trackpy's "mass" is *integrated* intensity
@@ -422,7 +444,6 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     _emit_chunk_previews(first_pp, locs0, frame_offset=0)
 
     del first_pp
-    gc.collect()
 
     # Remaining chunks
     for i in _tqdm(range(1, n_chunks), desc="  Streaming", unit="chunk", ncols=70):
@@ -433,9 +454,7 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
 
         start     = i * chunk_size
         end       = min(start + chunk_size, n_frames)
-        with ThreadPoolExecutor(max_workers=workers_) as _exe:
-            chunk_pp = np.stack([_f.result() for _f in
-                                 [_exe.submit(fn, f, bg_radius) for f in stack[start:end]]])
+        chunk_pp = _preprocess_block(start, end)
 
         mean_acc   += chunk_pp.sum(axis=0)
         np.maximum(max_acc, chunk_pp.max(axis=0), out=max_acc)
@@ -481,7 +500,14 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
         _emit_chunk_previews(chunk_pp, locs_i, frame_offset=start)
 
         del chunk_pp
-        gc.collect()
+        # numpy chunk buffers are refcount-freed on `del`; a full cyclic GC
+        # sweep every chunk (hundreds per file) is wasted work.  Sweep
+        # occasionally instead — enough to keep fragmentation in check under
+        # memory pressure without paying GC on every chunk.
+        if (i & 15) == 0:
+            gc.collect()
+
+    _exe.shutdown(wait=True)
 
     # ── Mean projection (normalised) ──────────────────────────────────────────
     mean_proj = (mean_acc / frame_count).astype(np.float32)
@@ -1387,7 +1413,7 @@ class TorchBackend(LocaliserBackend):
 
     def localise(self, stack, *, diameter=7, minmass=0.1, percentile=64,
                  workers=None, chunk_size=500, preview_cb=None,
-                 device=None, **_):
+                 device=None, quiet=False, **_):
         import torch
         import torch.nn.functional as F
 
@@ -1448,13 +1474,14 @@ class TorchBackend(LocaliserBackend):
                 # the first-call thread count is what counts.
                 pass
 
-        print(f"  Device    : {dev_str}")
-        print(f"  Diameter  : {diameter}px  |  minmass: {minmass:.4f}  "
-              f"|  percentile: {percentile}")
-        print(f"  Chunks    : {n_chunks} × ~{chunk_size} frames")
-        if dev_str == "cpu":
-            try:    print(f"  Torch threads : {torch.get_num_threads()}")
-            except Exception: pass
+        if not quiet:
+            print(f"  Device    : {dev_str}")
+            print(f"  Diameter  : {diameter}px  |  minmass: {minmass:.4f}  "
+                  f"|  percentile: {percentile}")
+            print(f"  Chunks    : {n_chunks} × ~{chunk_size} frames")
+            if dev_str == "cpu":
+                try:    print(f"  Torch threads : {torch.get_num_threads()}")
+                except Exception: pass
 
         t0 = time.perf_counter()
         all_locs: list[dict] = []
@@ -1492,9 +1519,14 @@ class TorchBackend(LocaliserBackend):
         # see steady forward motion.
         chunk_t0_outer = time.perf_counter()
         last_chunk_end_t = chunk_t0_outer
-        print(f"  Starting localisation: {n_chunks} chunks of "
-              f"~{chunk_size} frames each "
-              f"(progress logged per-chunk below)", flush=True)
+        # In streaming mode this backend is invoked once per CPU sub-chunk, so
+        # its own per-chunk progress lines would duplicate the streaming loop's
+        # tqdm bar hundreds of times.  `quiet` routes them to a no-op.
+        _plog = (lambda *a, **k: None) if quiet else print
+        if not quiet:
+            print(f"  Starting localisation: {n_chunks} chunks of "
+                  f"~{chunk_size} frames each "
+                  f"(progress logged per-chunk below)", flush=True)
 
         for chunk_idx, chunk_start in enumerate(range(0, n_frames, chunk_size)):
             chunk_end = min(chunk_start + chunk_size, n_frames)
@@ -1532,7 +1564,7 @@ class TorchBackend(LocaliserBackend):
             coords = is_max.nonzero(as_tuple=False)
             if coords.numel() == 0:
                 _ct = time.perf_counter()
-                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                _plog(f"  Chunk {chunk_idx+1}/{n_chunks} "
                       f"(frames {chunk_start}–{chunk_end-1}): 0 spots "
                       f"in {_ct - last_chunk_end_t:.1f}s "
                       f"(no maxima above threshold)", flush=True)
@@ -1547,7 +1579,7 @@ class TorchBackend(LocaliserBackend):
             coords = coords[edge_ok]
             if coords.numel() == 0:
                 _ct = time.perf_counter()
-                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                _plog(f"  Chunk {chunk_idx+1}/{n_chunks} "
                       f"(frames {chunk_start}–{chunk_end-1}): 0 spots "
                       f"in {_ct - last_chunk_end_t:.1f}s "
                       f"(all maxima edge-rejected)", flush=True)
@@ -1580,7 +1612,7 @@ class TorchBackend(LocaliserBackend):
             keep = mass >= minmass
             if not bool(keep.any()):
                 _ct = time.perf_counter()
-                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                _plog(f"  Chunk {chunk_idx+1}/{n_chunks} "
                       f"(frames {chunk_start}–{chunk_end-1}): 0 spots "
                       f"in {_ct - last_chunk_end_t:.1f}s "
                       f"(all below minmass={minmass:.2f})", flush=True)
@@ -1653,7 +1685,7 @@ class TorchBackend(LocaliserBackend):
                 _n_spots = int(mass.numel())
                 _avg_fps = (chunk_end - chunk_start) / max(1e-3,
                                                               _ct - last_chunk_end_t)
-                print(f"  Chunk {chunk_idx+1}/{n_chunks} "
+                _plog(f"  Chunk {chunk_idx+1}/{n_chunks} "
                       f"(frames {chunk_start}–{chunk_end-1}): "
                       f"{_n_spots:,} spots in "
                       f"{_ct - last_chunk_end_t:.1f}s "
@@ -1679,18 +1711,21 @@ class TorchBackend(LocaliserBackend):
             # respectively); freeing the survivors is still worth doing
             # to keep MPS's allocator from holding stale chunk memory.
             del x, signal, maxp, is_max, coords
+            # MPS only: on Apple Silicon's UNIFIED memory the device pool isn't
+            # returned until the command queue drains, so without this per-chunk
+            # synchronize+empty_cache a long localisation can starve downstream
+            # Qt/matplotlib of GPU memory.  On discrete CUDA VRAM the opposite is
+            # true: calling empty_cache() every chunk forces the caching
+            # allocator to hand blocks back to the driver, so the next chunk
+            # re-allocates from scratch — a large, well-documented throughput
+            # hit (≈1000 calls/file in streaming mode).  CUDA only needs ONE
+            # drain at the end of the call (below), so skip it per chunk here.
             if dev_str == "mps":
                 try:
                     if hasattr(torch.mps, "synchronize"):
                         torch.mps.synchronize()
                     if hasattr(torch.mps, "empty_cache"):
                         torch.mps.empty_cache()
-                except Exception:
-                    pass
-            elif dev_str.startswith("cuda"):
-                try:
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
                 except Exception:
                     pass
 
@@ -1725,7 +1760,7 @@ class TorchBackend(LocaliserBackend):
                 pass
 
         if not all_locs:
-            print("  Found 0 localisations")
+            _plog("  Found 0 localisations")
             return pd.DataFrame(columns=["x", "y", "frame", "mass"])
 
         df = pd.DataFrame({
@@ -1734,7 +1769,7 @@ class TorchBackend(LocaliserBackend):
         })
 
         elapsed = time.perf_counter() - t0
-        print(f"  Found {len(df):,} localisations in {elapsed:.1f}s  "
+        _plog(f"  Found {len(df):,} localisations in {elapsed:.1f}s  "
               f"({n_frames / elapsed:.0f} frames/s)")
         return df
 
@@ -2004,15 +2039,22 @@ def _harvest_windows(stack, windows, diameter, percentile,
     the Torch backend are mass-calibrated to agree (`_TP_MASS_SCALE`), so a
     threshold chosen here transfers to a Torch run.  `frame` is kept LOCAL to
     each window (0..win_len) and tagged with `window_id`, so per-window linking
-    never bridges the gap between windows.  Returns a DataFrame with columns
-    x, y, frame, mass, window_id (+ size, ecc, ep, signal when available)."""
+    never bridges the gap between windows.  Returns `(H, pp0)` where H is a
+    DataFrame with columns x, y, frame, mass, window_id (+ size, ecc, ep, signal
+    when available) and `pp0` is window 0's preprocessed frames (or None) — the
+    Torch↔Trackpy mass-scale audit reuses these to skip re-preprocessing the
+    same frames (preprocessing is per-frame independent, so `pp0[:k]` is
+    bit-identical to preprocessing the first k frames)."""
     parts = []
+    pp0 = None
     for wid, (s, e) in enumerate(windows):
         block = np.asarray(stack[s:e])
         if block.size == 0:
             continue
         pp = preprocess_stack(block, bg_radius=bg_radius,
                               bg_method=bg_method, workers=workers)
+        if wid == 0:
+            pp0 = pp                       # retained for the mass-scale audit
         f = None
         for kw in ({"engine": "numba"}, {}):
             try:
@@ -2029,9 +2071,9 @@ def _harvest_windows(stack, windows, diameter, percentile,
     cols = ["x", "y", "frame", "mass", "size", "ecc", "ep", "signal",
             "window_id"]
     if not parts:
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=cols), pp0
     H = pd.concat(parts, ignore_index=True)
-    return H[[c for c in cols if c in H.columns]]
+    return H[[c for c in cols if c in H.columns]], pp0
 
 
 def _quality_pregate(H, diameter):
@@ -2067,11 +2109,9 @@ def _link_track_lengths(sub, search_range, memory):
     """Link one window's surviving detections WITHOUT the stub filter and
     return the array of per-track frame counts (so we can count both good
     tracks and short spurious fragments).  Quiet — swallows the linker's
-    chatter."""
+    chatter (stdout redirect is process-/thread-local to this call)."""
     if sub is None or len(sub) < 2:
         return np.array([], dtype=int)
-    import contextlib, io
-    from firefly.analysis.fa_linking import _link_via_trackpy
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             linked = _link_via_trackpy(
@@ -2085,44 +2125,118 @@ def _link_track_lengths(sub, search_range, memory):
     return linked.groupby("particle")["frame"].count().to_numpy()
 
 
-def _sweep_thresholds(H, grid, search_range, memory, link_min_len):
-    """For each candidate threshold t: filter to mass≥t, link each window, and
-    measure track quality.  Returns a list of per-t dicts with n_surv, N_good
-    (tracks ≥ link_min_len), good_fraction (detections inside good tracks /
-    surviving), spurious_rate (detections in ≤2-frame fragments / surviving),
-    and median ep."""
+def _split_windows(H):
+    """Split the harvested candidate table into per-window column dicts
+    (numpy arrays only) so the sweep can be evaluated without re-slicing the
+    DataFrame at every threshold, and so the data ships cheaply to worker
+    processes."""
     if "window_id" in H.columns:
-        windows = sorted(int(w) for w in H["window_id"].unique())
+        wids = sorted(int(w) for w in H["window_id"].unique())
     else:
-        windows = [0]
+        wids = [0]
     has_ep = "ep" in H.columns
-    rows = []
-    for t in grid:
-        sub = H[H["mass"] >= t]
-        n_surv = int(len(sub))
-        if n_surv < 4:
-            rows.append(dict(t=float(t), n_surv=n_surv, N_good=0,
-                             good_fraction=0.0, spurious_rate=0.0,
-                             median_ep=float("nan")))
+    out = []
+    for wid in wids:
+        sub = H[H["window_id"] == wid] if "window_id" in H.columns else H
+        d = {"x": sub["x"].to_numpy(dtype=float),
+             "y": sub["y"].to_numpy(dtype=float),
+             "frame": sub["frame"].to_numpy(),
+             "mass": sub["mass"].to_numpy(dtype=float)}
+        if has_ep:
+            d["ep"] = sub["ep"].to_numpy(dtype=float)
+        out.append(d)
+    return out
+
+
+def _sweep_threshold_row(t, window_arrays, search_range, memory, link_min_len):
+    """Evaluate one candidate threshold `t`: per window, keep mass≥t, link, and
+    tally good/spurious tracks.  Identical maths to the original inline loop —
+    factored out so the serial and parallel sweep paths share one code path and
+    produce byte-identical numbers."""
+    keeps = [w["mass"] >= t for w in window_arrays]
+    n_surv = int(sum(int(k.sum()) for k in keeps))
+    if n_surv < 4:
+        return dict(t=float(t), n_surv=n_surv, N_good=0,
+                    good_fraction=0.0, spurious_rate=0.0,
+                    median_ep=float("nan"))
+    n_good = good_det = spur_det = 0
+    ep_parts = []
+    for w, keep in zip(window_arrays, keeps):
+        if "ep" in w:
+            ep_parts.append(w["ep"][keep])
+        if int(keep.sum()) < 2:
             continue
-        n_good = good_det = spur_det = 0
-        for wid in windows:
-            w = sub[sub["window_id"] == wid] if "window_id" in sub.columns else sub
-            lens = _link_track_lengths(w, search_range, memory)
-            if lens.size == 0:
-                continue
-            good = lens[lens >= link_min_len]
-            spur = lens[lens <= 2]
-            n_good += int(good.size)
-            good_det += int(good.sum())
-            spur_det += int(spur.sum())
-        med_ep = (float(np.nanmedian(sub["ep"].to_numpy(dtype=float)))
-                  if has_ep else float("nan"))
-        rows.append(dict(t=float(t), n_surv=n_surv, N_good=int(n_good),
-                         good_fraction=float(good_det / n_surv),
-                         spurious_rate=float(spur_det / n_surv),
-                         median_ep=med_ep))
-    return rows
+        sub = pd.DataFrame({"x": w["x"][keep], "y": w["y"][keep],
+                            "frame": w["frame"][keep]})
+        lens = _link_track_lengths(sub, search_range, memory)
+        if lens.size == 0:
+            continue
+        good = lens[lens >= link_min_len]
+        spur = lens[lens <= 2]
+        n_good += int(good.size)
+        good_det += int(good.sum())
+        spur_det += int(spur.sum())
+    if ep_parts:
+        _ep = np.concatenate(ep_parts)
+        med_ep = float(np.nanmedian(_ep)) if _ep.size else float("nan")
+    else:
+        med_ep = float("nan")
+    return dict(t=float(t), n_surv=n_surv, N_good=int(n_good),
+                good_fraction=float(good_det / n_surv),
+                spurious_rate=float(spur_det / n_surv),
+                median_ep=med_ep)
+
+
+# Module-level worker glue for the parallel sweep.  The (potentially large)
+# per-window candidate arrays are shipped to each worker ONCE via the pool
+# initializer; each task then carries only the scalar threshold.
+_SWEEP_POOL_STATE: dict = {}
+
+
+def _sweep_pool_init(window_arrays, search_range, memory, link_min_len):
+    _SWEEP_POOL_STATE["args"] = (window_arrays, search_range, memory,
+                                 link_min_len)
+
+
+def _sweep_pool_one(t):
+    window_arrays, search_range, memory, link_min_len = _SWEEP_POOL_STATE["args"]
+    return _sweep_threshold_row(t, window_arrays, search_range, memory,
+                                link_min_len)
+
+
+# Run the threshold sweep on a process pool only when there's enough work to
+# amortise pool startup (Windows spawn ≈ 0.5–1 s); below this the serial path
+# is faster.  Same grid, same linker → identical results either way.
+_SWEEP_PARALLEL_MIN_CANDIDATES = 8000
+
+
+def _sweep_thresholds(H, grid, search_range, memory, link_min_len):
+    """For each candidate threshold t: keep mass≥t, link each window, and
+    measure track quality.  Returns a list of per-t dicts (t, n_surv, N_good,
+    good_fraction, spurious_rate, median_ep), one per grid point, in grid order.
+
+    Parallelised across grid points on a process pool when the candidate set is
+    large; otherwise evaluated serially.  Both paths call `_sweep_threshold_row`
+    so the numbers are identical."""
+    window_arrays = _split_windows(H)
+    grid = [float(t) for t in grid]
+    n_cand = int(sum(w["mass"].size for w in window_arrays))
+
+    if (N_CPUS > 1 and len(grid) >= 4
+            and n_cand >= _SWEEP_PARALLEL_MIN_CANDIDATES):
+        try:
+            with ProcessPoolExecutor(
+                    max_workers=min(N_CPUS, len(grid)),
+                    initializer=_sweep_pool_init,
+                    initargs=(window_arrays, search_range, memory,
+                              link_min_len)) as ex:
+                # ex.map preserves input order → rows stay in grid order.
+                return list(ex.map(_sweep_pool_one, grid))
+        except Exception:
+            pass  # any pool failure → deterministic serial fallback
+
+    return [_sweep_threshold_row(t, window_arrays, search_range, memory,
+                                 link_min_len) for t in grid]
 
 
 def _pick_linkability_threshold(sweep, sensitivity, max_false_track_rate,
@@ -2267,7 +2381,8 @@ def _static_minmass(masses, sensitivity, diag, log_fn):
 
 
 def _audit_mass_scale(stack, windows, H, diameter, percentile,
-                      bg_radius, bg_method, workers, backend, log_cb=None):
+                      bg_radius, bg_method, workers, backend, log_cb=None,
+                      pp0=None):
     """Self-audit the trackpy↔Torch mass calibration.
 
     The auto-threshold harvest always runs through trackpy, so the chosen
@@ -2288,11 +2403,18 @@ def _audit_mass_scale(stack, windows, H, diameter, percentile,
             return None
         s0, e0 = windows[0]
         e0 = min(e0, s0 + 32)                 # a handful of frames → robust median
-        blk = np.asarray(stack[s0:e0])
-        if blk.size == 0:
-            return None
-        pp = preprocess_stack(blk, bg_radius=bg_radius,
-                              bg_method=bg_method, workers=workers)
+        cap = e0 - s0
+        # Reuse window 0's preprocessed frames from the harvest when available —
+        # preprocessing is per-frame independent, so pp0[:cap] is bit-identical
+        # to preprocessing stack[s0:e0] afresh (just without the redundant work).
+        if pp0 is not None and len(pp0) >= cap:
+            pp = np.asarray(pp0[:cap])
+        else:
+            blk = np.asarray(stack[s0:e0])
+            if blk.size == 0:
+                return None
+            pp = preprocess_stack(blk, bg_radius=bg_radius,
+                                  bg_method=bg_method, workers=workers)
         tdf = impl.localise(pp, diameter=diameter, minmass=0.0,
                             percentile=percentile, workers=workers,
                             chunk_size=len(pp))
@@ -2372,8 +2494,8 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         windows = _contiguous_windows(n)
         diag["windows"] = [[int(s), int(e)] for s, e in windows]
         diag["frame_sample"] = int(sum(e - s for s, e in windows))
-        H = _harvest_windows(stack, windows, diameter, percentile,
-                             bg_radius, bg_method, workers)
+        H, _pp0 = _harvest_windows(stack, windows, diameter, percentile,
+                                   bg_radius, bg_method, workers)
         masses = (np.asarray(H["mass"].values, dtype=float)
                   if len(H) else np.array([], dtype=float))
         masses = masses[np.isfinite(masses) & (masses > 0)]
@@ -2474,7 +2596,7 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         try:
             _ratio = _audit_mass_scale(stack, windows, H, diameter, percentile,
                                        bg_radius, bg_method, workers, backend,
-                                       log_cb)
+                                       log_cb, pp0=_pp0)
             if _ratio is not None:
                 diag["torch_trackpy_mass_ratio"] = _ratio
         except _Cancelled:

@@ -1069,3 +1069,119 @@ def test_audit_mass_scale_noop_on_trackpy():
     # empty harvest / no windows are also safe
     assert _audit_mass_scale(stack, [], H.iloc[:0], 7, 64, 10,
                              "uniform_filter", 1, "torch", lambda m: None) is None
+
+
+# ── perf-refactor regression: results-identity guards ────────────────────────
+def _synthetic_harvest_table(seed=11):
+    """A windowed candidate table H like `_harvest_windows` produces:
+    persistent bright emitters (link into tracks) + faint noise blips."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for wid in range(4):
+        for _ in range(12):                       # persistent emitters
+            x0, y0 = rng.uniform(5, 55, 2)
+            for fr in range(int(rng.integers(6, 20))):
+                rows.append((x0 + rng.normal(0, 0.2), y0 + rng.normal(0, 0.2),
+                             fr, rng.uniform(60, 300), rng.uniform(0.2, 0.4), wid))
+        for _ in range(500):                      # noise blips
+            rows.append((rng.uniform(0, 60), rng.uniform(0, 60),
+                         int(rng.integers(0, 40)), rng.uniform(0.5, 25),
+                         rng.uniform(0.1, 0.6), wid))
+    return pd.DataFrame(rows, columns=["x", "y", "frame", "mass", "ep",
+                                       "window_id"])
+
+
+def test_sweep_thresholds_parallel_matches_serial():
+    """The parallel (process-pool) threshold sweep must be byte-identical to the
+    serial path — same grid, same linker, just concurrent."""
+    from firefly.analysis import fa_localize as L
+    H = _synthetic_harvest_table()
+    grid = np.unique(np.geomspace(1.0, 250.0, 18))
+    saved = L._SWEEP_PARALLEL_MIN_CANDIDATES
+    try:
+        L._SWEEP_PARALLEL_MIN_CANDIDATES = 1          # force the process pool
+        par = L._sweep_thresholds(H, grid, search_range=5, memory=3, link_min_len=4)
+        L._SWEEP_PARALLEL_MIN_CANDIDATES = 10**12     # force serial
+        ser = L._sweep_thresholds(H, grid, search_range=5, memory=3, link_min_len=4)
+    finally:
+        L._SWEEP_PARALLEL_MIN_CANDIDATES = saved
+    assert len(par) == len(ser) == len(grid)
+    for a, b in zip(par, ser):
+        for k in ("t", "n_surv", "N_good", "good_fraction", "spurious_rate"):
+            assert a[k] == b[k], (k, a[k], b[k])
+        # median_ep: identical (or both NaN)
+        assert (a["median_ep"] == b["median_ep"]
+                or (np.isnan(a["median_ep"]) and np.isnan(b["median_ep"])))
+
+
+def _drift_localisations(n_frames, gx, gy, poison_seg=None, seg_len=None, seed=0):
+    """Localisations of a fixed structure shifted by a per-frame drift, with an
+    optional fully-scrambled ('poisoned') segment."""
+    rng = np.random.default_rng(seed)
+    struct = rng.uniform(20, 80, size=(300, 2))
+    rows = []
+    for fr in range(n_frames):
+        k = int(rng.integers(15, 35))
+        idx = rng.choice(len(struct), k, replace=False)
+        xs = struct[idx, 0] + gx[fr] + rng.normal(0, 0.3, k)
+        ys = struct[idx, 1] + gy[fr] + rng.normal(0, 0.3, k)
+        if poison_seg is not None and (fr // seg_len) == poison_seg:
+            xs = rng.uniform(20, 80, k); ys = rng.uniform(20, 80, k)
+        for a, b in zip(xs, ys):
+            rows.append((0, fr, a, b))
+    return pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+
+
+def test_correct_drift_clean_noop_and_bounds_spurious():
+    """Robust RCC: a clean drift ramp is recovered with NO pairs rejected (guard
+    inactive → behaviour preserved); a fully-poisoned segment can no longer blow
+    the drift up to non-physical values (the 150 px artefact can't recur)."""
+    from firefly.analysis.fa_drift import correct_drift
+    n = 2000
+    gx = np.linspace(0, 8.0, n); gy = np.linspace(0, -5.0, n)
+
+    locs = _drift_localisations(n, gx, gy, seed=0)
+    _, drift = correct_drift(locs)
+    rng_x = float(drift["dx"].max() - drift["dx"].min())
+    rng_y = float(drift["dy"].max() - drift["dy"].min())
+    # Recovers the right order of magnitude (smoothing compresses the endpoints).
+    assert 3.0 < rng_x < 9.0 and 2.0 < rng_y < 6.0, (rng_x, rng_y)
+
+    seg = 200
+    locs2 = _drift_localisations(n, gx, gy, poison_seg=5, seg_len=seg, seed=0)
+    _, drift2 = correct_drift(locs2, n_seg_frames=seg)
+    rng2_x = float(drift2["dx"].max() - drift2["dx"].min())
+    rng2_y = float(drift2["dy"].max() - drift2["dy"].min())
+    # Bounded — must NOT explode to the old 100+ px failure mode.
+    assert rng2_x < 20.0 and rng2_y < 20.0, (rng2_x, rng2_y)
+
+
+def test_streaming_localise_quiet_and_reproducible():
+    """The streaming Torch path must not leak the backend's per-call banner
+    (quiet=True), and on a small deterministic stack (<5M-element chunks → exact
+    quantile) two runs must give identical localisations."""
+    import io, contextlib
+    from firefly.analysis.fa_localize import preprocess_and_localise_stream
+    rng = np.random.default_rng(5)
+    T, S = 160, 40
+    stack = rng.normal(100, 6, size=(T, S, S)).astype(np.float32)
+    yy, xx = np.mgrid[0:S, 0:S]
+    for fr in range(T):
+        for _ in range(4):
+            ex, ey = rng.uniform(6, 34, 2); amp = rng.uniform(500, 1000)
+            stack[fr] += amp * np.exp(-(((xx - ex) ** 2 + (yy - ey) ** 2)
+                                        / (2 * 1.6 ** 2)))
+
+    def _run():
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            locs, *_ = preprocess_and_localise_stream(
+                stack, diameter=7, minmass=2.0, bg_radius=12, workers=2,
+                chunk_size=32, backend="torch-cpu")
+        return locs[["x", "y", "frame", "mass"]].to_numpy(), buf.getvalue()
+
+    a, log = _run()
+    b, _ = _run()
+    assert len(a) > 0
+    assert "Device    : cpu" not in log, "Torch per-call banner leaked into stream"
+    assert a.shape == b.shape and np.array_equal(a, b), "streaming not reproducible"

@@ -14,7 +14,8 @@ from scipy.signal import correlate as _correlate2d
 from scipy.interpolate import interp1d
 
 
-def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5):
+def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5,
+                  max_shift_frac=0.30, outlier_k=6.0, outlier_tol_px=6.0):
     """
     Reference-free drift correction via cross-correlation of localization
     density maps (simplified RCC approach; Wang et al. 2014, Nat Methods).
@@ -39,6 +40,23 @@ def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5):
                     ~25 nm accuracy at 0.1 µm/px (default 4).
     smooth_sigma  : Gaussian smoothing sigma in units of *segments* applied to
                     the raw drift trajectory before interpolation (default 1.5).
+    max_shift_frac: cross-correlation peak search is restricted to inter-segment
+                    shifts within ``max_shift_frac`` of the density-map extent
+                    along each axis (default 0.30).  This rejects gross spurious
+                    / wrap-around correlation peaks on sparse or poorly-overlapping
+                    segments (which otherwise produce non-physical drifts like
+                    150 px on a 512 px frame) while leaving real drift — always
+                    far inside this window — untouched.  Scales with the data so
+                    larger structures permit larger absolute drift.
+    outlier_k     : robustness factor for inconsistent-pair rejection.  After the
+                    redundant cross-correlation least-squares solve, segment pairs
+                    whose measured shift disagrees with the global solution by more
+                    than ``max(outlier_tol_px, outlier_k · 1.4826 · MAD)``
+                    (in upsampled px) are dropped and the system is re-solved (one
+                    IRLS pass).  On clean data all residuals are tiny → nothing is
+                    dropped → the result is identical to the un-guarded solve.
+    outlier_tol_px: absolute residual floor (upsampled px) for the rejection rule,
+                    so clean data with near-zero MAD never rejects good pairs.
 
     Returns
     -------
@@ -112,42 +130,85 @@ def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5):
                     for j in range(i + 1, n_segments)
                     if seg_counts[i] >= 5 and seg_counts[j] >= 5]
 
+    # ── Plausible-shift search mask ───────────────────────────────────────────
+    # The cross-correlation lives on a (pad_H × pad_W) wrapped grid: index k on
+    # an axis of length L means lag k (k < L/2) or k−L (k ≥ L/2).  Restricting
+    # argmax to lags within ±(max_shift_frac · extent) per axis prevents a
+    # spurious / wrap-around peak on a sparse or poorly-overlapping segment from
+    # being selected as the drift (the root cause of 150 px artefacts).  Real
+    # drift sits far inside this window, so on well-behaved data the masked
+    # argmax returns the SAME index as the un-masked one — byte-identical output.
+    _lag0 = np.where(np.arange(pad_H) < pad_H // 2,
+                     np.arange(pad_H), np.arange(pad_H) - pad_H)
+    _lag1 = np.where(np.arange(pad_W) < pad_W // 2,
+                     np.arange(pad_W), np.arange(pad_W) - pad_W)
+    _R_y = max(1, int(round(max_shift_frac * H)))
+    _R_x = max(1, int(round(max_shift_frac * W)))
+    search_mask = ((np.abs(_lag0) <= _R_y)[:, None]
+                   & (np.abs(_lag1) <= _R_x)[None, :])
+
     def _pair_shift(i, j):
         # Cross-correlation r[τ] = Σ a[k+τ] b[k]  via  IFFT(F_a · conj(F_b))
         cross = _irfft2(fft_maps[i] * np.conj(fft_maps[j]),
                         s=(pad_H, pad_W))
-        # Zero-lag at index 0; positive shifts up to (H-1, W-1) sit at low
-        # indices, negative shifts wrap to the end.  Re-centre by treating
-        # any index beyond half-extent as negative.
-        peak = int(np.argmax(cross))
+        # Search only the plausible-shift window; everything else is masked to
+        # −∞ so it can never win the argmax.
+        peak = int(np.argmax(np.where(search_mask, cross, -np.inf)))
         py, px = divmod(peak, pad_W)
         if py >= pad_H // 2: py -= pad_H
         if px >= pad_W // 2: px -= pad_W
         return i, j, float(px), float(py)
 
-    A_rows_x, A_rows_y = [], []
-    b_x, b_y = [], []
+    pairs = []          # (i, j, dx, dy) in upsampled px
     if pair_indices:
         with ThreadPoolExecutor(max_workers=N_CPUS) as _exe:
             for i, j, dx_pair, dy_pair in _exe.map(
                     lambda ij: _pair_shift(*ij), pair_indices):
-                row = np.zeros(n_segments)
-                row[i], row[j] = -1.0, 1.0
-                A_rows_x.append(row); b_x.append(dx_pair)
-                A_rows_y.append(row); b_y.append(dy_pair)
+                pairs.append((int(i), int(j), float(dx_pair), float(dy_pair)))
 
-    if not A_rows_x:
-        # Fallback: zero drift
-        dx_cum = np.zeros(n_segments)
-        dy_cum = np.zeros(n_segments)
-    else:
-        # Add gauge-fixing row: drift[0] = 0 (heavy weight)
+    def _solve(pair_list):
+        """Gauge-fixed least-squares (drift[0]=0) over the given pair shifts."""
+        if not pair_list:
+            return np.zeros(n_segments), np.zeros(n_segments)
+        rows, bx, by = [], [], []
+        for (i, j, dx, dy) in pair_list:
+            row = np.zeros(n_segments)
+            row[i], row[j] = -1.0, 1.0
+            rows.append(row); bx.append(dx); by.append(dy)
         gauge = np.zeros(n_segments); gauge[0] = 1.0
-        A = np.vstack(A_rows_x + [gauge * 1e3])
-        bx = np.append(np.array(b_x), 0.0)
-        by = np.append(np.array(b_y), 0.0)
-        dx_cum, *_ = np.linalg.lstsq(A, bx, rcond=None)
-        dy_cum, *_ = np.linalg.lstsq(A, by, rcond=None)
+        A  = np.vstack(rows + [gauge * 1e3])
+        bxv = np.append(np.array(bx), 0.0)
+        byv = np.append(np.array(by), 0.0)
+        dxc, *_ = np.linalg.lstsq(A, bxv, rcond=None)
+        dyc, *_ = np.linalg.lstsq(A, byv, rcond=None)
+        return dxc, dyc
+
+    dx_cum, dy_cum = _solve(pairs)
+
+    # ── Robust pair rejection (IRLS) ──────────────────────────────────────────
+    # Use the RCC redundancy: a good pair's measured shift agrees with the global
+    # solution (drift[j]−drift[i]).  Drop pairs whose residual exceeds
+    # max(outlier_tol_px, k·1.4826·MAD) and re-solve.  On clean data residuals
+    # are ~0 → threshold is the floor → nothing is dropped → identical curve.
+    n_rejected = 0
+    if len(pairs) > n_segments:
+        for _ in range(2):                 # at most two refinement passes
+            resid = np.array([
+                np.hypot((dx_cum[j] - dx_cum[i]) - dx,
+                         (dy_cum[j] - dy_cum[i]) - dy)
+                for (i, j, dx, dy) in pairs])
+            med = float(np.median(resid))
+            mad = float(np.median(np.abs(resid - med)))
+            thresh = max(float(outlier_tol_px), float(outlier_k) * 1.4826 * mad)
+            keep = resid <= thresh
+            if keep.all() or int(keep.sum()) < n_segments:
+                break
+            n_rejected += int((~keep).sum())
+            pairs = [p for p, k in zip(pairs, keep) if k]
+            dx_cum, dy_cum = _solve(pairs)
+    if n_rejected:
+        print(f"  Drift: rejected {n_rejected} inconsistent segment pair(s) "
+              f"(robust RCC)")
 
     # Smooth then convert to localization pixels
     dx_sm = gaussian_filter1d(dx_cum, sigma=smooth_sigma) / upsampling
