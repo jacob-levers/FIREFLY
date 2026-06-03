@@ -693,7 +693,7 @@ class BuildMixin:
         self.c_roi_mode = _QuietComboBox()
         self.c_roi_mode.addItems(
             ["None", "Auto threshold", "Manual threshold",
-             "Manual polygon", "From sister TIFF"])
+             "Manual polygon", "Sister TIFF", "ImageJ ROI"])
         self.c_roi_mode.setCurrentText("Auto threshold")
         self.c_roi_mode.setToolTip(
             "Restrict analysis to a region of interest in the field of view.\n"
@@ -703,12 +703,16 @@ class BuildMixin:
             "• Manual polygon — draw a polygon per file on the Import tab\n"
             "  (Set ROI… buttons).  Files without a saved polygon fall back\n"
             "  to the global Auto-threshold behaviour.\n"
-            "• From sister TIFF — use a microscope-exported ROI image\n"
-            "  saved next to the data as `<base><suffix>.tif`.  Suffix\n"
-            "  defaults to `_green` (palmTRACER / Zeiss convention).\n"
-            "  Auto-thresholded with Li if it's a fluorescence channel,\n"
-            "  or non-zero pixels if it's a binary segmentation mask.\n"
-            "  Multi-frame ROIs are max-projected.")
+            "• Sister TIFF — use a microscope-exported ROI image saved next\n"
+            "  to the data as `<base><suffix>.tif` (suffix defaults to\n"
+            "  `_green`).  Auto-thresholded with Li if a fluorescence channel,\n"
+            "  or non-zero pixels if a binary mask; multi-frame ROIs are\n"
+            "  max-projected.\n"
+            "• ImageJ ROI — use a sibling ImageJ/Fiji ROI next to each movie\n"
+            "  (RoiSet.zip, a RoiSet/ folder, or <name>.roi / <name>.zip) as\n"
+            "  a polygon ROI, so a batch reuses ROIs drawn in ImageJ without\n"
+            "  loading each by hand.  Files with no sibling ROI fall back to\n"
+            "  the whole image (logged).")
         gl.addRow("Mode", self.c_roi_mode)
         self.c_roi_auto_method = _QuietComboBox()
         self.c_roi_auto_method.addItems(["Li", "Otsu", "Triangle", "Mean"])
@@ -820,21 +824,8 @@ class BuildMixin:
         vbg.addWidget(self.sld_roi_bg_sigma)
         gl.addRow("Background scale σ", wbg)
 
-        # Auto-pair a sibling ImageJ ROI (RoiSet.zip / a RoiSet/ folder / .roi)
-        # found next to each input file, applying it as a polygon ROI — so a
-        # batch reuses ROIs drawn in ImageJ/Fiji without loading each by hand.
-        self.c_roi_imagej_auto = QtWidgets.QCheckBox(
-            "Auto-detect ImageJ ROI")
-        self.c_roi_imagej_auto.setChecked(True)
-        self.c_roi_imagej_auto.setToolTip(
-            "When a movie has an ImageJ ROI next to it (RoiSet.zip, a RoiSet/\n"
-            "folder of .roi files, or <name>.roi / <name>.zip), use it as a\n"
-            "polygon ROI automatically.  Lets a batch reuse ROIs drawn in\n"
-            "ImageJ/Fiji without loading each one by hand.  A polygon you set\n"
-            "explicitly in the ROI editor still takes precedence.")
-        # Span the whole row (no label column) so the checkbox doesn't force
-        # the sidebar's scroll content wider than the viewport.
-        gl.addRow(self.c_roi_imagej_auto)
+        # (ImageJ ROI auto-pairing is now the "ImageJ ROI" entry in the Mode
+        # dropdown above — it is a ROI source, not a global toggle.)
 
         # Grey out threshold-related controls when the mode doesn't use
         # them, AND show/hide the embedded ROI viewer on the Import tab
@@ -850,10 +841,8 @@ class BuildMixin:
             lambda _=None: self._push_roi_mask_params())
         self.s_roi_bg_sigma.valueChanged.connect(
             lambda _=None: self._push_roi_mask_params())
-        # When ImageJ ROI auto-detect is on, a sibling RoiSet/.roi overrides the
-        # Mode below — grey it (and its sub-controls) out to make that clear.
-        self.c_roi_imagej_auto.toggled.connect(self._on_roi_imagej_auto_toggled)
-        self._on_roi_imagej_auto_toggled(self.c_roi_imagej_auto.isChecked())
+        # Apply the initial per-mode greying of sub-controls.
+        self._on_roi_mode_changed(self.c_roi_mode.currentText())
         layout.addWidget(sec)
 
         # ── Drift correction ──────────────────────────────────────────────
@@ -2151,7 +2140,8 @@ class BuildMixin:
             "Auto threshold":    "auto",
             "Manual threshold":  "manual",
             "Manual polygon":    "polygon",
-            "From sister TIFF":  "sister",
+            "Sister TIFF":       "sister",
+            "ImageJ ROI":        "imagej",
         }
         max_tl = int(self.s_max_track_len.value())
         return {
@@ -2191,14 +2181,15 @@ class BuildMixin:
             "roi_mask_mode":     self.c_roi_mask_mode.currentText(),
             "roi_bg_sigma":      float(self.s_roi_bg_sigma.value()),
             # Sister-TIFF ROI — passed through whether or not the
-            # explicit "From sister TIFF" mode is picked, so the worker
+            # explicit "Sister TIFF" mode is picked, so the worker
             # can auto-detect a `<base>_green.tif` next to the data and
             # prefer it over the intensity-based ROI when present.
             "roi_sister_suffix":      "_green",
             "roi_sister_autodetect":  True,
-            # ImageJ ROI auto-pairing — find a sibling RoiSet.zip / RoiSet
-            # folder / .roi next to each file and apply it as a polygon ROI.
-            "roi_imagej_autodetect":  bool(self.c_roi_imagej_auto.isChecked()),
+            # ImageJ ROI is now a Mode: only pair a sibling RoiSet.zip /
+            # RoiSet folder / .roi when the user picked "ImageJ ROI".
+            "roi_imagej_autodetect":  (roi_mode_map.get(
+                                        self.c_roi_mode.currentText()) == "imagej"),
             # Per-file polygon ROI lookup.  If this file has a saved
             # polygon, it's sent regardless of the ROI-mode setting and
             # the worker treats it as if mode were "polygon".  Files

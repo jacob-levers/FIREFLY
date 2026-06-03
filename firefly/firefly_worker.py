@@ -829,20 +829,19 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # Per-file polygon overrides the global mode: if a polygon was set
     # for this file in the Import-tab ROI editor, treat it as polygon-mode
     # regardless of what the sidebar says.
-    roi_mode = p.get("roi_mode", "none")
+    roi_mode_user = p.get("roi_mode", "none")   # what the user picked
+    roi_mode = roi_mode_user
     if p.get("roi_polygon"):
         roi_mode = "polygon"
 
-    # Auto-detect a sibling ImageJ ROI (RoiSet.zip / a RoiSet/ folder / *.roi)
-    # next to the input file and use it as a polygon ROI — so a batch picks up
-    # ROIs drawn in ImageJ/Fiji without loading each one by hand.  Skipped for
-    # external-CSV inputs, when a polygon was already set for this file, or when
-    # the user explicitly chose a different ROI mode.  A local copy of `p` is
-    # used so the detected polygon never leaks to the next file in a batch.
-    if (not external_csv
-            and not p.get("roi_polygon")
-            and bool(p.get("roi_imagej_autodetect", True))
-            and roi_mode in ("none", "auto", "manual", "polygon")):
+    # "ImageJ ROI" mode: pair a sibling ImageJ ROI (RoiSet.zip / a RoiSet/
+    # folder / *.roi) found next to the movie and use it as a polygon ROI — so
+    # a batch reuses ROIs drawn in ImageJ/Fiji without loading each by hand.
+    # If none is found, fall back to the whole image (logged).  Skipped for
+    # external-CSV inputs and when a polygon was already set for this file.
+    # A local copy of `p` is used so the polygon never leaks to the next file.
+    if (roi_mode == "imagej" and not external_csv and not p.get("roi_polygon")):
+        _found = False
         try:
             from firefly.analysis import fa_roi as _far
             _roi_path = _far.find_sibling_imagej_roi(
@@ -854,12 +853,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     p = dict(p)
                     p["roi_polygon"] = [poly.tolist() for poly in _polys]
                     roi_mode = "polygon"
-                    _log(f"  NOTE: auto-detected ImageJ ROI "
-                         f"'{os.path.basename(_roi_path)}' "
-                         f"({len(_polys)} region(s)) — using as polygon ROI.  "
-                         f"Set roi_imagej_autodetect=False to disable.")
+                    _found = True
+                    _log(f"  NOTE: ImageJ ROI '{os.path.basename(_roi_path)}' "
+                         f"({len(_polys)} region(s)) — using as polygon ROI.")
         except Exception as _exc:
-            _log(f"  WARN: ImageJ ROI auto-detect failed: {_exc}")
+            _log(f"  WARN: ImageJ ROI load failed: {_exc}")
+        if not _found:
+            _log("  NOTE: ROI mode 'ImageJ ROI' but no sibling RoiSet/.roi "
+                 "found — analysing the whole image.")
+            roi_mode = "none"
 
     # Auto-detect a microscope-exported sister ROI image (e.g.
     # `<base>_green.tif`).  When `roi_mode == "auto_sister"` we ONLY use
@@ -888,11 +890,12 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # auto-detect is on and we found a file.
     if roi_mode == "sister":
         if roi_sister_path is None:
-            _log(f"  NOTE: ROI mode set to 'From sister TIFF' but no "
+            _log(f"  NOTE: ROI mode set to 'Sister TIFF' but no "
                  f"`<base>{roi_sister_suffix}.tif` found — falling back "
                  f"to no ROI.")
             roi_mode = "none"
-    elif (roi_mode in ("none", "auto", "manual")
+    elif (roi_mode_user in ("none", "auto", "manual")
+            and roi_mode in ("none", "auto", "manual")
             and bool(p.get("roi_sister_autodetect", True))
             and roi_sister_path is not None):
         _log(f"  NOTE: found sister ROI image "

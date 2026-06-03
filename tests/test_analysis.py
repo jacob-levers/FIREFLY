@@ -371,6 +371,25 @@ def test_twoway_recovers_planted_interaction():
     assert float(inter0["p_GG"].iloc[0]) > 0.05, "false-positive interaction"
 
 
+def test_twoway_headline_extracts_interaction_and_group():
+    """_twoway_headline pulls the interaction (group×time) and group-main-effect
+    p-values out of the ANOVA table for display on the interaction panel."""
+    tw = pytest.importorskip("firefly.analysis.fa_twoway")
+    if not tw.HAVE_PINGOUIN:
+        pytest.skip("pingouin not installed")
+    from firefly.analysis import fa_compare as fc
+    df = _paired_twofactor_df(interaction=True)
+    res, _ = tw.compute_twoway_anova(df, ["auc_msd"])
+    hl = fc._twoway_headline(res, "auc_msd")
+    assert hl is not None
+    assert hl["interaction_p"] is not None and hl["interaction_p"] < 0.05
+    assert hl["interaction_stars"] in ("*", "**", "***")
+    assert hl["group_p"] is not None
+    # graceful on missing inputs
+    assert fc._twoway_headline(None, "auc_msd") is None
+    assert fc._twoway_headline(res, "no_such_metric") is None
+
+
 def test_twoway_validate_pairing_drops_unmatched():
     tw = pytest.importorskip("firefly.analysis.fa_twoway")
     df = _paired_twofactor_df(interaction=False)

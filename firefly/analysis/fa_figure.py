@@ -255,7 +255,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     ax.set_ylabel("MSD (um2)",fontsize=9)
     ax.set_xscale("log"); ax.set_yscale("log")
     ax.grid(True,which="both",ls=":",alpha=0.3)
-    ax.legend(fontsize=8,framealpha=0.6,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
+    ax.legend(fontsize=8,loc="upper left",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
     sax(ax,"D","MSD Curves")
 
     # E — D distribution
@@ -279,7 +279,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                    label=f"Median={dv.median():.4f}")
         ax.set_xlabel("log10(D)  [um2/s]",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
-        ax.legend(fontsize=8,framealpha=0.6,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
+        ax.legend(fontsize=8,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
     ax.grid(True,ls=":",alpha=0.3)
     sax(ax,"E","Diffusion Coefficient Distribution")
 
@@ -310,7 +310,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
             ax.axvline(xv,color=GRD,ls=ls,lw=1.2,label=lb)
         ax.set_xlabel("Anomalous exponent alpha",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
-        ax.legend(fontsize=7,framealpha=0.6,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
+        ax.legend(fontsize=7,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
     ax.grid(True,ls=":",alpha=0.3)
     sax(ax,"G","Anomalous Exponent Alpha Distribution")
 
@@ -371,7 +371,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.set_xlabel("|Turning angle|  (°)", fontsize=9)
         ax.set_ylabel("Relative frequency", fontsize=9)
         ax.grid(True, ls=":", alpha=0.3)
-        ax.legend(fontsize=7, frameon=False, loc="best")
+        ax.legend(fontsize=7, loc="upper right", framealpha=0.85,
+                  facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
     sax(ax, "I", "Turning Angle Distribution")
 
     # J — Mobile Fraction Over Time
@@ -466,8 +467,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
             ax.plot(t_fit, (1/dwell_tau) * np.exp(-t_fit / dwell_tau),
                     "--", color="#f78166", lw=2,
                     label=f"τ = {dwell_tau:.2f} s")
-            ax.legend(fontsize=8, framealpha=0.6, facecolor=PNL,
-                      edgecolor=GRD, labelcolor=TXT)
+            ax.legend(fontsize=8, loc="upper right", framealpha=0.85,
+                      facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
         ax.set_xlabel("Dwell time  (s)", fontsize=9)
         ax.set_ylabel("Probability density", fontsize=9)
         ax.grid(True, ls=":", alpha=0.3)
@@ -492,7 +493,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
             ax.axvline(xv, color=GRD, ls=ls_, lw=1.2, label=lb)
         ax.set_xlabel("MSS slope  (ν)", fontsize=9)
         ax.set_ylabel("Count", fontsize=9)
-        ax.legend(fontsize=7, framealpha=0.6, facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
+        ax.legend(fontsize=7, loc="upper right", framealpha=0.85, facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
         ax.grid(True, ls=":", alpha=0.3)
     else:
         ax.text(0.5, 0.5, "MSS not computed\n(tracks too short)",

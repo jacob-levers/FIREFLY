@@ -256,36 +256,6 @@ class HandlersMixin:
 
         self._push_roi_mask_params()
 
-    def _on_roi_imagej_auto_toggled(self, checked):
-        """When 'Auto-detect ImageJ ROI' is on, a sibling RoiSet/.roi (when
-        present) is used as the ROI and overrides the Mode dropdown, so grey
-        out Mode and its threshold/projection controls.  (They still apply as a
-        fallback for any file with no sibling ROI — noted in the tooltip.)
-        When off, restore the per-mode enable/disable logic."""
-        on = bool(checked)
-        roi_widgets = ("c_roi_mode", "c_roi_auto_method", "s_roi_threshold",
-                       "sld_roi_threshold", "c_roi_mask_mode",
-                       "s_roi_bg_sigma", "sld_roi_bg_sigma")
-        for name in roi_widgets:
-            w = getattr(self, name, None)
-            if w is not None:
-                w.setEnabled(not on)
-        if on:
-            try:
-                self.c_roi_mode.setToolTip(
-                    "Disabled while 'Auto-detect ImageJ ROI' is on — a sibling "
-                    "RoiSet/.roi is used when present and overrides this Mode "
-                    "(Mode still applies only to files with no sibling ROI).")
-            except AttributeError:
-                pass
-        else:
-            try:
-                self.c_roi_mode.setToolTip("")
-            except AttributeError:
-                pass
-            # Re-apply the normal per-mode greying of sub-controls.
-            self._on_roi_mode_changed(self.c_roi_mode.currentText())
-
     def _on_single_set_roi(self):
         path = self.e_file.text().strip()
         if not path or not os.path.isfile(path):

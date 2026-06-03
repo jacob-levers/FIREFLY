@@ -44,7 +44,8 @@ _LOGD_CENTERS = 0.5 * (_LOGD_BINS[:-1] + _LOGD_BINS[1:])
 # Per-(cell, time point) scalar metrics the two-way ANOVA runs on.  These are
 # the columns produced by fa_compare's `_row` helper.
 SCALAR_METRICS = ["auc_msd", "mob_immob_ratio", "median_D", "median_alpha",
-                  "mean_track_length_s"]
+                  "mean_track_length_s", "n_tracks",
+                  "nongauss_alpha2", "vacf_persistence"]
 
 
 # ── small helpers ───────────────────────────────────────────────────────────

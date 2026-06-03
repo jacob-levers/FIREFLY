@@ -145,8 +145,56 @@ _TP_SERIES_COLORS = ["#3b6ed8", "#f78166", "#56d364", "#d2a8ff",
                      "#ffa657", "#79c0ff", "#e3b341", "#ff7b72"]
 
 
+def _stars_of(p):
+    if p is None or not np.isfinite(p):
+        return ""
+    if p < 0.001: return "***"
+    if p < 0.01:  return "**"
+    if p < 0.05:  return "*"
+    return "ns"
+
+
+def _twoway_headline(twoway_df, metric):
+    """Pull the two-way mixed-ANOVA **Interaction** (group × time) and **Group**
+    main-effect p-values for `metric`, so an interaction plot can show the "do
+    the groups differ when both group AND time are taken into account" result.
+    Returns a dict, or None when unavailable (pingouin missing, <2 groups/time
+    points, or the metric wasn't fitted)."""
+    if twoway_df is None or not len(twoway_df):
+        return None
+    try:
+        a = twoway_df[(twoway_df["section"] == "anova")
+                      & (twoway_df["metric"] == metric)]
+    except Exception:
+        return None
+    if not len(a):
+        return None
+
+    def _p(effect, *cols):
+        r = a[a["effect"] == effect]
+        if not len(r):
+            return None
+        row = r.iloc[0]
+        for c in cols:
+            v = row.get(c)
+            try:
+                v = float(v)
+                if np.isfinite(v):
+                    return v
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    ip = _p("Interaction", "p_GG", "p_unc")          # GG-corrected interaction
+    gp = _p("group", "p_unc")                         # between-subjects main effect
+    if ip is None and gp is None:
+        return None
+    return {"interaction_p": ip, "interaction_stars": _stars_of(ip),
+            "group_p": gp, "group_stars": _stars_of(gp)}
+
+
 def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
-                      group_colors, palette, ylabel=""):
+                      group_colors, palette, ylabel="", headline=None):
     """Group × time-point interaction plot: x = TIME POINTS (in the order the
     user assigned them), one mean±SEM line per group drawn in that group's
     assigned colour — a time-course view.  Cell-level points are jittered
@@ -168,10 +216,10 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                               metric]
 
     # Per-group change across time (first→last time point, paired by cell).
-    # Shown as a compact, line-coloured "p = … / g = …" label, CENTRED between
-    # the time points (so its position reads as the PRE-vs-POST comparison).
+    # Only used as the FALLBACK header when the two-way ANOVA headline isn't
+    # available — otherwise we show the interaction / group p instead.
     change = []   # (text, colour, line-centre height)
-    if len(tp_order) >= 2:
+    if headline is None and len(tp_order) >= 2:
         tp_a, tp_b = tp_order[0], tp_order[-1]
         for gi, grp in enumerate(group_order):
             col = (group_colors or {}).get(grp) \
@@ -225,15 +273,37 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
     ax.legend(frameon=False, loc="lower center", fontsize=8, title="Group",
               title_fontsize=8, ncol=len(group_order))
 
-    # Centred p/g labels, stacked in a clear band ABOVE all the data.  Anchor to
-    # the current top (which already sits above the highest point), then expand
-    # the y-axis so the band never lands on a dot or a line.
-    if change:
-        x_mid = (len(tp_order) - 1) / 2.0          # data x at the centre
-        ymin, ymax = ax.get_ylim()
-        span = (ymax - ymin) or 1.0
-        n = len(change)
-        ax.set_ylim(ymin, ymax + (0.05 + 0.075 * n) * span)
+    # Stats header in a clear band ABOVE all the data.  Prefer the two-way
+    # mixed-ANOVA result — the INTERACTION (group × time) answers "do the groups
+    # differ when both group and time are taken into account" (e.g. both arms
+    # drop but the drug drops more), plus the Group main effect.  Fall back to
+    # the per-group PRE→POST change labels when the ANOVA isn't available.
+    x_mid = (len(tp_order) - 1) / 2.0
+    ymin, ymax = ax.get_ylim()
+    span = (ymax - ymin) or 1.0
+
+    def _pstr(p):
+        return (f"p = {p:.1e}" if p < 0.001 else f"p = {p:.3f}")
+
+    if headline is not None:
+        lines = []
+        if headline.get("interaction_p") is not None:
+            lines.append("Group × Time interaction:  "
+                         f"{_pstr(headline['interaction_p'])}  "
+                         f"{headline['interaction_stars']}")
+        if headline.get("group_p") is not None:
+            lines.append("Group (overall):  "
+                         f"{_pstr(headline['group_p'])}  {headline['group_stars']}")
+        if lines:
+            col = palette.get("SIG", palette.get("TXT", "#e0e0e0"))
+            ax.set_ylim(ymin, ymax + (0.05 + 0.07 * len(lines)) * span)
+            y = ymax + 0.03 * span
+            for t in lines:
+                ax.text(x_mid, y, t, ha="center", va="bottom", fontsize=8.5,
+                        color=col, fontweight="bold")
+                y += 0.07 * span
+    elif change:
+        ax.set_ylim(ymin, ymax + (0.05 + 0.075 * len(change)) * span)
         y = ymax + 0.03 * span
         for t, col, _h in change:           # stack upward, above all data
             ax.text(x_mid, y, t, ha="center", va="bottom", fontsize=8,
@@ -392,9 +462,20 @@ def compare_groups(groups,
     # Per-metric statistics dict — populated as panels render
     stats_records = {}
 
+    # Two-way mixed ANOVA computed UP FRONT (paired: between=group,
+    # within=timepoint, subject=cell) so the interaction panels can show the
+    # interaction / group p as they render.  Reused by the report block later.
+    twoway_df, twoway_msg, pair_warn, paired_df = None, None, None, None
+    if two_factor:
+        paired_df, pair_warn, _dropped = fa_twoway.validate_pairing(summary_df)
+        if pair_warn:
+            print(f"  Two-way pairing: {pair_warn}")
+        twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df)
+        print(f"  Two-way ANOVA: {twoway_msg}")
+
     # ── Render the figure ────────────────────────────────────────────────────
     panel_order = ["msd", "auc", "logd_dist", "mob_immob",
-                   "motion_classes", "track_length",
+                   "motion_classes", "track_length", "track_count",
                    "jdd", "dwell_cdf", "turning_angles", "radial_dist",
                    "van_hove", "vacf"]
     enabled = [p for p in panel_order if p in panels]
@@ -476,7 +557,8 @@ def compare_groups(groups,
         ax = _next_ax()
         if two_factor:
             _interaction_plot(ax, summary_df, "auc_msd", group_order, tp_order,
-                              group_colors, pal, ylabel="AUC (µm²·s)")
+                              group_colors, pal, ylabel="AUC (µm²·s)",
+                              headline=_twoway_headline(twoway_df, "auc_msd"))
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
                     for lbl in labels]
@@ -516,7 +598,8 @@ def compare_groups(groups,
         if two_factor:
             _interaction_plot(ax, summary_df, "mob_immob_ratio", group_order,
                               tp_order, group_colors, pal,
-                              ylabel="Mobile/Immobile ratio")
+                              ylabel="Mobile/Immobile ratio",
+                              headline=_twoway_headline(twoway_df, "mob_immob_ratio"))
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "mob_immob_ratio"].values
                     for lbl in labels]
@@ -611,6 +694,22 @@ def compare_groups(groups,
                     for lbl in labels]
             omn, pw = _stat_test_n(arrs, labels)
             stats_records["mean_track_length_s"] = {"omnibus": omn, "pairwise": pw}
+
+    # ── 6b. Track count (trajectories detected per group) ─────────────────────
+    if "track_count" in panels:
+        ax = _next_ax()
+        if two_factor:
+            _interaction_plot(ax, summary_df, "n_tracks", group_order, tp_order,
+                              group_colors, pal, ylabel="Tracks (n)",
+                              headline=_twoway_headline(twoway_df, "n_tracks"))
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, "n_tracks"].values
+                    for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal,
+                             ylabel="Tracks (n)",
+                             record_stats=stats_records, metric_name="n_tracks",
+                             xtick_labels=bar_xticks)
+        ax.set_title("Tracks detected")
 
     # ── 7. JDD: per-population D + fraction (N groups) ────────────────────────
     if "jdd" in panels:
@@ -827,7 +926,8 @@ def compare_groups(groups,
         if two_factor:
             _interaction_plot(ax, summary_df, "nongauss_alpha2", group_order,
                               tp_order, group_colors, pal,
-                              ylabel="Non-Gaussian α₂")
+                              ylabel="Non-Gaussian α₂",
+                              headline=_twoway_headline(twoway_df, "nongauss_alpha2"))
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "nongauss_alpha2"]
                     .dropna().to_numpy() for lbl in labels]
@@ -843,7 +943,8 @@ def compare_groups(groups,
         if two_factor:
             _interaction_plot(ax, summary_df, "vacf_persistence", group_order,
                               tp_order, group_colors, pal,
-                              ylabel="VACF persistence (lag 1)")
+                              ylabel="VACF persistence (lag 1)",
+                              headline=_twoway_headline(twoway_df, "vacf_persistence"))
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "vacf_persistence"]
                     .dropna().to_numpy() for lbl in labels]
@@ -986,14 +1087,10 @@ def compare_groups(groups,
     # Paired design: between=group, within=timepoint, subject=cell.  Scalars run
     # directly; the curve graphs (MSD, LogD) get a per-time-point group×(lag|bin)
     # drill-down because pingouin can't fit 1-between + 2-within in one model.
-    twoway_df, twoway_msg, pair_warn = None, None, None
+    # twoway_df / twoway_msg / pair_warn / paired_df were already computed up
+    # front (so the interaction panels could use them) — reuse here.
     drilldown = {}
     if two_factor:
-        paired_df, pair_warn, _dropped = fa_twoway.validate_pairing(summary_df)
-        if pair_warn:
-            print(f"  Two-way pairing: {pair_warn}")
-        twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df)
-        print(f"  Two-way ANOVA: {twoway_msg}")
         # Build per-cell curve records, restricted to the paired cell set.
         paired_cells = (set(zip(paired_df["group"], paired_df["cell"]))
                         if paired_df is not None and len(paired_df) else set())
