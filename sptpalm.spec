@@ -71,6 +71,18 @@ try:
 except ImportError:
     pass
 
+# numba / llvmlite — trackpy's FAST locate engine.  trackpy imports numba
+# lazily (inside its refine path), so PyInstaller's static analysis misses it;
+# without these the frozen app silently falls back to the ~5-10x slower
+# pure-Python locate engine, which dominates the auto-threshold harvest.
+# PyInstaller's bundled numba/llvmlite hooks pull in the LLVM shared library.
+try:
+    import numba  # noqa: F401
+    hidden += collect_submodules("numba")
+    hidden += collect_submodules("llvmlite")
+except ImportError:
+    pass
+
 hidden += [
     "czifile", "aicspylibczi", "imagecodecs",
     "tifffile",
@@ -147,6 +159,8 @@ for _pkg in ("numpy", "pandas", "scipy", "scikit-image", "scikit-learn",
              "PySide6", "shiboken6", "qtpy", "superqt", "pydantic",
              "imageio", "scikit-image", "cachey", "lazy_loader",
              "pint", "app-model", "in-n-out", "psygnal",
+             # numba/llvmlite do importlib.metadata version lookups at import.
+             "numba", "llvmlite",
              # pingouin (Compare-tab two-way ANOVA) + deps do runtime
              # importlib.metadata version lookups; without .dist-info the
              # frozen import raises PackageNotFoundError.
