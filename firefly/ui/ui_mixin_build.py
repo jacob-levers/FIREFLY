@@ -553,7 +553,11 @@ class BuildMixin:
         self.s_minmass_false_rate.setSingleStep(1.0)
         self.s_minmass_false_rate.setValue(0.0)
         self.s_minmass_false_rate.setSuffix(" %")
-        self.s_minmass_false_rate.setSpecialValueText("off (use Sensitivity)")
+        # Keep the special text SHORT — a long string here inflates the
+        # spinbox's minimum size hint, which (with the sidebar's fixed width and
+        # horizontal scrollbar disabled) would clip the whole parameters panel.
+        self.s_minmass_false_rate.setSpecialValueText("off")
+        self.s_minmass_false_rate.setMaximumWidth(160)
         self.s_minmass_false_rate.setToolTip(
             "Advanced — max false-track rate (linkability sweep only):\n"
             "Directly caps the measured fraction of 1–2-frame spurious\n"
