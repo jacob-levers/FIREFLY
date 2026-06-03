@@ -302,7 +302,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         # Honest label for the floor pile-up.
         if pct_imm >= 0.5:
             ax.axvline(np.log10(_D_RES_FLOOR),color=TXT,ls=":",lw=1.0,alpha=0.5)
-            ax.text(0.02, 0.97,
+            # Sit the note in the empty gap to the RIGHT of the floor pile-up
+            # bar (which hugs the left edge) so the text never overlaps it.
+            ax.text(0.30, 0.97,
                     f"immobile / below\nresolution: {pct_imm:.0f}%",
                     transform=ax.transAxes, fontsize=7, color=TXT,
                     va="top", ha="left", alpha=0.9)
