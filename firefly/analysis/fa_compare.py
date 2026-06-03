@@ -42,13 +42,18 @@ def _replicate_colors(k):
 
 
 def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
-                     ylabel="", record_stats=None, metric_name=""):
+                     ylabel="", record_stats=None, metric_name="",
+                     xtick_labels=None):
     """Bar chart with mean ± SEM and individual replicate dots, generalised
     to N groups.
 
     For 2 groups: shows pairwise stars on a bracket (matches lab style).
     For 3+ groups: shows omnibus ANOVA / Kruskal p-value as a panel
-    annotation; full pairwise comparisons go to record_stats[metric_name]."""
+    annotation; full pairwise comparisons go to record_stats[metric_name].
+
+    `xtick_labels` overrides the x-axis tick text (display only — `labels`
+    still drives the statistics); used to put short tokens on the axis when
+    there are many groups, with the full names carried by the shared legend."""
     fill = palette["BAR_FILL"]
     sig_col = palette["SIG"]
 
@@ -76,7 +81,11 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                        c=[rep_colors[k] for k in range(len(a))],
                        s=34, zorder=3, edgecolors=colors[i], linewidths=0.6)
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=15 if n > 3 else 0)
+    disp = list(xtick_labels) if xtick_labels is not None else list(labels)
+    _short = all(len(str(t)) <= 6 for t in disp)
+    ax.set_xticklabels(disp, rotation=0 if _short else (30 if n > 3 else 0),
+                       ha="center" if _short else ("right" if n > 3 else "center"),
+                       fontsize=8 if n > 6 else 9)
     ax.set_ylabel(ylabel)
 
     # Stats
@@ -374,6 +383,12 @@ def compare_groups(groups,
     for i, gf in enumerate(group_factor):
         group_colors.setdefault(gf, colors[i])
 
+    # With many groups the full names won't fit on a bar x-axis (they rotate
+    # into an unreadable smear), so use short numeric tokens on the axis and
+    # carry the full names in the shared legend.  Threshold: >4 groups.
+    many_groups = n_groups > 4
+    bar_xticks = [str(i + 1) for i in range(n_groups)] if many_groups else labels
+
     # Per-metric statistics dict — populated as panels render
     stats_records = {}
 
@@ -467,7 +482,7 @@ def compare_groups(groups,
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="AUC (µm²·s)",
-                             record_stats=stats_records, metric_name="auc_msd")
+                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks)
         ax.set_title("Area Under the Curve")
 
     # ── 3. LogD frequency distribution ────────────────────────────────────────
@@ -507,7 +522,7 @@ def compare_groups(groups,
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Mobile/Immobile ratio",
-                             record_stats=stats_records, metric_name="mob_immob_ratio")
+                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks)
         ax.set_title("Mobile/Immobile Ratio")
 
     # ── 5. Motion class fractions (grouped bars, N groups) ────────────────────
@@ -819,7 +834,7 @@ def compare_groups(groups,
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Non-Gaussian α₂",
                              record_stats=stats_records,
-                             metric_name="nongauss_alpha2")
+                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks)
         ax.set_title("Population heterogeneity (α₂)")
 
     # ── VACF persistence (directional memory) ─────────────────────────────────
@@ -835,18 +850,58 @@ def compare_groups(groups,
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="VACF persistence (lag 1)",
                              record_stats=stats_records,
-                             metric_name="vacf_persistence")
+                             metric_name="vacf_persistence", xtick_labels=bar_xticks)
         ax.set_title("Directional persistence (VACF lag 1)")
 
-    # ── Suptitle: Group A (n=…) vs Group B (n=…) [vs Group C …] ───────────────
-    parts = [f"{labels[i]}  (n={len(all_summaries[i])})" for i in range(n_groups)]
-    fig.suptitle("   vs   ".join(parts),
-                 fontsize=12, fontweight="bold", color=pal["TXT"])
+    # ── Single shared legend ─────────────────────────────────────────────────
+    # Per-panel `loc="best"` legends overlap the data badly once there are many
+    # groups / time points, and they repeat the same key in every panel.  Drop
+    # every per-panel legend and place ONE deterministic legend (group order)
+    # in a reserved bottom strip so nothing covers the plots.  When the bars use
+    # short numeric x-tick tokens, prefix the legend entries with the same
+    # number so the axis ↔ legend mapping is explicit.
+    from matplotlib.lines import Line2D
+    for ax in axes[:n_plots]:
+        _lg = ax.get_legend()
+        if _lg is not None:
+            _lg.remove()
+
+    number_legend = many_groups and not two_factor
+    leg_handles, leg_labels = [], []
+    for i in range(n_groups):
+        leg_handles.append(Line2D([0], [0], color=colors[i], marker="o",
+                                   lw=2.0, ms=5))
+        tag = f"{i + 1}.  " if number_legend else ""
+        leg_labels.append(f"{tag}{labels[i]}  (n={len(all_summaries[i])})")
+
+    legend_rows = 0
+    if leg_handles:
+        ncol = min(len(leg_labels), 4)
+        legend_rows = (len(leg_labels) + ncol - 1) // ncol
+        fig.legend(leg_handles, leg_labels, loc="lower center", ncol=ncol,
+                   frameon=False, fontsize=8, bbox_to_anchor=(0.5, 0.0),
+                   labelcolor=pal["TXT"])
+
+    # ── Suptitle ──────────────────────────────────────────────────────────────
+    # "A vs B [vs C]" only stays readable for a few groups; beyond that it
+    # overflows the figure, so collapse to a count (the names + n live in the
+    # shared legend).
+    if n_groups <= 3:
+        parts = [f"{labels[i]}  (n={len(all_summaries[i])})" for i in range(n_groups)]
+        suptitle = "   vs   ".join(parts)
+    elif two_factor:
+        suptitle = (f"{len(group_order)} groups × {len(tp_order)} time points  "
+                    f"({n_groups} cells)")
+    else:
+        suptitle = f"Comparison of {n_groups} groups"
+    fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"])
     for ax in axes[:n_plots]:
         ax.set_facecolor(pal["PNL"])
         for spine in ax.spines.values():
             spine.set_edgecolor(pal["GRD"])
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    # Reserve a bottom strip for the shared legend (grows with its row count).
+    bottom = min(0.18, 0.03 + 0.026 * legend_rows) if legend_rows else 0.0
+    fig.tight_layout(rect=[0, bottom, 1, 0.96])
 
     # ── Build statistics dataframe (per metric × pairwise) ────────────────────
     # Bonferroni correction across pairwise comparisons WITHIN each metric:
