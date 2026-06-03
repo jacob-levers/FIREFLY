@@ -1051,3 +1051,21 @@ def test_mss_handles_frame_as_index_and_column():
     mss = s.compute_mss(tracks, 0.1, 0.05)
     assert len(mss) == 60                            # computed, did not crash
     assert 0.3 <= float(mss["mss_slope"].median()) <= 0.65
+
+
+def test_audit_mass_scale_noop_on_trackpy():
+    """The Torch/Trackpy mass-scale self-audit must be a clean no-op on the
+    trackpy backend (returns None, never raises) — it only does work when a
+    Torch run will consume the trackpy-harvested threshold."""
+    from firefly.analysis.fa_localize import _audit_mass_scale
+    import pandas as pd
+    H = pd.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0], "frame": [0, 0],
+                      "mass": [10.0, 20.0], "window_id": [0, 0]})
+    stack = np.zeros((4, 32, 32), dtype=np.float32)
+    r = _audit_mass_scale(stack, [(0, 4)], H, diameter=7, percentile=64,
+                          bg_radius=10, bg_method="uniform_filter", workers=1,
+                          backend="trackpy", log_cb=lambda m: None)
+    assert r is None
+    # empty harvest / no windows are also safe
+    assert _audit_mass_scale(stack, [], H.iloc[:0], 7, 64, 10,
+                             "uniform_filter", 1, "torch", lambda m: None) is None

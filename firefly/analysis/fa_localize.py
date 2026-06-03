@@ -2266,6 +2266,65 @@ def _static_minmass(masses, sensitivity, diag, log_fn):
     return mm
 
 
+def _audit_mass_scale(stack, windows, H, diameter, percentile,
+                      bg_radius, bg_method, workers, backend, log_cb=None):
+    """Self-audit the trackpy↔Torch mass calibration.
+
+    The auto-threshold harvest always runs through trackpy, so the chosen
+    minmass is in *trackpy*-mass units.  A Torch/CUDA production run rescales
+    its own mass column by the fixed `TorchBackend._TP_MASS_SCALE` constant so
+    that the same threshold applies — but that's a single hard-coded calibration
+    that could drift for a different camera/PSF.  When the run will use Torch,
+    re-localise a few frames of the first window with the Torch backend and
+    report the empirical Torch/Trackpy median-mass ratio (target ≈ 1.0) so a
+    drifted calibration is visible in the log instead of silently
+    mis-thresholding.  Best-effort: returns the ratio (float) or None, and never
+    raises except on cancellation.  No-op on the trackpy backend.
+    """
+    _log = log_cb or print
+    try:
+        impl = _resolve_backend(backend)
+        if getattr(impl, "name", "") != "torch" or not len(H) or not windows:
+            return None
+        s0, e0 = windows[0]
+        e0 = min(e0, s0 + 32)                 # a handful of frames → robust median
+        blk = np.asarray(stack[s0:e0])
+        if blk.size == 0:
+            return None
+        pp = preprocess_stack(blk, bg_radius=bg_radius,
+                              bg_method=bg_method, workers=workers)
+        tdf = impl.localise(pp, diameter=diameter, minmass=0.0,
+                            percentile=percentile, workers=workers,
+                            chunk_size=len(pp))
+        tm = np.asarray(tdf["mass"].values, dtype=float)
+        tm = tm[np.isfinite(tm) & (tm > 0)]
+        # Trackpy masses from the SAME physical frames (window 0, frame < cap).
+        h0 = H[(H["window_id"] == 0) & (H["frame"] < (e0 - s0))]
+        hm = np.asarray(h0["mass"].values, dtype=float)
+        hm = hm[np.isfinite(hm) & (hm > 0)]
+        if tm.size < 30 or hm.size < 30:
+            return None
+        # Compare the BRIGHT tail (p90), not the median: the detectors find
+        # different numbers of noise blips at minmass=0, which skews the median,
+        # whereas the upper tail is dominated by real spots in both — the
+        # population the _TP_MASS_SCALE calibration actually targets.  This is a
+        # coarse population-level sanity check, not a per-spot calibration.
+        ratio = float(np.percentile(tm, 90) / np.percentile(hm, 90))
+        # Only flag EGREGIOUS drift (>2x either way); modest deviation is normal
+        # population variation and shouldn't cry wolf.
+        egregious = not (0.5 <= ratio <= 2.0)
+        _log(f"  Mass-scale check (Torch vs Trackpy, coarse): bright-tail ratio "
+             f"= {ratio:.2f}  (≈1.0 = calibration holds)" +
+             ("  — WARNING: large mismatch; auto minmass may transfer poorly to "
+              "the Torch run — sanity-check detection or set minmass manually"
+              if egregious else ""))
+        return ratio
+    except _Cancelled:
+        raise
+    except Exception:
+        return None
+
+
 def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                      sensitivity="balanced", frame_sample=80,
                      bg_radius=50, bg_method="uniform_filter",
@@ -2356,7 +2415,7 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         # ── Linkability sweep (primary) ──────────────────────────────────────
         chosen = None
         try:
-            Hq, n_drop, qinfo = _quality_pregate(H, diameter)
+            Hq, n_drop, _qinfo = _quality_pregate(H, diameter)
             diag["quality_dropped"] = int(n_drop)
             mq = np.asarray(Hq["mass"].values, dtype=float)
             mq = mq[np.isfinite(mq) & (mq > 0)]
@@ -2410,6 +2469,18 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         _log(f"  Auto-threshold [{diag['method']}, {str(sensitivity).lower()}]: "
              f"minmass = {mm:.4g}  (from {diag['n_candidates']} candidates over "
              f"{diag['frame_sample']} frames in {len(windows)} window(s))")
+        # Self-audit the trackpy↔Torch mass calibration (no-op unless the run
+        # will use the Torch backend) so a drifted _TP_MASS_SCALE is visible.
+        try:
+            _ratio = _audit_mass_scale(stack, windows, H, diameter, percentile,
+                                       bg_radius, bg_method, workers, backend,
+                                       log_cb)
+            if _ratio is not None:
+                diag["torch_trackpy_mass_ratio"] = _ratio
+        except _Cancelled:
+            raise
+        except Exception:
+            pass
         return mm, diag
 
     except _Cancelled:
