@@ -1515,10 +1515,11 @@ def save_comparison_circular_statistics(groups_angles, *,
                 "Per-replicate tests treat each replicate (movie / cell) "
                 "as ONE data point, so n = the number of replicates — "
                 "the correct biological unit.",
-                "Welch's t-test on per-replicate κ and R̄ asks whether the "
-                "turning-angle concentration differs between groups; "
-                "Watson-Williams F on per-replicate μ tests the mean "
-                "direction.",
+                "Per-replicate κ and R̄ (turning-angle concentration) are "
+                "compared with a normality-checked test — one-way ANOVA / "
+                "Welch's t when normal, Kruskal-Wallis / Mann-Whitney otherwise "
+                "(the test used is named on each row); Watson-Williams F on "
+                "per-replicate μ tests the mean direction.",
                 "Pooled-angle tests (Watson-Williams / Mardia-Watson-"
                 "Wheeler / Wallraff / Kuiper on all localisations) are "
                 "deliberately NOT shown: with ~10^5 pooled angles they "
@@ -1680,8 +1681,13 @@ def save_comparison_circular_statistics(groups_angles, *,
                         _p_stars(pw["p"]),
                     ])
 
-            _push_per_rep("per_replicate_kappa_test", "Welch κ (per-replicate)")
-            _push_per_rep("per_replicate_rbar_test",  "Welch R̄ (per-replicate)")
+            # Prefix names the METRIC only — the actual test (auto-selected by a
+            # normality check: ANOVA/Welch when normal, Kruskal-Wallis/Mann-
+            # Whitney otherwise) is shown in parentheses per row.  (It used to
+            # say "Welch κ", which contradicted rows whose test was Kruskal-
+            # Wallis / Mann-Whitney.)
+            _push_per_rep("per_replicate_kappa_test", "κ concentration (per-replicate)")
+            _push_per_rep("per_replicate_rbar_test",  "R̄ resultant length (per-replicate)")
 
             mu_ww = comp_tests.get("per_replicate_mu_ww")
             if mu_ww is not None and mu_ww.get("p") is not None:
