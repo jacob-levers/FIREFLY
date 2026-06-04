@@ -765,7 +765,13 @@ def compare_groups(groups,
                            label=(grp_label if not label_done else None))
                 label_done = True
         if any_data:
-            tick_labels = ["Immobile", "Mobile", "Fast"][:max_pop_overall]
+            # Label the JDD populations Slow/Medium/Fast — matching the
+            # single-run figure (panel K) so the two plots use ONE vocabulary.
+            # Deliberately NOT "Immobile/Mobile": those words name the MSD
+            # motion classes (Immobile/Confined/Brownian/Directed), a separate
+            # analysis, and reusing them here invites cross-reading. These are
+            # diffusion-coefficient populations from the jump-distance fit.
+            tick_labels = ["Slow", "Medium", "Fast"][:max_pop_overall]
             if max_pop_overall == 1: tick_labels = ["All"]
             ax.set_xticks(np.arange(max_pop_overall))
             ax.set_xticklabels(tick_labels)
