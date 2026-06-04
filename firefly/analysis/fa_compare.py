@@ -734,19 +734,13 @@ def compare_groups(groups,
                 omn, pw = _stat_test_n(arrs, labels)
                 stats_records[f"motion_frac_{cname}"] = {"omnibus": omn, "pairwise": pw}
         ax.set_xticks(x)
-        # Always show the GROUP NAME + its replicate n on the axis — the numeric
-        # stand-ins (bar_xticks) hid the names once there were >4 groups, and a
-        # shallow 15° rotation let long names overlap into an unreadable smear.
-        # Angle scales with the group count; the n is right under each bar so
-        # the per-group replicate count is unmissable.
-        # 2-line "name / (n=…)" reads cleanly when horizontal; switch to a
-        # compact single line once rotated so the angled labels don't grow tall
-        # enough to collide with the panel below.
+        # Show the GROUP NAME on the axis — the numeric stand-ins (bar_xticks)
+        # hid the names once there were >4 groups, and a shallow 15° rotation let
+        # long names overlap into an unreadable smear.  Angle scales with the
+        # group count so names stay legible.  The replicate n is NOT repeated
+        # here — it lives in the shared bottom legend.
         _mc_rot = 0 if n_groups <= 2 else (30 if n_groups <= 6 else 45)
-        _sep = "\n" if _mc_rot == 0 else "  "
-        mc_labels = [f"{labels[gi]}{_sep}(n={len(all_summaries[gi])})"
-                     for gi in range(n_groups)]
-        ax.set_xticklabels(mc_labels, rotation=_mc_rot,
+        ax.set_xticklabels(labels, rotation=_mc_rot,
                            ha="center" if _mc_rot == 0 else "right",
                            rotation_mode="anchor",
                            fontsize=8 if n_groups <= 6 else 7)
