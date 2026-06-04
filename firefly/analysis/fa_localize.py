@@ -1545,7 +1545,8 @@ class TorchBackend(LocaliserBackend):
                 else:
                     print(f"  WARNING: Torch device '{dev_str}' is not usable on "
                           f"this machine (no kernel image / unsupported GPU "
-                          f"architecture). Falling back to Torch — CPU.")
+                          f"architecture). Falling back to the Torch backend on "
+                          f"CPU.")
                     committed = "cpu"
                 self._validated_device = committed
             dev_str = committed

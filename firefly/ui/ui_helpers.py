@@ -11,6 +11,7 @@ import sys
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from firefly import crash_reporter
+from firefly.analysis.fa_constants import MOTION_CLASS_COLORS, MOTION_CLASS_ORDER
 from firefly.ui.ui_theme import _THEME
 
 
@@ -23,16 +24,13 @@ _NAPARI_WELCOME_PHRASES = (
 )
 
 
-_MOTION_PALETTE = {
-    "Immobile":  "#e05252",   # red
-    "Confined":  "#f5a623",   # orange
-    "Brownian":  "#4a90d9",   # blue
-    "Directed":  "#7ed321",   # green
-    "Unknown":   "#aaaaaa",   # grey
-}
+# Canonical motion-class colours/order live in fa_constants so the napari
+# overlay, the single-run figure and the comparison figure can never drift
+# apart.  (This palette is the reference scheme the others were standardised on.)
+_MOTION_PALETTE = dict(MOTION_CLASS_COLORS)
 
 
-_MOTION_ORDER = ["Immobile", "Confined", "Brownian", "Directed", "Unknown"]
+_MOTION_ORDER = list(MOTION_CLASS_ORDER) + ["Unknown"]
 
 
 _MOTION_CMAP_NAME = "firefly_motion"

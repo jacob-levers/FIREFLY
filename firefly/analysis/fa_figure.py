@@ -16,13 +16,13 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 from firefly.analysis.fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
 from firefly.analysis.fa_diffusion import classify_motion, msd_linear
+from firefly.analysis.fa_constants import MOTION_CLASS_COLORS, MOTION_CLASS_ORDER
 
 
-MC   = {"Immobile":"#e05252","Confined":"#f5a623","Brownian":"#4a90d9",
-        "Directed":"#7ed321","Unknown":"#aaaaaa"}
-
-
-MORD = ["Immobile","Confined","Brownian","Directed"]
+# Canonical motion-class colours / order — shared with the comparison figure and
+# the napari overlay (see fa_constants) so a class is the same colour everywhere.
+MC   = dict(MOTION_CLASS_COLORS)
+MORD = list(MOTION_CLASS_ORDER)
 
 # Resolution floor for the log10(D) distribution panels.  Below this, the
 # fitted D of a flat-MSD (immobile) track is indistinguishable from zero — both
@@ -257,10 +257,10 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         po,_  = curve_fit(msd_linear,t6[ok6],m6[ok6],p0=[0.01,0],maxfev=2000)
         te    = np.linspace(t6[0],lt[-1],200)
         ax.plot(te,msd_linear(te,*po),"--",color="#f78166",lw=2,
-                label=f"Fit D={po[0]:.4f} um2/s")
+                label=f"Fit D={po[0]:.4f} µm²/s")
     except Exception: pass
     ax.set_xlabel("Lag time (s)",fontsize=9)
-    ax.set_ylabel("MSD (um2)",fontsize=9)
+    ax.set_ylabel("MSD (µm²)",fontsize=9)
     ax.set_xscale("log"); ax.set_yscale("log")
     ax.grid(True,which="both",ls=":",alpha=0.3)
     ax.legend(fontsize=8,loc="upper left",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
@@ -308,7 +308,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                     f"immobile / below\nresolution: {pct_imm:.0f}%",
                     transform=ax.transAxes, fontsize=7, color=TXT,
                     va="top", ha="left", alpha=0.9)
-        ax.set_xlabel("log10(D)  [um2/s]",fontsize=9)
+        ax.set_xlabel("log10(D)  [µm²/s]",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
         ax.legend(fontsize=8,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
     ax.grid(True,ls=":",alpha=0.3)
@@ -651,7 +651,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     ma = diff_df["alpha"].dropna().median()
     fig.suptitle(
         f"FIREFLY Analysis  |  {diff_df.shape[0]:,} trajectories  |  "
-        f"Median D = {md:.4f} um2/s  |  Median alpha = {ma:.2f}",
+        f"Median D = {md:.4f} µm²/s  |  Median alpha = {ma:.2f}",
         fontsize=13,color=TXT,y=0.97,fontweight="bold")
 
     import io as _io

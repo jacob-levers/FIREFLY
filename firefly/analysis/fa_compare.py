@@ -5,6 +5,7 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 from __future__ import annotations
 
 import os
+from firefly.analysis.fa_constants import MOTION_CLASS_COLORS, MOTION_CLASS_ORDER
 from firefly.analysis.fa_theme import _theme_palette
 from firefly.analysis.fa_palmtracer import load_summary_from_folder
 
@@ -687,11 +688,12 @@ def compare_groups(groups,
     # ── 5. Motion class fractions (stacked bars: x = population, colour = class) ─
     if "motion_classes" in panels:
         ax = _next_ax()
-        classes = ["Immobile", "Confined", "Brownian", "Directed"]
-        # Fixed per-class colours so the legend reads the same across every
-        # comparison and on every theme: Immobile=red, Confined=yellow,
-        # Brownian=green, Directed=blue.
-        class_colors = ["#e45756", "#eeca3b", "#54a24b", "#4c78a8"]
+        # Canonical motion-class colours/order — shared with the single-run
+        # figure AND the napari viewer (fa_constants) so a class is the same
+        # colour everywhere: Immobile=red, Confined=orange, Brownian=blue,
+        # Directed=green.
+        classes = list(MOTION_CLASS_ORDER)
+        class_colors = [MOTION_CLASS_COLORS[c] for c in classes]
         def _txt_on(hexcol):
             """Black or white label text, whichever contrasts with the fill."""
             h = hexcol.lstrip("#")

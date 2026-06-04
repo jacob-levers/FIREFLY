@@ -48,3 +48,20 @@ def _dim_size(v, default=1):
     if isinstance(v, tuple):
         return int(v[1])
     return int(v) if v is not None else default
+
+
+# ── Canonical motion-class colours ────────────────────────────────────────────
+# ONE source of truth so EVERY view draws the same motion class in the same
+# colour — the single-run figure, the group-comparison figure, AND the napari
+# overlay.  They had drifted apart (the comparison figure used a different
+# scheme from the viewer + single-run figure), which read as a mislabel.
+# Standardised on the VIEWER's scheme: Immobile = red, Confined = orange,
+# Brownian = blue, Directed = green, Unknown = grey.
+MOTION_CLASS_ORDER  = ["Immobile", "Confined", "Brownian", "Directed"]
+MOTION_CLASS_COLORS = {
+    "Immobile": "#e05252",   # red
+    "Confined": "#f5a623",   # orange
+    "Brownian": "#4a90d9",   # blue
+    "Directed": "#7ed321",   # green
+    "Unknown":  "#aaaaaa",   # grey
+}
