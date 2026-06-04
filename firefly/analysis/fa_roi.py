@@ -377,7 +377,9 @@ def apply_roi_mask(locs, mask):
     Parameters
     ----------
     locs : DataFrame with columns 'x', 'y', 'frame', in pixels
-    mask : bool array (Y, X)      — mean-projection mode: same mask every frame
+    mask : bool array (Y, X)      — static ROI: the SAME mask for every frame
+                                    (whatever its source: sister TIFF, polygon,
+                                    or an intensity-projection threshold)
            bool array (T, Y, X)   — per-frame mode: each frame gets its own mask
 
     Returns
@@ -388,7 +390,8 @@ def apply_roi_mask(locs, mask):
     yi = np.clip(locs["y"].values.astype(int), 0, mask.shape[-2] - 1)
 
     if mask.ndim == 2:
-        # Mean-projection mode — same mask for every localisation
+        # Static ROI — the same mask for every localisation (the mask's
+        # source — sister TIFF / polygon / threshold — is logged upstream).
         inside = mask[yi, xi]
     else:
         # Per-frame mode — look up the mask for each localisation's frame
@@ -406,7 +409,7 @@ def apply_roi_mask(locs, mask):
 
     filtered  = locs[inside].reset_index(drop=True)
     n_removed = len(locs) - len(filtered)
-    mode_str  = "per-frame" if mask.ndim == 3 else "mean-projection"
+    mode_str  = "per-frame" if mask.ndim == 3 else "static"
     print(f"  ROI filter ({mode_str}): kept {len(filtered):,} / {len(locs):,} "
           f"localisations  ({n_removed:,} outside ROI removed)")
     return filtered
