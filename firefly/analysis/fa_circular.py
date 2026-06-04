@@ -1686,8 +1686,8 @@ def save_comparison_circular_statistics(groups_angles, *,
             # Whitney otherwise) is shown in parentheses per row.  (It used to
             # say "Welch κ", which contradicted rows whose test was Kruskal-
             # Wallis / Mann-Whitney.)
-            _push_per_rep("per_replicate_kappa_test", "κ concentration (per-replicate)")
-            _push_per_rep("per_replicate_rbar_test",  "R̄ resultant length (per-replicate)")
+            _push_per_rep("per_replicate_kappa_test", "κ (per-replicate)")
+            _push_per_rep("per_replicate_rbar_test",  "R̄ (per-replicate)")
 
             mu_ww = comp_tests.get("per_replicate_mu_ww")
             if mu_ww is not None and mu_ww.get("p") is not None:
@@ -1722,7 +1722,7 @@ def save_comparison_circular_statistics(groups_angles, *,
                     colLabels=["Test  ·  Comparison", "Statistic",
                                "p-value", "sig"],
                     cellLoc="left", colLoc="left",
-                    colWidths=[0.55, 0.25, 0.13, 0.07],
+                    colWidths=[0.60, 0.25, 0.10, 0.05],
                     bbox=[0.0, 0.0, 1.0, 1.0])
                 tbl.auto_set_font_size(False)
                 tbl.set_fontsize(8.5)
