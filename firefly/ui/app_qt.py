@@ -2683,7 +2683,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self.batch_progress.setFormat("Starting…")
         self.batch_stage_label.setText("Starting…")
         self.batch_subprogress.setValue(0)
-        self.batch_subprogress.setFormat("")
+        self.batch_subprogress.setFormat("Preparing…")
         self.batch_subprogress.show()
         self.run_results.reset("Batch in progress…")
         try:
@@ -2858,6 +2858,19 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         # do NOT auto-push into napari here — a large result can exhaust the GPU
         # backend and hard-crash the app, and loading on demand is clearer.
 
+    def _handle_file_starting(self, payload: dict):
+        """A new series is starting in a batch — update the overall-batch bar to
+        show how many files remain.  `index` is 1-based (the file about to run),
+        so `index - 1` files are already done.  The top bar then tracks this
+        file's per-step progress."""
+        i, total = payload.get("index", 0), payload.get("total", 0)
+        if total:
+            done = max(0, i - 1)
+            left = max(0, total - done)
+            self.batch_subprogress.setValue(int(100 * done / total))
+            self.batch_subprogress.setFormat(
+                f"{left} of {total} file(s) left   ·   {done} done")
+
     def _handle_file_done(self, payload: dict):
         """One series in a batch finished successfully — not the terminal msg.
         ('file' here = 'series' in the GUI sense — the batch list now has
@@ -2869,12 +2882,13 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self.statusBar().showMessage(
             f"Batch: {i} / {total} series complete  ({n_tracks:,} tracks)")
         if total:
-            pct = int(100 * i / total)
-            self.batch_progress.setValue(pct)
-            self.batch_progress.setFormat(f"Batch  {i}/{total}  ({pct}%)")
-            self.batch_subprogress.setValue(pct)
+            # Bottom bar = overall BATCH position: how many files are LEFT to
+            # analyse (the top bar already tracks the current file's step + %).
+            left = max(0, total - i)
+            self.batch_subprogress.setValue(int(100 * i / total))
             self.batch_subprogress.setFormat(
-                f"Last: {stem}  ({n_tracks:,} tracks)")
+                f"{left} of {total} file(s) left   ·   {i} done"
+                if left else f"All {total} file(s) done — finishing…")
 
     def _handle_file_error(self, payload: dict):
         """One series in a batch failed — log it, batch continues."""

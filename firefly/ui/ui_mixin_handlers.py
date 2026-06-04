@@ -596,6 +596,9 @@ class HandlersMixin:
                 # messages naturally overwrite as they arrive.
                 try:    self.mass_hist.reset()
                 except AttributeError: pass
+                # Update the overall-batch bar (files remaining).
+                try:    self._handle_file_starting(payload)
+                except AttributeError: pass
             elif kind == "file_done":
                 self._handle_file_done(payload)
             elif kind == "file_error":
@@ -621,9 +624,13 @@ class HandlersMixin:
         if last_progress is not None:
             pct, msg = last_progress
             progress_widget.setValue(pct)
-            # Progress bar shows just the % (clean look).  Verbose stage
-            # info goes above it in the stage label.
-            progress_widget.setFormat(f"{pct}%")
+            # Show the current step IN the bar alongside the % so the bar is
+            # self-describing (e.g. "Localising… — 95%").  Trim an over-long
+            # message (e.g. a long file path) so it doesn't overflow the bar.
+            _m = (msg or "").strip()
+            if len(_m) > 48:
+                _m = _m[:47] + "…"
+            progress_widget.setFormat(f"{_m}  —  {pct}%" if _m else f"{pct}%")
             stage_label.setText(msg)
             self.statusBar().showMessage(msg)
 
