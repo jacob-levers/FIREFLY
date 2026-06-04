@@ -193,8 +193,27 @@ def _twoway_headline(twoway_df, metric):
             "group_p": gp, "group_stars": _stars_of(gp)}
 
 
+def _gradient_line(ax, x0, y0, x1, y1, c0, c1, lw=1.8, zorder=3, n=48):
+    """Draw a straight line (x0,y0)->(x1,y1) whose colour fades from c0 to c1,
+    so a segment joining a group's consecutive time points starts in the first
+    cell's colour and ends in the next cell's colour."""
+    import matplotlib.colors as _mc
+    from matplotlib.collections import LineCollection
+    xs = np.linspace(x0, x1, n + 1)
+    ys = np.linspace(y0, y1, n + 1)
+    pts = np.column_stack([xs, ys]).reshape(-1, 1, 2)
+    segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
+    a = np.array(_mc.to_rgba(c0))
+    b = np.array(_mc.to_rgba(c1))
+    t = ((np.arange(n) + 0.5) / n)[:, None]
+    cols = a[None, :] * (1 - t) + b[None, :] * t
+    ax.add_collection(LineCollection(segs, colors=cols, linewidth=lw,
+                                     zorder=zorder, capstyle="round"))
+
+
 def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
-                      group_colors, palette, ylabel="", headline=None):
+                      group_colors, palette, ylabel="", headline=None,
+                      card_colors=None):
     """Group × time-point interaction plot: x = TIME POINTS (in the order the
     user assigned them), one mean±SEM line per group drawn in that group's
     assigned colour — a time-course view.  Cell-level points are jittered
@@ -246,10 +265,22 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
             change.append((t, col, 0.5 * (float(np.nanmean(a)) + float(np.nanmean(b)))))
 
     for gi, grp in enumerate(group_order):
-        col = (group_colors or {}).get(grp) \
+        g_col = (group_colors or {}).get(grp) \
             or _TP_SERIES_COLORS[gi % len(_TP_SERIES_COLORS)]
-        means, sems = [], []
+
+        def _cell_col(tp):
+            # Per-(group × time point) cell colour so the dots match the
+            # bottom-legend entries; fall back to the group colour.
+            if card_colors:
+                c = card_colors.get((grp, tp))
+                if c:
+                    return c
+            return g_col
+
+        means, sems, pt_cols = [], [], []
         for ti, tp in enumerate(tp_order):
+            c_cell = _cell_col(tp)
+            pt_cols.append(c_cell)
             vals = _cells(grp, tp).to_numpy(dtype=float)
             vals = vals[np.isfinite(vals)]
             if len(vals):
@@ -257,11 +288,29 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                 sems.append(float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
                             if len(vals) > 1 else 0.0)
                 ax.scatter(np.full(len(vals), x[ti]) + rng.uniform(-0.06, 0.06, len(vals)),
-                           vals, color=col, s=12, alpha=0.6, zorder=2)
+                           vals, color=c_cell, s=12, alpha=0.6, zorder=2)
             else:
                 means.append(np.nan); sems.append(0.0)
-        ax.errorbar(x, means, yerr=sems, color=col, marker="o", ms=5,
-                    lw=1.8, capsize=3, label=str(grp), zorder=3)
+        means = np.asarray(means, dtype=float)
+        sems = np.asarray(sems, dtype=float)
+        # Line joining a group's consecutive time points: a colour gradient from
+        # one cell's colour to the next (e.g. blue PRE → orange POST) when we
+        # have per-cell colours, otherwise a plain group-coloured line.
+        for ti in range(len(tp_order) - 1):
+            if np.isfinite(means[ti]) and np.isfinite(means[ti + 1]):
+                if card_colors:
+                    _gradient_line(ax, x[ti], means[ti], x[ti + 1], means[ti + 1],
+                                   pt_cols[ti], pt_cols[ti + 1], lw=1.8, zorder=3)
+                else:
+                    ax.plot([x[ti], x[ti + 1]], [means[ti], means[ti + 1]],
+                            color=g_col, lw=1.8, zorder=3)
+        # Mean marker + SEM bar at each time point, in that cell's colour.
+        for ti, tp in enumerate(tp_order):
+            if np.isfinite(means[ti]):
+                ax.errorbar(x[ti], means[ti], yerr=sems[ti], color=pt_cols[ti],
+                            marker="o", ms=5, capsize=3, lw=0, zorder=4,
+                            label=(str(grp) if (ti == 0 and not card_colors)
+                                   else None))
     ax.set_xticks(x)
     ax.set_xticklabels(tp_order)
     ax.set_xlim(-0.35, len(tp_order) - 0.65)   # pad so end markers aren't clipped
@@ -449,6 +498,25 @@ def compare_groups(groups,
     # alphabetical.  Each group keeps its user-assigned colour for its line.
     group_order = list(dict.fromkeys(group_factor))
     tp_order = list(dict.fromkeys(t for t in timepoints_per_card if t))
+
+    # Per-(group × time point) cell colours for the two-factor interaction plots.
+    # Each cell gets its OWN colour so the dots line up with the bottom-legend
+    # entries (e.g. "DMSO / PRE" blue, "DMSO / POST" orange), and the line that
+    # joins a group's time points fades between them.  The GUI commonly reuses a
+    # single colour per group across its time points, which collapses the legend
+    # to one colour per group — so when the incoming per-card colours aren't all
+    # distinct, fan them out across a qualitative palette and write them back
+    # into `colors` so the shared bottom legend shows the SAME colours.
+    card_colors = {}
+    if two_factor:
+        _QUAL = ["#4c78a8", "#f58518", "#54a24b", "#e45756", "#b279a2",
+                 "#9d755d", "#ff9da6", "#79706e", "#bab0ac", "#d67195",
+                 "#86bcb6", "#fabfd2", "#b4d2b1", "#c7b0c1", "#f2cf5b"]
+        if len(set(colors)) < n_groups:        # not already all-distinct
+            colors = [_QUAL[i % len(_QUAL)] for i in range(n_groups)]
+        for i in range(n_groups):
+            card_colors[(group_factor[i], timepoints_per_card[i])] = colors[i]
+
     group_colors = {}
     for i, gf in enumerate(group_factor):
         group_colors.setdefault(gf, colors[i])
@@ -558,7 +626,8 @@ def compare_groups(groups,
         if two_factor:
             _interaction_plot(ax, summary_df, "auc_msd", group_order, tp_order,
                               group_colors, pal, ylabel="AUC (µm²·s)",
-                              headline=_twoway_headline(twoway_df, "auc_msd"))
+                              headline=_twoway_headline(twoway_df, "auc_msd"),
+                              card_colors=card_colors)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
                     for lbl in labels]
@@ -605,7 +674,8 @@ def compare_groups(groups,
             _interaction_plot(ax, summary_df, "mob_immob_ratio", group_order,
                               tp_order, group_colors, pal,
                               ylabel="Mobile/Immobile ratio",
-                              headline=_twoway_headline(twoway_df, "mob_immob_ratio"))
+                              headline=_twoway_headline(twoway_df, "mob_immob_ratio"),
+                              card_colors=card_colors)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "mob_immob_ratio"].values
                     for lbl in labels]
@@ -743,7 +813,8 @@ def compare_groups(groups,
         if two_factor:
             _interaction_plot(ax, summary_df, "n_tracks", group_order, tp_order,
                               group_colors, pal, ylabel="Tracks (n)",
-                              headline=_twoway_headline(twoway_df, "n_tracks"))
+                              headline=_twoway_headline(twoway_df, "n_tracks"),
+                              card_colors=card_colors)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "n_tracks"].values
                     for lbl in labels]
@@ -975,7 +1046,8 @@ def compare_groups(groups,
             _interaction_plot(ax, summary_df, "nongauss_alpha2", group_order,
                               tp_order, group_colors, pal,
                               ylabel="Non-Gaussian α₂",
-                              headline=_twoway_headline(twoway_df, "nongauss_alpha2"))
+                              headline=_twoway_headline(twoway_df, "nongauss_alpha2"),
+                              card_colors=card_colors)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "nongauss_alpha2"]
                     .dropna().to_numpy() for lbl in labels]
@@ -992,7 +1064,8 @@ def compare_groups(groups,
             _interaction_plot(ax, summary_df, "vacf_persistence", group_order,
                               tp_order, group_colors, pal,
                               ylabel="VACF persistence (lag 1)",
-                              headline=_twoway_headline(twoway_df, "vacf_persistence"))
+                              headline=_twoway_headline(twoway_df, "vacf_persistence"),
+                              card_colors=card_colors)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "vacf_persistence"]
                     .dropna().to_numpy() for lbl in labels]

@@ -1073,6 +1073,47 @@ def test_compare_groups_reports_alpha2_and_persistence_stats(tmp_path):
     assert "omnibus" in stats["nongauss_alpha2"]
 
 
+def test_interaction_plot_per_card_colours_and_gradient_line(tmp_path):
+    """Two-factor interaction panels must colour dots PER group×timepoint cell
+    (matching the bottom legend) and join a group's time points with a colour
+    gradient — not one flat colour per group.  Reusing one colour per group
+    across its time points must be fanned out to distinct cell colours."""
+    import matplotlib; matplotlib.use("Agg")
+    from matplotlib.collections import LineCollection
+    from firefly.analysis.fa_compare import compare_groups
+    root = str(tmp_path)
+    # 2 groups × PRE/POST, paired cells, with the SAME colour reused per group
+    # (the case that used to collapse the dots to 2 colours).
+    spec = [("DMSO", "PRE", "#3b6ed8"), ("DMSO", "POST", "#3b6ed8"),
+            ("Cip", "PRE", "#54a24b"), ("Cip", "POST", "#54a24b")]
+    groups = []
+    for gi, (grp, tp, col) in enumerate(spec):
+        folders = [_write_run_folder(root, f"{grp}_{tp}", f"{grp}_c{c}_{tp}",
+                                     sigma_px=2.0 + 0.3 * gi, seed=gi * 7 + c)
+                   for c in range(5)]
+        groups.append({"folders": folders, "label": grp,
+                       "timepoint": tp, "color": col})
+    fig, summary_df, stats = compare_groups(
+        groups, output_dir=str(tmp_path / "out"), pdf_report=False)
+    auc = [ax for ax in fig.axes if ax.get_title() == "Area Under the Curve"]
+    assert auc, "AUC interaction panel missing"
+    ax = auc[0]
+    scat = set()
+    for c in ax.collections:
+        if c.__class__.__name__ == "PathCollection":
+            fc = c.get_facecolors()
+            if len(fc):
+                scat.add(tuple(np.round(fc[0], 3)))
+    assert len(scat) >= 4, f"expected ≥4 distinct cell colours, got {len(scat)}"
+    assert any(isinstance(c, LineCollection) for c in ax.collections), \
+        "expected a gradient connecting line (LineCollection)"
+    # bottom legend names every cell as group / timepoint
+    leg = fig.legends[0]
+    txts = {t.get_text() for t in leg.get_texts()}
+    assert any("DMSO / PRE" in t for t in txts)
+    assert any("DMSO / POST" in t for t in txts)
+
+
 def test_jdd_and_mss_reject_bad_calibration():
     """compute_jdd / compute_mss validate calibration like compute_msd_and_fit
     (no silent garbage on zero/NaN pixel size or frame interval)."""
