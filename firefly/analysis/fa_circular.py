@@ -1693,22 +1693,20 @@ def save_comparison_circular_statistics(groups_angles, *,
                     _p_stars(mu_ww["p"]),
                 ])
 
-            # Page-1 tests table: omnibus + circ-lin correlations +
-            # per-replicate tests + as many pairwise rows as fit.  We
-            # always put the per-group correlations and per-replicate
-            # tests on page 1 (they're tiny, ~k rows each) and let the
-            # pooled pairwise tests be the ones that paginate.
-            PAGE1_TESTS_CAP = 14        # omnibus + corr + per-rep + pairwise
-            CONT_PAGE_CAP   = 24        # ~24 rows on a continuation page
-
-            fixed_rows = omnibus_rows + corr_rows + per_rep_rows
-            page1_pairwise_cap = max(
-                PAGE1_TESTS_CAP - len(fixed_rows), 0)
-            page1_tests   = fixed_rows + pairwise_rows[:page1_pairwise_cap]
-            overflow_pairs = pairwise_rows[page1_pairwise_cap:]
-
-            if not page1_tests:
-                page1_tests = [["Insufficient data", "—", "—", "—"]]
+            # Paginate ALL test rows so page 1 is never overstuffed.  The
+            # omnibus + per-replicate "fixed" rows used to bypass the cap, so
+            # with several groups 20+ rows got squashed into a ~1.4" strip.  Now
+            # everything paginates, ordered by importance (omnibus → per-
+            # replicate → circ-lin → pooled pairwise) so the most relevant tests
+            # land on page 1 and the rest flow onto roomy continuation pages.
+            PAGE1_TESTS_CAP = 11        # page 1 shares space with summary + text
+            CONT_PAGE_CAP   = 20        # full-height continuation pages
+            all_test_rows = (omnibus_rows + per_rep_rows + corr_rows
+                             + pairwise_rows)
+            if not all_test_rows:
+                all_test_rows = [["Insufficient data", "—", "—", "—"]]
+            page1_tests    = all_test_rows[:PAGE1_TESTS_CAP]
+            overflow_pairs = all_test_rows[PAGE1_TESTS_CAP:]
 
             def _render_tests_table(host_fig, rect, cells, pal):
                 """Render a 4-column tests table into the given fig+rect."""
@@ -1725,6 +1723,7 @@ def save_comparison_circular_statistics(groups_angles, *,
                 for (rr, cc), c_obj in tbl.get_celld().items():
                     c_obj.set_linewidth(0.5)
                     c_obj.set_edgecolor(pal["GRD"])
+                    c_obj.PAD = 0.06          # a little breathing room in-cell
                     if rr == 0:
                         c_obj.set_facecolor(pal["HDR_BG"])
                         c_obj.set_text_props(color=pal["HDR_TXT"],
@@ -1734,7 +1733,9 @@ def save_comparison_circular_statistics(groups_angles, *,
                             pal["ZEBRA"] if rr % 2 == 0 else pal["PNL"])
                         c_obj.set_text_props(color=pal["TXT"])
 
-            _render_tests_table(fig, [0.05, 0.14, 0.90, 0.165],
+            # Taller area + a hard 11-row cap → each row gets ~2x the height it
+            # had before, so the table reads cleanly instead of cramped.
+            _render_tests_table(fig, [0.05, 0.12, 0.90, 0.205],
                                 page1_tests, pal)
 
             # ── Footer block ──────────────────────────────────────
@@ -1786,8 +1787,8 @@ def save_comparison_circular_statistics(groups_angles, *,
                     ax_h.axis("off")
                     ax_h.text(0.0, 0.5,
                               "Comparison: Circular Statistics  —  "
-                              f"pairwise tests (page {page_num - 1} of "
-                              f"{total_cont_pages})",
+                              f"between-group tests, continued "
+                              f"(page {page_num - 1} of {total_cont_pages})",
                               fontsize=14, fontweight="bold",
                               va="center", ha="left", color=pal["TXT"])
                     # Big tests-table area on a continuation page.
