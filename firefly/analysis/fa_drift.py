@@ -18,7 +18,8 @@ def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5,
                   max_shift_frac=0.30, outlier_k=6.0, outlier_tol_px=6.0):
     """
     Reference-free drift correction via cross-correlation of localization
-    density maps (simplified RCC approach; Wang et al. 2014, Nat Methods).
+    density maps (simplified RCC approach; Wang et al. 2014,
+    Opt. Express 22(13):15982, DOI 10.1364/OE.22.015982).
 
     The acquisition is divided into time segments.  A 2-D localization density
     histogram is built for each segment at ``upsampling``× the raw pixel
@@ -104,7 +105,7 @@ def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5,
 
     # ── Cross-correlate ALL pairs (i, j) → solve cumulative drift ─────────────
     # This is the redundant cross-correlation (RCC) algorithm of Wang et al.
-    # 2014 (Nat. Methods).  Instead of relying only on consecutive pairs, we
+    # 2014 (Opt. Express 22(13):15982).  Instead of relying only on consecutive pairs, we
     # measure the inter-segment shift Δ_{ij} for every pair (i, j) with i<j
     # and then solve the over-determined linear system
     #
