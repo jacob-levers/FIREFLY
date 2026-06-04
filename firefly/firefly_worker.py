@@ -840,6 +840,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # regardless of what the sidebar says.
     roi_mode_user = p.get("roi_mode", "none")   # what the user picked
     roi_mode = roi_mode_user
+    roi_from_imagej = False                      # set when a sibling ImageJ ROI
+                                                 # is what produced the polygon
     if p.get("roi_polygon"):
         roi_mode = "polygon"
 
@@ -862,6 +864,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     p = dict(p)
                     p["roi_polygon"] = [poly.tolist() for poly in _polys]
                     roi_mode = "polygon"
+                    roi_from_imagej = True
                     _found = True
                     _log(f"  NOTE: ImageJ ROI '{os.path.basename(_roi_path)}' "
                          f"({len(_polys)} region(s)) — using as polygon ROI.")
@@ -926,6 +929,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             mode_hint = None
             bg_sigma  = None
             info      = None
+            # Human-readable provenance of WHERE the ROI came from (sister TIFF
+            # vs polygon vs intensity threshold).  Set by whichever branch builds
+            # the mask, so the figure title names the real ROI source instead of
+            # the background image it's drawn over.
+            roi_source_label = None
 
             # ── Sister TIFF ROI (microscope export, e.g. _green.tif) ─
             if roi_mode == "sister" and roi_sister_path is not None:
@@ -958,6 +966,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                             (_arr > 0).sum()) / float(_arr.size or 1)
                         if _nonzero_frac < 0.4:
                             roi_mask = _arr > 0
+                            roi_source_label = (
+                                f"Sister TIFF · "
+                                f"{os.path.basename(roi_sister_path)} "
+                                f"(non-zero mask)")
                             _log(f"  Sister ROI "
                                  f"({os.path.basename(roi_sister_path)}): "
                                  f"non-zero pixel mask, "
@@ -977,6 +989,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                                     threshold_method="li",
                                     bg_sigma=float(p.get("roi_bg_sigma", 25.0)),
                                     mode_hint="mean")
+                                roi_source_label = (
+                                    f"Sister TIFF · "
+                                    f"{os.path.basename(roi_sister_path)} "
+                                    f"(Li threshold)")
                                 _log(f"  Sister ROI "
                                      f"({os.path.basename(roi_sister_path)}): "
                                      f"Li-threshold mask, "
@@ -986,6 +1002,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                                      f"failed — {_exc}.  Falling back to "
                                      f"non-zero mask.")
                                 roi_mask = _arr > 0
+                                roi_source_label = (
+                                    f"Sister TIFF · "
+                                    f"{os.path.basename(roi_sister_path)} "
+                                    f"(non-zero mask)")
                 except Exception as _exc:
                     _log(f"  WARN: could not load sister ROI image "
                          f"{roi_sister_path}: {_exc}.  Continuing "
@@ -1019,6 +1039,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                             m = polygon2mask((h, w), _np.asarray(poly))
                             roi_mask |= m.astype(bool)
                         n_polys = len(polys)
+                        roi_source_label = (
+                            f"ImageJ ROI ({n_polys} region(s))"
+                            if roi_from_imagej
+                            else f"Manual polygon ({n_polys} shape(s))")
                         _log(f"  User polygon ROI: {n_polys} shape(s), "
                              f"{100.0 * roi_mask.mean():.1f}% of frame")
                     except Exception as poly_exc:
@@ -1149,28 +1173,30 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                             interpolation="nearest")
                         ax.contour(roi_mask.astype(float), levels=[0.5],
                                    colors=["#39ff14"], linewidths=1.4)
-                        if roi_mode == "polygon":
+                        # Lead the title with the ROI SOURCE (sister TIFF /
+                        # polygon / intensity threshold), not the background
+                        # image — "{bg_label}" alone read as if a mean-projection
+                        # threshold made the ROI even when a sister TIFF did.
+                        _pct = 100.0 * float(roi_mask.mean())
+                        if mode_hint is not None and info is not None:
+                            # Intensity-threshold ROI — full provenance, and name
+                            # the projection it thresholded explicitly.
                             title = (
-                                f"ROI applied — {bg_label}  |  "
-                                f"polygon, "
-                                f"{100.0 * float(roi_mask.mean()):.1f}% "
-                                f"of frame"
-                            )
-                        elif mode_hint is not None and info is not None:
-                            # Threshold-projection branch — full provenance.
-                            title = (
-                                f"ROI applied — {bg_label}  |  "
-                                f"projection={mode_hint}, "
+                                f"ROI applied — {mode_hint.capitalize()} "
+                                f"projection threshold  |  "
                                 f"σ_bg={bg_sigma:.0f}, "
                                 f"t={info['threshold']:.3f}, "
                                 f"{100.0 * info['fraction']:.1f}% of frame"
                             )
                         else:
-                            # Sister-TIFF (or any other) ROI: we only know the
-                            # kept fraction, not a threshold / σ_bg.
+                            # Sister-TIFF / polygon / ImageJ ROI — name the
+                            # source; the projection is just the display backdrop.
+                            _src = roi_source_label or (
+                                "Polygon" if roi_mode == "polygon"
+                                else "ROI")
                             title = (
-                                f"ROI applied — {bg_label}  |  "
-                                f"{100.0 * float(roi_mask.mean()):.1f}% of frame"
+                                f"ROI applied — {_src}  |  "
+                                f"{_pct:.1f}% of frame  (bg: {bg_label})"
                             )
                         ax.set_title(title, color="#e6edf3", fontsize=9)
                         ax.set_xticks([]); ax.set_yticks([])
