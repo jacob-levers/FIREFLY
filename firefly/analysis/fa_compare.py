@@ -825,6 +825,7 @@ def compare_groups(groups,
         ax = _next_ax()
         any_data = False
         max_pop_overall = 0
+        all_D = []                       # every plotted D, for y-axis tick choice
         # Spread groups across ±0.18 around each population index
         if n_groups > 1:
             offsets = np.linspace(-0.18, 0.18, n_groups)
@@ -839,6 +840,7 @@ def compare_groups(groups,
                 f = np.asarray(jd.get("fractions", np.ones_like(D)), dtype=float)
                 if D.size == 0: continue
                 any_data = True
+                all_D.append(D[np.isfinite(D) & (D > 0)])
                 max_pop_overall = max(max_pop_overall, len(D))
                 sizes = 25 + 175 * np.clip(f, 0, 1)
                 xs = np.arange(len(D)) + offsets[gi]
@@ -858,8 +860,35 @@ def compare_groups(groups,
             ax.set_xticks(np.arange(max_pop_overall))
             ax.set_xticklabels(tick_labels)
             ax.set_xlim(-0.5, max_pop_overall - 0.5)
-            ax.set_ylabel("D (µm²/s, log)")
+            ax.set_ylabel("D (µm²/s, log scale)")
             ax.set_yscale("log")
+            # ── Readable log y-axis ──────────────────────────────────────────
+            # Plain decimal tick labels (0.001, 0.01, 0.1, 1) instead of 10^x
+            # power notation, horizontal gridlines to trace a dot's value across
+            # to the axis, and — when the data spans < 2 decades (so the decade
+            # majors alone are too sparse) — labelled 2×/5× minor ticks.
+            from matplotlib.ticker import (LogLocator, FuncFormatter,
+                                           NullFormatter)
+            _plain = FuncFormatter(lambda y, _p: f"{y:g}" if y > 0 else "")
+            ax.yaxis.set_major_locator(LogLocator(base=10.0))
+            ax.yaxis.set_major_formatter(_plain)
+            _dd = np.concatenate(all_D) if all_D else np.array([])
+            _dd = _dd[np.isfinite(_dd) & (_dd > 0)]
+            _narrow = (_dd.size > 0 and
+                       (np.log10(_dd.max()) - np.log10(_dd.min())) < 2.0)
+            if _narrow:
+                ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=(2.0, 5.0)))
+                ax.yaxis.set_minor_formatter(_plain)
+                ax.tick_params(axis="y", which="minor", labelsize=7)
+            else:
+                ax.yaxis.set_minor_locator(
+                    LogLocator(base=10.0, subs=tuple(np.arange(2, 10))))
+                ax.yaxis.set_minor_formatter(NullFormatter())
+            ax.grid(True, axis="y", which="major", color=pal["GRD"],
+                    lw=0.6, alpha=0.55)
+            ax.grid(True, axis="y", which="minor", color=pal["GRD"],
+                    lw=0.4, alpha=0.30)
+            ax.set_axisbelow(True)       # gridlines behind the markers
             ax.set_title("JDD: per-population D  (marker size ∝ population fraction)")
             ax.legend(frameon=False, loc="best")
         else:
