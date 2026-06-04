@@ -1416,3 +1416,31 @@ def test_streaming_gpu_batch_matches_unbatched():
     assert np.array_equal(unbatched[:, 2], batched[:, 2]), "frame indices changed"
     assert np.allclose(unbatched, batched, rtol=0, atol=1e-3), \
         "GPU batching changed detections beyond float32 rounding"
+
+
+# ── low-severity hardening regressions ───────────────────────────────────────
+def test_preprocess_flat_frame_returns_zero_not_unnormalised():
+    """A perfectly uniform frame (mx == mn) must come back all-finite and in
+    [0,1] (zeros), not as un-normalised values downstream code assumes are
+    normalised."""
+    from firefly.analysis.fa_preprocess import _preprocess_fast
+    flat = np.full((32, 32), 1234.0, dtype=np.float32)
+    out = _preprocess_fast(flat, bg_radius=5)
+    assert out.shape == (32, 32) and out.dtype == np.float32
+    assert np.all(np.isfinite(out))
+    assert out.min() >= 0.0 and out.max() <= 1.0
+    assert np.all(out == 0.0)          # flat → zero image
+
+
+def test_apply_roi_mask_excluding_all_returns_empty_without_raising():
+    """If the ROI mask excludes every localisation, apply_roi_mask must return an
+    empty DataFrame (not raise) — the contract the worker relies on to surface a
+    clean 'ROI removed all localisations' stop rather than crashing."""
+    from firefly.analysis.fa_roi import apply_roi_mask
+    locs = pd.DataFrame({"x": [5.0, 10.0, 20.0],
+                         "y": [5.0, 10.0, 20.0],
+                         "frame": [0, 1, 2]})
+    mask = np.zeros((32, 32), dtype=bool)        # nothing inside
+    out = apply_roi_mask(locs, mask)
+    assert len(out) == 0
+    assert list(out.columns) == list(locs.columns)

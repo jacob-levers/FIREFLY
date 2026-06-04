@@ -1111,6 +1111,13 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 locs = apply_roi_mask(locs, roi_mask)
                 _log(f"  Locs after ROI : {len(locs):,}  "
                      f"(dropped {n_before - len(locs):,})")
+                if len(locs) == 0:
+                    # Make the cause explicit — otherwise the run only shows the
+                    # generic "no tracks" stop downstream, which hides that the
+                    # ROI (threshold / sister mask / polygon) removed everything.
+                    _log(f"  WARNING: the ROI removed ALL {n_before:,} "
+                         f"localisations — check the ROI mode / threshold "
+                         f"(the run will stop with no tracks).")
 
                 # ── Persist the exact mask that was applied ──────────
                 # Two artefacts:

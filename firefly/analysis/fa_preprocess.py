@@ -25,6 +25,10 @@ def _preprocess_fast(frame, bg_radius=50, sigma=1.0):
     mn, mx    = smoothed.min(), smoothed.max()
     if mx > mn:
         smoothed = (smoothed - mn) / (mx - mn)
+    else:
+        # Flat frame (mx == mn): return a clean zero image rather than
+        # un-normalised values — downstream code assumes the [0,1] range.
+        smoothed = np.zeros_like(smoothed)
     return smoothed.astype(np.float32)
 
 
@@ -37,6 +41,10 @@ def _preprocess_rolling(frame, bg_radius=50, sigma=1.0):
     mn, mx    = smoothed.min(), smoothed.max()
     if mx > mn:
         smoothed = (smoothed - mn) / (mx - mn)
+    else:
+        # Flat frame (mx == mn): return a clean zero image rather than
+        # un-normalised values — downstream code assumes the [0,1] range.
+        smoothed = np.zeros_like(smoothed)
     return smoothed.astype(np.float32)
 
 

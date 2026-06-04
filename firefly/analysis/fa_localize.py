@@ -615,7 +615,12 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     _exe.shutdown(wait=True)
 
     # ── Mean projection (normalised) ──────────────────────────────────────────
-    mean_proj = (mean_acc / frame_count).astype(np.float32)
+    # Guard frame_count (defensive: a 0-frame stack can't reach here, but a
+    # divide-by-zero would poison every downstream ROI/threshold with NaNs).
+    if frame_count > 0:
+        mean_proj = (mean_acc / frame_count).astype(np.float32)
+    else:
+        mean_proj = np.zeros(mean_acc.shape, dtype=np.float32)
     mn, mx    = mean_proj.min(), mean_proj.max()
     if mx > mn:
         mean_proj = (mean_proj - mn) / (mx - mn)
