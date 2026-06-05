@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.15.1
+
+- **"Generate comparison" is now the blue primary button**, matching the "Start"
+  button on the Import/Analysis page (accent fill, bold). Previously it was a
+  plain button, so the Compare tab's main action didn't read as the primary
+  call-to-action.
+
 ## v2.15.0
 
 ### One Compare tab with a wizard-driven "Analysis Configuration" centre

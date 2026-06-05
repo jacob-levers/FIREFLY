@@ -1934,7 +1934,10 @@ class BuildMixin:
         # Primary action — kept in the bottom-left action stack for app-wide
         # consistency (re-parented in `_build_remaining_sidebar_pages`).
         self.btn_cmp_run = QtWidgets.QPushButton("Generate comparison")
-        self.btn_cmp_run.setMinimumHeight(32)
+        self.btn_cmp_run.setObjectName("primary")  # accent-fill QSS rule (blue)
+        self.btn_cmp_run.setMinimumHeight(36)
+        _cf = self.btn_cmp_run.font(); _cf.setBold(True); _cf.setPointSize(13)
+        self.btn_cmp_run.setFont(_cf)
         self.btn_cmp_run.clicked.connect(self._on_run_clicked)
 
         # ── Centre: the 'Analysis Configuration' wizard. ──
