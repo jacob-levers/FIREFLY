@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.21.0
+
+### A calmer, searchable Analysis sidebar
+
+The Analysis parameter sidebar had ~50 controls across ~10 sections, all expanded
+— a wall to scroll through. It now opens scannable.
+
+- **Advanced sections collapse by default.** Imaging / Preprocessing / Detection /
+  Linking / Diffusion stay open; the rarely-touched ROI, Drift, Clustering and
+  Performance sections start collapsed (click to expand).
+- **"Search parameters…" box.** A filter at the top of the sidebar shows just the
+  controls whose name matches what you type (e.g. "minmass", "search", "roi") and
+  expands their sections; clearing it restores the default view. No setting is
+  changed — it only shows/hides rows.
+
 ## v2.20.4
 
 ### Results readout: typography + spacing polish

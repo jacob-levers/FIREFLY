@@ -375,6 +375,20 @@ class BuildMixin:
         frame (`self._sidebar_title`, set per-tab in _build_sidebar
         scaffolding) — don't re-add it here or it duplicates.
         """
+        # ── Parameter search ──────────────────────────────────────────────
+        # Filters the (long) parameter list down to the rows whose label
+        # matches — typing 'minmass' or 'roi' surfaces just those knobs and
+        # expands their sections.  Registry built at the end of this method.
+        self._sidebar_sections = []
+        self._param_search = QtWidgets.QLineEdit()
+        self._param_search.setObjectName("param_search")
+        self._param_search.setPlaceholderText("Search parameters…")
+        self._param_search.setClearButtonEnabled(True)
+        self._param_search.setToolTip(
+            "Filter the parameters below by name (e.g. minmass, search, ROI).")
+        self._param_search.textChanged.connect(self._filter_sidebar_params)
+        layout.addWidget(self._param_search)
+
         # ── Presets ───────────────────────────────────────────────────────
         # Quick switcher for labelled parameter bundles.  Selecting a
         # preset applies its widget snapshot to the rest of the sidebar.
@@ -963,7 +977,74 @@ class BuildMixin:
 
         layout.addWidget(sec)
 
+        # Index every section + row for the search box, and collapse the
+        # advanced sections by default so the sidebar opens scannable.
+        self._build_param_registry(layout)
         layout.addStretch(1)
+
+    def _build_param_registry(self, layout):
+        """Walk the just-built sidebar and record each collapsible section + its
+        form rows, so `_filter_sidebar_params` can show/hide rows by name.  Also
+        collapses the advanced sections (ROI / Drift / Clustering / Performance)
+        by default — the common knobs (Detection / Linking / Diffusion …) stay
+        open."""
+        advanced = {"ROI", "Drift correction", "Clustering (DBSCAN)"}
+        LabelRole = QtWidgets.QFormLayout.ItemRole.LabelRole
+        FieldRole = QtWidgets.QFormLayout.ItemRole.FieldRole
+        self._sidebar_sections = []
+        for i in range(layout.count()):
+            w = layout.itemAt(i).widget()
+            if not isinstance(w, _CollapsibleSection):
+                continue
+            title = (getattr(w, "_title", "") or "").replace("&&", "&")
+            form = w.findChild(QtWidgets.QFormLayout)
+            rows = []
+            if form is not None:
+                for r in range(form.rowCount()):
+                    li = form.itemAt(r, LabelRole)
+                    fi = form.itemAt(r, FieldRole)
+                    label = li.widget() if li is not None else None
+                    field = fi.widget() if fi is not None else None
+                    if field is None:
+                        continue
+                    if label is not None and hasattr(label, "text"):
+                        text = label.text()
+                    elif isinstance(field, QtWidgets.QCheckBox):
+                        text = field.text()          # checkbox-only rows
+                    else:
+                        text = ""
+                    rows.append({"label": label, "field": field,
+                                 "text": text.strip().lower()})
+            is_advanced = (title in advanced) or title.startswith("Performance")
+            if is_advanced:
+                w.set_expanded(False)
+            self._sidebar_sections.append(
+                {"sec": w, "form": form, "title": title,
+                 "default_expanded": not is_advanced, "rows": rows})
+
+    def _filter_sidebar_params(self, query):
+        """Show only the parameter rows whose label matches `query`; hide
+        sections with no match and force-expand the ones that do.  An empty
+        query restores every row and each section's default expand state."""
+        q = (query or "").strip().lower()
+        for entry in getattr(self, "_sidebar_sections", []):
+            sec = entry["sec"]
+            title_match = bool(q) and q in entry["title"].lower()
+            any_vis = False
+            for row in entry["rows"]:
+                vis = (not q) or (q in row["text"]) or title_match
+                if row["label"] is not None:
+                    row["label"].setVisible(vis)
+                row["field"].setVisible(vis)
+                any_vis = any_vis or vis
+            if not q:
+                sec.setVisible(True)
+                sec.set_expanded(entry["default_expanded"])
+            else:
+                show = any_vis or title_match
+                sec.setVisible(show)
+                if show:
+                    sec.set_expanded(True)
 
     def _refresh_cuda_perf_ui(self):
         """Performance-section GPU control state.  Show the Set-up button only
