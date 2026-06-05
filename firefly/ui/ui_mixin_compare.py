@@ -26,9 +26,15 @@ class CompareMixin:
         idx = len(self._cmp_group_cards)
         card = _CompareGroupCard(idx)
         card.delete_requested.connect(self._cmp_remove_group)
-        # Insert before the stretch element at the end
-        self._cmp_groups_layout.insertWidget(idx, card)
+        # Live-update the Compare tab's "Analysis Configuration" wizard
+        # (design summary / test plan / recommendation) whenever this card's
+        # label, time point or folder set changes.  `_refresh_stats_preview`
+        # is guarded (returns early until the centre wizard exists), so the
+        # build-time seed calls are safe no-ops.
+        card.changed.connect(self._refresh_stats_preview)
+        self._cmp_groups_layout.addWidget(card)
         self._cmp_group_cards.append(card)
+        self._refresh_stats_preview()
 
     def _cmp_remove_group(self, card: _CompareGroupCard):
         if len(self._cmp_group_cards) <= 2:
@@ -42,6 +48,7 @@ class CompareMixin:
         # Re-number remaining cards
         for i, c in enumerate(self._cmp_group_cards):
             c.setTitle(f"Group {i + 1}")
+        self._refresh_stats_preview()
 
     def _cmp_collect_groups(self) -> list[dict]:
         """Return the groups list in the shape `compare_groups` expects."""

@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.15.0
+
+### One Compare tab with a wizard-driven "Analysis Configuration" centre
+
+The separate **Compare** and **Statistics** tabs are merged into a single
+**Compare** tab that works like a modern stats package (JASP / GraphPad Prism /
+jamovi): you set up the experiment on the left and read/choose the statistics in
+the centre.
+
+- **Left sidebar = the whole experiment setup.** The group/file/colour cards
+  (drag-and-drop folders, per-group colour, time point) now live in the sidebar
+  alongside the output folder/name — everything that *defines* the comparison in
+  one place. (Figure theme, panels and the PDF toggle stay in Preferences.)
+- **Centre = "Analysis Configuration", a live wizard.** A single, always-visible
+  panel that updates as you edit groups: (1) your detected experimental design
+  (paired/unpaired, group count, replicates), (2) a data-aware recommendation
+  with one-click apply, (3) the test-choosing options, (4) the plain-English plan
+  of exactly which test each metric gets, and (5) a decision diagram of how the
+  test is chosen. Editing a group on the left refreshes all of this instantly.
+- **Inline plain-English explanations.** Every technical term carries a small
+  **ⓘ** info icon whose tooltip defines it in one sentence — Sphericity,
+  Interaction effect, Welch's t-test, Holm, Benjamini–Hochberg FDR,
+  Greenhouse–Geisser, Hedges' g, Family-wise, Parametric, Mann–Whitney,
+  Two-way mixed ANOVA, and more — backed by a reusable `STATS_GLOSSARY`. A
+  collapsible "What these terms mean" panel lists them all.
+- **No behaviour change to the statistics themselves.** Same tests, same config
+  keys, same saved settings; the controls just moved from a second tab into the
+  Compare centre. The old "⚙ Configure statistics…" button (which jumped between
+  tabs) is gone — it's all one tab now.
+
+Covered by an offscreen UI smoke test (5-tab layout, sidebar/title alignment for
+every tab, stats widgets + config, live test-plan refresh, group cards hosted in
+the sidebar, info-icon tooltips, and a settings round-trip). Full analysis suite
+green.
+
 ## v2.14.2
 
 ### Theme-aware motion colours in the 3-D Visualise viewer

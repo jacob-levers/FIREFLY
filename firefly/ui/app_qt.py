@@ -1778,7 +1778,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("compare/theme",            self.c_cmp_theme,       "combo"),
             ("compare/pdf_report",       self.c_cmp_pdf,         "check", _bool_cast),
 
-            # ── Statistics tab ────────────────────────────────────────────
+            # ── Statistics (the Compare-tab "Analysis Configuration" wizard) ──
             ("stats/alpha",              self.s_stat_alpha,         "spin",  float),
             ("stats/correction",         self.c_stat_correction,    "combo"),
             ("stats/across_metric",      self.c_stat_across_metric, "check", _bool_cast),

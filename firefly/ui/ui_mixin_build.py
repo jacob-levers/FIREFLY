@@ -18,7 +18,7 @@ from firefly import crash_reporter
 from firefly import cuda_installer
 from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
-                          TAB_VISUALISE, TAB_REPROCESS, TAB_STATISTICS)
+                          TAB_VISUALISE, TAB_REPROCESS)
 from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _make_napari_container_layout_opaque, _hide_napari_chrome,
                         _register_motion_colormap, _open_folder,
@@ -29,7 +29,8 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
                         _TrackInspector, _ResultsPanel, _RoiDialog, _RoiViewer,
                         _FolderDropList, _CompareGroupCard, _PreferencesDialog,
                         _load_imagej_roi_polygons, _load_tif_mask_polygons,
-                        _load_any_roi_file)
+                        _load_any_roi_file, _info_icon, _InfoIcon,
+                        _label_with_info)
 
 
 class BuildMixin:
@@ -166,7 +167,6 @@ class BuildMixin:
         # into the Preferences dialog when it opens.
         self._figures_widget = self._build_figures_widget()
         self._build_compare_tab()
-        self._build_statistics_tab()
         self._build_visualise_tab()
         # Seal the QTabWidget too — same trick as `_make_napari_container_layout_opaque`.
         # Without this, the natural sizeHint of the widest tab body
@@ -185,8 +185,8 @@ class BuildMixin:
         # widgets) and wire up the tab-change → sidebar-swap signal.
         self._build_remaining_sidebar_pages()
         self.tabs.currentChanged.connect(self._on_tab_changed_swap_sidebar)
-        # Keep the Statistics "test plan" preview in step with the Compare-tab
-        # groups whenever the user switches to it.
+        # Keep the Compare tab's "Analysis Configuration" test-plan preview in
+        # step with the group cards whenever the user switches to it.
         self.tabs.currentChanged.connect(lambda *_: self._refresh_stats_preview())
 
         # Start on the landing page; main UI activates only after the user
@@ -1130,7 +1130,7 @@ class BuildMixin:
 
         Mapping (must match the tab order set by __init__):
           1 → Analysis tab     → muted info label, no controls
-          2 → Compare tab      → muted info label, no controls
+          2 → Compare tab      → Comparison settings + group cards
           3 → Visualise tab    → Load / Track filters / Cluster sections
           4 → Re-process tab   → Source-run + ROI helper
         """
@@ -1148,9 +1148,8 @@ class BuildMixin:
         ap_v.addWidget(_lbl); ap_v.addStretch(1)
         self._sidebar_stack.addWidget(analysis_page)         # index 1
 
-        # Page 2 — Compare: comparison settings (output folder/name) in
-        # the sidebar; the group cards stay inline in the tab body
-        # because they're full-width drop targets.
+        # Page 2 — Compare: output folder/name AND the group/file/colour
+        # cards both live in the sidebar; the tab body is the wizard.
         compare_page = QtWidgets.QWidget()
         cp_outer = QtWidgets.QVBoxLayout(compare_page)
         cp_outer.setContentsMargins(0, 0, 0, 0); cp_outer.setSpacing(0)
@@ -1165,36 +1164,15 @@ class BuildMixin:
         sec_cmp = _CollapsibleSection("Comparison settings")
         sec_cmp.content_layout.addWidget(self._cmp_settings_widget)
         cp_v.addWidget(sec_cmp)
-        _hint = QtWidgets.QLabel(
-            "Add groups on the right, then click Generate comparison.")
-        _hint.setWordWrap(True)
-        _hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; padding: 4px;")
-        cp_v.addWidget(_hint)
+        sec_groups = _CollapsibleSection("Groups")
+        sec_groups.content_layout.addWidget(self._cmp_groups_container)
+        cp_v.addWidget(sec_groups)
         cp_v.addStretch(1)
         cp_scroll.setWidget(cp_inner)
         cp_outer.addWidget(cp_scroll)
         self._sidebar_stack.addWidget(compare_page)          # index 2
 
-        # Page 3 — Statistics: the global stats controls (the tab body shows
-        # the live test plan).
-        stats_page = QtWidgets.QWidget()
-        st_outer = QtWidgets.QVBoxLayout(stats_page)
-        st_outer.setContentsMargins(0, 0, 0, 0); st_outer.setSpacing(0)
-        st_scroll = QtWidgets.QScrollArea()
-        st_scroll.setWidgetResizable(True)
-        st_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        st_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        st_inner = QtWidgets.QWidget()
-        st_v = QtWidgets.QVBoxLayout(st_inner)
-        st_v.setContentsMargins(12, 0, 12, 12); st_v.setSpacing(8)
-        st_v.addWidget(self._stats_settings_widget)
-        st_v.addStretch(1)
-        st_scroll.setWidget(st_inner)
-        st_outer.addWidget(st_scroll)
-        self._sidebar_stack.addWidget(stats_page)            # index 3
-
-        # Page 4 — Visualise (re-parents load/filter/DBSCAN widgets).
+        # Page 3 — Visualise (re-parents load/filter/DBSCAN widgets).
         vis_page = QtWidgets.QWidget()
         vp_outer = QtWidgets.QVBoxLayout(vis_page)
         vp_outer.setContentsMargins(0, 0, 0, 0); vp_outer.setSpacing(0)
@@ -1218,7 +1196,7 @@ class BuildMixin:
         vp_v.addStretch(1)
         vp_scroll.setWidget(vp_inner)
         vp_outer.addWidget(vp_scroll)
-        self._sidebar_stack.addWidget(vis_page)              # index 4
+        self._sidebar_stack.addWidget(vis_page)              # index 3
 
         # Page 4 — Re-process (re-parents source picker).
         pp_page = QtWidgets.QWidget()
@@ -1253,44 +1231,27 @@ class BuildMixin:
         pp_v.addStretch(1)
         pp_scroll.setWidget(pp_inner)
         pp_outer.addWidget(pp_scroll)
-        self._sidebar_stack.addWidget(pp_page)               # index 5
+        self._sidebar_stack.addWidget(pp_page)               # index 4
 
         # ── Bottom-button pages (action stack) ────────────────────────
         # Page 1 — Analysis: no action (empty placeholder).
         self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 1
-        # Page 2 — Compare: "Configure statistics" (nudges users to the
-        # Statistics tab once their groups are in) above the Generate button.
+        # Page 2 — Compare: the primary "Generate comparison" button.  (The
+        # old "Configure statistics" button is gone — the statistics wizard
+        # now lives in this same tab's centre.)
         cmp_act = QtWidgets.QWidget()
         cmp_av = QtWidgets.QVBoxLayout(cmp_act)
         cmp_av.setContentsMargins(12, 6, 12, 12)
         cmp_av.setSpacing(6)
-        self.btn_cmp_configure_stats = QtWidgets.QPushButton(
-            "⚙  Configure statistics…")
-        self.btn_cmp_configure_stats.setMinimumHeight(30)
-        self.btn_cmp_configure_stats.setToolTip(
-            "Choose the statistical tests, correction and significance level "
-            "for this comparison — and see a recommendation for your data.")
-        # Accent-outline styling so it draws the eye without competing with the
-        # primary Generate button.
-        self.btn_cmp_configure_stats.setStyleSheet(
-            f"QPushButton {{ color: {_THEME['ACC']}; background: transparent; "
-            f"border: 1px solid {_THEME['ACC']}; border-radius: 6px; "
-            f"padding: 5px 10px; font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {_THEME['PANEL_ALT']}; "
-            f"color: {_THEME['ACC_HOVER']}; border-color: {_THEME['ACC_HOVER']}; }}")
-        self.btn_cmp_configure_stats.clicked.connect(self._goto_statistics_tab)
-        cmp_av.addWidget(self.btn_cmp_configure_stats)
         _btn = getattr(self, "btn_cmp_run", None)
         if _btn is not None:
             _btn.setMinimumHeight(36)
             cmp_av.addWidget(_btn)
         self._sidebar_action.addWidget(cmp_act)               # index 2
-        # Page 3 — Statistics: no action (runs happen from the Compare tab).
+        # Page 3 — Visualise: no action.
         self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 3
-        # Page 4 — Visualise: no action.
-        self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 4
-        # Page 5 — Re-process: the action widget built by the tab.
-        self._sidebar_action.addWidget(self._pp_action_widget)  # index 5
+        # Page 4 — Re-process: the action widget built by the tab.
+        self._sidebar_action.addWidget(self._pp_action_widget)  # index 4
 
     def _build_import_tab(self):
         """Import tab — single-source-of-truth for input/output config.
@@ -1898,16 +1859,19 @@ class BuildMixin:
 
     def _build_compare_tab(self):
         """Compare tab: N≥2 groups of analysis-output folders → comparison
-        figure + summary CSV + stats CSV + multi-page PDF report."""
+        figure + summary CSV + stats CSV + multi-page PDF report.
+
+        Layout: the LEFT SIDEBAR holds the group/file/colour cards plus the
+        output folder/name (built here, re-parented in
+        `_build_remaining_sidebar_pages`); the CENTRE is the wizard-style
+        'Analysis Configuration' panel built by `_build_stats_centre`."""
         tab = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(tab)
-        v.setContentsMargins(8, 8, 8, 8)
-        v.setSpacing(6)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
-        # ── Comparison settings (re-parented into the Compare sidebar) ──
-        # Output folder + name used to live as a GroupBox above the
-        # group cards; they're now hosted in the left sidebar so the
-        # tab body gives all its room to the group cards.
+        # ── Comparison settings (output folder/name) — re-parented to the
+        # Compare sidebar's "Comparison settings" section. ──
         self._cmp_settings_widget = QtWidgets.QWidget()
         sg = QtWidgets.QVBoxLayout(self._cmp_settings_widget)
         sg.setContentsMargins(0, 0, 0, 0); sg.setSpacing(6)
@@ -1942,47 +1906,50 @@ class BuildMixin:
         style_hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
         sg.addWidget(style_hint)
 
-        # ── Group cards (scrollable) ──────────────────────────────────────
+        # ── Group cards container — re-parented to the Compare sidebar's
+        # "Groups" area (the sidebar page provides the scroll). ──
+        self._cmp_groups_container = QtWidgets.QWidget()
+        gc = QtWidgets.QVBoxLayout(self._cmp_groups_container)
+        gc.setContentsMargins(0, 0, 0, 0); gc.setSpacing(6)
         groups_area_label = QtWidgets.QLabel(
-            "Groups  —  drop folders directly onto a card to add them, "
-            "or use the buttons:")
-        v.addWidget(groups_area_label)
+            "Drop analysis-output folders onto a card to add them, or use the "
+            "buttons on each card.")
+        groups_area_label.setWordWrap(True)
+        groups_area_label.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        gc.addWidget(groups_area_label)
 
-        groups_scroll = QtWidgets.QScrollArea()
-        groups_scroll.setWidgetResizable(True)
-        groups_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         groups_inner = QtWidgets.QWidget()
         self._cmp_groups_layout = QtWidgets.QVBoxLayout(groups_inner)
         self._cmp_groups_layout.setContentsMargins(0, 0, 0, 0)
         self._cmp_groups_layout.setSpacing(6)
-        self._cmp_groups_layout.addStretch(1)   # pushes cards to top
-        groups_scroll.setWidget(groups_inner)
-        v.addWidget(groups_scroll, stretch=1)
+        gc.addWidget(groups_inner)
 
-        self._cmp_group_cards: list[_CompareGroupCard] = []
-        # Seed with the two default groups (Pre / Post) — matches the Tk app
-        self._cmp_add_group()
-        self._cmp_add_group()
-
-        # ── Action row ────────────────────────────────────────────────────
-        actions = QtWidgets.QHBoxLayout()
         self.btn_cmp_add_group = QtWidgets.QPushButton("+ Add group")
         self.btn_cmp_add_group.clicked.connect(self._cmp_add_group)
-        actions.addWidget(self.btn_cmp_add_group)
-        actions.addStretch(1)
+        gc.addWidget(self.btn_cmp_add_group)
+        gc.addStretch(1)
+
+        self._cmp_group_cards: list[_CompareGroupCard] = []
+
+        # Primary action — kept in the bottom-left action stack for app-wide
+        # consistency (re-parented in `_build_remaining_sidebar_pages`).
         self.btn_cmp_run = QtWidgets.QPushButton("Generate comparison")
         self.btn_cmp_run.setMinimumHeight(32)
         self.btn_cmp_run.clicked.connect(self._on_run_clicked)
-        actions.addWidget(self.btn_cmp_run)
-        v.addLayout(actions)
 
-        # The status widgets (stage label, progress bar, results panel)
-        # used to live below the action row, but they were visually noisy
-        # for a tab that mostly just configures + kicks off the comparison.
-        # They're still constructed and parented to the tab so the rest of
-        # the run-machinery can call .setText / .setValue / .reset on them
-        # — but they're hidden so they don't show in the UI.  Progress is
-        # surfaced via the status bar instead.
+        # ── Centre: the 'Analysis Configuration' wizard. ──
+        centre = self._build_stats_centre()
+        v.addWidget(centre, stretch=1)
+
+        # Seed the two default groups AFTER the centre exists so the live
+        # `changed → _refresh_stats_preview` wiring has somewhere to render.
+        self._cmp_add_group()
+        self._cmp_add_group()
+
+        # The status widgets (stage label, progress bar, results panel) are
+        # still constructed + parented to the tab so the run-machinery can
+        # call .setText / .setValue / .reset / .show_results on them — but
+        # hidden, since progress is surfaced via the status bar instead.
         self.cmp_stage_label = QtWidgets.QLabel("Idle", tab)
         self.cmp_progress    = QtWidgets.QProgressBar(tab)
         self.cmp_progress.setRange(0, 100)
@@ -1991,8 +1958,11 @@ class BuildMixin:
             w.hide()
 
         self.tabs.addTab(tab, TAB_COMPARE)
+        # Now that both the sidebar group cards and the centre wizard exist,
+        # render the initial test plan.
+        self._refresh_stats_preview()
 
-    # ── Statistics tab ────────────────────────────────────────────────────────
+    # ── Statistics config (the Compare-tab "Analysis Configuration" wizard) ──
     _STAT_CORR_MAP   = {"None": "none", "Bonferroni": "bonferroni",
                         "Holm": "holm", "Benjamini-Hochberg (FDR)": "fdr_bh"}
     _STAT_STRAT_MAP  = {"Auto (normality test)": "auto",
@@ -2013,25 +1983,80 @@ class BuildMixin:
         ("Directional persistence (VACF)", "vacf_persistence"),
     ]
 
-    def _build_statistics_tab(self):
-        """Statistics tab.  The global controls live in the LEFT SIDEBAR (like
-        every other tab's settings); the tab BODY shows a live, plain-language
-        'test plan' that updates as the controls / Compare groups change, so it
-        is always clear which test each metric will get before anything runs."""
-        # ── Controls (re-parented into the Statistics sidebar page) ──────────
+    def _build_stats_centre(self):
+        """Build the Compare tab's CENTRE — a wizard-style 'Analysis
+        Configuration' panel (returns a QScrollArea to use as the tab body).
+
+        It reads the groups defined in the LEFT SIDEBAR and shows, live: the
+        detected experimental design, a data-aware recommendation, the
+        test-choosing options (each label carrying a ⓘ plain-English
+        definition), the resulting plain-language test plan, and a decision
+        diagram.  Every choice is mirrored on the figure captions, the stats
+        CSV and the PDF report."""
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(body)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(12)
+
+        intro = QtWidgets.QLabel(
+            "<span style='font-size:16px;'><b>Analysis Configuration</b></span>"
+            "<br>Define your groups in the left sidebar; this panel shows "
+            "exactly how they’ll be compared and lets you choose the tests. "
+            "Tests use <b>one value per cell / replicate</b> (never pooled "
+            "per-track), so there’s no pseudoreplication.")
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+
+        # 1 · Experimental design (auto-detected from the sidebar groups).
+        grp1 = QtWidgets.QGroupBox("1 · Your experimental design")
+        g1 = QtWidgets.QVBoxLayout(grp1)
+        self.lbl_stats_design = QtWidgets.QLabel("—")
+        self.lbl_stats_design.setWordWrap(True)
+        self.lbl_stats_design.setTextFormat(Qt.TextFormat.RichText)
+        g1.addWidget(self.lbl_stats_design)
+        v.addWidget(grp1)
+
+        # 2 · Data-aware recommendation + one-click apply.
+        grpr = QtWidgets.QGroupBox("2 · Recommended for your data")
+        gr = QtWidgets.QVBoxLayout(grpr)
+        self.lbl_stats_recommend = QtWidgets.QLabel("—")
+        self.lbl_stats_recommend.setWordWrap(True)
+        self.lbl_stats_recommend.setTextFormat(Qt.TextFormat.RichText)
+        gr.addWidget(self.lbl_stats_recommend)
+        _rrow = QtWidgets.QHBoxLayout()
+        _rrow.addStretch(1)
+        self.btn_stats_apply_rec = QtWidgets.QPushButton(
+            "Apply recommended settings")
+        self.btn_stats_apply_rec.setToolTip(
+            "Set the options below to the recommended values for the current "
+            "groups. You can still adjust them afterwards.")
+        self.btn_stats_apply_rec.clicked.connect(self._apply_stats_recommendation)
+        _rrow.addWidget(self.btn_stats_apply_rec)
+        gr.addLayout(_rrow)
+        v.addWidget(grpr)
+        self._stats_recommended_cfg = None
+
+        # 3 · Options — the test-choosing controls.  Each row label carries a
+        # ⓘ icon whose tooltip defines the term in one plain-English sentence
+        # (see fa_stats_config.STATS_GLOSSARY).
         self._stats_settings_widget = QtWidgets.QWidget()
         sw = QtWidgets.QVBoxLayout(self._stats_settings_widget)
         sw.setContentsMargins(0, 0, 0, 0)
         sw.setSpacing(6)
-
-        sec, gl = self._make_form_section("Statistical tests")
+        sec, gl = self._make_form_section("3 · Analysis options")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self.s_stat_alpha = self._spin_dbl(
             0.05, 0.0001, 0.5, step=0.005, decimals=4,
             tip="Significance level α. A comparison is 'significant' when its\n"
                 "(corrected) p-value < α. The ***/**/* tiers stay at 0.001/0.01/0.05.")
-        gl.addRow("Significance α", self.s_stat_alpha)
+        gl.addRow(_label_with_info("Significance α", "Significance α"),
+                  self.s_stat_alpha)
 
         self.c_stat_correction = _QuietComboBox()
         self.c_stat_correction.addItems(
@@ -2041,7 +2066,8 @@ class BuildMixin:
             "Multiple-comparison correction applied to the pairwise tests.\n"
             "Holm is a uniformly more powerful step-down version of Bonferroni;\n"
             "Benjamini-Hochberg controls the false-discovery rate instead.")
-        gl.addRow("Correction", self.c_stat_correction)
+        gl.addRow(_label_with_info("Correction", "Correction"),
+                  self.c_stat_correction)
 
         self.c_stat_across_metric = QtWidgets.QCheckBox(
             "Across the 8 scalar metrics too")
@@ -2050,7 +2076,8 @@ class BuildMixin:
             "family-wise false-positive rate. When on, the correction is also\n"
             "applied across every scalar metric's pairwise tests, reported in\n"
             "the CSV and reflected in the on-figure stars.")
-        gl.addRow("Family-wise", self.c_stat_across_metric)
+        gl.addRow(_label_with_info("Family-wise", "Family-wise"),
+                  self.c_stat_across_metric)
 
         self.c_stat_strategy = _QuietComboBox()
         self.c_stat_strategy.addItems(
@@ -2059,7 +2086,8 @@ class BuildMixin:
             "Auto: a Shapiro-Wilk normality test per metric picks parametric\n"
             "(t-test / ANOVA) vs non-parametric (Mann-Whitney / Kruskal-Wallis).\n"
             "Force the choice to keep one family across all metrics.")
-        gl.addRow("Parametric strategy", self.c_stat_strategy)
+        gl.addRow(_label_with_info("Parametric strategy", "Parametric strategy"),
+                  self.c_stat_strategy)
 
         self.c_stat_anova3 = _QuietComboBox()
         self.c_stat_anova3.addItems(["Welch's ANOVA", "One-way ANOVA", "Auto"])
@@ -2067,12 +2095,14 @@ class BuildMixin:
             "Parametric test for 3+ groups. Welch's ANOVA does NOT assume equal\n"
             "variances (consistent with the Welch's t-test used for 2 groups);\n"
             "one-way ANOVA does. Auto = Welch's.")
-        gl.addRow("Test for 3+ groups", self.c_stat_anova3)
+        gl.addRow(_label_with_info("Test for 3+ groups", "Welch's ANOVA"),
+                  self.c_stat_anova3)
 
         self.s_stat_ci = self._spin_dbl(
             0.95, 0.50, 0.999, step=0.01, decimals=3,
             tip="Confidence-interval coverage for the Hedges' g effect sizes.")
-        gl.addRow("Effect-size CI", self.s_stat_ci)
+        gl.addRow(_label_with_info("Effect-size CI", "Effect-size CI"),
+                  self.s_stat_ci)
 
         self.c_stat_fig_corrected = QtWidgets.QCheckBox(
             "Corrected p on figure stars")
@@ -2081,45 +2111,14 @@ class BuildMixin:
             "On (recommended): the stars drawn on the figure use the chosen\n"
             "correction, so the figure agrees with the CSV. Off: figure shows\n"
             "raw-p stars (the corrected values are still in the CSV).")
-        gl.addRow("Figure stars", self.c_stat_fig_corrected)
+        gl.addRow(_label_with_info("Figure stars", "Figure stars"),
+                  self.c_stat_fig_corrected)
         sw.addWidget(sec)
-        sw.addStretch(1)
         self._propagate_form_tooltips(self._stats_settings_widget)
+        v.addWidget(self._stats_settings_widget)
 
-        # ── Tab body: the live 'test plan' ──────────────────────────────────
-        tab = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(tab)
-        v.setContentsMargins(16, 14, 16, 14)
-        v.setSpacing(12)
-
-        intro = QtWidgets.QLabel(
-            "<span style='font-size:15px;'><b>Statistics</b></span><br>"
-            "How the <b>Compare</b> tab tests each metric. Set the options in the "
-            "left sidebar; this page shows exactly what will run. Every choice is "
-            "recorded on the figure captions, in the stats CSV, and in the PDF "
-            "report. Tests use <b>one value per cell / replicate</b> (never pooled "
-            "per-track), so there is no pseudoreplication.")
-        intro.setWordWrap(True)
-        v.addWidget(intro)
-
-        grp1 = QtWidgets.QGroupBox("Current comparison  (from the Compare tab)")
-        g1 = QtWidgets.QVBoxLayout(grp1)
-        self.lbl_stats_design = QtWidgets.QLabel("—")
-        self.lbl_stats_design.setWordWrap(True)
-        self.lbl_stats_design.setTextFormat(Qt.TextFormat.RichText)
-        g1.addWidget(self.lbl_stats_design)
-        v.addWidget(grp1)
-
-        # ── Live decision diagram (updates with the data + settings) ────────
-        grpd = QtWidgets.QGroupBox("Decision guide  —  how the test is chosen")
-        gd = QtWidgets.QVBoxLayout(grpd)
-        self.lbl_stats_diagram = QtWidgets.QLabel()
-        self.lbl_stats_diagram.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_stats_diagram.setMinimumHeight(150)
-        gd.addWidget(self.lbl_stats_diagram)
-        v.addWidget(grpd)
-
-        grp2 = QtWidgets.QGroupBox("Tests that will run")
+        # 4 · The resulting plain-language test plan.
+        grp2 = QtWidgets.QGroupBox("4 · Tests that will run")
         g2 = QtWidgets.QVBoxLayout(grp2)
         self.lbl_stats_plan = QtWidgets.QLabel("—")
         self.lbl_stats_plan.setWordWrap(True)
@@ -2129,24 +2128,35 @@ class BuildMixin:
         g2.addWidget(self.lbl_stats_plan)
         v.addWidget(grp2)
 
-        # ── Data-aware recommendation + one-click apply ─────────────────────
-        grpr = QtWidgets.QGroupBox("Recommended for your data")
-        gr = QtWidgets.QVBoxLayout(grpr)
-        self.lbl_stats_recommend = QtWidgets.QLabel("—")
-        self.lbl_stats_recommend.setWordWrap(True)
-        self.lbl_stats_recommend.setTextFormat(Qt.TextFormat.RichText)
-        gr.addWidget(self.lbl_stats_recommend)
-        _rrow = QtWidgets.QHBoxLayout()
-        _rrow.addStretch(1)
-        self.btn_stats_apply_rec = QtWidgets.QPushButton("Apply recommended settings")
-        self.btn_stats_apply_rec.setToolTip(
-            "Set the sidebar controls to the recommended values for the current "
-            "groups. You can still adjust them afterwards.")
-        self.btn_stats_apply_rec.clicked.connect(self._apply_stats_recommendation)
-        _rrow.addWidget(self.btn_stats_apply_rec)
-        gr.addLayout(_rrow)
-        v.addWidget(grpr)
-        self._stats_recommended_cfg = None
+        # 5 · Decision diagram (live; updates with the data + settings).
+        grpd = QtWidgets.QGroupBox("5 · How the test is chosen")
+        gd = QtWidgets.QVBoxLayout(grpd)
+        self.lbl_stats_diagram = QtWidgets.QLabel()
+        self.lbl_stats_diagram.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_stats_diagram.setMinimumHeight(150)
+        gd.addWidget(self.lbl_stats_diagram)
+        v.addWidget(grpd)
+
+        # Glossary — every technical term, one sentence each, with a ⓘ icon
+        # (collapsed by default).  Sphericity / Greenhouse–Geisser / Interaction
+        # effect are the repeated-measures terms used on the paired two-way path.
+        sec_terms = _CollapsibleSection("What these terms mean")
+        terms_w = QtWidgets.QWidget()
+        tg = QtWidgets.QGridLayout(terms_w)
+        tg.setContentsMargins(0, 0, 0, 0)
+        tg.setHorizontalSpacing(18)
+        tg.setVerticalSpacing(4)
+        _key_terms = [
+            "Parametric", "Welch's t-test", "Mann–Whitney", "Welch's ANOVA",
+            "Holm", "Benjamini–Hochberg FDR", "Hedges' g", "Replicate",
+            "Two-way mixed ANOVA", "Sphericity", "Greenhouse–Geisser",
+            "Interaction effect",
+        ]
+        for _i, _term in enumerate(_key_terms):
+            tg.addWidget(_label_with_info(_term, _term), _i // 2, _i % 2)
+        sec_terms.content_layout.addWidget(terms_w)
+        sec_terms.set_expanded(False)
+        v.addWidget(sec_terms)
 
         cap = QtWidgets.QLabel(
             "<i>The same test applies to every scalar metric — it depends on the "
@@ -2166,17 +2176,8 @@ class BuildMixin:
         for _w in (self.c_stat_across_metric, self.c_stat_fig_corrected):
             _w.toggled.connect(lambda *_: self._refresh_stats_preview())
 
-        self.tabs.addTab(tab, TAB_STATISTICS)
-        self._refresh_stats_preview()
-
-    def _goto_statistics_tab(self):
-        """Jump to the Statistics tab (from the Compare-tab button) and refresh
-        its live preview against the current groups."""
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == TAB_STATISTICS:
-                self.tabs.setCurrentIndex(i)
-                break
-        self._refresh_stats_preview()
+        scroll.setWidget(body)
+        return scroll
 
     def _collect_stats_config(self) -> dict:
         """Read the Statistics-tab widgets into the canonical stats_config dict

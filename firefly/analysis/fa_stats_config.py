@@ -184,6 +184,80 @@ def describe_test_label(test_name, correction, across_metric=False):
     return f"{test_name} · {tail}" if test_name else tail
 
 
+# ── Plain-English glossary for the Compare/Statistics UI ─────────────────────
+# One-sentence, jargon-light definitions surfaced next to technical terms via
+# small "ⓘ" info icons (see ui_widgets._info_icon).  Kept here — UI-free and
+# import-light — so the same wording can later feed CSV/PDF captions or tests.
+# Keys are the exact term strings the UI passes in.
+STATS_GLOSSARY = {
+    "Significance α":
+        "The p-value threshold below which a result is called statistically "
+        "significant (conventionally 0.05).",
+    "Correction":
+        "A multiple-comparison adjustment that stops you from collecting false "
+        "positives when many tests are run at once.",
+    "Family-wise":
+        "Correct p-values across all the metrics together, not just within each "
+        "metric on its own — a stricter, more honest bar.",
+    "Parametric":
+        "A test that assumes the data follow a normal (bell-curve) distribution.",
+    "Parametric strategy":
+        "How FIREFLY decides between normal-theory (parametric) and rank-based "
+        "(non-parametric) tests: automatically per metric, or forced one way.",
+    "Mann–Whitney":
+        "A rank-based two-group test that makes no assumption of a normal "
+        "distribution — the non-parametric counterpart of the t-test.",
+    "Welch's t-test":
+        "A two-group test of means that does not assume the groups have equal "
+        "variance (the safer default t-test).",
+    "Welch's ANOVA":
+        "A test for 3+ groups that does not assume equal variances across "
+        "groups — the unequal-variance version of one-way ANOVA.",
+    "One-way ANOVA":
+        "The classic 3+-group test of means, which assumes every group has the "
+        "same variance.",
+    "Kruskal–Wallis":
+        "A rank-based test for 3+ groups — the non-parametric counterpart of "
+        "one-way ANOVA.",
+    "Holm":
+        "A step-down correction that controls the chance of any false positive "
+        "across your tests, with more power than plain Bonferroni.",
+    "Benjamini–Hochberg FDR":
+        "Controls the expected proportion of false positives among the results "
+        "you call significant, rather than the chance of any single one.",
+    "Effect-size CI":
+        "The confidence interval around the effect size — the range of "
+        "plausible true effect magnitudes, not just whether it's significant.",
+    "Hedges' g":
+        "A standardized effect size (like Cohen's d) saying how large a "
+        "difference is in standard-deviation units, corrected for small samples.",
+    "Replicate":
+        "An independent experimental unit — here one cell/field of view — which "
+        "is the level the statistics are computed on (never per-track).",
+    "Two-way mixed ANOVA":
+        "Tests group, time, and their interaction together when the same cells "
+        "are measured at more than one time point.",
+    "Sphericity":
+        "The assumption that the spread of the differences between every pair of "
+        "time points is about equal; when violated a correction is applied.",
+    "Greenhouse–Geisser":
+        "A correction that adjusts a repeated-measures ANOVA's degrees of "
+        "freedom when sphericity is violated, guarding against false positives.",
+    "Interaction effect":
+        "Whether the change over time differs between your groups — usually the "
+        "key result in a group × time experiment.",
+    "Figure stars":
+        "Whether the asterisks drawn on the figure use the corrected p-values "
+        "(matching the CSV) rather than the raw ones.",
+}
+
+
+def glossary_def(term):
+    """Return the plain-English definition for a glossary term, or '' if the
+    term isn't in `STATS_GLOSSARY`."""
+    return STATS_GLOSSARY.get(term, "")
+
+
 def config_summary_rows(cfg):
     """Return a list of (label, value) rows describing the config — used by the
     CSV/PDF header blocks so the exact statistical settings are recorded with

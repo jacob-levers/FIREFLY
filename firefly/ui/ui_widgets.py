@@ -24,6 +24,75 @@ from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _hide_napari_chrome, _register_motion_colormap,
                         _MOTION_PALETTE, _MOTION_ORDER,
                         _MOTION_CMAP_NAME, _open_folder)
+from firefly.analysis.fa_stats_config import glossary_def
+
+
+class _InfoIcon(QtWidgets.QLabel):
+    """A small "ⓘ" affordance that reveals a one-sentence, plain-English
+    definition of a technical term on hover (and on click, for trackpad /
+    touch users who don't hover).
+
+    The definition text comes from `fa_stats_config.STATS_GLOSSARY` via the
+    `term` key.  An unknown term renders nothing (the icon hides itself), so
+    callers can pass any label safely.  Used next to statistics terms in the
+    Compare tab's "Analysis Configuration" wizard.
+    """
+
+    def __init__(self, term: str, parent=None):
+        super().__init__("ⓘ", parent)   # ⓘ
+        self._term = term
+        definition = glossary_def(term)
+        if not definition:
+            self.hide()
+            return
+        # Rich-text tooltip names the term it defines, then the sentence.
+        self.setToolTip(f"<b>{term}</b><br>{definition}")
+        # macOS can suppress tooltips on non-focused widgets — force them
+        # (mirrors the fix used for the form-row labels).
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
+        except Exception:
+            pass
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(15, 15)
+        # Muted by default, accent on hover — a recognisable info affordance
+        # without competing with the label text it sits beside.
+        self.setStyleSheet(
+            "QLabel { color: %s; font-size: 12px; font-weight: bold;"
+            " background: transparent; }"
+            "QLabel:hover { color: %s; }"
+            % (_THEME["TXT_MUTED"], _THEME["ACC"]))
+
+    def mousePressEvent(self, ev):
+        # Click anywhere on the icon → pop the definition immediately, anchored
+        # just beneath it, so it works without a hover.
+        try:
+            QtWidgets.QToolTip.showText(
+                self.mapToGlobal(QtCore.QPoint(0, self.height())),
+                self.toolTip(), self)
+        except Exception:
+            pass
+        super().mousePressEvent(ev)
+
+
+def _info_icon(term: str, parent=None) -> _InfoIcon:
+    """Factory for an `_InfoIcon` explaining `term` (see STATS_GLOSSARY)."""
+    return _InfoIcon(term, parent)
+
+
+def _label_with_info(text: str, term: str, parent=None) -> QtWidgets.QWidget:
+    """Composite "<text> ⓘ" widget for QFormLayout label cells / section
+    headers: a plain label followed by an info icon for `term`.  Falls back to
+    a bare label when the term has no glossary entry."""
+    w = QtWidgets.QWidget(parent)
+    lay = QtWidgets.QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(4)
+    lay.addWidget(QtWidgets.QLabel(text))
+    lay.addWidget(_InfoIcon(term, w))
+    lay.addStretch(1)
+    return w
 
 
 class _UpdateCheckThread(QtCore.QThread):
