@@ -95,6 +95,280 @@ def _label_with_info(text: str, term: str, parent=None) -> QtWidgets.QWidget:
     return w
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Compare-tab "Analysis Configuration" wizard widgets
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _AlertBanner(QtWidgets.QFrame):
+    """A severity-coloured callout for the data-aware recommendation: a subtle
+    panel with a thick coloured left bar + an icon + rich-text message.  Styled
+    by the `#alert_banner[severity=...]` QSS rules; the icon colour is read
+    live from `_THEME`."""
+
+    _ICON = {"danger": "⚠", "warn": "⚠", "success": "✓", "info": "ⓘ"}
+    _ICON_KEY = {"danger": "DANGER", "warn": "WARN",
+                 "success": "SUCCESS", "info": "ACC"}
+
+    def __init__(self, severity: str, html: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("alert_banner")
+        sev = severity if severity in self._ICON else "info"
+        self.setProperty("severity", sev)
+        lay = QtWidgets.QHBoxLayout(self)
+        lay.setContentsMargins(10, 8, 11, 8)
+        lay.setSpacing(9)
+        icon = QtWidgets.QLabel(self._ICON[sev])
+        icon.setStyleSheet(
+            "color: %s; font-size: 14px; font-weight: bold; background: transparent;"
+            % _THEME.get(self._ICON_KEY[sev], _THEME["ACC"]))
+        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        icon.setFixedWidth(16)
+        lay.addWidget(icon)
+        msg = QtWidgets.QLabel(html)
+        msg.setWordWrap(True)
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(msg, 1)
+
+
+class _StatusBadge(QtWidgets.QLabel):
+    """Small run-readiness pill in the wizard header.  `set_state(kind, text)`
+    where kind ∈ {ready, blocked, muted} recolours it.
+
+    Styled with an INLINE stylesheet (not the app QSS): the global
+    `QLabel { background: transparent }` rule otherwise wins over an app-level
+    `background-color`, so a widget-specific stylesheet is the robust way to
+    paint the pill."""
+
+    _STYLES = {                       # kind → (bg key, fg key, bordered)
+        "ready":   ("SUCCESS",   "ACC_FG",    False),
+        "blocked": ("DANGER",    "ACC_FG",    False),
+        "muted":   ("PANEL_ALT", "TXT_MUTED", True),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("status_badge")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_state("muted", "—")
+
+    def set_state(self, kind: str, text: str):
+        self.setText(text)
+        self.setProperty("kind", kind)   # introspectable; styling is inline
+        bg, fg, bordered = self._STYLES.get(kind, self._STYLES["muted"])
+        border = (f"border: 1px solid {_THEME['BORDER']};"
+                  if bordered else "border: none;")
+        self.setStyleSheet(
+            "QLabel#status_badge { background-color: %s; color: %s; "
+            "border-radius: 9px; padding: 2px 11px; font-weight: 600; "
+            "font-size: 11px; %s }" % (_THEME[bg], _THEME[fg], border))
+
+
+def _step_badge(n, parent=None) -> QtWidgets.QLabel:
+    """A small accent-filled number chip ('1'..'5') prefixing a wizard step.
+    Inline-styled for the same reason as `_StatusBadge`."""
+    lbl = QtWidgets.QLabel(str(n), parent)
+    lbl.setObjectName("step_badge")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl.setFixedSize(20, 20)
+    lbl.setStyleSheet(
+        "QLabel#step_badge { background-color: %s; color: %s; border-radius: 10px; "
+        "font-weight: 700; font-size: 11px; }" % (_THEME["ACC"], _THEME["ACC_FG"]))
+    return lbl
+
+
+def _color_chip(label: str, color: str, n_reps: int,
+                parent=None) -> QtWidgets.QFrame:
+    """A rounded group chip: a colour swatch (the group's own colour) + the
+    group label + a muted replicate-count.  Ties the centre summary back to the
+    sidebar group cards."""
+    chip = QtWidgets.QFrame(parent)
+    chip.setObjectName("group_chip")
+    lay = QtWidgets.QHBoxLayout(chip)
+    lay.setContentsMargins(8, 3, 10, 3)
+    lay.setSpacing(6)
+    sw = QtWidgets.QLabel()
+    sw.setFixedSize(11, 11)
+    # Inline stylesheet wins over the global `QLabel { background: transparent }`
+    # for this specific widget, so the swatch shows the group colour.
+    sw.setStyleSheet(
+        "background: %s; border-radius: 5px;" % (color or _THEME["TXT_MUTED"]))
+    lay.addWidget(sw)
+    name = QtWidgets.QLabel(str(label) or "Group")
+    lay.addWidget(name)
+    cnt = QtWidgets.QLabel("n=%d" % int(n_reps))
+    cnt.setStyleSheet("color: %s; background: transparent;" % _THEME["TXT_MUTED"])
+    lay.addWidget(cnt)
+    return chip
+
+
+class _DecisionDiagram(QtWidgets.QWidget):
+    """Native (QPainter) decision flow for how the statistical test is chosen —
+    replaces the old matplotlib→QPixmap diagram.  Painted in logical
+    coordinates so it stays retina-crisp at any size, reads `_THEME` live, and
+    is on-palette (the result box uses the accent, not an off-theme green).
+
+    `set_flow(n_groups, paired, strat, result_text)` updates it.  Nodes are
+    rebuilt every paint into `self._nodes` so hovering shows a one-line tooltip
+    and clicking emits `node_clicked` (room to grow into richer interactivity)."""
+
+    node_clicked = QtCore.Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._n_groups = 0
+        self._paired = False
+        self._strat = "auto"
+        self._result = "—"
+        self._nodes: list = []           # (QRectF, label, tip)
+        self.setMinimumHeight(165)
+        self.setMouseTracking(True)
+
+    def sizeHint(self):
+        return QtCore.QSize(660, 175)
+
+    def set_flow(self, n_groups, paired, strat, result_text):
+        self._n_groups = int(n_groups or 0)
+        self._paired = bool(paired)
+        self._strat = str(strat or "auto")
+        self._result = str(result_text or "—")
+        self.update()
+
+    # ── tooltips for each node (falls back to the shared glossary) ──
+    def _tip(self, label):
+        tips = {
+            "2 groups": "Exactly two groups → a two-sample test.",
+            "3+ groups":
+                "Three or more groups → an omnibus test + pairwise follow-ups.",
+            "Unpaired":
+                "Independent groups; no cell appears in more than one group.",
+            "Paired": "The same cells measured at two or more time points.",
+            "Parametric": glossary_def("Parametric"),
+            "Non-parametric":
+                "Rank-based; makes no normal-distribution assumption.",
+        }
+        return tips.get(label) or glossary_def(label) or ""
+
+    def paintEvent(self, _ev):
+        T = _THEME
+        W, H = self.width(), self.height()
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        p.fillRect(self.rect(), QtGui.QColor(T["PANEL"]))
+        self._nodes = []
+
+        strat = self._strat
+        n = self._n_groups
+        paired = self._paired
+
+        col_x = [0.135 * W, 0.350 * W, 0.560 * W]
+        res_cx = 0.850 * W
+        pill_w = max(104.0, 0.180 * W)
+        pill_h = max(30.0, min(40.0, 0.225 * H))
+        y_title = 0.115 * H
+        y_top = 0.430 * H
+        y_bot = 0.730 * H
+        y_mid = 0.5 * (y_top + y_bot)
+
+        base = self.font()
+
+        def _title(x, text):
+            f = QtGui.QFont(base); f.setPointSizeF(8.5); f.setBold(False)
+            p.setFont(f); p.setPen(QtGui.QColor(T["TXT_MUTED"]))
+            r = QtCore.QRectF(x - pill_w / 2, y_title - 10, pill_w, 20)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+
+        def _pill(x, yc, text, active):
+            r = QtCore.QRectF(x - pill_w / 2, yc - pill_h / 2, pill_w, pill_h)
+            fill = QtGui.QColor(T["ACC"] if active else T["PANEL_ALT"])
+            edge = QtGui.QColor(T["ACC"] if active else T["BORDER"])
+            tcol = QtGui.QColor(T["ACC_FG"] if active else T["TXT_MUTED"])
+            p.setPen(QtGui.QPen(edge, 1.6 if active else 1.0))
+            p.setBrush(QtGui.QBrush(fill))
+            p.drawRoundedRect(r, pill_h / 2, pill_h / 2)
+            f = QtGui.QFont(base); f.setPointSizeF(9.5); f.setBold(active)
+            p.setFont(f); p.setPen(QtGui.QPen(tcol))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter
+                       | Qt.TextFlag.TextWordWrap, text)
+            self._nodes.append((r, text, self._tip(text)))
+
+        def _arrow(x0, x1, y):
+            p.setPen(QtGui.QPen(QtGui.QColor(T["BORDER_HI"]), 1.6))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLine(QtCore.QPointF(x0, y), QtCore.QPointF(x1, y))
+            ah = 5.0
+            p.drawLine(QtCore.QPointF(x1, y), QtCore.QPointF(x1 - ah, y - ah))
+            p.drawLine(QtCore.QPointF(x1, y), QtCore.QPointF(x1 - ah, y + ah))
+
+        # Column titles
+        _title(col_x[0], "Groups")
+        _title(col_x[1], "Design")
+        _title(col_x[2], "Distribution")
+
+        # Connecting arrows (drawn first, behind the pills)
+        half = pill_w / 2
+        _arrow(col_x[0] + half, col_x[1] - half, y_mid)
+        _arrow(col_x[1] + half, col_x[2] - half, y_mid)
+        _arrow(col_x[2] + half, res_cx - max(120.0, 0.21 * W) / 2, y_mid)
+
+        # Column 1 — number of groups
+        _pill(col_x[0], y_top, "2 groups", n == 2)
+        _pill(col_x[0], y_bot, "3+ groups", n >= 3)
+        # Column 2 — design
+        _pill(col_x[1], y_top, "Unpaired", (not paired) and n >= 2)
+        _pill(col_x[1], y_bot, "Paired", paired)
+        # Column 3 — distribution
+        _pill(col_x[2], y_top, "Parametric",
+              strat in ("auto", "force_parametric"))
+        _pill(col_x[2], y_bot, "Non-parametric",
+              strat in ("auto", "force_nonparametric"))
+        if strat == "auto":
+            f = QtGui.QFont(base); f.setPointSizeF(7.5); p.setFont(f)
+            p.setPen(QtGui.QColor(T["TXT_MUTED"]))
+            r = QtCore.QRectF(col_x[2] - pill_w / 2, y_bot + pill_h / 2 + 1,
+                              pill_w, 14)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter,
+                       "auto: per metric")
+
+        # Result box (accent border — on-theme, replacing the old green)
+        res_w = max(120.0, 0.21 * W)
+        res_h = max(pill_h * 1.7, (y_bot - y_top) + pill_h)
+        rr = QtCore.QRectF(res_cx - res_w / 2, y_mid - res_h / 2, res_w, res_h)
+        p.setPen(QtGui.QPen(QtGui.QColor(T["ACC"]), 2.0))
+        p.setBrush(QtGui.QBrush(QtGui.QColor(T["PANEL_ALT"])))
+        p.drawRoundedRect(rr, 9, 9)
+        f = QtGui.QFont(base); f.setPointSizeF(10.5); f.setBold(True)
+        p.setFont(f); p.setPen(QtGui.QPen(QtGui.QColor(T["TXT"])))
+        p.drawText(rr, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                   self._result)
+        self._nodes.append((rr, self._result, glossary_def(self._result) or ""))
+        p.end()
+
+    def _node_at(self, pos):
+        for rect, label, tip in self._nodes:
+            if rect.contains(pos):
+                return label, tip
+        return None, None
+
+    def mouseMoveEvent(self, ev):
+        pos = ev.position()
+        _label, tip = self._node_at(pos)
+        if tip:
+            QtWidgets.QToolTip.showText(ev.globalPosition().toPoint(), tip, self)
+        else:
+            QtWidgets.QToolTip.hideText()
+        super().mouseMoveEvent(ev)
+
+    def mousePressEvent(self, ev):
+        label, tip = self._node_at(ev.position())
+        if label:
+            self.node_clicked.emit(label)
+            if tip:
+                QtWidgets.QToolTip.showText(
+                    ev.globalPosition().toPoint(), tip, self)
+        super().mousePressEvent(ev)
+
+
 class _UpdateCheckThread(QtCore.QThread):
     """Tiny background thread that hits GitHub's Releases API and emits
     `update_available(tag, html_url)` if the latest tag is newer than
@@ -2614,6 +2888,31 @@ class _FolderDropList(QtWidgets.QListWidget):
             "QListWidget { border: 1px dashed #777; border-radius: 4px; "
             "padding: 4px; }")
 
+    # ── path storage: show the readable basename, keep the full path ──
+    # Each row displays `basename` but stores the FULL path in UserRole (and
+    # as its tooltip), so the narrow sidebar stays readable while every
+    # consumer still gets the absolute path via `folder_paths()`.
+    def folder_paths(self) -> "list[str]":
+        out = []
+        for i in range(self.count()):
+            it = self.item(i)
+            p = it.data(Qt.ItemDataRole.UserRole)
+            out.append(str(p) if p is not None else it.text())
+        return out
+
+    def add_folder(self, path: str) -> bool:
+        """Add one folder (basename shown, full path stored). Returns False if
+        it was already present (de-duped on the full path)."""
+        path = str(path)
+        if path in self.folder_paths():
+            return False
+        name = os.path.basename(path.rstrip("/\\")) or path
+        item = QtWidgets.QListWidgetItem(name)
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        item.setToolTip(path)
+        self.addItem(item)
+        return True
+
     # Qt drag-and-drop event handlers
     def dragEnterEvent(self, e: QtGui.QDragEnterEvent):
         if e.mimeData().hasUrls():
@@ -2626,17 +2925,13 @@ class _FolderDropList(QtWidgets.QListWidget):
     def dropEvent(self, e: QtGui.QDropEvent):
         if not e.mimeData().hasUrls():
             return
-        existing = {self.item(i).text() for i in range(self.count())}
         added: list[str] = []
         for url in e.mimeData().urls():
             path = url.toLocalFile()
             if not path or not os.path.isdir(path):
                 continue
-            if path in existing:
-                continue
-            self.addItem(path)
-            added.append(path)
-            existing.add(path)
+            if self.add_folder(path):
+                added.append(path)
         if added:
             self.folders_dropped.emit(added)
         e.acceptProposedAction()
@@ -2823,10 +3118,7 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
             self, "Add folder to this group", os.path.expanduser("~"))
         if not path:
             return
-        existing = {self.lst_folders.item(i).text()
-                    for i in range(self.lst_folders.count())}
-        if path not in existing:
-            self.lst_folders.addItem(path)
+        if self.lst_folders.add_folder(path):
             self._refresh_count()
             self.changed.emit()
 
@@ -2842,13 +3134,13 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
         self.changed.emit()
 
     def get_state(self) -> dict:
-        """Return the group as the dict shape `compare_groups` expects."""
-        folders = [self.lst_folders.item(i).text()
-                   for i in range(self.lst_folders.count())]
+        """Return the group as the dict shape `compare_groups` expects.
+        Folders are the FULL absolute paths (the list shows basenames but
+        stores the full path in each item's UserRole)."""
         return {"label":  self.e_label.text().strip() or "Group",
                 "color":  self._color,
                 "timepoint": self.e_timepoint.text().strip(),
-                "folders": folders}
+                "folders": self.lst_folders.folder_paths()}
 
     def set_state(self, label: str, color: str, folders: list,
                   timepoint: str = ""):
@@ -2859,7 +3151,7 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
         self.e_timepoint.setText(timepoint or "")
         self.lst_folders.clear()
         for f in folders:
-            self.lst_folders.addItem(str(f))
+            self.lst_folders.add_folder(str(f))
         self._refresh_count()
 
 

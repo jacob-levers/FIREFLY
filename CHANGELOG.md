@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.16.0
+
+### A modern, guided "Analysis Configuration" wizard (Compare tab)
+
+The Compare tab's centre panel was rebuilt to feel like a real stats package —
+clearer guidance, on-theme visuals, and a correctness fix to the replicate count.
+
+- **Replicate-count fix (important).** The recommendation counted *cards per
+  label* instead of *folders*, so a group with 4 folders showed as "1 replicate"
+  and wrongly warned "comparisons can't be interpreted". The backend treats each
+  analysis-output folder as one replicate (one scalar row per folder), so the
+  panel now counts folders. Your "Ready to run" status and recommendation now
+  reflect the real n.
+- **Guidance banners + run-readiness badge.** The recommendation is now shown as
+  severity **alert banners** (red ⚠ / amber ⚠ / green ✓ with a coloured bar),
+  and a **status pill** in the header reads "Ready to run" / "Need ≥3 replicates"
+  / "Add 2 groups" at a glance.
+- **Native, crisp decision diagram.** The matplotlib raster diagram (with its
+  off-theme green result box) is replaced by a vector **QPainter** widget:
+  retina-sharp at any size, fully on the accent palette, naming the chosen test,
+  and hover-explained per node.
+- **Richer design summary.** The plain "DMSO (1) · Ciprofol (1)" text is now
+  **colour chips** matching each group's sidebar colour with a replicate count,
+  plus a one-line explanation of *why* the design is paired vs unpaired (e.g.
+  identical time points ⇒ compared as independent groups).
+- **Polish.** Numbered **step badges** on each section; a tighter options form
+  (controls no longer stretch edge-to-edge); inline glossary **definitions**
+  (term — one sentence) instead of hover-only icons; a condensed intro; and the
+  sidebar group cards now show readable folder **basenames** (full path on hover)
+  while every consumer still gets the absolute path.
+
+Covered by offscreen UI checks (banner severities, badge states, chips, native
+diagram paint + flow, folder full-path round-trip, settings round-trip) and the
+full analysis suite stays green.
+
 ## v2.15.1
 
 - **"Generate comparison" is now the blue primary button**, matching the "Start"

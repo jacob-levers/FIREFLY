@@ -30,7 +30,8 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
                         _FolderDropList, _CompareGroupCard, _PreferencesDialog,
                         _load_imagej_roi_polygons, _load_tif_mask_polygons,
                         _load_any_roi_file, _info_icon, _InfoIcon,
-                        _label_with_info)
+                        _label_with_info, _AlertBanner, _StatusBadge,
+                        _step_badge, _color_chip, _DecisionDiagram)
 
 
 class BuildMixin:
@@ -2006,31 +2007,66 @@ class BuildMixin:
         v.setContentsMargins(16, 14, 16, 14)
         v.setSpacing(12)
 
+        def _card(n, title):
+            """A numbered wizard-step card: an accent step badge + bold title
+            above a content area.  Returns (card, content_layout)."""
+            card = QtWidgets.QFrame()
+            card.setObjectName("wizard_card")
+            cl = QtWidgets.QVBoxLayout(card)
+            cl.setContentsMargins(12, 10, 12, 12)
+            cl.setSpacing(8)
+            hdr = QtWidgets.QHBoxLayout()
+            hdr.setContentsMargins(0, 0, 0, 0)
+            hdr.setSpacing(8)
+            hdr.addWidget(_step_badge(n))
+            t = QtWidgets.QLabel(title)
+            _tf = t.font(); _tf.setBold(True); _tf.setPointSize(12); t.setFont(_tf)
+            hdr.addWidget(t)
+            hdr.addStretch(1)
+            cl.addLayout(hdr)
+            return card, cl
+
+        # ── Header row: title + live run-readiness badge ──
+        head = QtWidgets.QHBoxLayout()
+        head.setSpacing(10)
+        _title = QtWidgets.QLabel("Analysis Configuration")
+        _htf = _title.font(); _htf.setBold(True); _htf.setPointSize(16)
+        _title.setFont(_htf)
+        head.addWidget(_title)
+        head.addStretch(1)
+        self._stats_status_badge = _StatusBadge()
+        head.addWidget(self._stats_status_badge)
+        v.addLayout(head)
         intro = QtWidgets.QLabel(
-            "<span style='font-size:16px;'><b>Analysis Configuration</b></span>"
-            "<br>Define your groups in the left sidebar; this panel shows "
-            "exactly how they’ll be compared and lets you choose the tests. "
-            "Tests use <b>one value per cell / replicate</b> (never pooled "
-            "per-track), so there’s no pseudoreplication.")
+            "Define your groups in the left sidebar — this panel shows how "
+            "they'll be compared and lets you choose the tests. Tests use "
+            "<b>one value per cell / replicate</b> (never pooled per-track).")
         intro.setWordWrap(True)
+        intro.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
         v.addWidget(intro)
 
-        # 1 · Experimental design (auto-detected from the sidebar groups).
-        grp1 = QtWidgets.QGroupBox("1 · Your experimental design")
-        g1 = QtWidgets.QVBoxLayout(grp1)
-        self.lbl_stats_design = QtWidgets.QLabel("—")
-        self.lbl_stats_design.setWordWrap(True)
-        self.lbl_stats_design.setTextFormat(Qt.TextFormat.RichText)
-        g1.addWidget(self.lbl_stats_design)
-        v.addWidget(grp1)
+        # ── 1 · Experimental design — colour chips + a paired/unpaired note ──
+        card1, c1 = _card(1, "Your experimental design")
+        self._stats_design_chips = QtWidgets.QWidget()
+        self._stats_design_grid = QtWidgets.QGridLayout(self._stats_design_chips)
+        self._stats_design_grid.setContentsMargins(0, 0, 0, 0)
+        self._stats_design_grid.setHorizontalSpacing(6)
+        self._stats_design_grid.setVerticalSpacing(6)
+        self._stats_design_grid.setColumnStretch(3, 1)   # keep chips left-packed
+        c1.addWidget(self._stats_design_chips)
+        self._stats_design_note = QtWidgets.QLabel("—")
+        self._stats_design_note.setWordWrap(True)
+        self._stats_design_note.setTextFormat(Qt.TextFormat.RichText)
+        c1.addWidget(self._stats_design_note)
+        v.addWidget(card1)
 
-        # 2 · Data-aware recommendation + one-click apply.
-        grpr = QtWidgets.QGroupBox("2 · Recommended for your data")
-        gr = QtWidgets.QVBoxLayout(grpr)
-        self.lbl_stats_recommend = QtWidgets.QLabel("—")
-        self.lbl_stats_recommend.setWordWrap(True)
-        self.lbl_stats_recommend.setTextFormat(Qt.TextFormat.RichText)
-        gr.addWidget(self.lbl_stats_recommend)
+        # ── 2 · Recommendation — severity banners + one-click apply ──
+        card2, c2 = _card(2, "Recommended for your data")
+        self._stats_banner_host = QtWidgets.QWidget()
+        self._stats_banner_layout = QtWidgets.QVBoxLayout(self._stats_banner_host)
+        self._stats_banner_layout.setContentsMargins(0, 0, 0, 0)
+        self._stats_banner_layout.setSpacing(6)
+        c2.addWidget(self._stats_banner_host)
         _rrow = QtWidgets.QHBoxLayout()
         _rrow.addStretch(1)
         self.btn_stats_apply_rec = QtWidgets.QPushButton(
@@ -2040,24 +2076,32 @@ class BuildMixin:
             "groups. You can still adjust them afterwards.")
         self.btn_stats_apply_rec.clicked.connect(self._apply_stats_recommendation)
         _rrow.addWidget(self.btn_stats_apply_rec)
-        gr.addLayout(_rrow)
-        v.addWidget(grpr)
+        c2.addLayout(_rrow)
+        v.addWidget(card2)
         self._stats_recommended_cfg = None
 
-        # 3 · Options — the test-choosing controls.  Each row label carries a
-        # ⓘ icon whose tooltip defines the term in one plain-English sentence
-        # (see fa_stats_config.STATS_GLOSSARY).
+        # ── 3 · Options — the test-choosing controls.  Each row label carries
+        # a ⓘ icon defining the term in one plain-English sentence. ──
+        card3, c3 = _card(3, "Analysis options")
         self._stats_settings_widget = QtWidgets.QWidget()
         sw = QtWidgets.QVBoxLayout(self._stats_settings_widget)
         sw.setContentsMargins(0, 0, 0, 0)
         sw.setSpacing(6)
-        sec, gl = self._make_form_section("3 · Analysis options")
+        gl = QtWidgets.QFormLayout()
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setHorizontalSpacing(10)
+        gl.setVerticalSpacing(7)
+        # Keep value controls at their natural width (not stretched edge-to-edge).
+        gl.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        _CTRL_W = 240
 
         self.s_stat_alpha = self._spin_dbl(
             0.05, 0.0001, 0.5, step=0.005, decimals=4,
             tip="Significance level α. A comparison is 'significant' when its\n"
                 "(corrected) p-value < α. The ***/**/* tiers stay at 0.001/0.01/0.05.")
+        self.s_stat_alpha.setMaximumWidth(_CTRL_W)
         gl.addRow(_label_with_info("Significance α", "Significance α"),
                   self.s_stat_alpha)
 
@@ -2065,6 +2109,7 @@ class BuildMixin:
         self.c_stat_correction.addItems(
             ["None", "Bonferroni", "Holm", "Benjamini-Hochberg (FDR)"])
         self.c_stat_correction.setCurrentText("Holm")
+        self.c_stat_correction.setMaximumWidth(_CTRL_W)
         self.c_stat_correction.setToolTip(
             "Multiple-comparison correction applied to the pairwise tests.\n"
             "Holm is a uniformly more powerful step-down version of Bonferroni;\n"
@@ -2085,6 +2130,7 @@ class BuildMixin:
         self.c_stat_strategy = _QuietComboBox()
         self.c_stat_strategy.addItems(
             ["Auto (normality test)", "Force parametric", "Force non-parametric"])
+        self.c_stat_strategy.setMaximumWidth(_CTRL_W)
         self.c_stat_strategy.setToolTip(
             "Auto: a Shapiro-Wilk normality test per metric picks parametric\n"
             "(t-test / ANOVA) vs non-parametric (Mann-Whitney / Kruskal-Wallis).\n"
@@ -2094,6 +2140,7 @@ class BuildMixin:
 
         self.c_stat_anova3 = _QuietComboBox()
         self.c_stat_anova3.addItems(["Welch's ANOVA", "One-way ANOVA", "Auto"])
+        self.c_stat_anova3.setMaximumWidth(_CTRL_W)
         self.c_stat_anova3.setToolTip(
             "Parametric test for 3+ groups. Welch's ANOVA does NOT assume equal\n"
             "variances (consistent with the Welch's t-test used for 2 groups);\n"
@@ -2104,6 +2151,7 @@ class BuildMixin:
         self.s_stat_ci = self._spin_dbl(
             0.95, 0.50, 0.999, step=0.01, decimals=3,
             tip="Confidence-interval coverage for the Hedges' g effect sizes.")
+        self.s_stat_ci.setMaximumWidth(_CTRL_W)
         gl.addRow(_label_with_info("Effect-size CI", "Effect-size CI"),
                   self.s_stat_ci)
 
@@ -2116,47 +2164,45 @@ class BuildMixin:
             "raw-p stars (the corrected values are still in the CSV).")
         gl.addRow(_label_with_info("Figure stars", "Figure stars"),
                   self.c_stat_fig_corrected)
-        sw.addWidget(sec)
+        sw.addLayout(gl)
+        c3.addWidget(self._stats_settings_widget)
         self._propagate_form_tooltips(self._stats_settings_widget)
-        v.addWidget(self._stats_settings_widget)
+        v.addWidget(card3)
 
-        # 4 · The resulting plain-language test plan.
-        grp2 = QtWidgets.QGroupBox("4 · Tests that will run")
-        g2 = QtWidgets.QVBoxLayout(grp2)
+        # ── 4 · The resulting plain-language test plan. ──
+        card4, c4 = _card(4, "Tests that will run")
         self.lbl_stats_plan = QtWidgets.QLabel("—")
         self.lbl_stats_plan.setWordWrap(True)
         self.lbl_stats_plan.setTextFormat(Qt.TextFormat.RichText)
         self.lbl_stats_plan.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
-        g2.addWidget(self.lbl_stats_plan)
-        v.addWidget(grp2)
+        c4.addWidget(self.lbl_stats_plan)
+        v.addWidget(card4)
 
-        # 5 · Decision diagram (live; updates with the data + settings).
-        grpd = QtWidgets.QGroupBox("5 · How the test is chosen")
-        gd = QtWidgets.QVBoxLayout(grpd)
-        self.lbl_stats_diagram = QtWidgets.QLabel()
-        self.lbl_stats_diagram.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_stats_diagram.setMinimumHeight(150)
-        gd.addWidget(self.lbl_stats_diagram)
-        v.addWidget(grpd)
+        # ── 5 · Native decision diagram (live; crisp; on-theme). ──
+        card5, c5 = _card(5, "How the test is chosen")
+        self._stats_diagram = _DecisionDiagram()
+        c5.addWidget(self._stats_diagram)
+        v.addWidget(card5)
 
-        # Glossary — every technical term, one sentence each, with a ⓘ icon
-        # (collapsed by default).  Sphericity / Greenhouse–Geisser / Interaction
-        # effect are the repeated-measures terms used on the paired two-way path.
+        # ── Glossary — inline term — definition rows (collapsed by default). ──
         sec_terms = _CollapsibleSection("What these terms mean")
         terms_w = QtWidgets.QWidget()
-        tg = QtWidgets.QGridLayout(terms_w)
-        tg.setContentsMargins(0, 0, 0, 0)
-        tg.setHorizontalSpacing(18)
-        tg.setVerticalSpacing(4)
+        tgl = QtWidgets.QVBoxLayout(terms_w)
+        tgl.setContentsMargins(0, 0, 0, 0)
+        tgl.setSpacing(4)
+        from firefly.analysis.fa_stats_config import glossary_def as _gdef
         _key_terms = [
             "Parametric", "Welch's t-test", "Mann–Whitney", "Welch's ANOVA",
             "Holm", "Benjamini–Hochberg FDR", "Hedges' g", "Replicate",
             "Two-way mixed ANOVA", "Sphericity", "Greenhouse–Geisser",
             "Interaction effect",
         ]
-        for _i, _term in enumerate(_key_terms):
-            tg.addWidget(_label_with_info(_term, _term), _i // 2, _i % 2)
+        for _term in _key_terms:
+            _row = QtWidgets.QLabel(f"<b>{_term}</b> — {_gdef(_term)}")
+            _row.setWordWrap(True)
+            _row.setTextFormat(Qt.TextFormat.RichText)
+            tgl.addWidget(_row)
         sec_terms.content_layout.addWidget(terms_w)
         sec_terms.set_expanded(False)
         v.addWidget(sec_terms)
@@ -2199,10 +2245,11 @@ class BuildMixin:
         }
 
     def _refresh_stats_preview(self):
-        """Update the body 'test plan' from the current config + the group /
-        time-point structure on the Compare tab.  Branch selection only — it
-        can't know normality (that needs the data), so 'Auto' shows both."""
-        if not hasattr(self, "lbl_stats_plan"):
+        """Update the wizard (design chips, recommendation banners, status badge,
+        test plan, decision diagram) from the current config + the group /
+        time-point structure in the sidebar.  Branch selection only — it can't
+        know normality (that needs the data), so 'Auto' shows both."""
+        if not hasattr(self, "_stats_diagram"):
             return
         try:
             cfg = self._collect_stats_config()
@@ -2253,25 +2300,47 @@ class BuildMixin:
             if strat == "force_nonparametric":  return "Kruskal-Wallis"
             return f"{para} <i>or</i> Kruskal-Wallis <i>(auto)</i>"
 
-        # ── Design summary ───────────────────────────────────────────────────
+        # Replicate = one analysis-output FOLDER (compare_groups computes one
+        # scalar row per folder).  So a group's replicate count is the number of
+        # folders it holds, summed across any cards sharing its label — NOT the
+        # number of cards.  This is what drives the recommendation + readiness.
+        def _reps(lbl):
+            return sum(len(c.get("folders") or [])
+                       for c in cards if str(c.get("label", "")) == lbl)
+        group_counts = [_reps(lbl) for lbl in labels]
+        min_reps = min(group_counts) if group_counts else 0
+
+        # ── 1 · Design summary: colour chips + a paired/unpaired note ─────────
+        while self._stats_design_grid.count():
+            _it = self._stats_design_grid.takeAt(0)
+            _w = _it.widget()
+            if _w is not None:
+                _w.deleteLater()
         if n_groups < 2:
-            self.lbl_stats_design.setText(
-                "<i>No comparison defined yet — add at least 2 groups on the "
-                "<b>Compare</b> tab.</i>")
+            self._stats_design_note.setText(
+                "<i>No comparison defined yet — add at least 2 groups (each with "
+                "≥1 folder) in the sidebar.</i>")
         else:
-            per_grp = []
-            for lbl in labels:
-                n_cells = sum(1 for c in cards if str(c.get("label", "")) == lbl)
-                per_grp.append(f"{lbl} ({n_cells})")
+            color_by_label = {}
+            for c in cards:
+                color_by_label.setdefault(
+                    str(c.get("label", "")), c.get("color") or _THEME["TXT_MUTED"])
+            for i, lbl in enumerate(labels):
+                self._stats_design_grid.addWidget(
+                    _color_chip(lbl, color_by_label.get(lbl), _reps(lbl)),
+                    i // 3, i % 3, Qt.AlignmentFlag.AlignLeft)
             if paired:
-                design = (f"<b>Paired</b> — {n_groups} group(s) × {len(tps)} "
-                          f"time point(s): {', '.join(map(str, tps))}. "
-                          "Cells are matched across time points by folder name.")
+                note = (f"<b>Paired</b> design — {n_groups} group(s) × {len(tps)} "
+                        f"time points ({', '.join(map(str, tps))}). Cells are "
+                        "matched across time points by folder name.")
+            elif tps:
+                note = (f"<b>Unpaired</b> — every group shares one time point "
+                        f"(“{tps[0]}”), so there's nothing to pair across; the "
+                        "groups are compared as independent samples.")
             else:
-                design = f"<b>Unpaired</b> — {n_groups} group(s)."
-            self.lbl_stats_design.setText(
-                design + "<br><span>Replicates per group: "
-                + " · ".join(per_grp) + "</span>")
+                note = (f"<b>Unpaired</b> — {n_groups} independent group(s) "
+                        "(no time points set).")
+            self._stats_design_note.setText(note)
 
         # ── Test plan ────────────────────────────────────────────────────────
         corr = describe_test_label("", cfg["correction"],
@@ -2305,153 +2374,103 @@ class BuildMixin:
                      f"<b>Scalar metrics covered:</b> {metrics}</div>")
             self.lbl_stats_plan.setText(html)
 
-        # ── Live decision diagram ────────────────────────────────────────────
-        if hasattr(self, "lbl_stats_diagram"):
-            try:
-                pix = self._render_stats_diagram(cfg, n_groups, paired)
-                if pix is not None:
-                    self.lbl_stats_diagram.setPixmap(pix)
-            except Exception:
-                self.lbl_stats_diagram.setText("(diagram unavailable)")
-
-        # ── Data-aware recommendation ────────────────────────────────────────
-        if hasattr(self, "lbl_stats_recommend"):
-            group_counts = [sum(1 for c in cards if str(c.get("label", "")) == lbl)
-                            for lbl in labels]
-            min_reps = min(group_counts) if group_counts else 0
-            advice, rec = self._stats_recommendation(n_groups, paired, min_reps,
-                                                     _have_pg)
-            self.lbl_stats_recommend.setText(advice)
-            self._stats_recommended_cfg = rec
-            self.btn_stats_apply_rec.setEnabled(rec is not None)
-
-    def _render_stats_diagram(self, cfg, n_groups, paired):
-        """Render the test-selection decision flow as a themed pixmap, with the
-        path for the current data + settings highlighted.  Returns a QPixmap."""
-        import io
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
-        from PySide6 import QtGui
-        T = _THEME
-        fig = plt.figure(figsize=(8.8, 2.45), facecolor=T["PANEL"])
-        ax = fig.add_axes([0, 0, 1, 1]); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        ax.axis("off"); ax.set_facecolor(T["PANEL"])
-
-        def pill(x, y, text, active, w=0.165, h=0.20):
-            fc = T["ACC"] if active else T["PANEL_ALT"]
-            ec = T["ACC"] if active else T["BORDER"]
-            tc = T["ACC_FG"] if active else T["TXT_MUTED"]
-            ax.add_patch(FancyBboxPatch(
-                (x - w / 2, y - h / 2), w, h,
-                boxstyle="round,pad=0.012,rounding_size=0.03",
-                fc=fc, ec=ec, lw=1.8 if active else 1.0, mutation_aspect=0.5))
-            ax.text(x, y, text, ha="center", va="center", color=tc,
-                    fontsize=8.5, fontweight="bold" if active else "normal")
-
-        def title(x, t):
-            ax.text(x, 0.93, t, ha="center", va="center",
-                    color=T["TXT_MUTED"], fontsize=8)
-
-        def arrow(x0, x1):
-            ax.add_patch(FancyArrowPatch(
-                (x0, 0.5), (x1, 0.5), arrowstyle="-|>", mutation_scale=12,
-                color=T["BORDER_HI"], lw=1.4, shrinkA=0, shrinkB=0))
-
-        X = [0.10, 0.33, 0.56]
-        title(X[0], "Groups")
-        pill(X[0], 0.66, "2 groups", n_groups == 2)
-        pill(X[0], 0.34, "3+ groups", n_groups >= 3)
-        title(X[1], "Design")
-        pill(X[1], 0.66, "Unpaired", (not paired) and n_groups >= 2)
-        pill(X[1], 0.34, "Paired (Pre/Post)", paired)
-        title(X[2], "Distribution")
-        strat = cfg["parametric_strategy"]
-        pill(X[2], 0.66, "Parametric", strat in ("auto", "force_parametric"))
-        pill(X[2], 0.34, "Non-parametric", strat in ("auto", "force_nonparametric"))
-        if strat == "auto":
-            ax.text(X[2], 0.08, "auto: per metric, at run time",
-                    ha="center", color=T["WARN"], fontsize=6.8, style="italic")
-        for a, b in ((X[0], X[1]), (X[1], X[2])):
-            arrow(a + 0.085, b - 0.085)
-        arrow(X[2] + 0.085, 0.745)
-
-        # Result box.
+        # ── 5 · Decision diagram: compute the chosen-test text + push it ──────
         if n_groups < 2:
-            res = "define ≥2\ngroups"
+            res = "Define ≥2 groups"
         elif paired:
-            res = "Two-way\nmixed ANOVA\n+ post-hoc"
+            res = "Two-way mixed ANOVA + post-hoc"
         elif n_groups == 2:
-            res = {"force_parametric": "Welch's\nt-test",
-                   "force_nonparametric": "Mann-\nWhitney U"}.get(
-                strat, "Welch's t /\nMann-Whitney")
+            res = {"force_parametric": "Welch's t-test",
+                   "force_nonparametric": "Mann-Whitney U"}.get(
+                strat, "Welch's t-test / Mann-Whitney")
         else:
-            para = {"welch": "Welch's\nANOVA", "oneway": "One-way\nANOVA",
-                    "auto": "Welch's\nANOVA"}[cfg["anova3plus"]]
+            para = {"welch": "Welch's ANOVA", "oneway": "One-way ANOVA",
+                    "auto": "Welch's ANOVA"}[cfg["anova3plus"]]
             res = {"force_parametric": para,
-                   "force_nonparametric": "Kruskal-\nWallis"}.get(
-                strat, para + " /\nKruskal-Wallis")
-        ax.add_patch(FancyBboxPatch(
-            (0.79, 0.30), 0.18, 0.40,
-            boxstyle="round,pad=0.012,rounding_size=0.03",
-            fc=T["PANEL_ALT"], ec=T["SUCCESS"], lw=2.0, mutation_aspect=0.6))
-        ax.text(0.88, 0.5, res, ha="center", va="center",
-                color=T["TXT"], fontsize=8.2, fontweight="bold")
+                   "force_nonparametric": "Kruskal-Wallis"}.get(
+                strat, para + " / Kruskal-Wallis")
+        self._stats_diagram.set_flow(n_groups, paired, strat, res)
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=150, facecolor=T["PANEL"])
-        plt.close(fig)
-        buf.seek(0)
-        pix = QtGui.QPixmap()
-        pix.loadFromData(buf.read())
-        return pix
+        # ── Run-readiness badge ──────────────────────────────────────────────
+        if n_groups < 2:
+            self._stats_status_badge.set_state("muted", "Add 2 groups")
+        elif min_reps < 3:
+            self._stats_status_badge.set_state("blocked", "Need ≥3 replicates")
+        else:
+            self._stats_status_badge.set_state("ready", "Ready to run")
+
+        # ── 2 · Recommendation banners (rebuild from structured advice) ───────
+        while self._stats_banner_layout.count():
+            _it = self._stats_banner_layout.takeAt(0)
+            _w = _it.widget()
+            if _w is not None:
+                _w.deleteLater()
+        rec_items, rec = self._stats_recommendation(n_groups, paired, min_reps,
+                                                     _have_pg)
+        for _item in rec_items:
+            self._stats_banner_layout.addWidget(
+                _AlertBanner(_item["severity"], _item["html"]))
+        self._stats_recommended_cfg = rec
+        self.btn_stats_apply_rec.setEnabled(rec is not None)
 
     def _stats_recommendation(self, n_groups, paired, min_reps, have_pg=True):
-        """Plain-language, data-aware advice + a recommended config dict (or
-        None when there's nothing to recommend yet)."""
-        T = _THEME
+        """Data-aware advice as a list of {severity, html} banner items, plus a
+        recommended config dict (None when there's nothing to recommend yet).
+
+        Severity drives the banner colour: danger / warn / success / info.  The
+        returned `rec` dict shape is unchanged (consumed by
+        `_apply_stats_recommendation`)."""
         if n_groups < 2:
-            return ("<i>Add at least 2 groups on the Compare tab and I'll "
-                    "recommend settings for your data.</i>", None)
+            return ([{"severity": "muted",
+                      "html": "Add at least 2 groups (each with ≥1 folder) in "
+                              "the sidebar and I'll recommend settings for your "
+                              "data."}], None)
         rec = {"alpha": 0.05, "correction": "holm",
                "across_metric_correction": True, "parametric_strategy": "auto",
                "anova3plus": "welch", "ci_level": 0.95,
                "figure_stars_use_corrected": True}
-        notes = []
+        items = []
         # Replicate-count guidance — the dominant issue in SPT statistics.
         if min_reps < 3:
-            notes.append(f"<span style='color:{T['DANGER']};'>Only "
-                         f"<b>{min_reps}</b> replicate(s) in the smallest group "
-                         "— comparisons can't be interpreted (they'll be reported "
-                         "but not starred). Add more cells/experiments per group.</span>")
+            items.append({"severity": "danger",
+                "html": f"Only <b>{min_reps}</b> replicate(s) in the smallest "
+                        "group — comparisons can't be interpreted (they'll be "
+                        "reported but not starred). Add more cells / experiments "
+                        "per group."})
             rec["parametric_strategy"] = "force_nonparametric"
         elif min_reps < 6:
-            notes.append(f"Few replicates (<b>{min_reps}</b> in the smallest "
-                         "group): the normality test has little power, so "
-                         "parametric vs non-parametric barely differ. <b>Auto</b> "
-                         "is fine; pick <b>Force non-parametric</b> if you prefer "
-                         "an assumption-free test, and lean on the <b>effect size "
-                         "+ CI</b> rather than the p-value alone.")
+            items.append({"severity": "warn",
+                "html": f"Few replicates (<b>{min_reps}</b> in the smallest "
+                        "group): the normality test has little power, so "
+                        "parametric vs non-parametric barely differ. <b>Auto</b> "
+                        "is fine; pick <b>Force non-parametric</b> for an "
+                        "assumption-free test, and lean on the <b>effect size + "
+                        "CI</b> rather than the p-value alone."})
         else:
-            notes.append(f"<b>{min_reps}+</b> replicates per group — enough for "
-                         "the normality test to choose sensibly. <b>Auto</b> is a "
-                         "good default.")
+            items.append({"severity": "success",
+                "html": f"<b>{min_reps}+</b> replicates per group — enough for "
+                        "the normality test to choose sensibly. <b>Auto</b> is a "
+                        "good default."})
         if paired:
-            pg = ("" if have_pg else f" <span style='color:{T['WARN']};'>"
-                  "Install <b>pingouin</b> to enable the ANOVA.</span>")
-            notes.append("Paired design detected (time points set) → a "
-                         "<b>two-way mixed ANOVA</b> (Greenhouse-Geisser) tests the "
-                         "group × time interaction." + pg)
+            if have_pg:
+                items.append({"severity": "info",
+                    "html": "Paired design detected (time points set) → a "
+                            "<b>two-way mixed ANOVA</b> (Greenhouse-Geisser) tests "
+                            "the group × time interaction."})
+            else:
+                items.append({"severity": "warn",
+                    "html": "Paired design detected → a <b>two-way mixed ANOVA</b> "
+                            "(Greenhouse-Geisser) tests the group × time "
+                            "interaction. Install <b>pingouin</b> to enable it."})
         if n_groups > 2:
-            notes.append("3+ groups → <b>Welch's ANOVA</b> (robust to unequal "
-                         "variances) with Holm-corrected pairwise follow-ups.")
-        notes.append("You're comparing 8 metrics, so <b>family-wise correction "
-                     "across metrics</b> is recommended to keep false positives "
-                     "in check.")
-        advice = "<ul style='margin-left:-22px;'>" + "".join(
-            f"<li style='margin-bottom:5px;'>{n}</li>" for n in notes) + "</ul>"
-        return advice, rec
+            items.append({"severity": "info",
+                "html": "3+ groups → <b>Welch's ANOVA</b> (robust to unequal "
+                        "variances) with Holm-corrected pairwise follow-ups."})
+        items.append({"severity": "info",
+            "html": "You're comparing 8 metrics, so <b>family-wise correction "
+                    "across metrics</b> is recommended to keep false positives "
+                    "in check."})
+        return items, rec
 
     def _apply_stats_recommendation(self):
         """Set the sidebar controls to the stored recommended config."""

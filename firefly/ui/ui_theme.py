@@ -576,6 +576,39 @@ QListWidget#results_files {{
     border-radius:       4px;
 }}
 
+/* ── Analysis-Configuration wizard: cards / banners / badges / chips ──────── */
+/* Each numbered wizard step is a card (replaces the plain QGroupBox). */
+QFrame#wizard_card {{
+    background-color:    {PANEL};
+    border:              1px solid {BORDER};
+    border-radius:       8px;
+}}
+
+/* Severity callout used for the data-aware recommendation.  Subtle panel
+   background + a thick coloured left bar so the severity reads at a glance. */
+QFrame#alert_banner {{
+    background-color:    {PANEL_ALT};
+    border:              1px solid {BORDER};
+    border-radius:       6px;
+}}
+QFrame#alert_banner[severity="danger"]  {{ border-left: 4px solid {DANGER}; }}
+QFrame#alert_banner[severity="warn"]    {{ border-left: 4px solid {WARN}; }}
+QFrame#alert_banner[severity="success"] {{ border-left: 4px solid {SUCCESS}; }}
+QFrame#alert_banner[severity="info"]    {{ border-left: 4px solid {ACC}; }}
+QFrame#alert_banner QLabel {{ background: transparent; border: none; }}
+
+/* The run-readiness pill (#status_badge) and step-number chips (#step_badge)
+   are styled with INLINE stylesheets in ui_widgets — an app-level
+   background-color loses to the global transparent-QLabel rule. */
+
+/* Group colour chip in the experimental-design summary. */
+QFrame#group_chip {{
+    background-color:    {PANEL_ALT};
+    border:              1px solid {BORDER};
+    border-radius:       11px;
+}}
+QFrame#group_chip QLabel {{ background: transparent; border: none; }}
+
 /* ── Menus ──────────────────────────────────────────────────────────────── */
 QMenu {{
     background-color: {PANEL};
