@@ -2092,6 +2092,15 @@ class BuildMixin:
         g1.addWidget(self.lbl_stats_design)
         v.addWidget(grp1)
 
+        # ── Live decision diagram (updates with the data + settings) ────────
+        grpd = QtWidgets.QGroupBox("Decision guide  —  how the test is chosen")
+        gd = QtWidgets.QVBoxLayout(grpd)
+        self.lbl_stats_diagram = QtWidgets.QLabel()
+        self.lbl_stats_diagram.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_stats_diagram.setMinimumHeight(150)
+        gd.addWidget(self.lbl_stats_diagram)
+        v.addWidget(grpd)
+
         grp2 = QtWidgets.QGroupBox("Tests that will run")
         g2 = QtWidgets.QVBoxLayout(grp2)
         self.lbl_stats_plan = QtWidgets.QLabel("—")
@@ -2101,6 +2110,25 @@ class BuildMixin:
             Qt.TextInteractionFlag.TextSelectableByMouse)
         g2.addWidget(self.lbl_stats_plan)
         v.addWidget(grp2)
+
+        # ── Data-aware recommendation + one-click apply ─────────────────────
+        grpr = QtWidgets.QGroupBox("Recommended for your data")
+        gr = QtWidgets.QVBoxLayout(grpr)
+        self.lbl_stats_recommend = QtWidgets.QLabel("—")
+        self.lbl_stats_recommend.setWordWrap(True)
+        self.lbl_stats_recommend.setTextFormat(Qt.TextFormat.RichText)
+        gr.addWidget(self.lbl_stats_recommend)
+        _rrow = QtWidgets.QHBoxLayout()
+        _rrow.addStretch(1)
+        self.btn_stats_apply_rec = QtWidgets.QPushButton("Apply recommended settings")
+        self.btn_stats_apply_rec.setToolTip(
+            "Set the sidebar controls to the recommended values for the current "
+            "groups. You can still adjust them afterwards.")
+        self.btn_stats_apply_rec.clicked.connect(self._apply_stats_recommendation)
+        _rrow.addWidget(self.btn_stats_apply_rec)
+        gr.addLayout(_rrow)
+        v.addWidget(grpr)
+        self._stats_recommended_cfg = None
 
         cap = QtWidgets.QLabel(
             "<i>The same test applies to every scalar metric — it depends on the "
@@ -2242,6 +2270,176 @@ class BuildMixin:
             html += (f"<div style='color:{_THEME['TXT_MUTED']};'>"
                      f"<b>Scalar metrics covered:</b> {metrics}</div>")
             self.lbl_stats_plan.setText(html)
+
+        # ── Live decision diagram ────────────────────────────────────────────
+        if hasattr(self, "lbl_stats_diagram"):
+            try:
+                pix = self._render_stats_diagram(cfg, n_groups, paired)
+                if pix is not None:
+                    self.lbl_stats_diagram.setPixmap(pix)
+            except Exception:
+                self.lbl_stats_diagram.setText("(diagram unavailable)")
+
+        # ── Data-aware recommendation ────────────────────────────────────────
+        if hasattr(self, "lbl_stats_recommend"):
+            group_counts = [sum(1 for c in cards if str(c.get("label", "")) == lbl)
+                            for lbl in labels]
+            min_reps = min(group_counts) if group_counts else 0
+            advice, rec = self._stats_recommendation(n_groups, paired, min_reps,
+                                                     _have_pg)
+            self.lbl_stats_recommend.setText(advice)
+            self._stats_recommended_cfg = rec
+            self.btn_stats_apply_rec.setEnabled(rec is not None)
+
+    def _render_stats_diagram(self, cfg, n_groups, paired):
+        """Render the test-selection decision flow as a themed pixmap, with the
+        path for the current data + settings highlighted.  Returns a QPixmap."""
+        import io
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+        from PySide6 import QtGui
+        T = _THEME
+        fig = plt.figure(figsize=(8.8, 2.45), facecolor=T["PANEL"])
+        ax = fig.add_axes([0, 0, 1, 1]); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.axis("off"); ax.set_facecolor(T["PANEL"])
+
+        def pill(x, y, text, active, w=0.165, h=0.20):
+            fc = T["ACC"] if active else T["PANEL_ALT"]
+            ec = T["ACC"] if active else T["BORDER"]
+            tc = T["ACC_FG"] if active else T["TXT_MUTED"]
+            ax.add_patch(FancyBboxPatch(
+                (x - w / 2, y - h / 2), w, h,
+                boxstyle="round,pad=0.012,rounding_size=0.03",
+                fc=fc, ec=ec, lw=1.8 if active else 1.0, mutation_aspect=0.5))
+            ax.text(x, y, text, ha="center", va="center", color=tc,
+                    fontsize=8.5, fontweight="bold" if active else "normal")
+
+        def title(x, t):
+            ax.text(x, 0.93, t, ha="center", va="center",
+                    color=T["TXT_MUTED"], fontsize=8)
+
+        def arrow(x0, x1):
+            ax.add_patch(FancyArrowPatch(
+                (x0, 0.5), (x1, 0.5), arrowstyle="-|>", mutation_scale=12,
+                color=T["BORDER_HI"], lw=1.4, shrinkA=0, shrinkB=0))
+
+        X = [0.10, 0.33, 0.56]
+        title(X[0], "Groups")
+        pill(X[0], 0.66, "2 groups", n_groups == 2)
+        pill(X[0], 0.34, "3+ groups", n_groups >= 3)
+        title(X[1], "Design")
+        pill(X[1], 0.66, "Unpaired", (not paired) and n_groups >= 2)
+        pill(X[1], 0.34, "Paired (Pre/Post)", paired)
+        title(X[2], "Distribution")
+        strat = cfg["parametric_strategy"]
+        pill(X[2], 0.66, "Parametric", strat in ("auto", "force_parametric"))
+        pill(X[2], 0.34, "Non-parametric", strat in ("auto", "force_nonparametric"))
+        if strat == "auto":
+            ax.text(X[2], 0.08, "auto: per metric, at run time",
+                    ha="center", color=T["WARN"], fontsize=6.8, style="italic")
+        for a, b in ((X[0], X[1]), (X[1], X[2])):
+            arrow(a + 0.085, b - 0.085)
+        arrow(X[2] + 0.085, 0.745)
+
+        # Result box.
+        if n_groups < 2:
+            res = "define ≥2\ngroups"
+        elif paired:
+            res = "Two-way\nmixed ANOVA\n+ post-hoc"
+        elif n_groups == 2:
+            res = {"force_parametric": "Welch's\nt-test",
+                   "force_nonparametric": "Mann-\nWhitney U"}.get(
+                strat, "Welch's t /\nMann-Whitney")
+        else:
+            para = {"welch": "Welch's\nANOVA", "oneway": "One-way\nANOVA",
+                    "auto": "Welch's\nANOVA"}[cfg["anova3plus"]]
+            res = {"force_parametric": para,
+                   "force_nonparametric": "Kruskal-\nWallis"}.get(
+                strat, para + " /\nKruskal-Wallis")
+        ax.add_patch(FancyBboxPatch(
+            (0.79, 0.30), 0.18, 0.40,
+            boxstyle="round,pad=0.012,rounding_size=0.03",
+            fc=T["PANEL_ALT"], ec=T["SUCCESS"], lw=2.0, mutation_aspect=0.6))
+        ax.text(0.88, 0.5, res, ha="center", va="center",
+                color=T["TXT"], fontsize=8.2, fontweight="bold")
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, facecolor=T["PANEL"])
+        plt.close(fig)
+        buf.seek(0)
+        pix = QtGui.QPixmap()
+        pix.loadFromData(buf.read())
+        return pix
+
+    def _stats_recommendation(self, n_groups, paired, min_reps, have_pg=True):
+        """Plain-language, data-aware advice + a recommended config dict (or
+        None when there's nothing to recommend yet)."""
+        T = _THEME
+        if n_groups < 2:
+            return ("<i>Add at least 2 groups on the Compare tab and I'll "
+                    "recommend settings for your data.</i>", None)
+        rec = {"alpha": 0.05, "correction": "holm",
+               "across_metric_correction": True, "parametric_strategy": "auto",
+               "anova3plus": "welch", "ci_level": 0.95,
+               "figure_stars_use_corrected": True}
+        notes = []
+        # Replicate-count guidance — the dominant issue in SPT statistics.
+        if min_reps < 3:
+            notes.append(f"<span style='color:{T['DANGER']};'>Only "
+                         f"<b>{min_reps}</b> replicate(s) in the smallest group "
+                         "— comparisons can't be interpreted (they'll be reported "
+                         "but not starred). Add more cells/experiments per group.</span>")
+            rec["parametric_strategy"] = "force_nonparametric"
+        elif min_reps < 6:
+            notes.append(f"Few replicates (<b>{min_reps}</b> in the smallest "
+                         "group): the normality test has little power, so "
+                         "parametric vs non-parametric barely differ. <b>Auto</b> "
+                         "is fine; pick <b>Force non-parametric</b> if you prefer "
+                         "an assumption-free test, and lean on the <b>effect size "
+                         "+ CI</b> rather than the p-value alone.")
+        else:
+            notes.append(f"<b>{min_reps}+</b> replicates per group — enough for "
+                         "the normality test to choose sensibly. <b>Auto</b> is a "
+                         "good default.")
+        if paired:
+            pg = ("" if have_pg else f" <span style='color:{T['WARN']};'>"
+                  "Install <b>pingouin</b> to enable the ANOVA.</span>")
+            notes.append("Paired design detected (time points set) → a "
+                         "<b>two-way mixed ANOVA</b> (Greenhouse-Geisser) tests the "
+                         "group × time interaction." + pg)
+        if n_groups > 2:
+            notes.append("3+ groups → <b>Welch's ANOVA</b> (robust to unequal "
+                         "variances) with Holm-corrected pairwise follow-ups.")
+        notes.append("You're comparing 8 metrics, so <b>family-wise correction "
+                     "across metrics</b> is recommended to keep false positives "
+                     "in check.")
+        advice = "<ul style='margin-left:-22px;'>" + "".join(
+            f"<li style='margin-bottom:5px;'>{n}</li>" for n in notes) + "</ul>"
+        return advice, rec
+
+    def _apply_stats_recommendation(self):
+        """Set the sidebar controls to the stored recommended config."""
+        rec = getattr(self, "_stats_recommended_cfg", None)
+        if not rec:
+            return
+        inv = lambda d, val: next((k for k, v in d.items() if v == val), None)
+        try:
+            self.s_stat_alpha.setValue(float(rec["alpha"]))
+            self.s_stat_ci.setValue(float(rec["ci_level"]))
+            self.c_stat_across_metric.setChecked(bool(rec["across_metric_correction"]))
+            self.c_stat_fig_corrected.setChecked(bool(rec["figure_stars_use_corrected"]))
+            for combo, dmap, key in (
+                    (self.c_stat_correction, self._STAT_CORR_MAP, "correction"),
+                    (self.c_stat_strategy, self._STAT_STRAT_MAP, "parametric_strategy"),
+                    (self.c_stat_anova3, self._STAT_ANOVA_MAP, "anova3plus")):
+                disp = inv(dmap, rec[key])
+                if disp is not None:
+                    combo.setCurrentText(disp)
+        except Exception:
+            pass
+        self._refresh_stats_preview()
 
     def _build_visualise_tab(self):
         """Build the Visualise tab — toolbar + lazy-loaded napari viewer.
