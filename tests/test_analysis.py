@@ -1646,3 +1646,27 @@ def test_single_shared_timepoint_is_not_two_factor(tmp_path, monkeypatch):
     assert pw and {pw[0]["label_i"], pw[0]["label_j"]} == {"DMSO", "Drug"}
     import matplotlib.pyplot as _plt
     _plt.close(fig)
+
+
+def test_compare_groups_inaccessible_folders_raise_friendly_error(tmp_path):
+    """Empty/inaccessible group folders raise CompareInputError (a clean user
+    error the worker turns into a popup) with actionable per-folder reasons —
+    not a bare RuntimeError/crash."""
+    from firefly.analysis.fa_compare import compare_groups, CompareInputError
+    groups = [{"label": "DMSO", "color": "#3b6ed8",
+               "folders": ["/Volumes/Gone/DMSO/cell1", "/Volumes/Gone/DMSO/cell2"]},
+              {"label": "Ciprofol", "color": "#f78166",
+               "folders": ["/Volumes/Gone/Cip/cell1"]}]
+    import pytest
+    with pytest.raises(CompareInputError) as ei:
+        compare_groups(groups, output_dir=str(tmp_path), pdf_report=False)
+    msg = str(ei.value)
+    assert "DMSO" in msg and "Ciprofol" in msg
+    assert "not found" in msg and "firefly_extras" in msg   # actionable guidance
+
+
+def test_compare_groups_too_few_groups_is_friendly():
+    from firefly.analysis.fa_compare import compare_groups, CompareInputError
+    import pytest
+    with pytest.raises(CompareInputError):
+        compare_groups([{"label": "A", "folders": ["/x"]}])

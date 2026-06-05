@@ -2441,6 +2441,11 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
             msg_queue.put(("log", "\n── Stopped by user ──"))
             msg_queue.put(("stopped", None))
+        elif type(exc).__name__ == "CompareInputError":
+            # Expected user-input problem (no valid folders, drive unmounted,
+            # <2 groups) — surface a clean popup, NOT a crash report.
+            msg_queue.put(("log", f"\n  {exc}"))
+            msg_queue.put(("compare_error", str(exc)))
         else:
             msg_queue.put(("error", traceback.format_exc()))
     finally:

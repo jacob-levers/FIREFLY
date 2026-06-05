@@ -58,10 +58,45 @@ def _dim_size(v, default=1):
 # Standardised on the VIEWER's scheme: Immobile = red, Confined = orange,
 # Brownian = blue, Directed = green, Unknown = grey.
 MOTION_CLASS_ORDER  = ["Immobile", "Confined", "Brownian", "Directed"]
-MOTION_CLASS_COLORS = {
-    "Immobile": "#e05252",   # red
-    "Confined": "#f5a623",   # orange
-    "Brownian": "#4a90d9",   # blue
-    "Directed": "#7ed321",   # green
-    "Unknown":  "#aaaaaa",   # grey
+
+# Per-theme motion-class palettes.  The DATA colours must suit the figure
+# background, and the Publication theme must be colour-blind safe (it is the one
+# people put in papers).  Keep Immobile=warm-red, Confined=orange, Brownian=blue,
+# Directed=green semantics everywhere so a class reads the same across themes.
+MOTION_CLASS_COLORS_BY_THEME = {
+    # Dark — unchanged from the historical palette so existing Dark exports stay
+    # pixel-identical.  AMOLED reuses it (it's just a blacker Dark).
+    "Dark": {
+        "Immobile": "#e05252", "Confined": "#f5a623",
+        "Brownian": "#4a90d9", "Directed": "#7ed321", "Unknown": "#aaaaaa",
+    },
+    "AMOLED": {
+        "Immobile": "#e05252", "Confined": "#f5a623",
+        "Brownian": "#4a90d9", "Directed": "#7ed321", "Unknown": "#aaaaaa",
+    },
+    # Light — deeper, more-saturated hues so fills/lines don't wash out on white.
+    "Light": {
+        "Immobile": "#d1242f", "Confined": "#bc4c00",
+        "Brownian": "#0969da", "Directed": "#1a7f37", "Unknown": "#6e7781",
+    },
+    # Publication — Okabe-Ito colour-blind-safe palette (deuteranopia /
+    # protanopia / tritanopia distinguishable, and separable in grayscale print).
+    "Publication": {
+        "Immobile": "#d55e00",   # vermillion
+        "Confined": "#e69f00",   # orange
+        "Brownian": "#0072b2",   # blue
+        "Directed": "#009e73",   # bluish-green
+        "Unknown":  "#999999",   # neutral grey
+    },
 }
+
+# Legacy alias — equals the Dark palette, so existing importers (napari overlay,
+# console summaries) are byte-for-byte unchanged.
+MOTION_CLASS_COLORS = MOTION_CLASS_COLORS_BY_THEME["Dark"]
+
+
+def motion_class_colors(theme="Dark"):
+    """Motion-class colour dict for a figure theme (Immobile/Confined/Brownian/
+    Directed/Unknown).  Falls back to the Dark palette for unknown theme names."""
+    return MOTION_CLASS_COLORS_BY_THEME.get(
+        (theme or "Dark").strip(), MOTION_CLASS_COLORS_BY_THEME["Dark"])

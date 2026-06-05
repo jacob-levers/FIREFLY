@@ -611,6 +611,9 @@ class HandlersMixin:
             elif kind == "compare_done":
                 self._handle_compare_done(payload)
                 worker_done = True
+            elif kind == "compare_error":
+                self._handle_compare_error(payload)
+                worker_done = True
             elif kind == "stopped":
                 self._handle_stopped()
                 worker_done = True

@@ -16,11 +16,14 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 from firefly.analysis.fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
 from firefly.analysis.fa_diffusion import classify_motion, msd_linear
-from firefly.analysis.fa_constants import MOTION_CLASS_COLORS, MOTION_CLASS_ORDER
+from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
+                                           motion_class_colors)
 
 
 # Canonical motion-class colours / order — shared with the comparison figure and
 # the napari overlay (see fa_constants) so a class is the same colour everywhere.
+# `MC` is the Dark default at module scope; `make_figure` rebinds it to the
+# theme-specific palette so panels render in colours that suit the figure theme.
 MC   = dict(MOTION_CLASS_COLORS)
 MORD = list(MOTION_CLASS_ORDER)
 
@@ -125,6 +128,11 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         _pie_text = "#0d1117"
         _font     = "monospace"
 
+    # Theme-specific motion-class colours (shadow the module-global `MC` for the
+    # whole figure body so every motion-coloured panel suits this theme — and
+    # Publication uses the colour-blind-safe palette).
+    MC = motion_class_colors(fig_theme)
+
     # ── Projection colourmap ───────────────────────────────────────────────────
     _cmap_map = {
         "Inferno": "inferno",
@@ -196,7 +204,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     for pid, grp in (tracks[tracks["particle"].isin(draw_pids)]
                      .reset_index(drop=True).sort_values("frame")
                      .groupby("particle")):
-        _draw_track(grp, MC.get(mcol.get(pid,"Unknown"),"#aaa"), ax)
+        _draw_track(grp, MC.get(mcol.get(pid,"Unknown"), MC["Unknown"]), ax)
         n_drawn += 1
     els = [Line2D([0],[0],color=MC[m],lw=2,label=m)
            for m in MORD if m in mcol.values()]

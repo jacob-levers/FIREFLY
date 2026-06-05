@@ -5,7 +5,8 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 from __future__ import annotations
 
 import os
-from firefly.analysis.fa_constants import MOTION_CLASS_COLORS, MOTION_CLASS_ORDER
+from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
+                                           motion_class_colors)
 from firefly.analysis.fa_theme import _theme_palette
 from firefly.analysis.fa_palmtracer import load_summary_from_folder
 
@@ -28,6 +29,10 @@ from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
 from firefly.analysis import fa_twoway
 
 
+class CompareInputError(Exception):
+    """A user-input problem with a comparison (no valid folders, <2 groups,
+    inaccessible paths).  The worker turns this into a friendly popup instead of
+    a crash report — it is an expected condition, not a bug."""
 
 
 
@@ -435,7 +440,9 @@ def compare_groups(groups,
     panel_annots = {}
 
     if len(groups) < 2:
-        raise ValueError(f"Need at least 2 groups; got {len(groups)}")
+        raise CompareInputError(
+            f"A comparison needs at least 2 groups; only {len(groups)} was given. "
+            "Add another group on the Compare tab.")
 
     if panels is None:
         panels = {"msd", "auc", "logd_dist", "mob_immob", "motion_classes",
@@ -466,6 +473,7 @@ def compare_groups(groups,
 
     # ── Load summaries for all groups ─────────────────────────────────────────
     all_summaries = [[] for _ in groups]
+    skipped = [[] for _ in groups]   # per group: (folder, reason) for failures
     total = sum(len(f) for f in folder_lists)
     done = 0
     for gi, folders in enumerate(folder_lists):
@@ -475,14 +483,33 @@ def compare_groups(groups,
             try:
                 all_summaries[gi].append(load_summary_from_folder(f))
             except Exception as e:
-                print(f"  Skipping {f}: {e}")
+                # Classify so the user gets an actionable reason, not a stack
+                # trace.  The #1 cause is an unmounted external drive.
+                if not os.path.exists(f):
+                    reason = "folder not found — is the drive/network share connected?"
+                elif not os.path.isdir(f):
+                    reason = "not a folder"
+                else:
+                    reason = str(e)
+                skipped[gi].append((f, reason))
+                print(f"  Skipping {f}: {reason}")
             done += 1
 
-    empty_groups = [labels[i] for i, ss in enumerate(all_summaries) if len(ss) == 0]
+    empty_groups = [i for i, ss in enumerate(all_summaries) if len(ss) == 0]
     if empty_groups:
-        raise RuntimeError(
-            "Need at least one valid folder per group; these are empty: "
-            + ", ".join(empty_groups))
+        lines = ["The comparison can't run — these group(s) have no valid "
+                 "analysis folders:"]
+        for i in empty_groups:
+            lines.append(f"\n• {labels[i]}:")
+            if not skipped[i]:
+                lines.append("    (no folders were added)")
+            for f, reason in skipped[i]:
+                lines.append(f"    – {os.path.basename(f.rstrip(os.sep)) or f}: {reason}")
+        lines.append(
+            "\nTip: add each analysis OUTPUT folder (the one containing a "
+            "'firefly_extras' subfolder), not the raw data or a parent folder — "
+            "and reconnect the drive if a path is missing.")
+        raise CompareInputError("\n".join(lines))
 
     if progress_cb:
         progress_cb(total, total, "Computing scalars and rendering...")
@@ -735,20 +762,40 @@ def compare_groups(groups,
         # colour everywhere: Immobile=red, Confined=orange, Brownian=blue,
         # Directed=green.
         classes = list(MOTION_CLASS_ORDER)
-        class_colors = [MOTION_CLASS_COLORS[c] for c in classes]
+        class_colors = [motion_class_colors(theme)[c] for c in classes]
         def _txt_on(hexcol):
-            """Black or white label text, whichever contrasts with the fill."""
+            """Black or white label text, whichever has the higher WCAG contrast
+            against the fill (robust across themes incl. the Publication
+            colour-blind palette, where a naive luminance cut mislabels amber)."""
             h = hexcol.lstrip("#")
             r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
-            lum = 0.299 * r + 0.587 * g + 0.114 * b
-            return "#101010" if lum > 0.6 else "#ffffff"
+            def _lin(c):
+                return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+            L = 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+            return "#101010" if (L + 0.05) / 0.05 >= 1.05 / (L + 0.05) else "#ffffff"
+        # Each replicate's 4 named-class fractions are renormalised to sum to 1
+        # (matching the single-run pie, which auto-normalises the same 4
+        # classes), so the stacked bars reach the top.  The dropped mass is the
+        # "Unknown" share — tracks too short to fit a D/α (common on dense
+        # palmTRACER data) — which is surfaced honestly in the x-axis labels
+        # below, never silently hidden.
         def _fracs(summaries):
             rows = []
             for s in summaries:
                 f = _motion_fractions(s["diffusion"])
-                rows.append([f.get(c, 0.0) for c in classes])
+                named = np.array([f.get(c, 0.0) for c in classes], dtype=float)
+                tot = named.sum()
+                if tot > 0:                 # skip replicates with no classifiable track
+                    rows.append(named / tot)
             return np.array(rows) if rows else np.zeros((0, len(classes)))
-        per_group = [_fracs(ss) for ss in all_summaries]
+        per_group, unclassified = [], []
+        for ss in all_summaries:
+            per_group.append(_fracs(ss))
+            uncl = []
+            for s in ss:
+                f = _motion_fractions(s["diffusion"])
+                uncl.append(1.0 - sum(f.get(c, 0.0) for c in classes))
+            unclassified.append(float(np.mean(uncl)) if uncl else 0.0)
         # Mean composition per group (each replicate's fractions sum to 1, so the
         # per-group means also sum to ~1 → each stacked bar reaches the top).
         means = np.array([fr.mean(axis=0) if len(fr) else np.zeros(len(classes))
@@ -782,7 +829,12 @@ def compare_groups(groups,
         # group count so names stay legible.  The replicate n is NOT repeated
         # here — it lives in the shared bottom legend.
         _mc_rot = 0 if n_groups <= 2 else (30 if n_groups <= 6 else 45)
-        ax.set_xticklabels(labels, rotation=_mc_rot,
+        # Append the % of tracks that were too short to classify (the renormalised
+        # "Unknown" share), so the composition bars stay honest about what was
+        # excluded.  Only shown when it's non-trivial.
+        mc_labels = [(f"{lbl}\n({u*100:.0f}% uncl.)" if u >= 0.005 else str(lbl))
+                     for lbl, u in zip(labels, unclassified)]
+        ax.set_xticklabels(mc_labels, rotation=_mc_rot,
                            ha="center" if _mc_rot == 0 else "right",
                            rotation_mode="anchor",
                            fontsize=8 if n_groups <= 6 else 7)

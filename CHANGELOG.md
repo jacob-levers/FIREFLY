@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.14.0
+
+### Theme-aware figure colours, Motion-Class fix, and a graceful "no folders" popup
+
+- **Per-theme, colour-blind-safe motion-class colours.** The Immobile/Confined/
+  Brownian/Directed colours were a single fixed dark-mode palette used in every
+  theme — so a Publication figure (white background, serif) showed dark-mode bar
+  colours. Each theme now has an appropriate palette: Dark/AMOLED unchanged
+  (pixel-stable), Light uses deeper hues for white-background contrast, and
+  **Publication uses the Okabe-Ito colour-blind-safe palette** (distinguishable
+  under deuteranopia/protanopia/tritanopia and in grayscale print). Applies to
+  every motion-coloured figure panel (trajectories, log10(D), α, MSS, the motion
+  pie, and the comparison Motion-Class bars). The on-bar % label colour now uses
+  a proper WCAG contrast pick so labels stay legible on every palette.
+- **Motion-Class Fractions graph fixed for palmTRACER data.** On dense data a
+  large share of tracks are too short to fit a D/α ("Unknown"), and the bars were
+  divided by *all* tracks — so the four classes summed to ~0.2 and the stacked
+  bars never reached the top. The bars now renormalise over the classifiable
+  tracks (matching the single-run pie, which already does), reaching 1.0, and the
+  x-axis labels honestly report the unclassified % per group.
+- **Inaccessible folders no longer crash — they pop up a clear message.** A
+  comparison whose group folders can't be loaded (e.g. the external drive wasn't
+  mounted) raised a generic error that surfaced as a *crash report*. It now raises
+  a dedicated CompareInputError that the worker turns into a friendly popup naming
+  each empty group, *why* each folder failed ("folder not found — is the drive
+  connected?" vs "not an analysis output folder"), and how to fix it.
+
+Covered by new headless tests (theme palettes, renormalised bars reaching 1.0
+with unclassified labels, and the friendly CompareInputError → compare_error path
+instead of a crash). 98 tests pass.
+
 ## v2.13.0
 
 ### Statistics transparency + a dedicated Statistics tab

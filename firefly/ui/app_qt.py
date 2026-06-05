@@ -2969,6 +2969,25 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self.statusBar().showMessage(
             f"Comparison complete — output at {out_dir}")
 
+    def _handle_compare_error(self, message: str):
+        """Expected comparison-input problem (no valid folders, drive unmounted,
+        <2 groups) — show a clear, actionable popup instead of a crash report."""
+        try:
+            self.cmp_progress.setValue(0)
+            self.cmp_progress.setFormat("Couldn't run")
+            self.cmp_stage_label.setText("Comparison not run")
+        except Exception:
+            pass
+        self.statusBar().showMessage("Comparison couldn't run — see message")
+        self.console_log.appendPlainText(f"\n{message}")
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        box.setWindowTitle("Comparison couldn't run")
+        box.setText("The comparison was not run.")
+        box.setInformativeText(str(message))
+        box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+        box.exec()
+
     def _handle_stopped(self):
         self.statusBar().showMessage("Stopped by user")
         is_batch = getattr(self, "_is_batch_run", False)
