@@ -369,6 +369,11 @@ class HandlersMixin:
         """Apply a preset to the sidebar when the user picks one from the
         combobox.  Ignores the leading '— Current settings —' sentinel."""
         if not name or name.startswith("—"):
+            # "— Current settings —" sentinel: no preset baseline → never
+            # "modified".
+            self._active_preset_state = None
+            try:    self._refresh_preset_modified()
+            except Exception: pass
             return
         import json
         path = os.path.join(self._presets_dir(), f"{name}.json")
@@ -383,7 +388,20 @@ class HandlersMixin:
             return
         # Drop our own internal tag before applying
         state.pop(self._BUILTIN_PRESETS_TAG, None)
-        self._apply_widget_state(state)
+        # Suspend the modified-watch while applying (the per-widget signals
+        # would otherwise transiently flag "modified" mid-apply), then capture
+        # the ACTUAL resulting state as the baseline so a freshly-applied preset
+        # reads as unmodified.
+        self._suspend_modified_watch = True
+        try:
+            self._apply_widget_state(state)
+        finally:
+            self._suspend_modified_watch = False
+        try:
+            self._active_preset_state = self._widget_state_dict()
+            self._refresh_preset_modified()
+        except Exception:
+            pass
         self.statusBar().showMessage(f"Applied preset: {name}", 5000)
 
     def _on_preset_delete(self) -> None:

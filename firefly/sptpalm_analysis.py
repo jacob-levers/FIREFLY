@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.23.0"
+__version__ = "2.24.0"
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":

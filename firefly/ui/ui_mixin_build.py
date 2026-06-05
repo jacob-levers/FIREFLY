@@ -403,6 +403,16 @@ class BuildMixin:
             "~/.firefly/presets/.  Two defaults ship out of the box;\n"
             "use the disk icon to save the current sidebar as a new one.")
         preset_row.addWidget(self.c_preset, 1)
+        # "• modified" pill — shown when the current parameters differ from the
+        # selected preset (baseline tracked in _on_preset_picked).
+        self._active_preset_state = None
+        self._suspend_modified_watch = False
+        self._modified_badge = _StatusBadge()
+        self._modified_badge.setToolTip(
+            "The parameters have been changed since this preset was applied. "
+            "Save a new preset to keep them.")
+        self._modified_badge.hide()
+        preset_row.addWidget(self._modified_badge)
         self.btn_preset_save = QtWidgets.QToolButton()
         self.btn_preset_save.setText("Save")
         self.btn_preset_save.setToolTip(

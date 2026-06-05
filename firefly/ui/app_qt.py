@@ -2366,6 +2366,31 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                     cb.setChecked(k in wanted)
         except Exception: pass
 
+    def _refresh_preset_modified(self):
+        """Show the '• modified' pill when the current analysis parameters
+        differ from the preset that was last applied (`_active_preset_state`).
+        No baseline (sentinel / startup) → never modified."""
+        badge = getattr(self, "_modified_badge", None)
+        if badge is None or getattr(self, "_suspend_modified_watch", False):
+            return
+        base = getattr(self, "_active_preset_state", None)
+        if not base:
+            badge.hide()
+            return
+        cur = self._widget_state_dict()
+
+        def _norm(x):
+            return round(x, 7) if isinstance(x, float) else x
+
+        modified = any(
+            _norm(cur.get(k)) != _norm(v)
+            for k, v in base.items() if k.startswith("analysis/"))
+        if modified:
+            badge.set_state("warn", "• modified")
+            badge.show()
+        else:
+            badge.hide()
+
     # ── Parameter presets ────────────────────────────────────────────────
     _BUILTIN_PRESETS_TAG = "__firefly_builtin__"
 
@@ -2500,6 +2525,21 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                     self._on_preset_picked)
             except Exception:
                 pass
+            # Watch the analysis params so the "• modified" pill lights up when
+            # the user diverges from the applied preset.
+            for spec in self._setting_specs():
+                key, widget, kind = spec[0], spec[1], spec[2]
+                if not key.startswith("analysis/"):
+                    continue
+                try:
+                    if   kind == "spin":  sig = widget.valueChanged
+                    elif kind == "combo": sig = widget.currentIndexChanged
+                    elif kind == "check": sig = widget.toggled
+                    elif kind == "text":  sig = widget.textChanged
+                    else: continue
+                    sig.connect(lambda *_a: self._refresh_preset_modified())
+                except Exception:
+                    pass
         except Exception:
             pass
 

@@ -163,6 +163,7 @@ class _StatusBadge(QtWidgets.QLabel):
     _STYLES = {                       # kind → (bg key, fg key, bordered)
         "ready":   ("SUCCESS",   "ACC_FG",    False),
         "blocked": ("DANGER",    "ACC_FG",    False),
+        "warn":    ("WARN",      "ACC_FG",    False),
         "muted":   ("PANEL_ALT", "TXT_MUTED", True),
     }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.24.0
+
+### Presets show when you've changed something
+
+The preset selector at the top of the Analysis sidebar gains a **"• modified"**
+pill: once you apply a preset and then tweak any parameter, the pill appears so
+it's obvious your current settings no longer match the saved preset (revert the
+change and it disappears; save a new preset to keep them). Picking "— Current
+settings —" or a fresh preset clears it. No change to how presets save/load.
+
 ## v2.23.0
 
 ### Sidebar header + title polish
