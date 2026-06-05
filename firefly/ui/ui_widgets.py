@@ -802,7 +802,7 @@ class _CollapsibleSection(QtWidgets.QWidget):
 
         self._header = QtWidgets.QToolButton()
         self._header.setObjectName("section_header")
-        self._header.setText(f"▼   {self._title}")
+        self._header.setText(f"▾  {self._title}")
         self._header.setCheckable(True)
         self._header.setChecked(True)
         self._header.setSizePolicy(
@@ -835,7 +835,7 @@ class _CollapsibleSection(QtWidgets.QWidget):
         outer.addWidget(self._content)
 
     def _on_toggled(self, checked: bool):
-        self._header.setText(f"{'▼' if checked else '▶'}   {self._title}")
+        self._header.setText(f"{'▾' if checked else '▸'}  {self._title}")
         self._content.setVisible(checked)
 
     @property

@@ -468,28 +468,34 @@ QToolButton#section_header {{
     background-color:    {PANEL_ALT};
     color:               {TXT};
     border:              1px solid {BORDER};
-    border-top-left-radius:  5px;
-    border-top-right-radius: 5px;
-    padding:             7px 10px;
-    margin-top:          4px;
+    border-left:         3px solid {BORDER};
+    border-top-left-radius:  6px;
+    border-top-right-radius: 6px;
+    padding:             8px 11px;
+    margin-top:          6px;
     text-align:          left;
     font-weight:         600;
-    font-size:           12px;
+    font-size:           12.5px;
 }}
 QToolButton#section_header:hover {{
     border-color:        {BORDER_HI};
+    border-left-color:   {ACC_HOVER};
     background-color:    {PANEL};
 }}
+/* Expanded section: an accent left bar runs down the header + content, so the
+   open section reads as "active" — a subtle modern cue. */
 QToolButton#section_header:checked {{
+    border-left:         3px solid {ACC};
     border-bottom-left-radius:  0;
     border-bottom-right-radius: 0;
 }}
 QFrame#section_content {{
     background-color:    {PANEL};
     border:              1px solid {BORDER};
+    border-left:         3px solid {ACC};
     border-top:          none;
-    border-bottom-left-radius:  5px;
-    border-bottom-right-radius: 5px;
+    border-bottom-left-radius:  6px;
+    border-bottom-right-radius: 6px;
 }}
 
 /* ── Mode-toggle tiles (Import tab) ─────────────────────────────────────── */

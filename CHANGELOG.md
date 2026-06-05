@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.23.0
+
+### Sidebar header + title polish
+
+- **Open sections read as "active."** An expanded section now shows a continuous
+  **accent left bar** down its header and content; collapsed sections have a muted
+  bar. Cleaner padding/rhythm and lighter disclosure chevrons (▾ / ▸).
+- **Stronger sidebar title.** The per-tab title ("Analysis Parameters",
+  "Comparison", …) is larger and bolder with a subtle divider beneath it, so it
+  reads as a proper header rather than an afterthought.
+
+Purely visual; theme-aware across Dark / AMOLED / Light.
+
 ## v2.22.0
 
 ### Live state chips on the Analysis sections

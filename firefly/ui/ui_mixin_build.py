@@ -102,8 +102,9 @@ class BuildMixin:
         # Top header — title swaps per tab so the sidebar self-labels.
         self._sidebar_title = QtWidgets.QLabel("Analysis Parameters")
         self._sidebar_title.setStyleSheet(
-            f"color: {_THEME['TXT']}; font-weight: 700; font-size: 13px; "
-            f"padding: 12px 12px 4px 12px;")
+            f"color: {_THEME['TXT']}; font-weight: 800; font-size: 15px; "
+            f"padding: 14px 12px 10px 12px; "
+            f"border-bottom: 1px solid {_THEME['BORDER']};")
         sb_outer.addWidget(self._sidebar_title)
 
         self._sidebar_stack = QtWidgets.QStackedWidget()
