@@ -1320,6 +1320,17 @@ class _ResultsPanel(QtWidgets.QFrame):
         self._headline.setWordWrap(True)
         v.addWidget(self._headline)
 
+        # Run-readiness pill — set from the QC flag levels after a run
+        # ("Analysis successful" / "Completed with warnings").  Hidden until
+        # `show_stats` populates a QC block.
+        _badge_row = QtWidgets.QHBoxLayout()
+        _badge_row.addStretch(1)
+        self._qc_badge = _StatusBadge()
+        self._qc_badge.hide()
+        _badge_row.addWidget(self._qc_badge)
+        _badge_row.addStretch(1)
+        v.addLayout(_badge_row)
+
         # Stats grid — populated post-run with key numbers (median D / α,
         # motion-class breakdown, cluster count, etc.).
         self._stats_grid = QtWidgets.QGridLayout()
@@ -1401,6 +1412,7 @@ class _ResultsPanel(QtWidgets.QFrame):
             if w is not None:
                 w.deleteLater()
         self._flags_container.hide()
+        self._qc_badge.hide()
 
     def _add_stat_row(self, row: int, label: str, value: str,
                       value_colour: str | None = None):
@@ -1550,27 +1562,43 @@ class _ResultsPanel(QtWidgets.QFrame):
                                    f"{dn:.0f} nm",
                                    value_colour=col); r += 1
 
-            # Flag list — each flag is a colour-coded, word-wrapped message.
-            # Rendered in the dedicated _flags_layout (a QVBoxLayout) so the
-            # wrapped text gets its full height instead of overflowing a grid
-            # cell.
+            # QC flags → severity banners (rendered in the dedicated
+            # _flags_layout QVBoxLayout so wrapped text keeps its full height).
+            # The worker's `msg` already carries the remedy, so we keep it
+            # verbatim and just prepend a short bold lead derived from it.
             flags = qc.get("flags") or []
+            levels = {str(f.get("level", "info")).lower() for f in flags}
+            for f in flags:
+                level = str(f.get("level", "info")).lower()
+                sev = level if level in ("danger", "warn", "info") else "info"
+                msg = str(f.get("msg", ""))
+                lead = self._qc_flag_lead(msg)
+                html = f"<b>{lead}</b><br>{msg}" if lead else msg
+                self._flags_layout.addWidget(_AlertBanner(sev, html))
             if flags:
-                for f in flags:
-                    level = f.get("level", "info")
-                    icon  = "⚠" if level == "warn" else "ℹ"
-                    col   = (_THEME['WARN'] if level == "warn"
-                             else _THEME['TXT_MUTED'])
-                    msg = QtWidgets.QLabel(f"{icon}  {f.get('msg', '')}")
-                    msg.setStyleSheet(
-                        f"color: {col}; font-size: 12px;")
-                    msg.setWordWrap(True)
-                    msg.setAlignment(Qt.AlignmentFlag.AlignLeft
-                                     | Qt.AlignmentFlag.AlignTop)
-                    self._flags_layout.addWidget(msg)
                 self._flags_container.show()
 
+            # Run-readiness pill from the flag levels.
+            if levels & {"warn", "danger"}:
+                self._qc_badge.set_state("blocked", "Completed with warnings")
+            else:
+                self._qc_badge.set_state("ready", "Analysis successful")
+            self._qc_badge.show()
+
         self._stats_container.show()
+
+    @staticmethod
+    def _qc_flag_lead(msg: str) -> str:
+        """A short bold headline for a QC flag, derived from its message text
+        (the message itself already contains the detail + remedy)."""
+        m = (msg or "").lower()
+        if "linked" in m or "link ratio" in m:          return "Low link ratio"
+        if "density" in m or "locs/frame" in m:         return "High density"
+        if "track length" in m:                         return "Short tracks"
+        if "stuck" in m or "aggregated" in m:           return "Stuck tracks"
+        if "gap" in m:                                  return "Track gaps"
+        if "drift" in m:                                return "Drift corrected"
+        return ""
 
     def show_results(self, headline: str, out_dir: str,
                      files: list[str] | None = None):

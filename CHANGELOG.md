@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.18.0
+
+### Post-run results: QC flags become severity banners + a readiness badge
+
+The Results panel that appears after an analysis now reads like the Compare
+wizard's guidance.
+
+- **QC flags are severity banners**, not plain text. Each warning/info flag
+  renders as a coloured callout (red/amber for warnings, blue for info) with a
+  short bold lead (Low link ratio / High density / Short tracks / Stuck tracks /
+  Track gaps / Drift corrected) above the full message — which still carries the
+  concrete remedy from the analysis.
+- **A run-readiness pill** sits under the headline: green **"Analysis successful"**
+  when there are no warnings, red **"Completed with warnings"** when there are.
+- No change to what's computed — purely how the existing QC results are
+  presented. The stats grid and saved-file list are unchanged; the panel's API
+  is untouched, so every caller keeps working.
+
 ## v2.17.1
 
 - **Definitions now appear on hover of the label text — no ⓘ icon.** The little
