@@ -2,7 +2,8 @@
 from __future__ import annotations
 import sys
 from firefly.ui.ui_helpers import (_make_napari_container_layout_opaque,
-                        _hide_napari_chrome, _MOTION_ORDER, _MOTION_PALETTE)
+                        _hide_napari_chrome, _MOTION_ORDER)
+from firefly.analysis.fa_constants import motion_class_colors
 
 import os
 import numpy as np
@@ -84,6 +85,79 @@ class VisualiseMixin:
                 "See the Workspace tab for details.")
             return None
         return self._napari_viewer
+
+    # ── Motion-class colours for the viewer ──────────────────────────────
+    # The 3-D Visualise viewer colours each motion class (Immobile /
+    # Confined / Brownian / Directed / Unknown) both as its own Tracks
+    # layer and in the DBSCAN cluster overlay.  Historically these were a
+    # single fixed dark palette; the sidebar "Motion colours" selector now
+    # lets the user pick the colour-blind-safe Okabe-Ito scheme (the same
+    # one the Publication figure theme uses).  Only palettes that read well
+    # on the viewer's DARK canvas are offered — the light figure palette is
+    # excluded because its deep hues are near-invisible on dark.
+    _WS_MOTION_COLOUR_THEMES = {
+        "Default": "Dark",
+        "Colour-blind safe": "Publication",
+    }
+
+    def _ws_motion_theme(self) -> str:
+        """Figure-theme name backing the viewer's motion colours, from the
+        sidebar selector.  Falls back to the dark default when the control
+        isn't built yet or carries an unexpected label."""
+        try:
+            txt = str(self._ws_motion_colour_mode.currentText()).strip()
+        except Exception:
+            return "Dark"
+        return self._WS_MOTION_COLOUR_THEMES.get(txt, "Dark")
+
+    def _ws_motion_palette(self) -> dict:
+        """Resolve the motion-class → hex-colour map for the viewer,
+        honouring the sidebar selector.  Single source of truth shared by
+        the per-class Tracks layers and the cluster overlay."""
+        return motion_class_colors(self._ws_motion_theme())
+
+    def _ws_recolour_motion_layers(self, *_args):
+        """Live-recolour the per-class Tracks layers (and the motion-coloured
+        cluster overlay) when the 'Motion colours' selector changes — in
+        place, without a full layer rebuild, so there's no flicker."""
+        v = getattr(self, "_napari_viewer", None)
+        if v is None:
+            return
+        pal = self._ws_motion_palette()
+        names = getattr(self, "_ws_motion_layer_names", {}) or {}
+        for cls, layer_name in names.items():
+            try:
+                if layer_name not in v.layers:
+                    continue
+                layer = v.layers[layer_name]
+                rgba = QtGui.QColor(
+                    pal.get(cls, pal["Unknown"])).getRgbF()
+                n_vertices = len(layer.data)
+                layer._track_colors = np.tile(
+                    np.asarray(rgba, dtype=float), (n_vertices, 1))
+                # Same repaint trick as the build loop: stop napari from
+                # re-deriving turbo colours, then nudge tail_length so the
+                # vispy node re-reads `_track_colors`.
+                try:    layer._recolor_tracks = lambda *a, **kw: None
+                except Exception: pass
+                try:    layer.tail_length = layer.tail_length
+                except Exception: pass
+                try:    layer.refresh()
+                except Exception: pass
+            except Exception:
+                # Don't fail the whole recolour over one bad layer, but DO
+                # leave a breadcrumb (the build loop logs the same way) so a
+                # silent half-recolour is diagnosable rather than invisible.
+                import traceback as _tb, sys as _sys
+                print(f"[FIREFLY] motion-colour recolour failed for "
+                      f"{cls!r}:\n{_tb.format_exc()}", file=_sys.stderr)
+        # Recolour the DBSCAN overlay only if it's already on screen — don't
+        # conjure one into existence as a side effect of a colour change.
+        try:
+            if "DBSCAN clusters" in v.layers:
+                self._ws_render_cluster_layer()
+        except Exception:
+            pass
 
     def _ws_reset_view(self):
         """Re-centre + re-fit the napari camera on all visible layers.
@@ -205,8 +279,9 @@ class VisualiseMixin:
 
         One layer is created per motion class present in the dataset
         (Immobile / Confined / Brownian / Directed / Unknown), each
-        rendered in its `_MOTION_PALETTE` colour — same palette used by
-        the analysis figures, so the napari view matches the report PDFs.
+        rendered in its colour from the theme-aware motion palette (chosen
+        via the sidebar "Motion colours" selector) — the same palettes the
+        analysis figures use, so the napari view matches the report PDFs.
         Visibility of individual classes is controlled directly from
         napari's layer list — there's no parallel checkbox UI.
 
@@ -287,6 +362,11 @@ class VisualiseMixin:
             built_any = False
             first_layer_for_click = None
 
+            # Theme-aware motion palette from the sidebar selector (defaults
+            # to the dark scheme).  Resolved once so every per-class layer in
+            # this rebuild uses one consistent palette.
+            motion_pal = self._ws_motion_palette()
+
             for cls in _MOTION_ORDER:
                 cls_mask = (row_motion == cls)
                 if not cls_mask.any():
@@ -341,12 +421,14 @@ class VisualiseMixin:
                 # colours from the (otherwise unused) head/tail/track
                 # properties; overwrite `_track_colors` directly with a
                 # uniform RGBA so every vertex of every track in this
-                # layer wears `_MOTION_PALETTE[cls]`.  Same trick as
-                # before — disable `_recolor_tracks` on the instance so
-                # napari doesn't stomp on us when the data setter is
-                # later called by a refresh.
+                # layer wears `motion_pal[cls]`.  Same trick as before —
+                # disable `_recolor_tracks` on the instance so napari
+                # doesn't stomp on us when the data setter is later called
+                # by a refresh.
                 try:
-                    rgba = QtGui.QColor(_MOTION_PALETTE[cls]).getRgbF()
+                    rgba = QtGui.QColor(
+                        motion_pal.get(cls, motion_pal["Unknown"])
+                    ).getRgbF()
                     n_vertices = len(data)
                     colors_arr = _np.tile(_np.asarray(rgba, dtype=float),
                                            (n_vertices, 1))
@@ -585,15 +667,17 @@ class VisualiseMixin:
         if mode == "Motion" and self._ws_cluster_motion is None:
             mode = "ID"
 
-        # Per-class colours read from `_MOTION_PALETTE` — single source
-        # of truth shared with the track-filter swatches and napari
-        # Tracks layer colormap.  Alpha 0.85 makes the points slightly
-        # translucent so the underlying image stays visible.
+        # Per-class colours from the theme-aware viewer palette — single
+        # source of truth shared with the per-class Tracks layers, so the
+        # overlay matches them under whichever "Motion colours" scheme the
+        # user picked.  Alpha 0.85 makes the points slightly translucent so
+        # the underlying image stays visible.
         def _swatch_rgba(hex_str: str, a: float) -> tuple:
             c = QtGui.QColor(hex_str).getRgbF()
             return (c[0], c[1], c[2], a)
+        _vis_pal = self._ws_motion_palette()
         _MOTION_COLORS = {
-            cls: _swatch_rgba(_MOTION_PALETTE[cls], 0.85)
+            cls: _swatch_rgba(_vis_pal.get(cls, _vis_pal["Unknown"]), 0.85)
             for cls in _MOTION_ORDER
         }
         # "Unmatched" is unique to the cluster overlay — used when a

@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.14.2
+
+### Theme-aware motion colours in the 3-D Visualise viewer
+
+- **"Motion colours" selector in the Visualise sidebar.** The napari viewer
+  coloured each motion class (Immobile / Confined / Brownian / Directed /
+  Unknown) — both the per-class Tracks layers and the motion-coloured DBSCAN
+  cluster overlay — with a single fixed dark-mode palette. A new sidebar
+  selector now offers **Default** (the original bright dark-mode palette,
+  unchanged) and **Colour-blind safe** (the Okabe-Ito palette, the same one the
+  Publication figure theme uses), so the 3-D view can be made colour-blind
+  accessible and matched to an exported figure. Both options are chosen to read
+  well on the viewer's dark canvas (the light figure palette is intentionally
+  not offered here — its deep hues are near-invisible on dark). The choice
+  recolours the loaded layers **live** (in place, no rebuild/flicker) and is
+  remembered between sessions. "Default" is pixel-identical to the previous
+  fixed colours, so existing views are unchanged.
+
 ## v2.14.1
 
 ### Comparison bars now respect the figure theme (no more dark bars on white)

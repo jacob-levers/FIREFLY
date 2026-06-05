@@ -2583,6 +2583,31 @@ class BuildMixin:
         self._ws_filter_status.setWordWrap(True)
         filter_v.addWidget(self._ws_filter_status)
 
+        # Motion-class colour scheme for the viewer.  Both options are tuned
+        # for the viewer's DARK canvas: "Default" is the standard bright
+        # dark-mode palette (unchanged behaviour); "Colour-blind safe" is the
+        # Okabe-Ito palette — the same one the Publication figure theme uses,
+        # so a colour-blind-safe export and the 3-D view agree.  (The light
+        # figure palette is deliberately NOT offered here: its deep hues are
+        # near-invisible on the dark canvas.)  Recolours the loaded track
+        # layers — and the motion-coloured cluster overlay — live.
+        _mc_row = QtWidgets.QHBoxLayout()
+        _mc_row.setContentsMargins(0, 8, 0, 0)
+        _mc_row.addWidget(QtWidgets.QLabel("Motion colours:"))
+        self._ws_motion_colour_mode = QtWidgets.QComboBox()
+        self._ws_motion_colour_mode.addItems(
+            ["Default", "Colour-blind safe"])
+        self._ws_motion_colour_mode.setToolTip(
+            "Colour scheme for the per-class track layers and the motion-"
+            "coloured cluster overlay.\n"
+            "• Default — standard bright dark-mode palette\n"
+            "• Colour-blind safe — Okabe-Ito, matches the "
+            "Publication figure theme")
+        self._ws_motion_colour_mode.currentIndexChanged.connect(
+            self._ws_recolour_motion_layers)
+        _mc_row.addWidget(self._ws_motion_colour_mode, 1)
+        filter_v.addLayout(_mc_row)
+
         # ── DBSCAN live-tune controls (re-parented into the sidebar) ──
         # Sliders adjust eps (nm) and min_samples for the cluster
         # overlay loaded via "Load cluster map…".  Changes are

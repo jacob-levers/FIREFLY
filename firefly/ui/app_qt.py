@@ -1786,6 +1786,9 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("stats/anova3plus",         self.c_stat_anova3,        "combo"),
             ("stats/ci_level",           self.s_stat_ci,            "spin",  float),
             ("stats/figure_stars_corrected", self.c_stat_fig_corrected, "check", _bool_cast),
+
+            # ── Visualise tab ─────────────────────────────────────────────
+            ("visualise/motion_colours", self._ws_motion_colour_mode, "combo"),
         ]
 
     def _restore_settings(self):
