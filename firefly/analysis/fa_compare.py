@@ -451,8 +451,13 @@ def compare_groups(groups,
     # in legends and the suptitle so duplicated group names stay distinct.
     group_factor = [g.get("label", f"Group {i+1}") for i, g in enumerate(groups)]
     timepoints_per_card = [str(g.get("timepoint", "")).strip() for g in groups]
-    two_factor = any(timepoints_per_card)
     timepoint_tokens = sorted({t for t in timepoints_per_card if t})
+    # Two-factor (group × time) only makes sense with ≥2 DISTINCT time points.
+    # A single shared time point (e.g. every card tagged "Pre") is just a
+    # one-factor group comparison — treat it exactly as if no time points were
+    # set, otherwise the interaction plots degenerate to a single x-position and
+    # render weirdly.
+    two_factor = len(timepoint_tokens) >= 2
     labels = [(f"{group_factor[i]} / {timepoints_per_card[i]}"
                if (two_factor and timepoints_per_card[i]) else group_factor[i])
               for i in range(n_groups)]

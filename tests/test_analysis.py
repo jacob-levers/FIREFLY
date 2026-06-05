@@ -1618,3 +1618,31 @@ def test_compare_groups_stats_transparency_end_to_end(tmp_path, monkeypatch):
 
     import matplotlib.pyplot as _plt
     _plt.close(fig)
+
+
+def test_single_shared_timepoint_is_not_two_factor(tmp_path, monkeypatch):
+    """Two groups that share ONE time point (e.g. both 'Pre') must be treated as
+    a plain one-factor 2-group comparison — NOT a degenerate two-factor design
+    (which produced weird single-x-position interaction plots and a spurious
+    two-way ANOVA)."""
+    import firefly.analysis.fa_compare as fcmp
+    table = {}
+    for i in range(4):
+        table[f"/A/c{i}"] = _fake_summary(f"A_c{i}", f"/A/c{i}", 0.02, 0.7, seed=i)
+        table[f"/B/c{i}"] = _fake_summary(f"B_c{i}", f"/B/c{i}", 0.20, 1.2, seed=10 + i)
+    monkeypatch.setattr(fcmp, "load_summary_from_folder", lambda f: table[f])
+    groups = [{"label": "DMSO", "color": "#3b6ed8", "timepoint": "Pre",
+               "folders": [f"/A/c{i}" for i in range(4)]},
+              {"label": "Drug", "color": "#f78166", "timepoint": "Pre",
+               "folders": [f"/B/c{i}" for i in range(4)]}]
+    fig, summary_df, stats = fcmp.compare_groups(
+        groups, output_dir=str(tmp_path), output_stem="cmp", pdf_report=False)
+    # No two-way ANOVA file (would only exist in true two-factor mode).
+    assert not (tmp_path / "cmp_twoway_anova.csv").exists()
+    # Treated as a plain 2-group comparison: groups stay DMSO/Drug (not
+    # "DMSO / Pre"), and a normal pairwise test was recorded.
+    assert set(summary_df["group"]) == {"DMSO", "Drug"}
+    pw = stats.get("auc_msd", {}).get("pairwise", [])
+    assert pw and {pw[0]["label_i"], pw[0]["label_j"]} == {"DMSO", "Drug"}
+    import matplotlib.pyplot as _plt
+    _plt.close(fig)

@@ -1258,10 +1258,28 @@ class BuildMixin:
         # ── Bottom-button pages (action stack) ────────────────────────
         # Page 1 — Analysis: no action (empty placeholder).
         self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 1
-        # Page 2 — Compare: re-parent the existing Generate button.
+        # Page 2 — Compare: "Configure statistics" (nudges users to the
+        # Statistics tab once their groups are in) above the Generate button.
         cmp_act = QtWidgets.QWidget()
         cmp_av = QtWidgets.QVBoxLayout(cmp_act)
         cmp_av.setContentsMargins(12, 6, 12, 12)
+        cmp_av.setSpacing(6)
+        self.btn_cmp_configure_stats = QtWidgets.QPushButton(
+            "⚙  Configure statistics…")
+        self.btn_cmp_configure_stats.setMinimumHeight(30)
+        self.btn_cmp_configure_stats.setToolTip(
+            "Choose the statistical tests, correction and significance level "
+            "for this comparison — and see a recommendation for your data.")
+        # Accent-outline styling so it draws the eye without competing with the
+        # primary Generate button.
+        self.btn_cmp_configure_stats.setStyleSheet(
+            f"QPushButton {{ color: {_THEME['ACC']}; background: transparent; "
+            f"border: 1px solid {_THEME['ACC']}; border-radius: 6px; "
+            f"padding: 5px 10px; font-weight: 600; }}"
+            f"QPushButton:hover {{ background: {_THEME['PANEL_ALT']}; "
+            f"color: {_THEME['ACC_HOVER']}; border-color: {_THEME['ACC_HOVER']}; }}")
+        self.btn_cmp_configure_stats.clicked.connect(self._goto_statistics_tab)
+        cmp_av.addWidget(self.btn_cmp_configure_stats)
         _btn = getattr(self, "btn_cmp_run", None)
         if _btn is not None:
             _btn.setMinimumHeight(36)
@@ -2151,6 +2169,15 @@ class BuildMixin:
         self.tabs.addTab(tab, TAB_STATISTICS)
         self._refresh_stats_preview()
 
+    def _goto_statistics_tab(self):
+        """Jump to the Statistics tab (from the Compare-tab button) and refresh
+        its live preview against the current groups."""
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == TAB_STATISTICS:
+                self.tabs.setCurrentIndex(i)
+                break
+        self._refresh_stats_preview()
+
     def _collect_stats_config(self) -> dict:
         """Read the Statistics-tab widgets into the canonical stats_config dict
         (see fa_stats_config)."""
@@ -2197,7 +2224,10 @@ class BuildMixin:
         tps = list(dict.fromkeys(str(c.get("timepoint", "")).strip()
                                  for c in cards
                                  if str(c.get("timepoint", "")).strip()))
-        paired = len(tps) >= 1
+        # Paired (two-factor) needs ≥2 DISTINCT time points; a single shared
+        # time point is treated as a plain one-factor comparison (matches
+        # compare_groups).
+        paired = len(tps) >= 2
         strat = cfg["parametric_strategy"]
 
         def _two_group():
