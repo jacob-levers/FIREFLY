@@ -1175,7 +1175,26 @@ class BuildMixin:
         cp_outer.addWidget(cp_scroll)
         self._sidebar_stack.addWidget(compare_page)          # index 2
 
-        # Page 3 — Visualise (re-parents load/filter/DBSCAN widgets).
+        # Page 3 — Statistics: the global stats controls (the tab body shows
+        # the live test plan).
+        stats_page = QtWidgets.QWidget()
+        st_outer = QtWidgets.QVBoxLayout(stats_page)
+        st_outer.setContentsMargins(0, 0, 0, 0); st_outer.setSpacing(0)
+        st_scroll = QtWidgets.QScrollArea()
+        st_scroll.setWidgetResizable(True)
+        st_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        st_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        st_inner = QtWidgets.QWidget()
+        st_v = QtWidgets.QVBoxLayout(st_inner)
+        st_v.setContentsMargins(12, 0, 12, 12); st_v.setSpacing(8)
+        st_v.addWidget(self._stats_settings_widget)
+        st_v.addStretch(1)
+        st_scroll.setWidget(st_inner)
+        st_outer.addWidget(st_scroll)
+        self._sidebar_stack.addWidget(stats_page)            # index 3
+
+        # Page 4 — Visualise (re-parents load/filter/DBSCAN widgets).
         vis_page = QtWidgets.QWidget()
         vp_outer = QtWidgets.QVBoxLayout(vis_page)
         vp_outer.setContentsMargins(0, 0, 0, 0); vp_outer.setSpacing(0)
@@ -1199,7 +1218,7 @@ class BuildMixin:
         vp_v.addStretch(1)
         vp_scroll.setWidget(vp_inner)
         vp_outer.addWidget(vp_scroll)
-        self._sidebar_stack.addWidget(vis_page)              # index 3
+        self._sidebar_stack.addWidget(vis_page)              # index 4
 
         # Page 4 — Re-process (re-parents source picker).
         pp_page = QtWidgets.QWidget()
@@ -1234,7 +1253,7 @@ class BuildMixin:
         pp_v.addStretch(1)
         pp_scroll.setWidget(pp_inner)
         pp_outer.addWidget(pp_scroll)
-        self._sidebar_stack.addWidget(pp_page)               # index 4
+        self._sidebar_stack.addWidget(pp_page)               # index 5
 
         # ── Bottom-button pages (action stack) ────────────────────────
         # Page 1 — Analysis: no action (empty placeholder).
@@ -1248,10 +1267,12 @@ class BuildMixin:
             _btn.setMinimumHeight(36)
             cmp_av.addWidget(_btn)
         self._sidebar_action.addWidget(cmp_act)               # index 2
-        # Page 3 — Visualise: no action.
+        # Page 3 — Statistics: no action (runs happen from the Compare tab).
         self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 3
-        # Page 4 — Re-process: the action widget built by the tab.
-        self._sidebar_action.addWidget(self._pp_action_widget)  # index 4
+        # Page 4 — Visualise: no action.
+        self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 4
+        # Page 5 — Re-process: the action widget built by the tab.
+        self._sidebar_action.addWidget(self._pp_action_widget)  # index 5
 
     def _build_import_tab(self):
         """Import tab — single-source-of-truth for input/output config.
@@ -1975,21 +1996,15 @@ class BuildMixin:
     ]
 
     def _build_statistics_tab(self):
-        """Statistics tab: global, transparent control over the tests the
-        Compare tab runs, plus a live 'test plan' preview so it is obvious which
-        test each metric gets before anything is run."""
-        tab = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(tab)
-        v.setContentsMargins(8, 8, 8, 8)
-        v.setSpacing(6)
-
-        intro = QtWidgets.QLabel(
-            "<b>Statistics</b> — how the Compare tab tests each metric. Every "
-            "choice here is recorded on the figure captions, in the stats CSV, "
-            "and in the PDF report. Tests run on <b>one value per cell / "
-            "replicate</b> (not per track).")
-        intro.setWordWrap(True)
-        v.addWidget(intro)
+        """Statistics tab.  The global controls live in the LEFT SIDEBAR (like
+        every other tab's settings); the tab BODY shows a live, plain-language
+        'test plan' that updates as the controls / Compare groups change, so it
+        is always clear which test each metric will get before anything runs."""
+        # ── Controls (re-parented into the Statistics sidebar page) ──────────
+        self._stats_settings_widget = QtWidgets.QWidget()
+        sw = QtWidgets.QVBoxLayout(self._stats_settings_widget)
+        sw.setContentsMargins(0, 0, 0, 0)
+        sw.setSpacing(6)
 
         sec, gl = self._make_form_section("Statistical tests")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -2011,13 +2026,13 @@ class BuildMixin:
         gl.addRow("Correction", self.c_stat_correction)
 
         self.c_stat_across_metric = QtWidgets.QCheckBox(
-            "Also correct across the 8 scalar metrics (family-wise)")
+            "Across the 8 scalar metrics too")
         self.c_stat_across_metric.setToolTip(
             "Scanning all metric panels for significance inflates the\n"
             "family-wise false-positive rate. When on, the correction is also\n"
             "applied across every scalar metric's pairwise tests, reported in\n"
             "the CSV and reflected in the on-figure stars.")
-        gl.addRow("", self.c_stat_across_metric)
+        gl.addRow("Family-wise", self.c_stat_across_metric)
 
         self.c_stat_strategy = _QuietComboBox()
         self.c_stat_strategy.addItems(
@@ -2042,39 +2057,61 @@ class BuildMixin:
         gl.addRow("Effect-size CI", self.s_stat_ci)
 
         self.c_stat_fig_corrected = QtWidgets.QCheckBox(
-            "Use corrected p-values for on-figure significance stars")
+            "Corrected p on figure stars")
         self.c_stat_fig_corrected.setChecked(True)
         self.c_stat_fig_corrected.setToolTip(
             "On (recommended): the stars drawn on the figure use the chosen\n"
             "correction, so the figure agrees with the CSV. Off: figure shows\n"
             "raw-p stars (the corrected values are still in the CSV).")
-        gl.addRow("", self.c_stat_fig_corrected)
-        v.addWidget(sec)
+        gl.addRow("Figure stars", self.c_stat_fig_corrected)
+        sw.addWidget(sec)
+        sw.addStretch(1)
+        self._propagate_form_tooltips(self._stats_settings_widget)
 
-        v.addWidget(QtWidgets.QLabel(
-            "<b>Test plan</b> — the test each metric gets with the current "
-            "settings and the groups defined on the Compare tab:"))
-        self.tbl_stats_preview = QtWidgets.QTableWidget(0, 4)
-        self.tbl_stats_preview.setHorizontalHeaderLabels(
-            ["Metric", "Design", "Test", "Correction"])
-        self.tbl_stats_preview.verticalHeader().setVisible(False)
-        self.tbl_stats_preview.setEditTriggers(
-            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tbl_stats_preview.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
-        _hdr = self.tbl_stats_preview.horizontalHeader()
-        _hdr.setStretchLastSection(True)
-        _hdr.setSectionResizeMode(
-            QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        v.addWidget(self.tbl_stats_preview, 1)
+        # ── Tab body: the live 'test plan' ──────────────────────────────────
+        tab = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(tab)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(12)
+
+        intro = QtWidgets.QLabel(
+            "<span style='font-size:15px;'><b>Statistics</b></span><br>"
+            "How the <b>Compare</b> tab tests each metric. Set the options in the "
+            "left sidebar; this page shows exactly what will run. Every choice is "
+            "recorded on the figure captions, in the stats CSV, and in the PDF "
+            "report. Tests use <b>one value per cell / replicate</b> (never pooled "
+            "per-track), so there is no pseudoreplication.")
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+
+        grp1 = QtWidgets.QGroupBox("Current comparison  (from the Compare tab)")
+        g1 = QtWidgets.QVBoxLayout(grp1)
+        self.lbl_stats_design = QtWidgets.QLabel("—")
+        self.lbl_stats_design.setWordWrap(True)
+        self.lbl_stats_design.setTextFormat(Qt.TextFormat.RichText)
+        g1.addWidget(self.lbl_stats_design)
+        v.addWidget(grp1)
+
+        grp2 = QtWidgets.QGroupBox("Tests that will run")
+        g2 = QtWidgets.QVBoxLayout(grp2)
+        self.lbl_stats_plan = QtWidgets.QLabel("—")
+        self.lbl_stats_plan.setWordWrap(True)
+        self.lbl_stats_plan.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_stats_plan.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        g2.addWidget(self.lbl_stats_plan)
+        v.addWidget(grp2)
 
         cap = QtWidgets.QLabel(
-            "<i>An 'auto' test is decided per metric from a Shapiro-Wilk "
-            "normality test at run time — both possibilities are shown here. "
-            "Underpowered comparisons (fewer than 3 replicates per group) are "
-            "reported but not starred.</i>")
+            "<i>The same test applies to every scalar metric — it depends on the "
+            "group structure, not the metric. With “Auto”, the parametric vs "
+            "non-parametric choice is made per metric from a Shapiro-Wilk "
+            "normality test at run time. Comparisons with fewer than 3 "
+            "replicates per group are reported but not starred.</i>")
         cap.setWordWrap(True)
+        cap.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
         v.addWidget(cap)
+        v.addStretch(1)
 
         for _w in (self.s_stat_alpha, self.s_stat_ci):
             _w.valueChanged.connect(lambda *_: self._refresh_stats_preview())
@@ -2083,7 +2120,6 @@ class BuildMixin:
         for _w in (self.c_stat_across_metric, self.c_stat_fig_corrected):
             _w.toggled.connect(lambda *_: self._refresh_stats_preview())
 
-        self._propagate_form_tooltips(tab)
         self.tabs.addTab(tab, TAB_STATISTICS)
         self._refresh_stats_preview()
 
@@ -2104,11 +2140,10 @@ class BuildMixin:
         }
 
     def _refresh_stats_preview(self):
-        """Rebuild the test-plan preview table from the current config + the
-        group/time-point structure on the Compare tab.  Branch selection only —
-        it can't know normality (that needs the data), so 'auto' rows show both
-        possibilities."""
-        if not hasattr(self, "tbl_stats_preview"):
+        """Update the body 'test plan' from the current config + the group /
+        time-point structure on the Compare tab.  Branch selection only — it
+        can't know normality (that needs the data), so 'Auto' shows both."""
+        if not hasattr(self, "lbl_stats_plan"):
             return
         try:
             cfg = self._collect_stats_config()
@@ -2119,6 +2154,7 @@ class BuildMixin:
             from firefly.analysis.fa_twoway import HAVE_PINGOUIN as _have_pg
         except Exception:
             _have_pg = False
+
         # Group / time-point structure from the Compare cards.
         cards = []
         for c in getattr(self, "_cmp_group_cards", []) or []:
@@ -2129,52 +2165,83 @@ class BuildMixin:
             if st.get("folders"):
                 cards.append(st)
         labels = list(dict.fromkeys(str(c.get("label", "")) for c in cards))
-        paired = any(str(c.get("timepoint", "")).strip() for c in cards)
         n_groups = len(labels)
+        tps = list(dict.fromkeys(str(c.get("timepoint", "")).strip()
+                                 for c in cards
+                                 if str(c.get("timepoint", "")).strip()))
+        paired = len(tps) >= 1
+        strat = cfg["parametric_strategy"]
 
-        corr_caption = describe_test_label("", cfg["correction"],
-                                           cfg["across_metric_correction"])
+        def _two_group():
+            if strat == "force_parametric":     return "Welch's t-test"
+            if strat == "force_nonparametric":  return "Mann-Whitney U"
+            return "Welch's t-test <i>or</i> Mann-Whitney U <i>(auto)</i>"
 
-        def _test_for(metric):
-            strat = cfg["parametric_strategy"]
-            if n_groups < 2:
-                return ("—", "add ≥2 groups on the Compare tab")
-            if paired:
-                # Two-factor design → mixed ANOVA headline + simple effects.
-                design = f"paired · group × time"
-                if n_groups >= 2:
-                    base2 = ("Paired t / Wilcoxon (Pre→Post change); "
-                             "Welch's t / Mann-Whitney (between groups)")
-                    if strat == "force_parametric":
-                        base2 = "Paired t (change); Welch's t (between)"
-                    elif strat == "force_nonparametric":
-                        base2 = "Wilcoxon (change); Mann-Whitney (between)"
-                    note = "" if _have_pg else "  [install pingouin for the ANOVA]"
-                    return (design,
-                            "Two-way mixed ANOVA (GG-corrected) · " + base2 + note)
-            # Unpaired N-group design.
-            design = f"unpaired · {n_groups} group(s)"
+        def _paired_change():
+            if strat == "force_parametric":     return "paired t-test"
+            if strat == "force_nonparametric":  return "Wilcoxon signed-rank"
+            return "paired t-test <i>or</i> Wilcoxon <i>(auto)</i>"
+
+        def _n_group():
+            para = {"welch": "Welch's ANOVA", "oneway": "one-way ANOVA",
+                    "auto": "Welch's ANOVA"}[cfg["anova3plus"]]
             if n_groups == 2:
-                para, nonpara = "Welch's t-test", "Mann-Whitney U"
-            else:
-                nonpara = "Kruskal-Wallis"
-                para = {"welch": "Welch's ANOVA", "oneway": "One-way ANOVA",
-                        "auto": "Welch's ANOVA"}[cfg["anova3plus"]]
-            if strat == "force_parametric":
-                return (design, para)
-            if strat == "force_nonparametric":
-                return (design, nonpara)
-            return (design, f"{para}  or  {nonpara}  (auto)")
+                return _two_group()
+            if strat == "force_parametric":     return para
+            if strat == "force_nonparametric":  return "Kruskal-Wallis"
+            return f"{para} <i>or</i> Kruskal-Wallis <i>(auto)</i>"
 
-        rows = self._STAT_PREVIEW_METRICS
-        self.tbl_stats_preview.setRowCount(len(rows))
-        for i, (disp, metric) in enumerate(rows):
-            design, test = _test_for(metric)
-            for col, txt in enumerate((disp, design, test, corr_caption)):
-                item = QtWidgets.QTableWidgetItem(str(txt))
-                item.setToolTip(str(txt))
-                self.tbl_stats_preview.setItem(i, col, item)
-        self.tbl_stats_preview.resizeColumnsToContents()
+        # ── Design summary ───────────────────────────────────────────────────
+        if n_groups < 2:
+            self.lbl_stats_design.setText(
+                "<i>No comparison defined yet — add at least 2 groups on the "
+                "<b>Compare</b> tab.</i>")
+        else:
+            per_grp = []
+            for lbl in labels:
+                n_cells = sum(1 for c in cards if str(c.get("label", "")) == lbl)
+                per_grp.append(f"{lbl} ({n_cells})")
+            if paired:
+                design = (f"<b>Paired</b> — {n_groups} group(s) × {len(tps)} "
+                          f"time point(s): {', '.join(map(str, tps))}. "
+                          "Cells are matched across time points by folder name.")
+            else:
+                design = f"<b>Unpaired</b> — {n_groups} group(s)."
+            self.lbl_stats_design.setText(
+                design + "<br><span>Replicates per group: "
+                + " · ".join(per_grp) + "</span>")
+
+        # ── Test plan ────────────────────────────────────────────────────────
+        corr = describe_test_label("", cfg["correction"],
+                                   cfg["across_metric_correction"])
+        ci_pct = f"{cfg['ci_level'] * 100:g}%"
+        stars_src = ("corrected" if cfg["figure_stars_use_corrected"] else "raw")
+        if n_groups < 2:
+            self.lbl_stats_plan.setText("<i>—</i>")
+        else:
+            items = []
+            if paired:
+                pg_note = ("" if _have_pg
+                           else " <span style='color:#e0673a;'>"
+                                "(install <b>pingouin</b> to enable)</span>")
+                items.append("<b>Overall, each metric:</b> two-way mixed ANOVA "
+                             "(group × time), Greenhouse-Geisser corrected" + pg_note)
+                items.append(f"<b>Between groups at each time point:</b> {_two_group()}")
+                items.append(f"<b>Change across time (per group, paired):</b> {_paired_change()}")
+            else:
+                items.append(f"<b>Each metric ({n_groups} groups):</b> {_n_group()}")
+                if n_groups > 2:
+                    items.append(f"<b>Pairwise follow-up:</b> {_two_group()}")
+            items.append(f"<b>Multiple-comparison correction:</b> {corr}")
+            items.append(f"<b>Effect size:</b> Hedges' g with {ci_pct} CI")
+            items.append(f"<b>Significance:</b> α = {cfg['alpha']:g}; "
+                         f"on-figure stars use <b>{stars_src}</b> p-values")
+            html = "<ul style='margin-left:-22px;'>" + "".join(
+                f"<li style='margin-bottom:4px;'>{it}</li>" for it in items) + "</ul>"
+            metrics = " · ".join(disp for disp, _ in self._STAT_PREVIEW_METRICS)
+            html += (f"<div style='color:{_THEME['TXT_MUTED']};'>"
+                     f"<b>Scalar metrics covered:</b> {metrics}</div>")
+            self.lbl_stats_plan.setText(html)
 
     def _build_visualise_tab(self):
         """Build the Visualise tab — toolbar + lazy-loaded napari viewer.

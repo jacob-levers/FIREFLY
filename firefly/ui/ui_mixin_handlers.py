@@ -83,10 +83,11 @@ class HandlersMixin:
         the active tab, and re-label the sidebar header.
 
         Tab order is fixed by `__init__`: 0=Import, 1=Analysis,
-        2=Compare, 3=Visualise, 4=Re-process.  Per the user spec the
-        Analysis tab reuses the Import sidebar wholesale (same
-        parameter set + same Start button) — there's no separate page
-        for it; the handler just routes idx=1 → page 0.
+        2=Compare, 3=Statistics, 4=Visualise, 5=Re-process.  Sidebar
+        pages share those indices (page 3 = Statistics controls).  Per
+        the user spec the Analysis tab reuses the Import sidebar
+        wholesale — there's no separate page for it; the handler just
+        routes idx=1 → page 0.
         """
         # Defensive clamp — Qt may emit currentChanged during shutdown.
         if idx < 0 or idx >= self.tabs.count():
@@ -104,8 +105,9 @@ class HandlersMixin:
             0: "Analysis Parameters",
             1: "Analysis Parameters",   # Analysis mirrors Import
             2: "Comparison",
-            3: "Visualise",
-            4: "Re-process",
+            3: "Statistics",
+            4: "Visualise",
+            5: "Re-process",
         }
         try:
             self._sidebar_title.setText(titles.get(idx, ""))
