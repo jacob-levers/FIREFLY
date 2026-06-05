@@ -1512,35 +1512,32 @@ class _ResultsPanel(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName("results_panel")
         v = QtWidgets.QVBoxLayout(self)
-        v.setContentsMargins(16, 16, 16, 16)
-        v.setSpacing(10)
+        v.setContentsMargins(18, 16, 18, 16)
+        v.setSpacing(12)
 
-        # Header line — big-ish status text
+        # Header row: run title (left) + the run-readiness pill (right).  The
+        # pill is set from the QC flag levels after a run ("Analysis
+        # successful" / "Completed with warnings") and hidden until then.
         self._headline = QtWidgets.QLabel(idle_text)
         self._headline.setStyleSheet(
-            f"color: {_THEME['TXT_MUTED']}; font-size: 13px;")
+            f"color: {_THEME['TXT_MUTED']}; font-size: 14px;")
         self._headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._headline.setWordWrap(True)
-        v.addWidget(self._headline)
-
-        # Run-readiness pill — set from the QC flag levels after a run
-        # ("Analysis successful" / "Completed with warnings").  Hidden until
-        # `show_stats` populates a QC block.
-        _badge_row = QtWidgets.QHBoxLayout()
-        _badge_row.addStretch(1)
         self._qc_badge = _StatusBadge()
         self._qc_badge.hide()
-        _badge_row.addWidget(self._qc_badge)
-        _badge_row.addStretch(1)
-        v.addLayout(_badge_row)
+        _hdr = QtWidgets.QHBoxLayout()
+        _hdr.setSpacing(8)
+        _hdr.addWidget(self._headline, 1)
+        _hdr.addWidget(self._qc_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        v.addLayout(_hdr)
 
         # Stats grid — populated post-run with key numbers (median D / α,
         # motion-class breakdown, cluster count, etc.).
         self._stats_grid = QtWidgets.QGridLayout()
         self._stats_grid.setColumnStretch(0, 0)
         self._stats_grid.setColumnStretch(1, 1)
-        self._stats_grid.setHorizontalSpacing(16)
-        self._stats_grid.setVerticalSpacing(4)
+        self._stats_grid.setHorizontalSpacing(18)
+        self._stats_grid.setVerticalSpacing(7)
         stats_container = QtWidgets.QWidget()
         stats_container.setLayout(self._stats_grid)
         self._stats_container = stats_container
@@ -1593,7 +1590,7 @@ class _ResultsPanel(QtWidgets.QFrame):
         if idle_text:
             self._headline.setText(idle_text)
         self._headline.setStyleSheet(
-            f"color: {_THEME['TXT_MUTED']}; font-size: 13px;")
+            f"color: {_THEME['TXT_MUTED']}; font-size: 14px;")
         self._headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._folder_row.hide()
         self._files.clear()
@@ -1618,16 +1615,20 @@ class _ResultsPanel(QtWidgets.QFrame):
         self._qc_badge.hide()
 
     def _add_stat_row(self, row: int, label: str, value: str,
-                      value_colour: str | None = None):
+                      value_colour: str | None = None,
+                      tooltip: str | None = None):
         lbl = QtWidgets.QLabel(label)
         lbl.setStyleSheet(
-            f"color: {_THEME['TXT_MUTED']}; font-size: 12px;")
+            f"color: {_THEME['TXT_MUTED']}; font-size: 12.5px;")
         val = QtWidgets.QLabel(value)
         col = value_colour or _THEME['TXT']
         val.setStyleSheet(
-            f"color: {col}; font-size: 13px; font-weight: 600;")
+            f"color: {col}; font-size: 14px; font-weight: 600;")
         val.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
+        if tooltip:
+            lbl.setToolTip(tooltip)
+            val.setToolTip(tooltip)
         self._stats_grid.addWidget(lbl, row, 0,
                                    Qt.AlignmentFlag.AlignLeft)
         self._stats_grid.addWidget(val, row, 1,
@@ -1638,9 +1639,9 @@ class _ResultsPanel(QtWidgets.QFrame):
         hairline divider above it to group the stats into sections."""
         hdr = QtWidgets.QLabel(text)
         hdr.setStyleSheet(
-            "color: %s; font-size: 11px; font-weight: 700; "
-            "text-transform: uppercase; letter-spacing: 0.5px; "
-            "border-top: 1px solid %s; padding-top: 7px; margin-top: 4px;"
+            "color: %s; font-size: 10.5px; font-weight: 700; "
+            "text-transform: uppercase; letter-spacing: 0.8px; "
+            "border-top: 1px solid %s; padding-top: 10px; margin-top: 12px;"
             % (_THEME['TXT_MUTED'], _THEME['BORDER']))
         self._stats_grid.addWidget(hdr, row, 0, 1, 2,
                                    Qt.AlignmentFlag.AlignLeft)
@@ -1698,8 +1699,10 @@ class _ResultsPanel(QtWidgets.QFrame):
                            _fmt_alpha(summary.get("median_alpha"))); r += 1
         mf = summary.get("mobile_fraction")
         if mf is not None:
-            self._add_stat_row(r, "Mobile fraction (D > threshold)",
-                               _fmt_pct(mf)); r += 1
+            self._add_stat_row(
+                r, "Mobile fraction", _fmt_pct(mf),
+                tooltip="Fraction of tracks with D above the mobile-D "
+                        "threshold."); r += 1
         ls = summary.get("median_loc_sigma_nm")
         if ls is not None:
             self._add_stat_row(r, "Localisation precision  σ",
@@ -1733,7 +1736,7 @@ class _ResultsPanel(QtWidgets.QFrame):
                         Qt.AlignmentFlag.AlignLeft)
                     val = QtWidgets.QLabel(f"{n:,}  ({100 * n / total:.1f} %)")
                     val.setStyleSheet(
-                        "color: %s; font-size: 13px; font-weight: 600;" % col)
+                        "color: %s; font-size: 14px; font-weight: 600;" % col)
                     val.setTextInteractionFlags(
                         Qt.TextInteractionFlag.TextSelectableByMouse)
                     self._stats_grid.addWidget(
@@ -1793,9 +1796,10 @@ class _ResultsPanel(QtWidgets.QFrame):
             sf = qc.get("stuck_fraction")
             if sf is not None:
                 col = (_THEME['WARN'] if sf > 0.30 else _THEME['TXT'])
-                self._add_stat_row(r, "Stuck tracks  (D < 1e-3)",
-                                   _fmt_pct(sf),
-                                   value_colour=col); r += 1
+                self._add_stat_row(
+                    r, "Stuck tracks", _fmt_pct(sf), value_colour=col,
+                    tooltip="Fraction of tracks with D < 1e-3 µm²/s — likely "
+                            "stuck or aggregated particles."); r += 1
             dn = qc.get("drift_total_nm")
             if dn is not None:
                 col = (_THEME['WARN'] if dn > 500 else _THEME['TXT'])
@@ -1846,8 +1850,9 @@ class _ResultsPanel(QtWidgets.QFrame):
         """Populate the panel with a completed run's outputs."""
         self._headline.setText(headline)
         self._headline.setStyleSheet(
-            f"color: {_THEME['SUCCESS']}; font-size: 14px; font-weight: 600;")
-        self._headline.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            f"color: {_THEME['SUCCESS']}; font-size: 16px; font-weight: 700;")
+        self._headline.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         self._out_dir = out_dir
         if out_dir:

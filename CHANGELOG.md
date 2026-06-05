@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.20.4
+
+### Results readout: typography + spacing polish
+
+- **Cleaner header.** The run title and the "Analysis successful" pill now share
+  one header row (title left, pill right) instead of the pill sitting orphaned in
+  the middle; the title is a touch larger and bolder.
+- **More breathing room.** Wider row spacing and clearer separation above each
+  section header, so the readout feels less cramped.
+- **Tighter value column.** Verbose labels were shortened ("Mobile fraction",
+  "Stuck tracks") so the values sit closer to their labels rather than far to the
+  right; the dropped qualifiers moved into hover tooltips. Values are slightly
+  larger for a clearer label→value hierarchy.
+
 ## v2.20.3
 
 - **Compare sidebar can no longer be dragged sideways (for real this time).**
