@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.20.0
+
+### Guidance polish across Import, Visualise and Re-process
+
+The same modern affordances now extend to the rest of the app.
+
+- **Import** — a live **"Ready to analyse"** pill in the tab header turns green
+  once you've picked an input (a file in single mode, a folder in batch), so
+  it's obvious when you're good to go.
+- **Visualise** — a **motion-class colour legend** in the sidebar (a swatch per
+  Immobile / Confined / Brownian / Directed / Unknown in the active palette) so
+  you can read the track colours without opening the napari layer list;
+  hover-definitions on Min length / eps / min samples; and a **"No clusters
+  found"** warning banner nudging you to widen eps or lower min-samples when a
+  clustering run comes back empty.
+- **Re-process** — a **status pill** by the source picker ("No run selected" →
+  "Run loaded", or "Not a FIREFLY run" on a bad pick), and the workflow help text
+  is now an info banner so the steps stand out.
+
+All reuse the existing banner/badge/chip widgets; no analysis or settings change.
+(The Windows-only GPU-status banner is deferred until it can be verified on
+Windows.)
+
 ## v2.19.0
 
 ### A live pipeline map in the Analysis cockpit

@@ -1255,6 +1255,25 @@ class BuildMixin:
         # Page 4 — Re-process: the action widget built by the tab.
         self._sidebar_action.addWidget(self._pp_action_widget)  # index 4
 
+    def _refresh_import_readiness(self, *_args):
+        """Update the Import tab's readiness pill: green 'Ready to analyse' once
+        an input is chosen (a file in single mode, or a folder in batch mode),
+        muted 'Incomplete' otherwise.  Wired to the input fields + mode tiles."""
+        badge = getattr(self, "_import_status_badge", None)
+        if badge is None:
+            return
+        is_batch = (getattr(self, "r_mode_batch", None) is not None
+                    and self.r_mode_batch.isChecked())
+        if is_batch:
+            e = getattr(self, "e_batch_folder", None)
+        else:
+            e = getattr(self, "e_file", None)
+        has_input = bool(e is not None and e.text().strip())
+        if has_input:
+            badge.set_state("ready", "Ready to analyse")
+        else:
+            badge.set_state("muted", "Incomplete")
+
     def _build_import_tab(self):
         """Import tab — single-source-of-truth for input/output config.
 
@@ -1271,6 +1290,18 @@ class BuildMixin:
         v = QtWidgets.QVBoxLayout(tab)
         v.setContentsMargins(16, 16, 16, 16)
         v.setSpacing(12)
+
+        # ── Header: title + a live "ready to analyse" pill ──
+        _hdr = QtWidgets.QHBoxLayout()
+        _ht = QtWidgets.QLabel("Import")
+        _htf = _ht.font(); _htf.setBold(True); _htf.setPointSize(15)
+        _ht.setFont(_htf)
+        _hdr.addWidget(_ht)
+        _hdr.addStretch(1)
+        self._import_status_badge = _StatusBadge()
+        self._import_status_badge.set_state("muted", "Incomplete")
+        _hdr.addWidget(self._import_status_badge)
+        v.addLayout(_hdr)
 
         # ── Mode toggle ───────────────────────────────────────────────────
         # Segmented control: two big tile buttons, exclusive.  Looks like
@@ -2598,7 +2629,7 @@ class BuildMixin:
         # clutter the field visually and aren't diffusion-classifiable.
         _ml_row = QtWidgets.QHBoxLayout()
         _ml_row.setContentsMargins(0, 6, 0, 0)
-        _ml_row.addWidget(QtWidgets.QLabel("Min length:"))
+        _ml_row.addWidget(_label_with_info("Min length:", "min track length"))
         self._ws_min_len = QtWidgets.QSpinBox()
         self._ws_min_len.setRange(1, 1000)
         self._ws_min_len.setValue(1)
@@ -2638,6 +2669,19 @@ class BuildMixin:
         _mc_row.addWidget(self._ws_motion_colour_mode, 1)
         filter_v.addLayout(_mc_row)
 
+        # Motion-class colour legend — a swatch per class in the active
+        # palette, so the user can read which colour is which class without
+        # opening the napari layer list.  Rebuilt when the palette changes.
+        self._ws_motion_legend = QtWidgets.QWidget()
+        _leg = QtWidgets.QGridLayout(self._ws_motion_legend)
+        _leg.setContentsMargins(0, 4, 0, 0)
+        _leg.setHorizontalSpacing(4)
+        _leg.setVerticalSpacing(4)
+        _leg.setColumnStretch(2, 1)
+        filter_v.addWidget(self._ws_motion_legend)
+        try:    self._ws_rebuild_motion_legend()
+        except Exception: pass
+
         # ── DBSCAN live-tune controls (re-parented into the sidebar) ──
         # Sliders adjust eps (nm) and min_samples for the cluster
         # overlay loaded via "Load cluster map…".  Changes are
@@ -2665,7 +2709,7 @@ class BuildMixin:
         self._ws_eps_value.setMinimumWidth(50)
         eps_row.addWidget(self._ws_eps_slider, 1)
         eps_row.addWidget(self._ws_eps_value)
-        dbscan_form.addRow("eps (nm)", eps_w)
+        dbscan_form.addRow(_label_with_info("eps (nm)", "DBSCAN eps"), eps_w)
 
         self._ws_minsamp_spin = QtWidgets.QSpinBox()
         self._ws_minsamp_spin.setRange(2, 200)
@@ -2673,7 +2717,8 @@ class BuildMixin:
         self._ws_minsamp_spin.setToolTip(
             "Minimum number of points within eps to form a dense core.\n"
             "Higher = fewer, larger, denser clusters.  Default 8.")
-        dbscan_form.addRow("min samples", self._ws_minsamp_spin)
+        dbscan_form.addRow(_label_with_info("min samples", "min samples"),
+                           self._ws_minsamp_spin)
 
         self._ws_cluster_color_mode = _QuietComboBox()
         self._ws_cluster_color_mode.addItems(["ID", "Motion"])
@@ -2691,6 +2736,14 @@ class BuildMixin:
         self._ws_cluster_status.setStyleSheet("color: #888;")
         self._ws_cluster_status.setWordWrap(True)
         dbscan_form.addRow(self._ws_cluster_status)
+
+        # Shown only when a clustering run finds nothing — a clear nudge to
+        # widen eps / lower min-samples (toggled in _ws_render_cluster_layer).
+        self._ws_cluster_banner = _AlertBanner(
+            "warn", "No clusters found — try a larger <b>eps</b> or a lower "
+                    "<b>min&nbsp;samples</b>.")
+        self._ws_cluster_banner.hide()
+        dbscan_form.addRow(self._ws_cluster_banner)
 
         # Debounce re-clustering so the slider doesn't fire on every
         # pixel of drag — coalesce to one re-cluster call per 300 ms.

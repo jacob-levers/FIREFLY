@@ -118,23 +118,37 @@ class _AlertBanner(QtWidgets.QFrame):
     def __init__(self, severity: str, html: str, parent=None):
         super().__init__(parent)
         self.setObjectName("alert_banner")
-        sev = severity if severity in self._ICON else "info"
-        self.setProperty("severity", sev)
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(10, 8, 11, 8)
         lay.setSpacing(9)
-        icon = QtWidgets.QLabel(self._ICON[sev])
-        icon.setStyleSheet(
-            "color: %s; font-size: 14px; font-weight: bold; background: transparent;"
+        self._icon = QtWidgets.QLabel()
+        self._icon.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self._icon.setFixedWidth(16)
+        lay.addWidget(self._icon)
+        self._msg = QtWidgets.QLabel()
+        self._msg.setWordWrap(True)
+        self._msg.setTextFormat(Qt.TextFormat.RichText)
+        self._msg.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(self._msg, 1)
+        self.set_message(severity, html)
+
+    def set_message(self, severity: str, html: str):
+        """Re-skin the banner to a new severity + message (re-polishes the QSS
+        so the coloured left bar updates).  Lets a single banner be reused
+        rather than rebuilt (e.g. the Preferences GPU-status banner)."""
+        sev = severity if severity in self._ICON else "info"
+        if self.property("severity") != sev:
+            self.setProperty("severity", sev)
+            self.style().unpolish(self)
+            self.style().polish(self)
+        self._icon.setText(self._ICON[sev])
+        self._icon.setStyleSheet(
+            "color: %s; font-size: 14px; font-weight: bold; "
+            "background: transparent;"
             % _THEME.get(self._ICON_KEY[sev], _THEME["ACC"]))
-        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-        icon.setFixedWidth(16)
-        lay.addWidget(icon)
-        msg = QtWidgets.QLabel(html)
-        msg.setWordWrap(True)
-        msg.setTextFormat(Qt.TextFormat.RichText)
-        msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        lay.addWidget(msg, 1)
+        self._msg.setText(html)
 
 
 class _StatusBadge(QtWidgets.QLabel):
@@ -184,10 +198,10 @@ def _step_badge(n, parent=None) -> QtWidgets.QLabel:
 
 
 def _color_chip(label: str, color: str, n_reps: int,
-                parent=None) -> QtWidgets.QFrame:
-    """A rounded group chip: a colour swatch (the group's own colour) + the
-    group label + a muted replicate-count.  Ties the centre summary back to the
-    sidebar group cards."""
+                parent=None, show_count: bool = True) -> QtWidgets.QFrame:
+    """A rounded chip: a colour swatch + a label, optionally a muted count.
+    Used both for the Compare group summary (with replicate counts) and as a
+    plain colour legend (`show_count=False`, e.g. the motion-class legend)."""
     chip = QtWidgets.QFrame(parent)
     chip.setObjectName("group_chip")
     lay = QtWidgets.QHBoxLayout(chip)
@@ -196,15 +210,17 @@ def _color_chip(label: str, color: str, n_reps: int,
     sw = QtWidgets.QLabel()
     sw.setFixedSize(11, 11)
     # Inline stylesheet wins over the global `QLabel { background: transparent }`
-    # for this specific widget, so the swatch shows the group colour.
+    # for this specific widget, so the swatch shows the supplied colour.
     sw.setStyleSheet(
         "background: %s; border-radius: 5px;" % (color or _THEME["TXT_MUTED"]))
     lay.addWidget(sw)
     name = QtWidgets.QLabel(str(label) or "Group")
     lay.addWidget(name)
-    cnt = QtWidgets.QLabel("n=%d" % int(n_reps))
-    cnt.setStyleSheet("color: %s; background: transparent;" % _THEME["TXT_MUTED"])
-    lay.addWidget(cnt)
+    if show_count:
+        cnt = QtWidgets.QLabel("n=%d" % int(n_reps))
+        cnt.setStyleSheet(
+            "color: %s; background: transparent;" % _THEME["TXT_MUTED"])
+        lay.addWidget(cnt)
     return chip
 
 

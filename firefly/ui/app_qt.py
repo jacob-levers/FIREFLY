@@ -122,7 +122,7 @@ from firefly.ui.ui_widgets import (
     _ResourceMonitor, _MassHistogram, _LiveFrameView, _TrackInspector,
     _ResultsPanel, _RoiDialog, _load_imagej_roi_polygons,
     _load_tif_mask_polygons, _load_any_roi_file, _RoiViewer, _FolderDropList,
-    _CompareGroupCard, _PreferencesDialog,
+    _CompareGroupCard, _PreferencesDialog, _AlertBanner, _StatusBadge,
 )
 # ui_helpers extracted; re-exported here.
 from firefly.ui.ui_helpers import (
@@ -359,6 +359,18 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         try:
             self._refresh_single_roi_status()
             self._refresh_batch_roi_markers()
+        except Exception:
+            pass
+        # Live "ready to analyse" pill on the Import tab — track the input
+        # fields + mode tiles, and set the initial state from restored values.
+        try:
+            self.e_file.textChanged.connect(self._refresh_import_readiness)
+            self.e_batch_folder.textChanged.connect(self._refresh_import_readiness)
+            self.r_mode_single.toggled.connect(
+                lambda *_: self._refresh_import_readiness())
+            self.r_mode_batch.toggled.connect(
+                lambda *_: self._refresh_import_readiness())
+            self._refresh_import_readiness()
         except Exception:
             pass
         # ROI viewer loading is now EXPLICIT — driven by the
@@ -1266,7 +1278,14 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self._pp_source_widget = QtWidgets.QWidget()
         src_v = QtWidgets.QVBoxLayout(self._pp_source_widget)
         src_v.setContentsMargins(0, 0, 0, 0); src_v.setSpacing(4)
-        src_v.addWidget(QtWidgets.QLabel("Source run:"))
+        _src_hdr = QtWidgets.QHBoxLayout()
+        _src_hdr.setContentsMargins(0, 0, 0, 0)
+        _src_hdr.addWidget(QtWidgets.QLabel("Source run:"))
+        _src_hdr.addStretch(1)
+        self._pp_status_badge = _StatusBadge()
+        self._pp_status_badge.set_state("muted", "No run selected")
+        _src_hdr.addWidget(self._pp_status_badge)
+        src_v.addLayout(_src_hdr)
         src_row = QtWidgets.QHBoxLayout()
         src_row.setContentsMargins(0, 0, 0, 0); src_row.setSpacing(6)
         self.e_postproc_src = QtWidgets.QLineEdit()
@@ -1279,14 +1298,13 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         src_row.addWidget(btn_pick)
         src_v.addLayout(src_row)
 
-        # ── Help text (compact — full explanation in the tooltip) ──
-        help_lbl = QtWidgets.QLabel(
-            "Draw or load a new ROI below, then click Re-run with new "
-            "ROI in the sidebar to re-link + re-analyse with the "
-            "filtered localisations. Outputs land in "
-            "<source>_postproc{N}/; the original run is untouched.")
-        help_lbl.setWordWrap(True)
-        help_lbl.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        # ── Help text — an info banner so the workflow stands out ──
+        help_lbl = _AlertBanner(
+            "info",
+            "Pick a source run, draw or load a new ROI below, then click "
+            "<b>Re-run with new ROI</b> in the sidebar to re-link + re-analyse "
+            "with the filtered localisations. Outputs land in "
+            "<i>&lt;source&gt;_postproc{N}/</i>; the original run is untouched.")
         help_lbl.setToolTip(
             "Post-processing reloads the original localisations from "
             "{stem}_localisations.csv, applies the ROI you draw below "
@@ -1337,6 +1355,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         if not d:
             return
         if not os.path.isdir(os.path.join(d, "firefly_extras")):
+            self._pp_status_badge.set_state("blocked", "Not a FIREFLY run")
             QtWidgets.QMessageBox.warning(
                 self, "Not a FIREFLY run",
                 f"{os.path.basename(d)!r} doesn't contain a "
@@ -1344,6 +1363,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 f"was produced by a FIREFLY analysis.")
             return
         self.e_postproc_src.setText(d)
+        self._pp_status_badge.set_state("ready", "Run loaded")
         # Try to point the embedded ROI viewer at the original input
         # file so the user has a real image to draw on.
         try:

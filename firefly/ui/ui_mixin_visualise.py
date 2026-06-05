@@ -4,6 +4,7 @@ import sys
 from firefly.ui.ui_helpers import (_make_napari_container_layout_opaque,
                         _hide_napari_chrome, _MOTION_ORDER)
 from firefly.analysis.fa_constants import motion_class_colors
+from firefly.ui.ui_widgets import _color_chip
 
 import os
 import numpy as np
@@ -116,10 +117,44 @@ class VisualiseMixin:
         the per-class Tracks layers and the cluster overlay."""
         return motion_class_colors(self._ws_motion_theme())
 
+    def _ws_rebuild_motion_legend(self):
+        """(Re)build the sidebar motion-class colour legend from the active
+        palette — a swatch + name per class, so the user can read which colour
+        means which motion class without opening the napari layer list."""
+        host = getattr(self, "_ws_motion_legend", None)
+        if host is None:
+            return
+        lay = host.layout()
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        pal = self._ws_motion_palette()
+        i = 0
+        for cls in _MOTION_ORDER:
+            col = pal.get(cls)
+            if not col:
+                continue
+            lay.addWidget(_color_chip(cls, col, 0, show_count=False),
+                          i // 2, i % 2, Qt.AlignmentFlag.AlignLeft)
+            i += 1
+
+    def _ws_set_cluster_banner(self, n_clu):
+        """Show the 'no clusters found' warning banner only when a clustering
+        run produced zero clusters."""
+        banner = getattr(self, "_ws_cluster_banner", None)
+        if banner is not None:
+            banner.setVisible(int(n_clu) == 0)
+
     def _ws_recolour_motion_layers(self, *_args):
         """Live-recolour the per-class Tracks layers (and the motion-coloured
         cluster overlay) when the 'Motion colours' selector changes — in
         place, without a full layer rebuild, so there's no flicker."""
+        # The legend reflects the selected palette regardless of whether a
+        # viewer/tracks are loaded, so refresh it first.
+        try:    self._ws_rebuild_motion_legend()
+        except Exception: pass
         v = getattr(self, "_napari_viewer", None)
         if v is None:
             return
@@ -633,6 +668,7 @@ class VisualiseMixin:
         self._ws_cluster_status.setText(
             f"{n_clu:,} clusters  |  {n_noise:,} noise locs  "
             f"({stem})")
+        self._ws_set_cluster_banner(n_clu)
 
     def _ws_render_cluster_layer(self):
         """(Re-)create the napari Points layer from the current
@@ -859,6 +895,7 @@ class VisualiseMixin:
         self._ws_cluster_status.setText(
             f"{n_clu:,} clusters  |  {n_noise:,} noise locs  "
             f"(eps={eps_nm:.0f} nm, min={min_samples})")
+        self._ws_set_cluster_banner(n_clu)
 
     def _ws_load_run_folder(self, run_dir: str):
         """Load a complete FIREFLY analysis run:  finds the stack via the
