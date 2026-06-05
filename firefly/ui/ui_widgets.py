@@ -3146,6 +3146,36 @@ class _RoiViewer(QtWidgets.QWidget):
         self._points_layer = None
 
 
+class _NoHScrollArea(QtWidgets.QScrollArea):
+    """A vertical-only scroll area: the inner widget is clamped to the viewport
+    width so the content can never scroll or drag sideways.
+
+    Setting `setHorizontalScrollBarPolicy(AlwaysOff)` only HIDES the bar — a
+    trackpad two-finger swipe still scrolls horizontally whenever the content's
+    minimum width exceeds the viewport (e.g. the Compare sidebar's group cards).
+    Clamping the inner widget's maximum width to the viewport removes the
+    overflow entirely; children compress to fit instead."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def _clamp(self):
+        w = self.widget()
+        if w is not None:
+            w.setMaximumWidth(self.viewport().width())
+
+    def setWidget(self, w):
+        super().setWidget(w)
+        self._clamp()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._clamp()
+
+
 class _FolderDropList(QtWidgets.QListWidget):
     """QListWidget that accepts dropped folders (Qt-native, no tkinterdnd2).
 
@@ -3347,17 +3377,23 @@ class _CompareGroupCard(QtWidgets.QGroupBox):
         self.lst_folders.folders_dropped.connect(lambda _: self.changed.emit())
         v.addWidget(self.lst_folders, 1)
 
-        # Add / Remove buttons
+        # Add / Remove buttons — short labels so the row fits the narrow
+        # sidebar without forcing the card wider than the viewport.
         btn_row = QtWidgets.QHBoxLayout()
-        self.btn_add = QtWidgets.QPushButton("+ Add folder")
+        btn_row.setSpacing(4)
+        self.btn_add = QtWidgets.QPushButton("+ Add")
+        self.btn_add.setToolTip("Add a folder to this group.")
         self.btn_add.clicked.connect(self._on_add_folder)
-        self.btn_remove = QtWidgets.QPushButton("− Remove")
+        self.btn_remove = QtWidgets.QPushButton("Remove")
+        self.btn_remove.setToolTip("Remove the selected folder(s).")
         self.btn_remove.clicked.connect(self._on_remove_selected)
         self.btn_clear = QtWidgets.QPushButton("Clear")
+        self.btn_clear.setToolTip("Remove all folders from this group.")
         self.btn_clear.clicked.connect(self._on_clear)
-        btn_row.addWidget(self.btn_add)
-        btn_row.addWidget(self.btn_remove)
-        btn_row.addWidget(self.btn_clear)
+        for _b in (self.btn_add, self.btn_remove, self.btn_clear):
+            _b.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum,
+                             QtWidgets.QSizePolicy.Policy.Fixed)
+            btn_row.addWidget(_b)
         btn_row.addStretch(1)
         self.lbl_count = QtWidgets.QLabel("0 folders")
         btn_row.addWidget(self.lbl_count)

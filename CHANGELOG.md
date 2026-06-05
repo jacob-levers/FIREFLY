@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.20.3
+
+- **Compare sidebar can no longer be dragged sideways (for real this time).**
+  Hiding the horizontal scrollbar wasn't enough — a trackpad swipe still scrolled
+  the hidden overflow because the group cards were a touch wider than the panel.
+  The Compare sidebar now uses a vertical-only scroll area that clamps its content
+  to the panel width, and the group-card buttons use shorter labels (+ Add /
+  Remove / Clear) so nothing needs to overflow. The content now compresses to fit
+  instead of scrolling.
+
 ## v2.20.2
 
 ### Three UI fixes

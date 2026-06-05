@@ -32,7 +32,7 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
                         _load_any_roi_file, _info_icon, _InfoIcon,
                         _label_with_info, _AlertBanner, _StatusBadge,
                         _step_badge, _color_chip, _DecisionDiagram,
-                        _PipelineDiagram)
+                        _PipelineDiagram, _NoHScrollArea)
 
 
 class BuildMixin:
@@ -1155,10 +1155,10 @@ class BuildMixin:
         compare_page = QtWidgets.QWidget()
         cp_outer = QtWidgets.QVBoxLayout(compare_page)
         cp_outer.setContentsMargins(0, 0, 0, 0); cp_outer.setSpacing(0)
-        cp_scroll = QtWidgets.QScrollArea()
-        cp_scroll.setWidgetResizable(True)
-        cp_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Vertical-only scroll area — clamps its content to the viewport width
+        # so the group cards can't be dragged sideways (the bug AlwaysOff alone
+        # didn't stop, since trackpad swipes still scroll hidden overflow).
+        cp_scroll = _NoHScrollArea()
         cp_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         cp_inner = QtWidgets.QWidget()
         cp_v = QtWidgets.QVBoxLayout(cp_inner)
