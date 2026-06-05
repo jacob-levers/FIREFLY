@@ -809,7 +809,23 @@ class _CollapsibleSection(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed)
         self._header.toggled.connect(self._on_toggled)
-        outer.addWidget(self._header)
+        # Optional status chip on the right of the header (see set_badge), so a
+        # section's active state reads even when collapsed.  Hidden by default →
+        # zero width → the header bar stays full-width for sections that never
+        # set a badge.  Placed BESIDE the toolbutton (not over it) so header
+        # clicks still toggle the section.
+        self._badge = QtWidgets.QLabel()
+        self._badge.setObjectName("section_badge")
+        self._badge.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                                  QtWidgets.QSizePolicy.Policy.Fixed)
+        self._badge.hide()
+        _hrow = QtWidgets.QHBoxLayout()
+        _hrow.setContentsMargins(0, 0, 0, 0)
+        _hrow.setSpacing(4)
+        _hrow.addWidget(self._header, 1)
+        _hrow.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignVCenter)
+        outer.addLayout(_hrow)
 
         self._content = QtWidgets.QFrame()
         self._content.setObjectName("section_content")
@@ -829,6 +845,26 @@ class _CollapsibleSection(QtWidgets.QWidget):
     def set_expanded(self, expanded: bool):
         if self._header.isChecked() != expanded:
             self._header.setChecked(expanded)
+
+    def set_badge(self, text: str, kind: str | None = None):
+        """Show a small status chip on the header right (e.g. a section's active
+        config: 'auto', 'none', 'on').  `kind="active"` paints it accent-filled,
+        otherwise a muted outline.  Empty text hides it.  Inline-styled (a global
+        transparent-QLabel rule would otherwise beat an app-level background)."""
+        if not text:
+            self._badge.hide()
+            return
+        if kind in ("active", "on"):
+            bg, fg, border = _THEME["ACC"], _THEME["ACC_FG"], "none"
+        else:
+            bg, fg, border = (_THEME["PANEL_ALT"], _THEME["TXT_MUTED"],
+                              "1px solid %s" % _THEME["BORDER"])
+        self._badge.setStyleSheet(
+            "QLabel#section_badge { background-color: %s; color: %s; "
+            "border: %s; border-radius: 8px; padding: 1px 8px; "
+            "font-size: 10px; font-weight: 600; }" % (bg, fg, border))
+        self._badge.setText(text)
+        self._badge.show()
 
 
 class _ResourceMonitor(QtWidgets.QFrame):

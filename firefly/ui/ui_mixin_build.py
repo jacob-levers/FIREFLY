@@ -980,6 +980,8 @@ class BuildMixin:
         # Index every section + row for the search box, and collapse the
         # advanced sections by default so the sidebar opens scannable.
         self._build_param_registry(layout)
+        # Status chips on the section headers (active config at a glance).
+        self._wire_sidebar_chips()
         layout.addStretch(1)
 
     def _build_param_registry(self, layout):
@@ -1045,6 +1047,79 @@ class BuildMixin:
                 sec.setVisible(show)
                 if show:
                     sec.set_expanded(True)
+
+    # ── Section status chips ────────────────────────────────────────────────
+    def _sec_by_title(self, title):
+        return next((e["sec"] for e in getattr(self, "_sidebar_sections", [])
+                     if e["title"] == title), None)
+
+    def _wire_sidebar_chips(self):
+        """Show a small status chip on the Detection / ROI / Diffusion / Drift
+        section headers so the active config reads at a glance — even when the
+        section is collapsed.  Updates live from the relevant controls (and
+        automatically when a preset is applied, since that fires the signals)."""
+        self._sec_detection = self._sec_by_title("Detection")
+        self._sec_roi       = self._sec_by_title("ROI")
+        self._sec_diffusion = self._sec_by_title(
+            "Diffusion & motion classification")
+        self._sec_drift     = self._sec_by_title("Drift correction")
+        try:
+            self.c_auto_minmass.toggled.connect(
+                lambda *_: self._refresh_minmass_chip())
+            self.s_minmass.valueChanged.connect(
+                lambda *_: self._refresh_minmass_chip())
+            self.c_roi_mode.currentTextChanged.connect(
+                lambda *_: self._refresh_roi_chip())
+            self.c_filter_d_enabled.toggled.connect(
+                lambda *_: self._refresh_diffusion_chip())
+            self.c_drift_correct.toggled.connect(
+                lambda *_: self._refresh_drift_chip())
+        except Exception:
+            pass
+        # Initial state (before settings-restore fires the signals).
+        self._refresh_minmass_chip()
+        self._refresh_roi_chip()
+        self._refresh_diffusion_chip()
+        self._refresh_drift_chip()
+
+    def _refresh_minmass_chip(self):
+        sec = getattr(self, "_sec_detection", None)
+        if sec is None:
+            return
+        if self.c_auto_minmass.isChecked():
+            sec.set_badge("auto", "active")
+        else:
+            sec.set_badge("manual", "muted")
+
+    def _refresh_roi_chip(self):
+        sec = getattr(self, "_sec_roi", None)
+        if sec is None:
+            return
+        mode = self.c_roi_mode.currentText()
+        if mode == "None":
+            sec.set_badge("none", "muted")
+        else:
+            sec.set_badge(mode.lower(), "active")
+
+    def _refresh_diffusion_chip(self):
+        sec = getattr(self, "_sec_diffusion", None)
+        if sec is None:
+            return
+        # Only flag the optional D-filter when it's ON (off is the default).
+        if self.c_filter_d_enabled.isChecked():
+            sec.set_badge("D-filter on", "active")
+        else:
+            sec.set_badge("")
+
+    def _refresh_drift_chip(self):
+        sec = getattr(self, "_sec_drift", None)
+        if sec is None:
+            return
+        # Drift correction off is the default → show the chip only when ON.
+        if self.c_drift_correct.isChecked():
+            sec.set_badge("RCC on", "active")
+        else:
+            sec.set_badge("")
 
     def _refresh_cuda_perf_ui(self):
         """Performance-section GPU control state.  Show the Set-up button only

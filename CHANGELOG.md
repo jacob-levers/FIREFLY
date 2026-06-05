@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.22.0
+
+### Live state chips on the Analysis sections
+
+Section headers now carry a small status chip so the active config reads at a
+glance — even when the section is collapsed:
+
+- **Detection** → `auto` / `manual` (minmass mode)
+- **ROI** → `none` or the active mode (e.g. `auto threshold`)
+- **Diffusion** → `D-filter on` (only when the optional D-range filter is enabled)
+- **Drift correction** → `RCC on` (only when drift correction is enabled)
+
+The chips update live from the controls and reflect a preset / restored settings
+automatically. (`_CollapsibleSection` gained a reusable `set_badge()`.)
+
 ## v2.21.0
 
 ### A calmer, searchable Analysis sidebar
