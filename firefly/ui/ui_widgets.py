@@ -3161,6 +3161,17 @@ class _FolderDropList(QtWidgets.QListWidget):
         self.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setAlternatingRowColors(True)
+        # Keep the list inside the narrow sidebar: never grow a horizontal
+        # scrollbar (which made the whole card draggable left/right), and elide
+        # long folder basenames with "…" instead.  The full path is still in
+        # each item's UserRole + tooltip.
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.setWordWrap(False)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                           QtWidgets.QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
         # Subtle styling cue that this is a drop target
         self.setStyleSheet(
             "QListWidget { border: 1px dashed #777; border-radius: 4px; "

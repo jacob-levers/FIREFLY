@@ -1268,7 +1268,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         tab = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(tab)
         v.setContentsMargins(8, 8, 8, 8)
-        v.setSpacing(8)
+        v.setSpacing(12)
 
         # ── Source-run picker (re-parented into the sidebar) ────────
         # The picker widgets exist here so the existing slots
@@ -1298,13 +1298,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         src_row.addWidget(btn_pick)
         src_v.addLayout(src_row)
 
-        # ── Help text — an info banner so the workflow stands out ──
+        # ── Help text — a short info banner; the detail is in the tooltip ──
         help_lbl = _AlertBanner(
             "info",
             "Pick a source run, draw or load a new ROI below, then click "
-            "<b>Re-run with new ROI</b> in the sidebar to re-link + re-analyse "
-            "with the filtered localisations. Outputs land in "
-            "<i>&lt;source&gt;_postproc{N}/</i>; the original run is untouched.")
+            "<b>Re-run with new ROI</b>. Results are written to a new "
+            "post-processing folder — your original run is untouched.")
         help_lbl.setToolTip(
             "Post-processing reloads the original localisations from "
             "{stem}_localisations.csv, applies the ROI you draw below "

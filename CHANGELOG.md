@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.20.2
+
+### Three UI fixes
+
+- **Viewer tracks no longer dim when only one motion class is shown.** The
+  per-class napari Tracks layers were created with `opaque` blending, whose depth
+  test darkened thin antialiased lines on the black canvas until a second layer
+  was toggled on. They now use napari's default `additive` blending, so a single
+  visible class renders at full brightness.
+- **Compare sidebar no longer drags sideways.** The group cards' folder list
+  could grow a horizontal scrollbar (making the card draggable left/right) when a
+  folder basename was long. It now suppresses the horizontal scrollbar and elides
+  long names with "…" (the full path is still in the row's tooltip).
+- **Re-process help text tightened.** The info banner is shorter and clearer (the
+  output-folder detail moved to its tooltip), with a bit more breathing room above
+  the preview viewer.
+
 ## v2.20.1
 
 ### Modernised the post-run results readout

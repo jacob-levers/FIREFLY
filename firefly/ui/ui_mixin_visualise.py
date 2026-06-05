@@ -442,10 +442,15 @@ class VisualiseMixin:
 
                 layer_name = f"{cls} Tracks"
                 try:
+                    # `additive` is napari's default Tracks blending — it
+                    # disables depth testing, so a SINGLE visible class layer
+                    # renders at full brightness instead of the dimming we saw
+                    # with `opaque` (whose depth test darkened thin antialiased
+                    # lines on the black canvas until a second layer was shown).
                     layer = v.add_tracks(
                         data,
                         name=layer_name,
-                        blending="opaque",
+                        blending="additive",
                     )
                 except Exception:
                     import traceback as _tb, sys as _sys
