@@ -252,10 +252,106 @@ STATS_GLOSSARY = {
 }
 
 
+# Plain-English definitions for the jargon-heavy ANALYSIS-tab parameters,
+# surfaced by the same ⓘ info icons (ui_widgets._info_icon).  Kept here next to
+# STATS_GLOSSARY so a single glossary_def() lookup resolves both.  Wording is
+# distilled from the controls' own tooltips.
+ANALYSIS_GLOSSARY = {
+    "pixel size":
+        "The physical size of one camera pixel, in micrometres — it sets the "
+        "length scale for every distance and for the diffusion coefficient.",
+    "frame interval":
+        "The time between consecutive frames, in seconds — it sets the time "
+        "axis of the MSD curve and the units of D.",
+    "channel":
+        "Which channel of a multi-channel CZI image to load and analyse.",
+    "background method":
+        "How the slowly-varying background is removed before spot detection "
+        "(e.g. a uniform/rolling-ball filter) so real PSFs stand out.",
+    "background radius":
+        "The size (px) of the background-smoothing window — roughly a few times "
+        "the spot diameter; too small eats real signal, too large leaves haze.",
+    "diameter":
+        "The expected spot size in pixels (an odd number) — it should match "
+        "your point-spread function so the detector finds true emitters.",
+    "minmass":
+        "The minimum integrated brightness a detection must have to be kept — "
+        "the main signal-vs-noise cut. Auto picks it from the data per file.",
+    "sensitivity":
+        "Nudges the automatic threshold stricter (fewer, cleaner detections) or "
+        "more lenient (more detections, more noise).",
+    "false-track rate":
+        "Caps the measured fraction of spurious short fragments the automatic "
+        "threshold is allowed to leave behind.",
+    "search range":
+        "The maximum distance (px) a particle may move between frames for the "
+        "linker to connect it into a track — too large invites mis-links.",
+    "memory":
+        "How many frames a particle may disappear (blink) and still be re-linked "
+        "to the same track.",
+    "min track length":
+        "Discard tracks shorter than this many frames — too short to fit a "
+        "reliable diffusion model.",
+    "max track length":
+        "Optionally cap track length (0 = off) to drop stuck or aggregated "
+        "particles that linger in one spot.",
+    "max lag time":
+        "The largest time lag (in frames) used when building the mean-squared-"
+        "displacement curve.",
+    "n fit lags":
+        "How many of the first MSD points are used to fit the diffusion "
+        "coefficient — fewer points emphasise short-time (local) diffusion.",
+    "alpha threshold":
+        "The anomalous exponent α from MSD ∝ τ^α; these cut-offs label each "
+        "track Immobile / Confined / Brownian (α≈1) / Directed (α>1).",
+    "mobile-D threshold":
+        "The diffusion coefficient below which a track is treated as immobile.",
+    "JDD components":
+        "How many populations are fit to the jump-distance distribution — often "
+        "2 (a slow and a fast pool) to resolve mixed mobility.",
+    "filter by D":
+        "Keep only tracks whose diffusion coefficient falls within a chosen "
+        "range — useful for isolating one mobility population.",
+    "ROI mode":
+        "How the region of interest is chosen: none, automatic (thresholded "
+        "cell footprint), a manual threshold, or drawn polygons.",
+    "ROI auto method":
+        "The thresholding rule (Otsu, Li, …) used to auto-detect the cell "
+        "footprint from the density image.",
+    "ROI threshold":
+        "The manual intensity cut-off separating cell from background when ROI "
+        "mode is set to manual.",
+    "ROI projection":
+        "Which density image the ROI is computed from — the max projection or a "
+        "blink-density map.",
+    "background sigma":
+        "The smoothing scale (σ) used to flatten the background before the "
+        "automatic ROI threshold is applied.",
+    "RCC drift":
+        "Redundant Cross-Correlation drift correction — aligns sub-movies "
+        "against each other to cancel stage/sample drift over the acquisition.",
+    "drift segment":
+        "How many frames per block when estimating drift — finer blocks capture "
+        "faster drift but are noisier.",
+    "DBSCAN eps":
+        "How close two localisations must be (in nm) to count as neighbours when "
+        "clustering — larger merges nearby clusters, smaller splits them.",
+    "min samples":
+        "How many neighbours within eps are needed to seed a cluster — higher "
+        "gives fewer, denser clusters and more points labelled as noise.",
+    "detection backend":
+        "Which engine runs spot detection — the Trackpy CPU path or the "
+        "GPU-accelerated Torch path (when available).",
+    "chunk size":
+        "How many frames are processed per batch — trades memory use against "
+        "per-batch overhead.",
+}
+
+
 def glossary_def(term):
-    """Return the plain-English definition for a glossary term, or '' if the
-    term isn't in `STATS_GLOSSARY`."""
-    return STATS_GLOSSARY.get(term, "")
+    """Return the plain-English definition for a glossary term (stats OR
+    analysis), or '' if the term isn't known."""
+    return STATS_GLOSSARY.get(term) or ANALYSIS_GLOSSARY.get(term, "")
 
 
 def config_summary_rows(cfg):

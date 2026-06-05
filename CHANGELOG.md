@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.17.0
+
+### Plain-English ⓘ explanations for every Analysis parameter
+
+The Analysis sidebar is powerful but jargon-heavy. Every technical parameter now
+carries a small **ⓘ icon** whose tooltip gives a one-sentence, plain-English
+definition — the same affordance the Compare tab's statistics wizard uses.
+
+- **~30 parameters explained**: diameter, minmass (+ sensitivity, false-track
+  rate), background method/radius, search range, memory, min/max track length,
+  max lag time, n-fit lags, the α (anomalous-exponent) thresholds, mobile-D
+  threshold, JDD components, filter-by-D, ROI mode/auto-method/projection/
+  threshold/background-σ, RCC drift + segment size, DBSCAN eps + min-samples,
+  detection backend, chunk size, pixel size, frame interval, channel.
+- Backed by a new `ANALYSIS_GLOSSARY` that the shared `glossary_def()` lookup
+  resolves alongside the statistics glossary, so the same ⓘ widget works
+  everywhere. The detailed hover tooltips are unchanged — the ⓘ is additive.
+
+No behaviour or settings change; the full analysis suite stays green.
+
 ## v2.16.1
 
 - **Decision diagram: arrow no longer touches the result box.** The final arrow

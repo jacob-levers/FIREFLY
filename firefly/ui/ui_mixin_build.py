@@ -427,7 +427,7 @@ class BuildMixin:
             tip="Physical pixel size in µm. Used to convert px → µm for D, MSD, etc.")
         row.addWidget(self.c_override_px); row.addWidget(self.s_pixel_size, 1)
         wpx = QtWidgets.QWidget(); wpx.setLayout(row)
-        gl.addRow("Pixel size (µm)", wpx)
+        gl.addRow(_label_with_info("Pixel size (µm)", "pixel size"), wpx)
 
         row = QtWidgets.QHBoxLayout()
         self.c_override_fi = QtWidgets.QCheckBox("Override")
@@ -437,11 +437,11 @@ class BuildMixin:
             tip="Time between frames in seconds. Used for diffusion coefficient units.")
         row.addWidget(self.c_override_fi); row.addWidget(self.s_frame_interval, 1)
         wfi = QtWidgets.QWidget(); wfi.setLayout(row)
-        gl.addRow("Frame interval (s)", wfi)
+        gl.addRow(_label_with_info("Frame interval (s)", "frame interval"), wfi)
 
         self.s_channel = self._spin_int(0, 0, 8,
             tip="Channel index to load (CZI files only). Most single-channel data uses 0.")
-        gl.addRow("Channel (CZI)", self.s_channel)
+        gl.addRow(_label_with_info("Channel (CZI)", "channel"), self.s_channel)
         layout.addWidget(sec)
 
         # ── Preprocessing ─────────────────────────────────────────────────
@@ -453,11 +453,11 @@ class BuildMixin:
             "Method for subtracting local background before detection.\n"
             "• Uniform Filter — fast box-mean subtraction. Good default.\n"
             "• Rolling Ball — slower but better on uneven illumination.")
-        gl.addRow("Background method", self.c_bg_method)
+        gl.addRow(_label_with_info("Background method", "background method"), self.c_bg_method)
         self.s_bg_radius = self._spin_int(10, 3, 200,
             tip="Radius (px) of the local-mean window for background subtraction.\n"
                 "Use ~3× spot diameter for diffraction-limited spots.")
-        gl.addRow("Background radius (px)", self.s_bg_radius)
+        gl.addRow(_label_with_info("Background radius (px)", "background radius"), self.s_bg_radius)
         layout.addWidget(sec)
 
         # ── Detection ─────────────────────────────────────────────────────
@@ -467,7 +467,7 @@ class BuildMixin:
             tip="Expected spot diameter in pixels. Must be ODD (the GUI enforces this).\n"
                 "Use ~2× the diffraction-limited PSF FWHM. Too small misses spots; "
                 "too big merges adjacent ones.")
-        gl.addRow("Diameter (px, odd)", self.s_diameter)
+        gl.addRow(_label_with_info("Diameter (px, odd)", "diameter"), self.s_diameter)
 
         # Auto minmass: when checked, the threshold is computed PER FILE from
         # the candidate spot-mass distribution (a 2-component Gaussian mixture
@@ -604,7 +604,7 @@ class BuildMixin:
         frow.addWidget(_ftr_lbl)
         frow.addWidget(self.s_minmass_false_rate, 1)
         vmm.addLayout(frow)
-        gl.addRow("Threshold", wmm)
+        gl.addRow(_label_with_info("Threshold", "minmass"), wmm)
 
         # Apply the initial enabled/disabled state (auto is on by default).
         _on_auto_toggled(self.c_auto_minmass.isChecked())
@@ -631,19 +631,19 @@ class BuildMixin:
             tip="Maximum pixel distance a particle can move between consecutive\n"
                 "frames. Calibrate from your data: bigger search_range tolerates\n"
                 "fast motion but increases linker subnetwork-explosion risk.")
-        gl.addRow("Search range (px)", self.s_search_range)
+        gl.addRow(_label_with_info("Search range (px)", "search range"), self.s_search_range)
         self.s_memory = self._spin_int(3, 0, 10,
             tip="Number of frames a track can disappear and still be re-linked.\n"
                 "0 = strict (no gaps). 3 is typical for blinking PALM probes.")
-        gl.addRow("Memory (frames)", self.s_memory)
+        gl.addRow(_label_with_info("Memory (frames)", "memory"), self.s_memory)
         self.s_min_track_len = self._spin_int(8, 3, 50,
             tip="Tracks shorter than this are discarded. 8 is the de-facto minimum\n"
                 "for reliable MSD fits.")
-        gl.addRow("Min track length", self.s_min_track_len)
+        gl.addRow(_label_with_info("Min track length", "min track length"), self.s_min_track_len)
         self.s_max_track_len = self._spin_int(0, 0, 100000,
             tip="0 = disabled. If set, drops tracks longer than this. Useful for\n"
                 "removing stuck/aggregated particles that masquerade as long tracks.")
-        gl.addRow("Max track length (0 = off)", self.s_max_track_len)
+        gl.addRow(_label_with_info("Max track length (0 = off)", "max track length"), self.s_max_track_len)
         layout.addWidget(sec)
 
         # ── Diffusion fit + motion classification ─────────────────────────
@@ -656,7 +656,7 @@ class BuildMixin:
         self.lbl_max_lag_sec.setStyleSheet("color: gray;")
         _row.addWidget(self.s_max_lagtime, 1); _row.addWidget(self.lbl_max_lag_sec)
         _w = QtWidgets.QWidget(); _w.setLayout(_row)
-        gl.addRow("Max lag time (frames)", _w)
+        gl.addRow(_label_with_info("Max lag time (frames)", "max lag time"), _w)
 
         self.s_n_fit = self._spin_int(5, 2, 20,
             tip="Number of initial lag times used to fit D and α.\n"
@@ -668,7 +668,7 @@ class BuildMixin:
         self.lbl_n_fit_sec.setStyleSheet("color: gray;")
         _row2.addWidget(self.s_n_fit, 1); _row2.addWidget(self.lbl_n_fit_sec)
         _w2 = QtWidgets.QWidget(); _w2.setLayout(_row2)
-        gl.addRow("N fit lags (frames)", _w2)
+        gl.addRow(_label_with_info("N fit lags (frames)", "n fit lags"), _w2)
 
         # Live seconds readout: lag_frames × frame_interval.  The analysis works
         # in frames, but labs usually express the MSD fit window in seconds
@@ -690,21 +690,21 @@ class BuildMixin:
         _update_lag_seconds()
         self.s_alpha_immobile = self._spin_dbl(0.5, 0.0, 2.0, 0.01, decimals=2,
             tip="α below this → 'Immobile'. Default 0.5 from the SPT literature.")
-        gl.addRow("α  immobile threshold", self.s_alpha_immobile)
+        gl.addRow(_label_with_info("α  immobile threshold", "alpha threshold"), self.s_alpha_immobile)
         self.s_alpha_confined = self._spin_dbl(0.9, 0.0, 2.0, 0.01, decimals=2,
             tip="α between immobile and this → 'Confined'.")
-        gl.addRow("α  confined threshold", self.s_alpha_confined)
+        gl.addRow(_label_with_info("α  confined threshold", "alpha threshold"), self.s_alpha_confined)
         self.s_alpha_directed = self._spin_dbl(1.1, 0.0, 2.0, 0.01, decimals=2,
             tip="α above this → 'Directed'. Between confined and directed → 'Brownian'.")
-        gl.addRow("α  directed threshold", self.s_alpha_directed)
+        gl.addRow(_label_with_info("α  directed threshold", "alpha threshold"), self.s_alpha_directed)
         self.s_mobile_d_threshold = self._spin_dbl(0.05, 0.0, 10.0, 0.01, decimals=3,
             tip="Diffusion coefficient threshold separating 'mobile' from\n"
                 "'immobile' tracks for the mobile-fraction-over-time panel.")
-        gl.addRow("Mobile D threshold (µm²/s)", self.s_mobile_d_threshold)
+        gl.addRow(_label_with_info("Mobile D threshold (µm²/s)", "mobile-D threshold"), self.s_mobile_d_threshold)
         self.s_jdd_components = self._spin_int(2, 1, 4,
             tip="Number of exponential components in the Jump Distance Distribution\n"
                 "fit. 2 is typical (mobile + immobile populations).")
-        gl.addRow("JDD components", self.s_jdd_components)
+        gl.addRow(_label_with_info("JDD components", "JDD components"), self.s_jdd_components)
 
         # Filter-by-D toggle + range
         self.c_filter_d_enabled = QtWidgets.QCheckBox("Filter tracks by D")
@@ -723,8 +723,8 @@ class BuildMixin:
         self.c_filter_d_enabled.toggled.connect(
             lambda checked: (self.s_filter_d_min.setEnabled(checked),
                               self.s_filter_d_max.setEnabled(checked)))
-        gl.addRow("  D min (µm²/s)", self.s_filter_d_min)
-        gl.addRow("  D max (µm²/s)", self.s_filter_d_max)
+        gl.addRow(_label_with_info("  D min (µm²/s)", "filter by D"), self.s_filter_d_min)
+        gl.addRow(_label_with_info("  D max (µm²/s)", "filter by D"), self.s_filter_d_max)
         layout.addWidget(sec)
 
         # ── ROI ───────────────────────────────────────────────────────────
@@ -753,13 +753,13 @@ class BuildMixin:
             "  a polygon ROI, so a batch reuses ROIs drawn in ImageJ without\n"
             "  loading each by hand.  Files with no sibling ROI fall back to\n"
             "  the whole image (logged).")
-        gl.addRow("Mode", self.c_roi_mode)
+        gl.addRow(_label_with_info("Mode", "ROI mode"), self.c_roi_mode)
         self.c_roi_auto_method = _QuietComboBox()
         self.c_roi_auto_method.addItems(["Li", "Otsu", "Triangle", "Mean"])
         self.c_roi_auto_method.setToolTip(
             "Auto-thresholding method (from scikit-image).  Li is robust for\n"
             "low-contrast SMLM data; Otsu for bimodal histograms.")
-        gl.addRow("Auto method", self.c_roi_auto_method)
+        gl.addRow(_label_with_info("Auto method", "ROI auto method"), self.c_roi_auto_method)
         self.s_roi_threshold = self._spin_dbl(0.08, 0.0, 1.0, 0.005, decimals=3,
             tip="Manual threshold on the normalised projection [0, 1].\n"
                 "Drag the slider below to sweep — the green mask overlay in\n"
@@ -795,7 +795,7 @@ class BuildMixin:
         vrt.setSpacing(4)
         vrt.addWidget(self.s_roi_threshold)
         vrt.addWidget(self.sld_roi_threshold)
-        gl.addRow("Manual threshold", wrt)
+        gl.addRow(_label_with_info("Manual threshold", "ROI threshold"), wrt)
         self.c_roi_mask_mode = _QuietComboBox()
         self.c_roi_mask_mode.addItems(["Max", "Blink density", "Mean", "Sum"])
         self.c_roi_mask_mode.setCurrentText("Max")
@@ -812,7 +812,7 @@ class BuildMixin:
             "NB: the analysis backend currently uses Mean regardless —\n"
             "this control is for choosing where to draw the ROI mask\n"
             "in the preview viewer.")
-        gl.addRow("Projection for ROI", self.c_roi_mask_mode)
+        gl.addRow(_label_with_info("Projection for ROI", "ROI projection"), self.c_roi_mask_mode)
 
         # Background-suppression scale (DoG σ_bg).  Subtracts a heavily-
         # blurred copy of the projection from a lightly-blurred copy so
@@ -862,7 +862,7 @@ class BuildMixin:
         vbg.setSpacing(4)
         vbg.addWidget(self.s_roi_bg_sigma)
         vbg.addWidget(self.sld_roi_bg_sigma)
-        gl.addRow("Background scale σ", wbg)
+        gl.addRow(_label_with_info("Background scale σ", "background sigma"), wbg)
 
         # (ImageJ ROI auto-pairing is now the "ImageJ ROI" entry in the Mode
         # dropdown above — it is a ROI source, not a global toggle.)
@@ -899,7 +899,7 @@ class BuildMixin:
         self.s_drift_segment = self._spin_int(500, 50, 5000, step=50,
             tip="Frames per RCC segment. Smaller = finer drift tracking but\n"
                 "noisier. 500 is a reasonable default for 4000+ frame movies.")
-        gl.addRow("Segment size (frames)", self.s_drift_segment)
+        gl.addRow(_label_with_info("Segment size (frames)", "drift segment"), self.s_drift_segment)
         layout.addWidget(sec)
 
         # ── Clustering ────────────────────────────────────────────────────
@@ -908,11 +908,11 @@ class BuildMixin:
         self.s_cluster_eps_nm = self._spin_dbl(50.0, 5.0, 1000.0, 5.0, decimals=1,
             tip="DBSCAN neighbourhood radius (nm). Two localisations are in the\n"
                 "same cluster if they're within this distance.")
-        gl.addRow("eps (nm)", self.s_cluster_eps_nm)
+        gl.addRow(_label_with_info("eps (nm)", "DBSCAN eps"), self.s_cluster_eps_nm)
         self.s_cluster_min_samples = self._spin_int(10, 2, 100,
             tip="Minimum localisations to form a DBSCAN cluster. Lower = more\n"
                 "clusters detected but noisier; higher = stricter.")
-        gl.addRow("min samples", self.s_cluster_min_samples)
+        gl.addRow(_label_with_info("min samples", "min samples"), self.s_cluster_min_samples)
         layout.addWidget(sec)
 
         # ── Performance ───────────────────────────────────────────────────
@@ -936,7 +936,7 @@ class BuildMixin:
             "                        allocator issues at very low minmass.\n"
             "• Torch — NVIDIA CUDA — force NVIDIA GPU.\n"
             "• Torch — CPU         — force PyTorch on CPU (for benchmarking).")
-        gl.addRow("Detection backend", self.c_backend)
+        gl.addRow(_label_with_info("Detection backend", "detection backend"), self.c_backend)
         self.s_workers = self._spin_int(N_CPUS, 1, N_CPUS,
             tip="Parallel CPU workers for the trackpy backend's multiprocessing\n"
                 "pool and the MSD fitting thread pool.  Default = all cores.")
@@ -945,7 +945,7 @@ class BuildMixin:
             tip="Frames per processing chunk. Bigger = less per-chunk overhead\n"
                 "(esp. on GPU) but more RAM. 500 is balanced; tune up if your\n"
                 "stack and free RAM are large.")
-        gl.addRow("Chunk size (frames)", self.s_chunk_size)
+        gl.addRow(_label_with_info("Chunk size (frames)", "chunk size"), self.s_chunk_size)
 
         # GPU-acceleration entry point — Windows only.  When CUDA is NOT
         # installed we show the Set-up button right here, where the user picks
