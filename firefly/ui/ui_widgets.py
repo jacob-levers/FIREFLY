@@ -81,18 +81,24 @@ def _info_icon(term: str, parent=None) -> _InfoIcon:
     return _InfoIcon(term, parent)
 
 
-def _label_with_info(text: str, term: str, parent=None) -> QtWidgets.QWidget:
-    """Composite "<text> ⓘ" widget for QFormLayout label cells / section
-    headers: a plain label followed by an info icon for `term`.  Falls back to
-    a bare label when the term has no glossary entry."""
-    w = QtWidgets.QWidget(parent)
-    lay = QtWidgets.QHBoxLayout(w)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(4)
-    lay.addWidget(QtWidgets.QLabel(text))
-    lay.addWidget(_InfoIcon(term, w))
-    lay.addStretch(1)
-    return w
+def _label_with_info(text: str, term: str, parent=None) -> QtWidgets.QLabel:
+    """A form-row label whose plain-English definition appears when you HOVER
+    the label text — no separate ⓘ icon (per user preference, the icon is gone
+    and the text itself is the affordance).
+
+    The definition comes from `glossary_def(term)`.  When the term has no entry
+    the label is just plain text with no tooltip.  A 'help' cursor on hover is
+    the only (cursor-only, no visual clutter) hint that an explanation exists."""
+    lbl = QtWidgets.QLabel(text, parent)
+    definition = glossary_def(term)
+    if definition:
+        lbl.setToolTip(f"<b>{text.strip()}</b><br>{definition}")
+        try:
+            lbl.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
+        except Exception:
+            pass
+        lbl.setCursor(Qt.CursorShape.WhatsThisCursor)
+    return lbl
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -296,8 +296,10 @@ ANALYSIS_GLOSSARY = {
         "Optionally cap track length (0 = off) to drop stuck or aggregated "
         "particles that linger in one spot.",
     "max lag time":
-        "The largest time lag (in frames) used when building the mean-squared-"
-        "displacement curve.",
+        "A lag time is the gap between two positions on a track that you "
+        "compare; the MSD curve averages the squared displacement over all "
+        "pairs separated by each lag. This sets the largest lag (in frames) "
+        "included in that curve.",
     "n fit lags":
         "How many of the first MSD points are used to fit the diffusion "
         "coefficient — fewer points emphasise short-time (local) diffusion.",

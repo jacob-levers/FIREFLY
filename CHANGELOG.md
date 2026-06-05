@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.17.1
+
+- **Definitions now appear on hover of the label text — no ⓘ icon.** The little
+  info icons are gone; instead, hovering a parameter's name shows its
+  plain-English definition (a 'help' cursor hints there's an explanation). Applies
+  everywhere `_label_with_info` is used (Analysis sidebar + the Compare wizard).
+- **"Max lag time" now explains what a lag time is** — the gap between two
+  positions on a track that you compare; the MSD curve averages squared
+  displacement over all pairs at each lag.
+
 ## v2.17.0
 
 ### Plain-English ⓘ explanations for every Analysis parameter
