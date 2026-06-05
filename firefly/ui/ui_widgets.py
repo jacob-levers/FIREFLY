@@ -305,11 +305,15 @@ class _DecisionDiagram(QtWidgets.QWidget):
         _title(col_x[1], "Design")
         _title(col_x[2], "Distribution")
 
-        # Connecting arrows (drawn first, behind the pills)
+        # Connecting arrows (drawn first, behind the pills).  The last arrow
+        # stops a clear gap short of the result box so its head never touches /
+        # overlaps the box border.
         half = pill_w / 2
+        res_w = max(120.0, 0.21 * W)
+        _GAP = 12.0
         _arrow(col_x[0] + half, col_x[1] - half, y_mid)
         _arrow(col_x[1] + half, col_x[2] - half, y_mid)
-        _arrow(col_x[2] + half, res_cx - max(120.0, 0.21 * W) / 2, y_mid)
+        _arrow(col_x[2] + half, res_cx - res_w / 2 - _GAP, y_mid)
 
         # Column 1 — number of groups
         _pill(col_x[0], y_top, "2 groups", n == 2)
@@ -331,7 +335,6 @@ class _DecisionDiagram(QtWidgets.QWidget):
                        "auto: per metric")
 
         # Result box (accent border — on-theme, replacing the old green)
-        res_w = max(120.0, 0.21 * W)
         res_h = max(pill_h * 1.7, (y_bot - y_top) + pill_h)
         rr = QtCore.QRectF(res_cx - res_w / 2, y_mid - res_h / 2, res_w, res_h)
         p.setPen(QtGui.QPen(QtGui.QColor(T["ACC"]), 2.0))

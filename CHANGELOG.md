@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.16.1
+
+- **Decision diagram: arrow no longer touches the result box.** The final arrow
+  into the chosen-test box ended exactly on its left border; it now stops a
+  clear gap short so the arrowhead doesn't clip into the box.
+
 ## v2.16.0
 
 ### A modern, guided "Analysis Configuration" wizard (Compare tab)
