@@ -597,6 +597,9 @@ class HandlersMixin:
                 # messages naturally overwrite as they arrive.
                 try:    self.mass_hist.reset()
                 except AttributeError: pass
+                # Restart the pipeline stage map for the new file.
+                try:    self.pipeline_diagram.reset()
+                except AttributeError: pass
                 # Update the overall-batch bar (files remaining).
                 try:    self._handle_file_starting(payload)
                 except AttributeError: pass
@@ -637,6 +640,11 @@ class HandlersMixin:
             progress_widget.setFormat(f"{_m}  —  {pct}%" if _m else f"{pct}%")
             stage_label.setText(msg)
             self.statusBar().showMessage(msg)
+            # Light up the Analysis cockpit's pipeline stage map (Analysis /
+            # batch only — Compare messages don't map to pipeline stages).
+            if not is_compare:
+                try:    self.pipeline_diagram.set_stage_from_msg(msg)
+                except AttributeError: pass
 
         # Stop-button escalation: if cancel_event was set N seconds ago
         # and the subprocess is still alive, escalate.  Two-stage SIGTERM

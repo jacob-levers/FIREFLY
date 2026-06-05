@@ -378,6 +378,140 @@ class _DecisionDiagram(QtWidgets.QWidget):
         super().mousePressEvent(ev)
 
 
+class _PipelineDiagram(QtWidgets.QWidget):
+    """A compact left-to-right map of the analysis stages shown in the run
+    cockpit: done stages in success-green, the running stage in accent, pending
+    stages muted.  Native QPainter (DPR-crisp), reads `_THEME` live, hover for a
+    one-line description.  Driven by the worker's progress messages via
+    `set_stage_from_msg()` — the index only ever advances (the worker's progress
+    %s are non-monotonic across stages, so we never regress)."""
+
+    _STAGES = ["Preprocess", "Detect", "Link", "Drift", "Diffuse", "Classify"]
+    _TIPS = {
+        "Preprocess": "Load the image stack (or localisations) and remove "
+                      "background.",
+        "Detect":     "Find candidate emitters frame by frame.",
+        "Link":       "Connect detections across frames into trajectories.",
+        "Drift":      "Correct sample/stage drift (when enabled).",
+        "Diffuse":    "Build MSD curves and fit diffusion (D, α).",
+        "Classify":   "Motion classes, clustering, secondary metrics, and "
+                      "saving the outputs.",
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._idx = -1          # furthest-reached active stage (-1 = idle)
+        self._complete = False
+        self._nodes: list = []  # (QRectF, label, tip)
+        self.setMinimumHeight(56)
+        self.setMouseTracking(True)
+
+    def sizeHint(self):
+        return QtCore.QSize(560, 60)
+
+    def reset(self):
+        self._idx = -1
+        self._complete = False
+        self.update()
+
+    def set_complete(self):
+        self._idx = len(self._STAGES) - 1
+        self._complete = True
+        self.update()
+
+    @classmethod
+    def _index_for_msg(cls, msg):
+        """Return ('complete', None), ('idx', i) or (None, None) for a worker
+        progress message.  Checked most-specific first so e.g. 'Linking…' never
+        falls through to the generic 'loading' bucket."""
+        m = (msg or "").lower()
+        if any(k in m for k in ("complete", "all done", "batch complete")):
+            return ("complete", None)
+        if any(k in m for k in ("saving", "rendering", "secondary",
+                                "cluster", "classif")):
+            return ("idx", 5)
+        if any(k in m for k in ("msd", "fits", "diffus")):
+            return ("idx", 4)
+        if "drift" in m:
+            return ("idx", 3)
+        if any(k in m for k in ("linking", "pre-linked", "link")):
+            return ("idx", 2)
+        if any(k in m for k in ("localising", "detect")):
+            return ("idx", 1)
+        if any(k in m for k in ("loading stack", "reading localisations",
+                                "loaded from csv", "loading")):
+            return ("idx", 0)
+        return (None, None)
+
+    def set_stage_from_msg(self, msg):
+        kind, idx = self._index_for_msg(msg)
+        if kind == "complete":
+            self.set_complete()
+        elif kind == "idx" and idx is not None and idx > self._idx:
+            self._idx = idx
+            self._complete = False
+            self.update()
+
+    def paintEvent(self, _ev):
+        T = _THEME
+        W, H = self.width(), self.height()
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        p.fillRect(self.rect(), QtGui.QColor(T["PANEL"]))
+        self._nodes = []
+        n = len(self._STAGES)
+        gap = 16.0
+        node_w = max(54.0, (W - (n - 1) * gap - 8) / n)
+        node_h = max(26.0, min(34.0, H - 18))
+        yc = H / 2.0
+        base = self.font()
+        x = 4.0
+        for i, name in enumerate(self._STAGES):
+            r = QtCore.QRectF(x, yc - node_h / 2, node_w, node_h)
+            if self._complete or i < self._idx:
+                fill, edge, tcol = T["SUCCESS"], T["SUCCESS"], T["ACC_FG"]
+            elif i == self._idx:
+                fill, edge, tcol = T["ACC"], T["ACC"], T["ACC_FG"]
+            else:
+                fill, edge, tcol = T["PANEL_ALT"], T["BORDER"], T["TXT_MUTED"]
+            p.setPen(QtGui.QPen(QtGui.QColor(edge), 1.4))
+            p.setBrush(QtGui.QBrush(QtGui.QColor(fill)))
+            p.drawRoundedRect(r, 6, 6)
+            f = QtGui.QFont(base); f.setPointSizeF(8.5)
+            f.setBold(self._complete or i <= self._idx)
+            p.setFont(f); p.setPen(QtGui.QPen(QtGui.QColor(tcol)))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter
+                       | Qt.TextFlag.TextWordWrap, name)
+            self._nodes.append((r, name, self._TIPS.get(name, "")))
+            x += node_w + gap
+        # Connecting arrows in the gaps.
+        p.setPen(QtGui.QPen(QtGui.QColor(T["BORDER_HI"]), 1.4))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(len(self._nodes) - 1):
+            x0 = self._nodes[i][0].right()
+            x1 = self._nodes[i + 1][0].left()
+            p.drawLine(QtCore.QPointF(x0 + 1, yc), QtCore.QPointF(x1 - 1, yc))
+            ah = 3.5
+            p.drawLine(QtCore.QPointF(x1 - 1, yc),
+                       QtCore.QPointF(x1 - 1 - ah, yc - ah))
+            p.drawLine(QtCore.QPointF(x1 - 1, yc),
+                       QtCore.QPointF(x1 - 1 - ah, yc + ah))
+        p.end()
+
+    def mouseMoveEvent(self, ev):
+        pos = ev.position()
+        shown = False
+        for rect, _label, tip in self._nodes:
+            if rect.contains(pos) and tip:
+                QtWidgets.QToolTip.showText(
+                    ev.globalPosition().toPoint(), tip, self)
+                shown = True
+                break
+        if not shown:
+            QtWidgets.QToolTip.hideText()
+        super().mouseMoveEvent(ev)
+
+
 class _UpdateCheckThread(QtCore.QThread):
     """Tiny background thread that hits GitHub's Releases API and emits
     `update_available(tag, html_url)` if the latest tag is newer than

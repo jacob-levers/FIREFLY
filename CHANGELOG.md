@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.19.0
+
+### A live pipeline map in the Analysis cockpit
+
+The Analysis tab now shows a compact **stage map** —
+Preprocess → Detect → Link → Drift → Diffuse → Classify — so you can see at a
+glance where a run is. Completed stages turn green, the running stage glows in
+the accent colour, and pending stages stay muted; hover any stage for a one-line
+description.
+
+- Native QPainter widget (crisp at any size, theme-aware), driven by the
+  analysis worker's progress messages. Because the worker's progress percentages
+  aren't strictly monotonic across stages, the map only ever advances (it never
+  flickers backward).
+- Resets at the start of each run (and each file in a batch) and turns fully
+  green on completion. Purely additive and guarded — Compare runs (which have no
+  per-stage pipeline) leave it untouched, and nothing in the run path changes.
+
 ## v2.18.0
 
 ### Post-run results: QC flags become severity banners + a readiness badge

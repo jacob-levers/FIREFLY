@@ -2604,6 +2604,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                                       if not self.c_auto_minmass.isChecked()
                                       else None)
             self.live_view.reset()
+            self.pipeline_diagram.reset()
             self._analysis_stack.setCurrentIndex(0)   # show cockpit
         except AttributeError:
             pass
@@ -2704,6 +2705,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                                       if not self.c_auto_minmass.isChecked()
                                       else None)
             self.live_view.reset()
+            self.pipeline_diagram.reset()
             self._analysis_stack.setCurrentIndex(0)   # show cockpit
         except AttributeError:
             pass
@@ -2863,6 +2865,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                    f"Analysis complete — {n_tracks:,} trajectories"
         self.run_results.show_results(headline, out_dir)
         self.run_results.show_stats(summary)
+        try:    self.pipeline_diagram.set_complete()
+        except AttributeError: pass
         self.run_stage_label.setText("Done")
         self.progress_bar.setFormat("Complete")
         self.statusBar().showMessage(f"Analysis complete — output at {out_dir}")
@@ -2923,6 +2927,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             f"Batch complete  —  {n_ok}/{n_total} series succeeded, "
             f"{n_fail} failed")
         self.batch_subprogress.hide()
+        try:    self.pipeline_diagram.set_complete()
+        except AttributeError: pass
         self.statusBar().showMessage(
             f"Batch complete — {n_ok}/{n_total} series succeeded, "
             f"{n_fail} failed")

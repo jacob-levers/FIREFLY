@@ -31,7 +31,8 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
                         _load_imagej_roi_polygons, _load_tif_mask_polygons,
                         _load_any_roi_file, _info_icon, _InfoIcon,
                         _label_with_info, _AlertBanner, _StatusBadge,
-                        _step_badge, _color_chip, _DecisionDiagram)
+                        _step_badge, _color_chip, _DecisionDiagram,
+                        _PipelineDiagram)
 
 
 class BuildMixin:
@@ -1563,6 +1564,12 @@ class BuildMixin:
         self.lbl_elapsed.setAlignment(Qt.AlignmentFlag.AlignRight)
         stage_row.addWidget(self.lbl_elapsed)
         v.addLayout(stage_row)
+
+        # Pipeline stage map — shows which analysis stage is running / done /
+        # pending.  Driven by the worker's progress messages (see the poll
+        # handler); idle = all pending, set_complete() on finish.
+        self.pipeline_diagram = _PipelineDiagram()
+        v.addWidget(self.pipeline_diagram)
 
         # Resource monitor — CPU / RAM / GPU / VRAM at 1 Hz
         self.resource_monitor = _ResourceMonitor()
