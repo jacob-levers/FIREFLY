@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.20.1
+
+### Modernised the post-run results readout
+
+- **Motion classes as a stacked proportion bar.** The four classes
+  (Immobile / Confined / Brownian / Directed) are now a single coloured bar
+  sized by fraction — hover a segment for its count + % — above a tidy swatch
+  legend, instead of four flat coloured rows.
+- **Sectioned stats.** The readout is grouped under quiet uppercase headers with
+  hairline dividers (Diffusion & dynamics · Motion classes · Clustering &
+  acquisition · Quality control), so it scans cleanly rather than as one long
+  list. Same numbers, clearer structure.
+
 ## v2.20.0
 
 ### Guidance polish across Import, Visualise and Re-process

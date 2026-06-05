@@ -528,6 +528,59 @@ class _PipelineDiagram(QtWidgets.QWidget):
         super().mouseMoveEvent(ev)
 
 
+class _StackedBar(QtWidgets.QWidget):
+    """A thin horizontal bar split into proportional coloured segments — e.g.
+    the motion-class composition (Immobile / Confined / Brownian / Directed).
+    `segments` is a list of (label, value, colour_hex).  Native QPainter
+    (DPR-crisp), rounded ends, hover a segment for its label + count + %."""
+
+    def __init__(self, segments=None, parent=None):
+        super().__init__(parent)
+        self._segs = list(segments or [])
+        self.setFixedHeight(16)
+        self.setMouseTracking(True)
+
+    def set_segments(self, segments):
+        self._segs = list(segments or [])
+        self.update()
+
+    def _total(self):
+        return sum(max(0.0, float(v)) for _l, v, _c in self._segs) or 1.0
+
+    def paintEvent(self, _ev):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        W, H = float(self.width()), float(self.height())
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(0.0, 0.0, W, H, H / 2, H / 2)
+        p.setClipPath(path)
+        p.fillRect(self.rect(), QtGui.QColor(_THEME["PANEL_ALT"]))
+        total = self._total()
+        x = 0.0
+        for _label, v, col in self._segs:
+            w = W * (max(0.0, float(v)) / total)
+            p.fillRect(QtCore.QRectF(x, 0.0, w + 0.5, H),
+                       QtGui.QColor(col or _THEME["TXT_MUTED"]))
+            x += w
+        p.end()
+
+    def mouseMoveEvent(self, ev):
+        W = float(self.width()) or 1.0
+        total = self._total()
+        x = ev.position().x()
+        acc = 0.0
+        for label, v, _c in self._segs:
+            w = W * (max(0.0, float(v)) / total)
+            if acc <= x < acc + w:
+                pct = 100.0 * float(v) / total
+                QtWidgets.QToolTip.showText(
+                    ev.globalPosition().toPoint(),
+                    f"{label}: {int(v):,} ({pct:.1f}%)", self)
+                break
+            acc += w
+        super().mouseMoveEvent(ev)
+
+
 class _UpdateCheckThread(QtCore.QThread):
     """Tiny background thread that hits GitHub's Releases API and emits
     `update_available(tag, html_url)` if the latest tag is newer than
@@ -1580,6 +1633,38 @@ class _ResultsPanel(QtWidgets.QFrame):
         self._stats_grid.addWidget(val, row, 1,
                                    Qt.AlignmentFlag.AlignLeft)
 
+    def _add_section_header(self, row: int, text: str):
+        """A small bold section header spanning both grid columns, with a
+        hairline divider above it to group the stats into sections."""
+        hdr = QtWidgets.QLabel(text)
+        hdr.setStyleSheet(
+            "color: %s; font-size: 11px; font-weight: 700; "
+            "text-transform: uppercase; letter-spacing: 0.5px; "
+            "border-top: 1px solid %s; padding-top: 7px; margin-top: 4px;"
+            % (_THEME['TXT_MUTED'], _THEME['BORDER']))
+        self._stats_grid.addWidget(hdr, row, 0, 1, 2,
+                                   Qt.AlignmentFlag.AlignLeft)
+
+    def _swatch_label(self, text: str, color: str) -> QtWidgets.QWidget:
+        """A '[colour swatch] label' cell for the motion-class legend."""
+        w = QtWidgets.QWidget()
+        h = QtWidgets.QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        sw = QtWidgets.QLabel()
+        sw.setFixedSize(10, 10)
+        sw.setStyleSheet(
+            "background: %s; border-radius: 5px;"
+            % (color or _THEME['TXT_MUTED']))
+        h.addWidget(sw)
+        lbl = QtWidgets.QLabel(text)
+        lbl.setStyleSheet(
+            "color: %s; font-size: 12px; background: transparent;"
+            % _THEME['TXT_MUTED'])
+        h.addWidget(lbl)
+        h.addStretch(1)
+        return w
+
     def show_stats(self, summary: dict):
         """Populate the stats grid from a worker `summary` dict.
 
@@ -1606,6 +1691,7 @@ class _ResultsPanel(QtWidgets.QFrame):
                            _fmt_int(summary.get("n_locs", 0))); r += 1
 
         # Diffusion ──────────────────────────────────────────────────
+        self._add_section_header(r, "Diffusion & dynamics"); r += 1
         self._add_stat_row(r, "Median D",
                            _fmt_um2(summary.get("median_d"))); r += 1
         self._add_stat_row(r, "Median α",
@@ -1627,34 +1713,45 @@ class _ResultsPanel(QtWidgets.QFrame):
             self._add_stat_row(r, "VACF persistence",
                                f"{vp:.3f}"); r += 1
 
-        # Motion-class breakdown ─────────────────────────────────────
+        # Motion-class composition — a stacked proportion bar + a swatch
+        # legend (replaces the old flat list of coloured rows).
         motion_counts = summary.get("motion_counts") or {}
         if motion_counts:
             total = sum(motion_counts.values()) or 1
-            # Standard order so the row is predictable
             order = ["Immobile", "Confined", "Brownian", "Directed", "Unknown"]
-            # Same source of truth as the napari layers and figures.
-            colour_map = dict(_MOTION_PALETTE)
-            for cls in order:
-                if cls in motion_counts:
-                    n = motion_counts[cls]
-                    self._add_stat_row(
-                        r, f"  {cls}",
-                        f"{n:,}  ({100 * n / total:.1f} %)",
-                        value_colour=colour_map.get(cls)); r += 1
+            colour_map = dict(_MOTION_PALETTE)   # same colours as figures/napari
+            present = [(cls, int(motion_counts[cls]), colour_map.get(cls))
+                       for cls in order
+                       if cls in motion_counts and motion_counts[cls] > 0]
+            if present:
+                self._add_section_header(r, "Motion classes"); r += 1
+                self._stats_grid.addWidget(_StackedBar(present), r, 0, 1, 2)
+                r += 1
+                for cls, n, col in present:
+                    self._stats_grid.addWidget(
+                        self._swatch_label(cls, col), r, 0,
+                        Qt.AlignmentFlag.AlignLeft)
+                    val = QtWidgets.QLabel(f"{n:,}  ({100 * n / total:.1f} %)")
+                    val.setStyleSheet(
+                        "color: %s; font-size: 13px; font-weight: 600;" % col)
+                    val.setTextInteractionFlags(
+                        Qt.TextInteractionFlag.TextSelectableByMouse)
+                    self._stats_grid.addWidget(
+                        val, r, 1, Qt.AlignmentFlag.AlignLeft)
+                    r += 1
 
-        # Secondary ──────────────────────────────────────────────────
+        # Clustering & acquisition ───────────────────────────────────
         nc = summary.get("n_clusters", 0)
+        dwell = summary.get("dwell_tau_s")
+        frames = summary.get("frames")
+        if nc or dwell is not None or frames:
+            self._add_section_header(r, "Clustering & acquisition"); r += 1
         if nc:
             self._add_stat_row(r, "DBSCAN clusters",
                                _fmt_int(nc)); r += 1
-        dwell = summary.get("dwell_tau_s")
         if dwell is not None:
             self._add_stat_row(r, "Dwell time  τ",
                                _fmt_secs(dwell)); r += 1
-
-        # Imaging metadata footer ────────────────────────────────────
-        frames = summary.get("frames")
         if frames:
             self._add_stat_row(
                 r, "Source movie",
@@ -1666,13 +1763,7 @@ class _ResultsPanel(QtWidgets.QFrame):
         # ── Quality control ──────────────────────────────────────────
         qc = summary.get("qc") or {}
         if qc:
-            # Section header
-            hdr = QtWidgets.QLabel("Quality control")
-            hdr.setStyleSheet(
-                f"color: {_THEME['TXT']}; font-size: 12px; "
-                "font-weight: 700; padding-top: 8px;")
-            self._stats_grid.addWidget(hdr, r, 0, 1, 2,
-                                       Qt.AlignmentFlag.AlignLeft); r += 1
+            self._add_section_header(r, "Quality control"); r += 1
 
             lr = qc.get("link_ratio")
             if lr is not None:
