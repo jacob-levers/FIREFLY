@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.14.1
+
+### Comparison bars now respect the figure theme (no more dark bars on white)
+
+- **Per-group "tint + outline" bars.** The comparison bar panels (AUC,
+  Mobile/Immobile ratio, Tracks detected, α₂, VACF persistence) drew every bar
+  with a single fixed fill from the theme palette — which on the **Publication**
+  and **Light** themes was a dark grey, so the bars came out near-black on a
+  white background. Each bar is now filled with a pale wash of its **own group
+  colour** blended toward the figure background, with the saturated group colour
+  kept as the edge. The result is theme-adaptive: a clean pastel-with-outline on
+  white themes and a subtle dark tint on Dark/AMOLED, and every bar now reads as
+  its own condition instead of a uniform block. (The Motion-Class Fractions panel
+  already used the per-class motion colours and is unchanged.)
+
 ## v2.14.0
 
 ### Theme-aware figure colours, Motion-Class fix, and a graceful "no folders" popup

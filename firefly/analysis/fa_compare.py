@@ -60,8 +60,18 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     `xtick_labels` overrides the x-axis tick text (display only — `labels`
     still drives the statistics); used to put short tokens on the axis when
     there are many groups, with the full names carried by the shared legend."""
-    fill = palette["BAR_FILL"]
     sig_col = palette["SIG"]
+    # Bar body = a wash of each group's OWN colour blended toward the figure
+    # background, with the saturated group colour kept as the edge ("tint +
+    # outline").  This is theme-adaptive: a pale pastel on white themes
+    # (Light / Publication) and a subtle dark tint on dark themes (Dark /
+    # AMOLED) — never the near-black bar a fixed dark BAR_FILL produced on a
+    # white background.  Per-group, so each bar reads as its own condition.
+    import matplotlib.colors as _mc
+    _bgc = np.array(_mc.to_rgb(palette.get("BG", "#ffffff")))
+    def _bar_fill_for(i, frac=0.78):
+        rgb = np.array(_mc.to_rgb(colors[i]))
+        return tuple((1.0 - frac) * rgb + frac * _bgc)
 
     arrs = [np.asarray(d, dtype=float) for d in data_per_group]
     arrs = [a[np.isfinite(a)] for a in arrs]
@@ -75,8 +85,8 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     # SuperPlot (Lord et al. 2020): each replicate gets its own colour so the
     # reader sees the true unit of replication, not pooled localisations.
     ax.bar(x, means, yerr=sems, capsize=4,
-           color=[fill] * n,
-           edgecolor=colors, linewidth=1.5,
+           color=[_bar_fill_for(i) for i in range(n)],
+           edgecolor=colors, linewidth=1.6,
            ecolor=sig_col)
     rng = np.random.default_rng(0)
     max_rep = max((len(a) for a in arrs), default=0)
