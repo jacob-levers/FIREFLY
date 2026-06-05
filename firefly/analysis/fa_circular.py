@@ -2010,9 +2010,92 @@ def _write_single_group_page(pdf, angles_deg, stats, label, pal,
     plt.close(fig)
 
 
-def _stat_test(a, b):
+def _decide_parametric(arrs, strategy="auto", alpha=0.05):
+    """Decide whether to use a parametric test for the given group arrays.
+
+    - ``force_parametric``     → always True (skip the normality test)
+    - ``force_nonparametric``  → always False
+    - ``auto`` (default)       → Shapiro-Wilk on each group (only where
+      3 ≤ n ≤ 5000); non-parametric if ANY group rejects normality at `alpha`.
+
+    Returns True (parametric) or False (non-parametric).
+    """
+    strategy = str(strategy or "auto").lower()
+    if strategy == "force_parametric":
+        return True
+    if strategy == "force_nonparametric":
+        return False
+    try:
+        from scipy.stats import shapiro
+    except Exception:
+        return True
+    for a in arrs:
+        a = np.asarray(a, dtype=float)
+        a = a[np.isfinite(a)]
+        if 3 <= len(a) <= 5000:
+            try:
+                if shapiro(a).pvalue < float(alpha):
+                    return False
+            except Exception:
+                pass
+    return True
+
+
+def _welch_anova_p(arrs):
+    """Welch's ANOVA p-value for ≥2 groups with UNequal variances (the k-group
+    analogue of Welch's t-test).  Closed-form (Welch 1951) so it needs no extra
+    dependency.  Returns a float p, or None when undefined (a group has <2
+    points or zero variance)."""
+    groups = [np.asarray(a, dtype=float) for a in arrs]
+    groups = [g[np.isfinite(g)] for g in groups]
+    k = len(groups)
+    if k < 2 or any(len(g) < 2 for g in groups):
+        return None
+    n = np.array([len(g) for g in groups], dtype=float)
+    mean = np.array([g.mean() for g in groups], dtype=float)
+    var = np.array([g.var(ddof=1) for g in groups], dtype=float)
+    if not np.all(np.isfinite(var)) or np.any(var <= 0):
+        return None
+    w = n / var
+    W = w.sum()
+    xbar = float((w * mean).sum() / W)
+    A = float((w * (mean - xbar) ** 2).sum()) / (k - 1)
+    s = float((((1.0 - w / W) ** 2) / (n - 1.0)).sum())
+    B = 1.0 + (2.0 * (k - 2) / (k * k - 1.0)) * s
+    F = A / B
+    df1 = k - 1
+    df2 = (k * k - 1.0) / (3.0 * s) if s > 0 else np.inf
+    try:
+        from scipy.stats import f as _f_dist
+        p = float(_f_dist.sf(F, df1, df2))
+    except Exception:
+        return None
+    return p if np.isfinite(p) else None
+
+
+def _anova_3plus(arrs, mode="welch"):
+    """Omnibus test for 3+ groups.  Returns (p, test_name).  `mode`:
+    'welch' / 'auto' → Welch's ANOVA (falls back to one-way ANOVA when Welch is
+    undefined, e.g. a zero-variance group); 'oneway' → classic one-way ANOVA."""
+    from scipy.stats import f_oneway
+    mode = str(mode or "welch").lower()
+    if mode == "oneway":
+        return float(f_oneway(*arrs).pvalue), "One-way ANOVA"
+    p = _welch_anova_p(arrs)
+    if p is not None:
+        return p, "Welch's ANOVA"
+    return (float(f_oneway(*arrs).pvalue),
+            "One-way ANOVA (Welch undefined — equal/zero variance)")
+
+
+def _stat_test(a, b, stats_config=None):
     """Two-sample test on per-experiment scalars.  Welch's t by default,
-    Mann-Whitney as fallback for non-normal data.  Returns (p, label)."""
+    Mann-Whitney as fallback for non-normal data.  Returns (p, label).
+
+    `stats_config` (see fa_stats_config) controls alpha and the parametric
+    strategy; None reproduces the legacy auto/α=0.05 behaviour."""
+    from firefly.analysis.fa_stats_config import normalize_stats_config, stars_for
+    cfg = normalize_stats_config(stats_config)
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
     a = a[np.isfinite(a)]
@@ -2020,27 +2103,14 @@ def _stat_test(a, b):
     if len(a) < 2 or len(b) < 2:
         return (np.nan, "")
     try:
-        from scipy.stats import ttest_ind, mannwhitneyu, shapiro
-        normal = True
-        for arr in (a, b):
-            if 3 <= len(arr) <= 5000:
-                try:
-                    if shapiro(arr).pvalue < 0.05:
-                        normal = False
-                        break
-                except Exception:
-                    pass
-        if normal:
+        from scipy.stats import ttest_ind, mannwhitneyu
+        if _decide_parametric((a, b), cfg["parametric_strategy"], cfg["alpha"]):
             p = ttest_ind(a, b, equal_var=False).pvalue
         else:
             p = mannwhitneyu(a, b, alternative="two-sided").pvalue
         if not np.isfinite(p):
             return (np.nan, "")
-        if p < 0.001: stars = "***"
-        elif p < 0.01: stars = "**"
-        elif p < 0.05: stars = "*"
-        else: stars = "ns"
-        return (float(p), stars)
+        return (float(p), stars_for(p, cfg["alpha"]))
     except Exception:
         return (np.nan, "")
 
@@ -2094,11 +2164,16 @@ def _hedges_g_ci(a, b, n_boot=2000, seed=0):
     return (g, None, None)
 
 
-def _paired_test(pre, post):
+def _paired_test(pre, post, stats_config=None):
     """Two-sided PAIRED test on matched per-cell values (the same cell measured
     at two time points).  Paired t-test when the differences look normal,
     Wilcoxon signed-rank otherwise.  `pre` and `post` must be aligned 1-D
-    arrays (same cell at the same index).  Returns (p, stars)."""
+    arrays (same cell at the same index).  Returns (p, stars).
+
+    `stats_config` controls alpha and the parametric strategy (the normality
+    test is applied to the paired DIFFERENCES); None = legacy auto/α=0.05."""
+    from firefly.analysis.fa_stats_config import normalize_stats_config, stars_for
+    cfg = normalize_stats_config(stats_config)
     pre = np.asarray(pre, dtype=float)
     post = np.asarray(post, dtype=float)
     m = np.isfinite(pre) & np.isfinite(post)
@@ -2109,25 +2184,15 @@ def _paired_test(pre, post):
     if np.allclose(diff, 0.0):
         return (np.nan, "")
     try:
-        from scipy.stats import ttest_rel, wilcoxon, shapiro
-        normal = True
-        if 3 <= len(diff) <= 5000:
-            try:
-                if shapiro(diff).pvalue < 0.05:
-                    normal = False
-            except Exception:
-                pass
-        if normal:
+        from scipy.stats import ttest_rel, wilcoxon
+        # Parametric decision is on the DIFFERENCES (the paired-test assumption).
+        if _decide_parametric((diff,), cfg["parametric_strategy"], cfg["alpha"]):
             p = ttest_rel(pre, post).pvalue
         else:
             p = wilcoxon(pre, post).pvalue
         if not np.isfinite(p):
             return (np.nan, "")
-        if p < 0.001: stars = "***"
-        elif p < 0.01: stars = "**"
-        elif p < 0.05: stars = "*"
-        else: stars = "ns"
-        return (float(p), stars)
+        return (float(p), stars_for(p, cfg["alpha"]))
     except Exception:
         return (np.nan, "")
 
@@ -2185,8 +2250,15 @@ def _n_per_group_for_power(d, power=0.80, alpha=0.05, n_max=500):
     return n_max + 1
 
 
-def _stat_test_n(arrays, labels):
+def _stat_test_n(arrays, labels, stats_config=None):
     """Statistical test across N≥2 groups.
+
+    `stats_config` (fa_stats_config) controls alpha, the parametric strategy,
+    and the 3+-group omnibus test (Welch's ANOVA / one-way / auto); None
+    reproduces the legacy auto / α=0.05 / Welch-ANOVA defaults.  Multiple-
+    comparison correction is NOT applied here — the raw p-value and raw stars
+    are returned, and the caller applies the chosen correction centrally so the
+    across-metric family can see every p-value.
 
     Returns
     -------
@@ -2195,6 +2267,8 @@ def _stat_test_n(arrays, labels):
         {"i", "j", "label_i", "label_j", "test", "p", "stars",
          "n_i", "n_j", "mean_i", "mean_j", "sem_i", "sem_j"}
     """
+    from firefly.analysis.fa_stats_config import normalize_stats_config, stars_for
+    cfg = normalize_stats_config(stats_config)
     arrs = [np.asarray(a, dtype=float)[np.isfinite(np.asarray(a, dtype=float))]
             for a in arrays]
     valid_idx = [i for i, a in enumerate(arrs) if len(a) >= 2]
@@ -2203,12 +2277,7 @@ def _stat_test_n(arrays, labels):
     pairwise = []
 
     def _star(p):
-        if not np.isfinite(p):
-            return ""
-        if p < 0.001: return "***"
-        if p < 0.01:  return "**"
-        if p < 0.05:  return "*"
-        return "ns"
+        return stars_for(p, cfg["alpha"])
 
     if len(valid_idx) < 2:
         # Still record per-pair "ns" rows for stats CSV completeness
@@ -2235,31 +2304,23 @@ def _stat_test_n(arrays, labels):
 
     # Omnibus test
     try:
-        from scipy.stats import f_oneway, kruskal, shapiro
+        from scipy.stats import kruskal
         valid_arrs = [arrs[i] for i in valid_idx]
 
-        normal = True
-        for a in valid_arrs:
-            if 3 <= len(a) <= 5000:
-                try:
-                    if shapiro(a).pvalue < 0.05:
-                        normal = False
-                        break
-                except Exception:
-                    pass
+        parametric = _decide_parametric(valid_arrs, cfg["parametric_strategy"],
+                                        cfg["alpha"])
 
         if len(valid_arrs) == 2:
             from scipy.stats import ttest_ind, mannwhitneyu
-            if normal:
+            if parametric:
                 p = ttest_ind(*valid_arrs, equal_var=False).pvalue
                 test_name = "Welch's t-test"
             else:
                 p = mannwhitneyu(*valid_arrs, alternative="two-sided").pvalue
                 test_name = "Mann-Whitney U"
         else:
-            if normal:
-                p = f_oneway(*valid_arrs).pvalue
-                test_name = "One-way ANOVA"
+            if parametric:
+                p, test_name = _anova_3plus(valid_arrs, cfg["anova3plus"])
             else:
                 p = kruskal(*valid_arrs).pvalue
                 test_name = "Kruskal-Wallis"
@@ -2279,7 +2340,7 @@ def _stat_test_n(arrays, labels):
 
     # Pairwise comparisons
     try:
-        from scipy.stats import ttest_ind, mannwhitneyu, shapiro
+        from scipy.stats import ttest_ind, mannwhitneyu
         for i in range(len(arrs)):
             for j in range(i + 1, len(arrs)):
                 a, b = arrs[i], arrs[j]
@@ -2287,16 +2348,8 @@ def _stat_test_n(arrays, labels):
                     p = np.nan
                     test_name = "n<2"
                 else:
-                    is_normal = True
-                    for arr in (a, b):
-                        if 3 <= len(arr) <= 5000:
-                            try:
-                                if shapiro(arr).pvalue < 0.05:
-                                    is_normal = False
-                                    break
-                            except Exception:
-                                pass
-                    if is_normal:
+                    if _decide_parametric((a, b), cfg["parametric_strategy"],
+                                          cfg["alpha"]):
                         p = ttest_ind(a, b, equal_var=False).pvalue
                         test_name = "Welch's t-test"
                     else:

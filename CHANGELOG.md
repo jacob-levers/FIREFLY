@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.13.0
+
+### Statistics transparency + a dedicated Statistics tab
+
+A full review of the Compare-tab statistics, plus user-facing control and
+transparency over every test.
+
+- **New Statistics tab** — global, defensible controls (no per-metric test
+  shopping): significance α, multiple-comparison correction
+  (None / Bonferroni / Holm / Benjamini–Hochberg FDR), an optional
+  family-wise correction *across* the scalar metrics, parametric strategy
+  (auto-by-normality / force parametric / force non-parametric), the 3+-group
+  test, effect-size CI level, and whether on-figure stars use corrected p. A
+  live **"test plan" preview** shows exactly which test each metric will get for
+  the current groups before anything runs.
+- **Self-describing output** — figure panels now name the test *and* the
+  correction (including 2-group panels); the stats CSV gains a configuration
+  header block and accurate, renamed columns (`p_value_corrected` +
+  `correction_method`, plus an across-metric column), replacing the previously
+  hard-coded "Bonferroni" label that didn't always match what was applied.
+- **Correctness fixes (from the audit):** on-figure significance stars now use
+  the chosen correction (so the figure can't say "*" while the CSV says "ns");
+  an across-metric family-wise correction is available; and 3+ groups use
+  **Welch's ANOVA** (unequal-variance robust, consistent with the Welch's t
+  already used for 2 groups) instead of equal-variance one-way ANOVA. The
+  two-way mixed-ANOVA post-hoc correction now follows the global choice.
+- **Confirmed sound (no change needed):** the unit of analysis is per
+  cell/replicate (not per track — no pseudoreplication); the two-way mixed
+  ANOVA (between=group, within=time, subject=cell, Greenhouse–Geisser) and its
+  per-cell curve drill-down were already correct.
+
+All settings are config-driven through a single `fa_stats_config` module with a
+backward-compatible normaliser, so old saved settings and callers keep working.
+Covered by new headless tests (config normalisation, correction math incl. Holm
+/ BH / NaN / single-comparison edge cases, forced strategies, Welch's ANOVA +
+fallback, and an end-to-end Compare run asserting the figure and CSV agree).
+
 ## v2.11.0
 
 ### Bulletproof auto-threshold — linkability-optimised detection

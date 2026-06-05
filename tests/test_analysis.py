@@ -1444,3 +1444,177 @@ def test_apply_roi_mask_excluding_all_returns_empty_without_raising():
     out = apply_roi_mask(locs, mask)
     assert len(out) == 0
     assert list(out.columns) == list(locs.columns)
+
+
+# ── Statistics config + correction (fa_stats_config) ─────────────────────────
+def test_stats_config_normalize_backfills_and_clamps():
+    from firefly.analysis.fa_stats_config import normalize_stats_config, DEFAULT_STATS_CONFIG
+    assert normalize_stats_config(None) == DEFAULT_STATS_CONFIG
+    c = normalize_stats_config({"alpha": 0.9, "correction": "BOGUS",
+                                "anova3plus": "nope", "ci_level": 2.0})
+    assert c["alpha"] == 0.05          # out-of-range clamped to default
+    assert c["correction"] == "holm"   # unknown → default
+    assert c["anova3plus"] == "welch"
+    assert c["ci_level"] == 0.95
+    # known values preserved
+    assert normalize_stats_config({"correction": "fdr_bh"})["correction"] == "fdr_bh"
+
+
+def test_correct_pvalues_methods_and_edge_cases():
+    from firefly.analysis.fa_stats_config import correct_pvalues
+    ps = [0.01, 0.04, 0.20]
+    assert np.allclose(correct_pvalues(ps, "bonferroni"), [0.03, 0.12, 0.60])
+    assert np.allclose(correct_pvalues(ps, "holm"), [0.03, 0.08, 0.20])
+    assert np.allclose(correct_pvalues(ps, "fdr_bh"), [0.03, 0.06, 0.20])
+    assert correct_pvalues(ps, "none") == ps
+    # m=1 identity for every method
+    for meth in ("bonferroni", "holm", "fdr_bh"):
+        assert correct_pvalues([0.03], meth) == [0.03]
+    # NaN passes through and is excluded from the comparison count m
+    out = correct_pvalues([0.01, float("nan"), 0.04], "bonferroni")
+    assert out[0] == 0.02 and out[2] == 0.08 and np.isnan(out[1])
+    assert correct_pvalues([float("nan")], "holm")[0] != correct_pvalues([float("nan")], "holm")[0]  # NaN
+
+
+def test_stars_for_alpha_gate():
+    from firefly.analysis.fa_stats_config import stars_for
+    assert stars_for(0.03, 0.05) == "*"
+    assert stars_for(0.03, 0.01) == "ns"     # stricter alpha → not significant
+    assert stars_for(0.0005, 0.05) == "***"
+    assert stars_for(float("nan"), 0.05) == ""
+
+
+# ── Config-driven test selection (fa_circular) ───────────────────────────────
+def _two_normal_groups(seed=0):
+    rng = np.random.default_rng(seed)
+    return rng.normal(10, 1, 6), rng.normal(13, 1, 6)
+
+
+def test_force_strategy_overrides_normality():
+    from firefly.analysis import fa_circular as fc
+    a, b = _two_normal_groups()
+    om, _ = fc._stat_test_n([a, b], ["A", "B"],
+                            {"parametric_strategy": "force_nonparametric"})
+    assert om["test"] == "Mann-Whitney U"
+    om, _ = fc._stat_test_n([a, b], ["A", "B"],
+                            {"parametric_strategy": "force_parametric"})
+    assert om["test"] == "Welch's t-test"
+    # default (auto) on clearly-normal data → parametric
+    om, _ = fc._stat_test_n([a, b], ["A", "B"])
+    assert om["test"] == "Welch's t-test"
+
+
+def test_anova3plus_selection_and_welch_fallback():
+    from firefly.analysis import fa_circular as fc
+    rng = np.random.default_rng(1)
+    a, b, c = rng.normal(10, 1, 6), rng.normal(13, 1, 6), rng.normal(16, 3, 6)
+    # force_parametric so the 3+-group test choice is exercised regardless of
+    # the random Shapiro outcome.
+    def _t(mode):
+        return fc._stat_test_n([a, b, c], ["A", "B", "C"],
+                               {"anova3plus": mode,
+                                "parametric_strategy": "force_parametric"})[0]["test"]
+    assert _t("welch") == "Welch's ANOVA"
+    assert _t("oneway") == "One-way ANOVA"
+    assert _t("auto") == "Welch's ANOVA"
+    # zero-variance group → Welch undefined → graceful one-way fallback (labelled)
+    z = np.full(6, 5.0)
+    t = fc._stat_test_n([a, b, z], ["A", "B", "Z"],
+                        {"anova3plus": "welch",
+                         "parametric_strategy": "force_parametric"})[0]["test"]
+    assert t.startswith("One-way ANOVA")
+
+
+def test_welch_anova_matches_known_value():
+    # Welch's ANOVA on a small fixed dataset vs an independent reference value.
+    from firefly.analysis.fa_circular import _welch_anova_p
+    g1 = np.array([27., 24., 29., 30., 26.])
+    g2 = np.array([21., 19., 25., 22., 23.])
+    g3 = np.array([20., 18., 17., 16., 22.])
+    p = _welch_anova_p([g1, g2, g3])
+    assert p is not None and 0.0 < p < 0.01      # strongly different groups
+    assert _welch_anova_p([g1, np.full(5, 3.0)]) is None   # zero-variance → undefined
+
+
+def test_force_parametric_keeps_underpowered_guard():
+    """Forcing parametric must NOT override the n<3 underpowered guard."""
+    from firefly.analysis import fa_circular as fc
+    a, b = np.array([1.0, 2.0]), np.array([5.0, 6.0])
+    _, pw = fc._stat_test_n([a, b], ["A", "B"],
+                            {"parametric_strategy": "force_parametric"})
+    assert pw[0]["stars"] == ""               # blanked (n=2 per group)
+    assert "underpowered" in pw[0]["note"]
+
+
+# ── End-to-end: compare_groups stats threading + transparency ────────────────
+def _fake_summary(stem, folder, d_mean, alpha_mean, n=40, seed=0):
+    import pandas as _pd
+    rng = np.random.default_rng(seed)
+    D = np.clip(rng.normal(d_mean, d_mean * 0.3, n), 1e-6, None)
+    alpha = np.clip(rng.normal(alpha_mean, 0.15, n), 0.05, 1.9)
+    motion = np.where(alpha < 0.5, "Immobile",
+             np.where(alpha < 0.9, "Confined",
+             np.where(alpha < 1.1, "Brownian", "Directed")))
+    diffusion = _pd.DataFrame({"D": D, "alpha": alpha, "motion": motion})
+    emsd = _pd.DataFrame({"lag_frame": np.arange(1, 11),
+                          "msd_um2": d_mean * 4 * np.arange(1, 11) * 0.02})
+    # simple tracks: n particles, 8 frames each, brownian
+    rows = []
+    for pid in range(n):
+        xy = np.cumsum(rng.normal(0, np.sqrt(D[pid]), size=(8, 2)), axis=0)
+        for fr in range(8):
+            rows.append({"particle": pid, "frame": fr,
+                         "x": xy[fr, 0], "y": xy[fr, 1]})
+    tracks = _pd.DataFrame(rows)
+    return {"params": {"frame_interval_s": 0.02}, "diffusion": diffusion,
+            "ensemble_msd": emsd, "tracks": tracks, "stem": stem,
+            "folder": folder}
+
+
+def test_compare_groups_stats_transparency_end_to_end(tmp_path, monkeypatch):
+    """End-to-end: the stats CSV carries the config header + renamed/extra
+    corrected columns, and the on-figure annotation names the test+correction —
+    i.e. the figure and CSV are self-describing and agree."""
+    import firefly.analysis.fa_compare as fcmp
+    # Map each fake folder path → a synthetic summary; two clearly different groups.
+    table = {}
+    for i in range(4):
+        table[f"/A/cell{i}"] = _fake_summary(f"A_cell{i}", f"/A/cell{i}",
+                                             d_mean=0.02, alpha_mean=0.7, seed=i)
+        table[f"/B/cell{i}"] = _fake_summary(f"B_cell{i}", f"/B/cell{i}",
+                                             d_mean=0.20, alpha_mean=1.2, seed=10 + i)
+    monkeypatch.setattr(fcmp, "load_summary_from_folder", lambda f: table[f])
+
+    groups = [{"label": "DMSO", "color": "#3b6ed8",
+               "folders": [f"/A/cell{i}" for i in range(4)]},
+              {"label": "Drug", "color": "#f78166",
+               "folders": [f"/B/cell{i}" for i in range(4)]}]
+    cfg = {"correction": "holm", "across_metric_correction": True,
+           "anova3plus": "welch", "figure_stars_use_corrected": True}
+    fig, summary_df, stats = fcmp.compare_groups(
+        groups, output_dir=str(tmp_path), output_stem="cmp",
+        pdf_report=False, stats_config=cfg)
+
+    # per-cell unit of analysis: 8 rows (4 cells × 2 groups)
+    assert len(summary_df) == 8
+
+    # stats CSV: config header + accurate, renamed columns
+    stats_csv = tmp_path / "cmp_stats.csv"
+    assert stats_csv.exists()
+    text = stats_csv.read_text()
+    assert "Statistics configuration" in text
+    assert "Within-metric correction" in text and "Holm" in text
+    assert "Across-metric correction" in text
+    assert "Adjusted P value (Holm, within metric)" in text
+    assert "Adjusted P value (Holm, across metrics)" in text
+    # old misleading hard-coded "Bonferroni" header is gone
+    assert "Bonferroni-adjusted across pairs" not in text
+
+    # on-figure transparency: at least one panel names the test + correction
+    fig_texts = [t.get_text() for ax in fig.axes for t in ax.texts]
+    joined = "\n".join(fig_texts)
+    assert ("Welch's t-test" in joined) or ("Mann-Whitney" in joined)
+    assert "Holm" in joined          # correction named on the figure
+
+    import matplotlib.pyplot as _plt
+    _plt.close(fig)

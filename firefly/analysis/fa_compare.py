@@ -44,7 +44,7 @@ def _replicate_colors(k):
 
 def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                      ylabel="", record_stats=None, metric_name="",
-                     xtick_labels=None):
+                     xtick_labels=None, stats_config=None, annot_sink=None):
     """Bar chart with mean ± SEM and individual replicate dots, generalised
     to N groups.
 
@@ -89,8 +89,20 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                        fontsize=8 if n > 6 else 9)
     ax.set_ylabel(ylabel)
 
-    # Stats
-    omnibus, pairwise = _stat_test_n(arrs, labels)
+    # Stats — config-driven; the displayed star uses the chosen multiple-
+    # comparison correction so the figure agrees with the CSV (no "* on the
+    # figure / ns in the table" mismatch).  The panel also NAMES the test and
+    # correction, so it is self-describing.
+    from firefly.analysis.fa_stats_config import (
+        normalize_stats_config, correct_pvalues, stars_for, describe_test_label)
+    cfg = normalize_stats_config(stats_config)
+    omnibus, pairwise = _stat_test_n(arrs, labels, cfg)
+    # Within-metric correction onto the pairwise list (also done centrally for
+    # the CSV; computed here so the initial draw is already correct).
+    _wp = correct_pvalues([pw["p"] for pw in pairwise], cfg["correction"])
+    for k, pw in enumerate(pairwise):
+        pw["p_within"] = _wp[k]
+        pw["stars_within"] = stars_for(_wp[k], cfg["alpha"])
     if record_stats is not None and metric_name:
         record_stats[metric_name] = {"omnibus": omnibus, "pairwise": pairwise}
 
@@ -104,41 +116,61 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
             return f"g = {g:.2f} [95% CI {lo:.2f}, {hi:.2f}]"
         return f"g = {g:.2f}"
 
-    # Annotation
-    top_data = max([a.max() if len(a) else 0 for a in arrs] + [max(means) * 1.2 if max(means) > 0 else 1])
-    if n == 2 and pairwise:
-        pair = pairwise[0]
-        note = pair.get("note", "")
-        if np.isfinite(pair["p"]):
-            top = top_data * 1.05
-            ax.plot([0, 0, 1, 1], [top, top * 1.03, top * 1.03, top],
-                    color=sig_col, lw=0.8)
-            # p (+ stars when interpretable) and the effect size with CI; if the
-            # comparison is underpowered (n<3 replicates) show that instead of stars.
-            p_str = (f"p = {pair['p']:.2e}" if pair['p'] < 0.001
-                     else f"p = {pair['p']:.3f}")
-            lines = [f"{p_str}  {pair['stars']}".rstrip()]
+    use_corr = cfg["figure_stars_use_corrected"]
+    corr_caption = describe_test_label("", cfg["correction"],
+                                       cfg["across_metric_correction"])
+
+    def _annot_text(which="within"):
+        """Build the panel's stats annotation. `which` ∈ {'within','across'}
+        selects which corrected star to show (the post-pass switches to
+        'across' when across-metric correction is on)."""
+        if n == 2 and pairwise:
+            pair = pairwise[0]
+            if not np.isfinite(pair.get("p", np.nan)):
+                return None
+            if use_corr:
+                pv = pair.get(f"p_{which}", pair.get("p_within", pair["p"]))
+                st = pair.get(f"stars_{which}", pair.get("stars_within", ""))
+            else:
+                pv, st = pair["p"], pair["stars"]
+            p_str = f"p = {pv:.2e}" if pv < 0.001 else f"p = {pv:.3f}"
+            lines = [pair.get("test", ""), f"{p_str}  {st}".rstrip()]
             g_str = _g_ci_str(pair)
             if g_str:
                 lines.append(g_str)
-            if note:
-                lines.append(note)
-            ax.text(0.5, top * 1.05, "\n".join(lines), ha="center", va="bottom",
-                    fontsize=8, color=sig_col)
-            ax.set_ylim(0, top * 1.42)
-    elif n > 2 and omnibus:
-        # Show test name + omnibus p + stars in the upper-left corner.
-        # Numeric format adapts to magnitude: scientific < 0.001, fixed otherwise.
-        p_val = omnibus['p']
-        p_str = (f"p = {p_val:.2e}" if p_val < 0.001
-                 else f"p = {p_val:.3f}")
-        text = f"{omnibus['test']}\n{p_str}   {omnibus['stars']}"
-        if omnibus.get("note"):
-            text += f"\n{omnibus['note']}"
-        ax.text(0.02, 0.98, text, transform=ax.transAxes,
-                ha="left", va="top", fontsize=8, color=sig_col,
-                bbox=dict(facecolor=palette["PNL"], edgecolor="none",
-                          alpha=0.7, pad=3))
+            lines.append(corr_caption)
+            if pair.get("note"):
+                lines.append(pair["note"])
+            return "\n".join([ln for ln in lines if ln])
+        if n > 2 and omnibus:
+            pv = omnibus["p"]
+            p_str = f"p = {pv:.2e}" if pv < 0.001 else f"p = {pv:.3f}"
+            lines = [omnibus["test"], f"{p_str}   {omnibus['stars']}",
+                     f"pairwise: {corr_caption}"]
+            if omnibus.get("note"):
+                lines.append(omnibus["note"])
+            return "\n".join(lines)
+        return None
+
+    # Annotation (draw + register for the optional across-metric post-pass)
+    top_data = max([a.max() if len(a) else 0 for a in arrs]
+                   + [max(means) * 1.2 if max(means) > 0 else 1])
+    txt = None
+    text = _annot_text("within")
+    if text is not None and n == 2:
+        top = top_data * 1.05
+        ax.plot([0, 0, 1, 1], [top, top * 1.03, top * 1.03, top],
+                color=sig_col, lw=0.8)
+        txt = ax.text(0.5, top * 1.05, text, ha="center", va="bottom",
+                      fontsize=7.5, color=sig_col)
+        ax.set_ylim(0, top * 1.62)
+    elif text is not None and n > 2:
+        txt = ax.text(0.02, 0.98, text, transform=ax.transAxes,
+                      ha="left", va="top", fontsize=7.5, color=sig_col,
+                      bbox=dict(facecolor=palette["PNL"], edgecolor="none",
+                                alpha=0.7, pad=3))
+    if txt is not None and annot_sink is not None and metric_name:
+        annot_sink[metric_name] = (txt, _annot_text)
 
 
 # Qualitative colours for the time-point series in two-factor interaction plots.
@@ -214,7 +246,7 @@ def _gradient_line(ax, x0, y0, x1, y1, c0, c1, lw=1.8, zorder=3, n=48):
 
 def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                       group_colors, palette, ylabel="", headline=None,
-                      card_colors=None):
+                      card_colors=None, stats_config=None):
     """Group × time-point interaction plot: x = TIME POINTS (in the order the
     user assigned them), one mean±SEM line per group drawn in that group's
     assigned colour — a time-course view.  Cell-level points are jittered
@@ -255,7 +287,7 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                 continue
             a = s0.loc[common].to_numpy(dtype=float)
             b = s1.loc[common].to_numpy(dtype=float)
-            p, stars = _paired_test(a, b)
+            p, stars = _paired_test(a, b, stats_config)
             if not np.isfinite(p):
                 continue
             g = _paired_hedges_g(a, b)
@@ -366,7 +398,7 @@ def compare_groups(groups,
                    panels=None, theme="Dark",
                    pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
-                   progress_cb=None):
+                   progress_cb=None, stats_config=None):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
 
@@ -396,6 +428,11 @@ def compare_groups(groups,
     stats       : dict[str, dict]   — per-metric omnibus + pairwise tests
     """
     import matplotlib.pyplot as plt
+    from firefly.analysis.fa_stats_config import normalize_stats_config
+    cfg = normalize_stats_config(stats_config)
+    # Bar-panel annotation handles, so the optional across-metric correction
+    # post-pass can update the on-figure stars to agree with the CSV.
+    panel_annots = {}
 
     if len(groups) < 2:
         raise ValueError(f"Need at least 2 groups; got {len(groups)}")
@@ -539,7 +576,7 @@ def compare_groups(groups,
         paired_df, pair_warn, _dropped = fa_twoway.validate_pairing(summary_df)
         if pair_warn:
             print(f"  Two-way pairing: {pair_warn}")
-        twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df)
+        twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df, stats_config=cfg)
         print(f"  Two-way ANOVA: {twoway_msg}")
 
     # ── Render the figure ────────────────────────────────────────────────────
@@ -628,13 +665,13 @@ def compare_groups(groups,
             _interaction_plot(ax, summary_df, "auc_msd", group_order, tp_order,
                               group_colors, pal, ylabel="AUC (µm²·s)",
                               headline=_twoway_headline(twoway_df, "auc_msd"),
-                              card_colors=card_colors)
+                              card_colors=card_colors, stats_config=cfg)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="AUC (µm²·s)",
-                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks)
+                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
         ax.set_title("Area Under the Curve")
 
     # ── 3. LogD frequency distribution ────────────────────────────────────────
@@ -676,13 +713,13 @@ def compare_groups(groups,
                               tp_order, group_colors, pal,
                               ylabel="Mobile/Immobile ratio",
                               headline=_twoway_headline(twoway_df, "mob_immob_ratio"),
-                              card_colors=card_colors)
+                              card_colors=card_colors, stats_config=cfg)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "mob_immob_ratio"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Mobile/Immobile ratio",
-                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks)
+                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
         ax.set_title("Mobile/Immobile Ratio")
 
     # ── 5. Motion class fractions (stacked bars: x = population, colour = class) ─
@@ -731,7 +768,7 @@ def compare_groups(groups,
         if not two_factor:
             for ci, cname in enumerate(classes):
                 arrs = [fr[:, ci] if len(fr) else np.array([]) for fr in per_group]
-                omn, pw = _stat_test_n(arrs, labels)
+                omn, pw = _stat_test_n(arrs, labels, cfg)
                 stats_records[f"motion_frac_{cname}"] = {"omnibus": omn, "pairwise": pw}
         ax.set_xticks(x)
         # Show the GROUP NAME on the axis — the numeric stand-ins (bar_xticks)
@@ -800,7 +837,7 @@ def compare_groups(groups,
         if not two_factor:
             arrs = [summary_df.loc[summary_df["group"] == lbl, "mean_track_length_s"].values
                     for lbl in labels]
-            omn, pw = _stat_test_n(arrs, labels)
+            omn, pw = _stat_test_n(arrs, labels, cfg)
             stats_records["mean_track_length_s"] = {"omnibus": omn, "pairwise": pw}
 
     # ── 6b. Track count (trajectories detected per group) ─────────────────────
@@ -810,14 +847,14 @@ def compare_groups(groups,
             _interaction_plot(ax, summary_df, "n_tracks", group_order, tp_order,
                               group_colors, pal, ylabel="Tracks (n)",
                               headline=_twoway_headline(twoway_df, "n_tracks"),
-                              card_colors=card_colors)
+                              card_colors=card_colors, stats_config=cfg)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "n_tracks"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Tracks (n)",
                              record_stats=stats_records, metric_name="n_tracks",
-                             xtick_labels=bar_xticks)
+                             xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
         ax.set_title("Tracks detected")
 
     # ── 7. JDD: per-population D + fraction (N groups) ────────────────────────
@@ -1072,14 +1109,14 @@ def compare_groups(groups,
                               tp_order, group_colors, pal,
                               ylabel="Non-Gaussian α₂",
                               headline=_twoway_headline(twoway_df, "nongauss_alpha2"),
-                              card_colors=card_colors)
+                              card_colors=card_colors, stats_config=cfg)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "nongauss_alpha2"]
                     .dropna().to_numpy() for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Non-Gaussian α₂",
                              record_stats=stats_records,
-                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks)
+                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
         ax.set_title("Population heterogeneity (α₂)")
 
     # ── VACF persistence (directional memory) ─────────────────────────────────
@@ -1090,14 +1127,14 @@ def compare_groups(groups,
                               tp_order, group_colors, pal,
                               ylabel="VACF persistence (lag 1)",
                               headline=_twoway_headline(twoway_df, "vacf_persistence"),
-                              card_colors=card_colors)
+                              card_colors=card_colors, stats_config=cfg)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "vacf_persistence"]
                     .dropna().to_numpy() for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="VACF persistence (lag 1)",
                              record_stats=stats_records,
-                             metric_name="vacf_persistence", xtick_labels=bar_xticks)
+                             metric_name="vacf_persistence", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
         ax.set_title("Directional persistence (VACF lag 1)")
 
     # ── Single shared legend ─────────────────────────────────────────────────
@@ -1177,20 +1214,51 @@ def compare_groups(groups,
                 arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
                         .dropna().to_numpy() for lbl in labels]
                 if sum(len(a) for a in arrs) >= 2:
-                    omn, pw = _stat_test_n(arrs, labels)
+                    omn, pw = _stat_test_n(arrs, labels, cfg)
                     stats_records[_m] = {"omnibus": omn, "pairwise": pw}
+
+    # ── Multiple-comparison correction (within metric + optional across) ──────
+    # Correction is applied HERE, centrally, so (a) the across-metric family can
+    # see every p-value and (b) the on-figure stars (drawn from the same
+    # corrected values) agree with the CSV.
+    from firefly.analysis.fa_stats_config import (
+        correct_pvalues, stars_for, correction_display)
+    _alpha, _method = cfg["alpha"], cfg["correction"]
+    # The across-metric family is the pairwise comparisons of the canonical
+    # SCALAR metrics (omnibus rows and per-class motion fractions excluded), so
+    # the family size is reproducible and matches the "scalar metrics" framing.
+    _ACROSS_FAMILY = {"auc_msd", "mob_immob_ratio", "median_D", "median_alpha",
+                      "mean_track_length_s", "n_tracks", "nongauss_alpha2",
+                      "vacf_persistence"}
+    across_pw = []
+    for metric, rec in stats_records.items():
+        pairs = rec.get("pairwise", [])
+        wcorr = correct_pvalues([pw.get("p") for pw in pairs], _method)
+        for k, pw in enumerate(pairs):
+            pw["p_within"] = wcorr[k]
+            pw["stars_within"] = stars_for(wcorr[k], _alpha)
+            pw.setdefault("p_across", np.nan)
+            pw.setdefault("stars_across", "")
+            if metric in _ACROSS_FAMILY and np.isfinite(pw.get("p", np.nan)):
+                across_pw.append(pw)
+    family_size = len(across_pw)
+    if cfg["across_metric_correction"] and across_pw:
+        acorr = correct_pvalues([pw["p"] for pw in across_pw], _method)
+        for pw, ap in zip(across_pw, acorr):
+            pw["p_across"] = ap
+            pw["stars_across"] = stars_for(ap, _alpha)
 
     stats_rows = []
     for metric, rec in stats_records.items():
         omn = rec.get("omnibus")
         if omn:
-            stars = omn["stars"]
-            stars_bonf = stars  # omnibus needs no correction
             stats_rows.append({
                 "metric": metric, "comparison": "omnibus",
                 "test": omn["test"],
-                "p_value": omn["p"], "stars": stars,
-                "p_value_bonferroni": omn["p"], "stars_bonferroni": stars_bonf,
+                "p_value": omn["p"], "stars": omn["stars"],
+                "correction_method": "none (omnibus needs no correction)",
+                "p_value_corrected": omn["p"], "stars_corrected": omn["stars"],
+                "p_value_across_metric": "", "stars_across_metric": "",
                 "n_a": "", "n_b": "", "mean_a": "", "mean_b": "",
                 "sem_a": "", "sem_b": "", "label_a": "all groups", "label_b": "",
                 "cohens_d": "", "hedges_g": "",
@@ -1199,24 +1267,18 @@ def compare_groups(groups,
                 "n_per_group_for_90pct_power": "",
                 "note": omn.get("note", ""),
             })
-        pairs = rec.get("pairwise", [])
-        n_pairs = max(1, len(pairs))
-        for pw in pairs:
-            p = pw["p"]
-            if np.isfinite(p):
-                p_bonf = min(1.0, p * n_pairs)
-                if   p_bonf < 0.001: stars_bonf = "***"
-                elif p_bonf < 0.01:  stars_bonf = "**"
-                elif p_bonf < 0.05:  stars_bonf = "*"
-                else:                stars_bonf = "ns"
-            else:
-                p_bonf = np.nan
-                stars_bonf = ""
+        for pw in rec.get("pairwise", []):
             stats_rows.append({
                 "metric": metric, "comparison": f"{pw['label_i']} vs {pw['label_j']}",
                 "test": pw["test"],
                 "p_value": pw["p"], "stars": pw["stars"],
-                "p_value_bonferroni": p_bonf, "stars_bonferroni": stars_bonf,
+                "correction_method": correction_display(_method),
+                "p_value_corrected": pw.get("p_within"),
+                "stars_corrected": pw.get("stars_within", ""),
+                "p_value_across_metric": (pw.get("p_across")
+                    if cfg["across_metric_correction"] else ""),
+                "stars_across_metric": (pw.get("stars_across", "")
+                    if cfg["across_metric_correction"] else ""),
                 "n_a": pw["n_i"], "n_b": pw["n_j"],
                 "mean_a": pw["mean_i"], "mean_b": pw["mean_j"],
                 "sem_a": pw["sem_i"], "sem_b": pw["sem_j"],
@@ -1230,6 +1292,18 @@ def compare_groups(groups,
                 "note": pw.get("note", ""),
             })
     stats_df = pd.DataFrame(stats_rows)
+
+    # Optional post-pass: when across-metric correction is on, switch the
+    # on-figure stars to the across-metric-corrected value so the figure agrees
+    # with the CSV.  (Within-metric correction was already drawn at panel time.)
+    if cfg["figure_stars_use_corrected"] and cfg["across_metric_correction"]:
+        for _metric, (txt, build) in panel_annots.items():
+            try:
+                new = build("across")
+                if new:
+                    txt.set_text(new)
+            except Exception:
+                pass
 
     # ── Two-factor (group × time point) mixed ANOVA ───────────────────────────
     # Paired design: between=group, within=timepoint, subject=cell.  Scalars run
@@ -1277,7 +1351,7 @@ def compare_groups(groups,
         fig.savefig(pdf_path, bbox_inches="tight", facecolor=fig.get_facecolor())
         summary_df.to_csv(csv_path, index=False)
         if len(stats_df):
-            _write_prism_ttests(stats_csv, stats_df)
+            _write_prism_ttests(stats_csv, stats_df, stats_config=cfg)
         print(f"  Saved: {png_path}")
         print(f"  Saved: {pdf_path}")
         print(f"  Saved: {csv_path}")
@@ -1290,7 +1364,8 @@ def compare_groups(groups,
             try:
                 # Writes split single-table files and prints each saved path.
                 _write_twoway_csv(tw_csv, twoway_df, twoway_msg, drilldown,
-                                  summary_df, group_order, tp_order, pair_warn)
+                                  summary_df, group_order, tp_order, pair_warn,
+                                  stats_config=cfg)
             except Exception as exc:
                 print(f"  Two-way CSV skipped ({type(exc).__name__}: {exc})")
 
@@ -1302,7 +1377,8 @@ def compare_groups(groups,
                                   labels, colors, summary_df, stats_df,
                                   panels=panels, theme=theme, palette=pal,
                                   twoway_df=twoway_df, twoway_msg=twoway_msg,
-                                  drilldown=drilldown, pair_warn=pair_warn)
+                                  drilldown=drilldown, pair_warn=pair_warn,
+                                  stats_config=cfg)
                 print(f"  Saved: {report_path}")
             except Exception as exc:
                 print(f"  PDF report skipped ({type(exc).__name__}: {exc})")
@@ -1391,7 +1467,7 @@ def compare_groups(groups,
 def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
                       summary_df, stats_df, panels, theme, palette,
                       twoway_df=None, twoway_msg=None, drilldown=None,
-                      pair_warn=None):
+                      pair_warn=None, stats_config=None):
     """Multi-page PDF: cover + figure, parameters & folders, statistics, and
     (in two-factor mode) the group × time-point ANOVA tables."""
     from matplotlib.backends.backend_pdf import PdfPages
@@ -1534,15 +1610,24 @@ def _f(v):
         return None
 
 
-def _write_prism_ttests(path, stats_df):
+def _write_prism_ttests(path, stats_df, stats_config=None):
     """Write the per-metric group comparisons in Prism unpaired-t-test
-    'tabular results' style (one sectioned block per metric)."""
+    'tabular results' style (one sectioned block per metric).  A header block
+    records the exact statistical configuration that was applied, so the CSV is
+    self-describing."""
     import csv as _csv
+    from firefly.analysis.fa_stats_config import (
+        normalize_stats_config, config_summary_rows, correction_display)
+    cfg = normalize_stats_config(stats_config)
+    corr_disp = correction_display(cfg["correction"])
     with open(path, "w", newline="") as fh:
         w = _csv.writer(fh)
         w.writerow(["Group comparisons  (per metric)"])
-        w.writerow(["Test", "Welch's t-test (normal) / Mann-Whitney (non-normal); "
-                    "Bonferroni-adjusted across pairs within a metric"])
+        # Exact configuration that produced these results.
+        w.writerow(["Statistics configuration"])
+        for label, value in config_summary_rows(cfg):
+            w.writerow([f"    {label}", value])
+        w.writerow(["    Unit of analysis", "one value per cell / replicate (not per track)"])
         w.writerow([])
         for metric in dict.fromkeys(stats_df["metric"].tolist()):
             block = stats_df[stats_df["metric"] == metric]
@@ -1560,15 +1645,20 @@ def _write_prism_ttests(path, stats_df):
             w.writerow([])
             for _, r in pairs.iterrows():
                 la, lb = r.get("label_a", "A"), r.get("label_b", "B")
-                p = _f(r.get("p_value")); padj = _f(r.get("p_value_bonferroni"))
+                p = _f(r.get("p_value")); padj = _f(r.get("p_value_corrected"))
+                pax = _f(r.get("p_value_across_metric"))
                 ma, mb = _f(r.get("mean_a")), _f(r.get("mean_b"))
                 w.writerow([f"{la}  vs  {lb}"])
                 w.writerow(["    " + str(r.get("test", "t test")), ""])
-                w.writerow(["    P value", _prism_p(p)])
+                w.writerow(["    P value (raw)", _prism_p(p)])
                 w.writerow(["    P value summary", _prism_summary(p)])
                 w.writerow(["    Significantly different (P<0.05)?", _prism_sig(p)])
-                w.writerow(["    Adjusted P value (Bonferroni)", _prism_p(padj)])
+                w.writerow([f"    Adjusted P value ({corr_disp}, within metric)",
+                            _prism_p(padj)])
                 w.writerow(["    Adjusted summary", _prism_summary(padj)])
+                if cfg["across_metric_correction"] and pax is not None:
+                    w.writerow([f"    Adjusted P value ({corr_disp}, across metrics)",
+                                _prism_p(pax)])
                 w.writerow(["How big is the difference?", ""])
                 w.writerow([f"    Mean of {la}", _fnum(ma)])
                 w.writerow([f"    Mean of {lb}", _fnum(mb)])
@@ -1588,7 +1678,7 @@ def _write_prism_ttests(path, stats_df):
 
 
 def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
-                      group_order, tp_order, pair_warn):
+                      group_order, tp_order, pair_warn, stats_config=None):
     """Write the group × time-point ANOVA report in GraphPad-Prism "tabular
     results" style: per metric, a sectioned vertical sheet with the Source-of-
     Variation summary, the full ANOVA table (SS / DF / MS / F / P), the
@@ -1633,6 +1723,11 @@ def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
         w = _csv.writer(fh)
         w.writerow(["Two-way mixed-effects ANOVA  (repeated measures on Time point)"])
         w.writerow(["Model", twoway_msg or ""])
+        from firefly.analysis.fa_stats_config import normalize_stats_config, correction_display
+        _cfg = normalize_stats_config(stats_config)
+        w.writerow(["Sphericity correction", "Greenhouse-Geisser (within-subjects + interaction)"])
+        w.writerow(["Post-hoc correction", correction_display(_cfg["correction"])])
+        w.writerow(["Significance level (alpha)", f"{_cfg['alpha']:g}"])
         w.writerow(["Groups (between-subjects)", ", ".join(map(str, group_order))])
         w.writerow(["Time points (within-subjects)", ", ".join(map(str, tp_order))])
         w.writerow(["Subjects", "biological replicate (cell), paired across time points"])

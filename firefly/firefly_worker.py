@@ -2396,6 +2396,11 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         theme     = p.get("theme", "Dark")
         pdf_report = bool(p.get("pdf_report", True))
         mob_d     = float(p.get("mobile_d_threshold", 0.05))
+        from firefly.analysis.fa_stats_config import (
+            normalize_stats_config, describe_test_label, correction_display)
+        stats_config = normalize_stats_config(p.get("stats_config"))
+        _log(f"  Statistics : {describe_test_label('test=' + stats_config['parametric_strategy'], stats_config['correction'], stats_config['across_metric_correction'])}; "
+             f"alpha={stats_config['alpha']:g}; 3+ groups={stats_config['anova3plus']}")
 
         _log(f"  Output dir : {out_dir}")
         _log(f"  Output stem: {out_stem}")
@@ -2413,7 +2418,8 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
             theme=theme,
             pdf_report=pdf_report,
             mobile_d_threshold=mob_d,
-            progress_cb=_progress_cb)
+            progress_cb=_progress_cb,
+            stats_config=stats_config)
 
         # Compose result paths.  compare_groups saves these by convention:
         figure_path = os.path.join(out_dir, f"{out_stem}.png")

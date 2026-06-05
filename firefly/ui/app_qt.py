@@ -1777,6 +1777,15 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("compare/stem",             self.e_cmp_stem,        "text"),
             ("compare/theme",            self.c_cmp_theme,       "combo"),
             ("compare/pdf_report",       self.c_cmp_pdf,         "check", _bool_cast),
+
+            # ── Statistics tab ────────────────────────────────────────────
+            ("stats/alpha",              self.s_stat_alpha,         "spin",  float),
+            ("stats/correction",         self.c_stat_correction,    "combo"),
+            ("stats/across_metric",      self.c_stat_across_metric, "check", _bool_cast),
+            ("stats/strategy",           self.c_stat_strategy,      "combo"),
+            ("stats/anova3plus",         self.c_stat_anova3,        "combo"),
+            ("stats/ci_level",           self.s_stat_ci,            "spin",  float),
+            ("stats/figure_stars_corrected", self.c_stat_fig_corrected, "check", _bool_cast),
         ]
 
     def _restore_settings(self):
@@ -2800,6 +2809,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             "pdf_report":  bool(self.c_cmp_pdf.isChecked()),
             "panels":      list(selected_panels),
             "mobile_d_threshold": float(self.s_mobile_d_threshold.value()),
+            "stats_config": self._collect_stats_config(),
         }
 
         try:

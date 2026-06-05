@@ -19,4 +19,7 @@ TAB_COMPARE   = "Compare"
 TAB_VISUALISE = "Visualise"
 
 
+TAB_STATISTICS = "Statistics"
+
+
 TAB_REPROCESS = "Re-process"    # was "Post-process"

@@ -18,7 +18,7 @@ from firefly import crash_reporter
 from firefly import cuda_installer
 from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
-                          TAB_VISUALISE, TAB_REPROCESS)
+                          TAB_VISUALISE, TAB_REPROCESS, TAB_STATISTICS)
 from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _make_napari_container_layout_opaque, _hide_napari_chrome,
                         _register_motion_colormap, _open_folder,
@@ -166,6 +166,7 @@ class BuildMixin:
         # into the Preferences dialog when it opens.
         self._figures_widget = self._build_figures_widget()
         self._build_compare_tab()
+        self._build_statistics_tab()
         self._build_visualise_tab()
         # Seal the QTabWidget too — same trick as `_make_napari_container_layout_opaque`.
         # Without this, the natural sizeHint of the widest tab body
@@ -184,6 +185,9 @@ class BuildMixin:
         # widgets) and wire up the tab-change → sidebar-swap signal.
         self._build_remaining_sidebar_pages()
         self.tabs.currentChanged.connect(self._on_tab_changed_swap_sidebar)
+        # Keep the Statistics "test plan" preview in step with the Compare-tab
+        # groups whenever the user switches to it.
+        self.tabs.currentChanged.connect(lambda *_: self._refresh_stats_preview())
 
         # Start on the landing page; main UI activates only after the user
         # picks an action card.
@@ -1948,6 +1952,229 @@ class BuildMixin:
             w.hide()
 
         self.tabs.addTab(tab, TAB_COMPARE)
+
+    # ── Statistics tab ────────────────────────────────────────────────────────
+    _STAT_CORR_MAP   = {"None": "none", "Bonferroni": "bonferroni",
+                        "Holm": "holm", "Benjamini-Hochberg (FDR)": "fdr_bh"}
+    _STAT_STRAT_MAP  = {"Auto (normality test)": "auto",
+                        "Force parametric": "force_parametric",
+                        "Force non-parametric": "force_nonparametric"}
+    _STAT_ANOVA_MAP  = {"Welch's ANOVA": "welch", "One-way ANOVA": "oneway",
+                        "Auto": "auto"}
+    # Scalar metrics shown in the preview (label · whether it's in the
+    # across-metric family).
+    _STAT_PREVIEW_METRICS = [
+        ("MSD area-under-curve",          "auc_msd"),
+        ("Mobile / immobile ratio",       "mob_immob_ratio"),
+        ("Median D",                      "median_D"),
+        ("Median α  (mobile tracks only)", "median_alpha"),
+        ("Mean track length",             "mean_track_length_s"),
+        ("Track count",                   "n_tracks"),
+        ("Population heterogeneity (α₂)", "nongauss_alpha2"),
+        ("Directional persistence (VACF)", "vacf_persistence"),
+    ]
+
+    def _build_statistics_tab(self):
+        """Statistics tab: global, transparent control over the tests the
+        Compare tab runs, plus a live 'test plan' preview so it is obvious which
+        test each metric gets before anything is run."""
+        tab = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(tab)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(6)
+
+        intro = QtWidgets.QLabel(
+            "<b>Statistics</b> — how the Compare tab tests each metric. Every "
+            "choice here is recorded on the figure captions, in the stats CSV, "
+            "and in the PDF report. Tests run on <b>one value per cell / "
+            "replicate</b> (not per track).")
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+
+        sec, gl = self._make_form_section("Statistical tests")
+        gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.s_stat_alpha = self._spin_dbl(
+            0.05, 0.0001, 0.5, step=0.005, decimals=4,
+            tip="Significance level α. A comparison is 'significant' when its\n"
+                "(corrected) p-value < α. The ***/**/* tiers stay at 0.001/0.01/0.05.")
+        gl.addRow("Significance α", self.s_stat_alpha)
+
+        self.c_stat_correction = _QuietComboBox()
+        self.c_stat_correction.addItems(
+            ["None", "Bonferroni", "Holm", "Benjamini-Hochberg (FDR)"])
+        self.c_stat_correction.setCurrentText("Holm")
+        self.c_stat_correction.setToolTip(
+            "Multiple-comparison correction applied to the pairwise tests.\n"
+            "Holm is a uniformly more powerful step-down version of Bonferroni;\n"
+            "Benjamini-Hochberg controls the false-discovery rate instead.")
+        gl.addRow("Correction", self.c_stat_correction)
+
+        self.c_stat_across_metric = QtWidgets.QCheckBox(
+            "Also correct across the 8 scalar metrics (family-wise)")
+        self.c_stat_across_metric.setToolTip(
+            "Scanning all metric panels for significance inflates the\n"
+            "family-wise false-positive rate. When on, the correction is also\n"
+            "applied across every scalar metric's pairwise tests, reported in\n"
+            "the CSV and reflected in the on-figure stars.")
+        gl.addRow("", self.c_stat_across_metric)
+
+        self.c_stat_strategy = _QuietComboBox()
+        self.c_stat_strategy.addItems(
+            ["Auto (normality test)", "Force parametric", "Force non-parametric"])
+        self.c_stat_strategy.setToolTip(
+            "Auto: a Shapiro-Wilk normality test per metric picks parametric\n"
+            "(t-test / ANOVA) vs non-parametric (Mann-Whitney / Kruskal-Wallis).\n"
+            "Force the choice to keep one family across all metrics.")
+        gl.addRow("Parametric strategy", self.c_stat_strategy)
+
+        self.c_stat_anova3 = _QuietComboBox()
+        self.c_stat_anova3.addItems(["Welch's ANOVA", "One-way ANOVA", "Auto"])
+        self.c_stat_anova3.setToolTip(
+            "Parametric test for 3+ groups. Welch's ANOVA does NOT assume equal\n"
+            "variances (consistent with the Welch's t-test used for 2 groups);\n"
+            "one-way ANOVA does. Auto = Welch's.")
+        gl.addRow("Test for 3+ groups", self.c_stat_anova3)
+
+        self.s_stat_ci = self._spin_dbl(
+            0.95, 0.50, 0.999, step=0.01, decimals=3,
+            tip="Confidence-interval coverage for the Hedges' g effect sizes.")
+        gl.addRow("Effect-size CI", self.s_stat_ci)
+
+        self.c_stat_fig_corrected = QtWidgets.QCheckBox(
+            "Use corrected p-values for on-figure significance stars")
+        self.c_stat_fig_corrected.setChecked(True)
+        self.c_stat_fig_corrected.setToolTip(
+            "On (recommended): the stars drawn on the figure use the chosen\n"
+            "correction, so the figure agrees with the CSV. Off: figure shows\n"
+            "raw-p stars (the corrected values are still in the CSV).")
+        gl.addRow("", self.c_stat_fig_corrected)
+        v.addWidget(sec)
+
+        v.addWidget(QtWidgets.QLabel(
+            "<b>Test plan</b> — the test each metric gets with the current "
+            "settings and the groups defined on the Compare tab:"))
+        self.tbl_stats_preview = QtWidgets.QTableWidget(0, 4)
+        self.tbl_stats_preview.setHorizontalHeaderLabels(
+            ["Metric", "Design", "Test", "Correction"])
+        self.tbl_stats_preview.verticalHeader().setVisible(False)
+        self.tbl_stats_preview.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tbl_stats_preview.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        _hdr = self.tbl_stats_preview.horizontalHeader()
+        _hdr.setStretchLastSection(True)
+        _hdr.setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        v.addWidget(self.tbl_stats_preview, 1)
+
+        cap = QtWidgets.QLabel(
+            "<i>An 'auto' test is decided per metric from a Shapiro-Wilk "
+            "normality test at run time — both possibilities are shown here. "
+            "Underpowered comparisons (fewer than 3 replicates per group) are "
+            "reported but not starred.</i>")
+        cap.setWordWrap(True)
+        v.addWidget(cap)
+
+        for _w in (self.s_stat_alpha, self.s_stat_ci):
+            _w.valueChanged.connect(lambda *_: self._refresh_stats_preview())
+        for _w in (self.c_stat_correction, self.c_stat_strategy, self.c_stat_anova3):
+            _w.currentIndexChanged.connect(lambda *_: self._refresh_stats_preview())
+        for _w in (self.c_stat_across_metric, self.c_stat_fig_corrected):
+            _w.toggled.connect(lambda *_: self._refresh_stats_preview())
+
+        self._propagate_form_tooltips(tab)
+        self.tabs.addTab(tab, TAB_STATISTICS)
+        self._refresh_stats_preview()
+
+    def _collect_stats_config(self) -> dict:
+        """Read the Statistics-tab widgets into the canonical stats_config dict
+        (see fa_stats_config)."""
+        return {
+            "alpha":      float(self.s_stat_alpha.value()),
+            "correction": self._STAT_CORR_MAP.get(
+                self.c_stat_correction.currentText(), "holm"),
+            "across_metric_correction": bool(self.c_stat_across_metric.isChecked()),
+            "parametric_strategy": self._STAT_STRAT_MAP.get(
+                self.c_stat_strategy.currentText(), "auto"),
+            "anova3plus": self._STAT_ANOVA_MAP.get(
+                self.c_stat_anova3.currentText(), "welch"),
+            "ci_level": float(self.s_stat_ci.value()),
+            "figure_stars_use_corrected": bool(self.c_stat_fig_corrected.isChecked()),
+        }
+
+    def _refresh_stats_preview(self):
+        """Rebuild the test-plan preview table from the current config + the
+        group/time-point structure on the Compare tab.  Branch selection only —
+        it can't know normality (that needs the data), so 'auto' rows show both
+        possibilities."""
+        if not hasattr(self, "tbl_stats_preview"):
+            return
+        try:
+            cfg = self._collect_stats_config()
+        except Exception:
+            return
+        from firefly.analysis.fa_stats_config import describe_test_label
+        try:
+            from firefly.analysis.fa_twoway import HAVE_PINGOUIN as _have_pg
+        except Exception:
+            _have_pg = False
+        # Group / time-point structure from the Compare cards.
+        cards = []
+        for c in getattr(self, "_cmp_group_cards", []) or []:
+            try:
+                st = c.get_state()
+            except Exception:
+                continue
+            if st.get("folders"):
+                cards.append(st)
+        labels = list(dict.fromkeys(str(c.get("label", "")) for c in cards))
+        paired = any(str(c.get("timepoint", "")).strip() for c in cards)
+        n_groups = len(labels)
+
+        corr_caption = describe_test_label("", cfg["correction"],
+                                           cfg["across_metric_correction"])
+
+        def _test_for(metric):
+            strat = cfg["parametric_strategy"]
+            if n_groups < 2:
+                return ("—", "add ≥2 groups on the Compare tab")
+            if paired:
+                # Two-factor design → mixed ANOVA headline + simple effects.
+                design = f"paired · group × time"
+                if n_groups >= 2:
+                    base2 = ("Paired t / Wilcoxon (Pre→Post change); "
+                             "Welch's t / Mann-Whitney (between groups)")
+                    if strat == "force_parametric":
+                        base2 = "Paired t (change); Welch's t (between)"
+                    elif strat == "force_nonparametric":
+                        base2 = "Wilcoxon (change); Mann-Whitney (between)"
+                    note = "" if _have_pg else "  [install pingouin for the ANOVA]"
+                    return (design,
+                            "Two-way mixed ANOVA (GG-corrected) · " + base2 + note)
+            # Unpaired N-group design.
+            design = f"unpaired · {n_groups} group(s)"
+            if n_groups == 2:
+                para, nonpara = "Welch's t-test", "Mann-Whitney U"
+            else:
+                nonpara = "Kruskal-Wallis"
+                para = {"welch": "Welch's ANOVA", "oneway": "One-way ANOVA",
+                        "auto": "Welch's ANOVA"}[cfg["anova3plus"]]
+            if strat == "force_parametric":
+                return (design, para)
+            if strat == "force_nonparametric":
+                return (design, nonpara)
+            return (design, f"{para}  or  {nonpara}  (auto)")
+
+        rows = self._STAT_PREVIEW_METRICS
+        self.tbl_stats_preview.setRowCount(len(rows))
+        for i, (disp, metric) in enumerate(rows):
+            design, test = _test_for(metric)
+            for col, txt in enumerate((disp, design, test, corr_caption)):
+                item = QtWidgets.QTableWidgetItem(str(txt))
+                item.setToolTip(str(txt))
+                self.tbl_stats_preview.setItem(i, col, item)
+        self.tbl_stats_preview.resizeColumnsToContents()
 
     def _build_visualise_tab(self):
         """Build the Visualise tab — toolbar + lazy-loaded napari viewer.

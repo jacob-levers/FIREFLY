@@ -149,10 +149,20 @@ def validate_pairing(df):
 
 
 # ── scalar two-way mixed ANOVA ───────────────────────────────────────────────
-def compute_twoway_anova(df, metrics=None):
+# Map the global correction key (fa_stats_config) → pingouin's padjust token.
+_PADJUST_MAP = {"none": "none", "bonferroni": "bonf", "holm": "holm",
+                "fdr_bh": "fdr_bh"}
+
+
+def compute_twoway_anova(df, metrics=None, stats_config=None):
     """Two-way mixed ANOVA per scalar metric.
 
     between = ``group`` · within = ``timepoint`` · subject = ``cell``.
+
+    The mixed-ANOVA model (Greenhouse-Geisser sphericity correction) is fixed;
+    `stats_config` only controls the post-hoc multiple-comparison method
+    (mapped to pingouin's ``padjust``), so the two-way post-hoc matches the
+    global correction choice.
 
     Returns ``(results_df, message)``.  ``results_df`` has ``section='anova'``
     rows (effect = Group / timepoint / Interaction, with F, df, p_unc, p_GG,
@@ -163,6 +173,9 @@ def compute_twoway_anova(df, metrics=None):
         return None, "pingouin not installed — two-way ANOVA skipped."
     if metrics is None:
         metrics = SCALAR_METRICS
+    from firefly.analysis.fa_stats_config import normalize_stats_config
+    _cfg = normalize_stats_config(stats_config)
+    _padjust = _PADJUST_MAP.get(_cfg["correction"], "holm")
 
     groups = sorted(df["group"].unique())
     tps = sorted(df["timepoint"].unique())
@@ -205,7 +218,7 @@ def compute_twoway_anova(df, metrics=None):
         try:
             pw = _pg.pairwise_tests(data=sub, dv=m, within="timepoint",
                                     subject="cell", between="group",
-                                    padjust="holm")
+                                    padjust=_padjust)
             for _, r in pw.iterrows():
                 # For the interaction ('timepoint * group') rows, pingouin puts
                 # the time-point level being contrasted in the 'timepoint' col.
@@ -227,7 +240,8 @@ def compute_twoway_anova(df, metrics=None):
     if not rows:
         return None, "No metric had enough paired data for a two-way ANOVA."
     msg = (f"pingouin {_PG_VERSION} mixed_anova "
-           f"(between=group, within=timepoint, subject=cell; GG-corrected)")
+           f"(between=group, within=timepoint, subject=cell; GG-corrected; "
+           f"post-hoc padjust={_padjust})")
     return pd.DataFrame(rows), msg
 
 
