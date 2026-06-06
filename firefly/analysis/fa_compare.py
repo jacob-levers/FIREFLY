@@ -754,10 +754,17 @@ def compare_groups(groups,
                              record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
         ax.set_title("Area Under the Curve")
 
-    # ── 3. LogD frequency distribution ────────────────────────────────────────
+    # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────
     if "logd_dist" in panels:
         ax = _next_ax()
         bins = np.linspace(-5, 1, 31)
+        binwidth = bins[1] - bins[0]
+        # Pool each group's log10(D), keeping the honesty clip: the sub-resolution
+        # (immobile) tail is clipped INTO the bin range so it stays in the
+        # distribution instead of being silently dropped — which would inflate the
+        # mobile frequencies and hide an immobilising drug effect.  Both FIREFLY
+        # and PALM-Tracer produce this ~10-12% immobile floor.
+        pooled_per_group = []
         for grp_label, summaries, color in _zip_groups():
             all_logD = []
             for s in summaries:
@@ -767,23 +774,62 @@ def compare_groups(groups,
                 vals = vals[vals > 0]
                 if len(vals): all_logD.append(np.log10(vals))
             if not all_logD: continue
-            pooled = np.concatenate(all_logD)
-            # Clip the sub-resolution (immobile) tail to the bin range so it
-            # piles into the first bin and stays IN the normalisation, instead
-            # of being silently dropped by np.histogram (which would inflate the
-            # mobile frequencies and hide an immobilising drug effect).  Both
-            # FIREFLY and PALM-Tracer produce this ~10-12% immobile floor.
-            pooled = np.clip(pooled, bins[0], bins[-1])
-            counts, edges = np.histogram(pooled, bins=bins)
-            centers = 0.5 * (edges[:-1] + edges[1:])
-            frac = counts / counts.sum() if counts.sum() else counts
-            ax.plot(centers, frac, "-o", color=color, label=grp_label, ms=4, lw=1.2)
-        ax.axvline(np.log10(mobile_d_threshold), color=pal["GRD"], ls="--", lw=0.8,
-                   label=f"D = {mobile_d_threshold} µm²/s")
-        ax.set_xlabel("log₁₀ D  (µm²/s)")
-        ax.set_ylabel("Relative frequency")
-        ax.set_title("LogD Frequency Distribution")
-        ax.legend(frameon=False, loc="best")
+            pooled = np.clip(np.concatenate(all_logD), bins[0], bins[-1])
+            pooled_per_group.append((grp_label, color, pooled))
+        xk  = np.linspace(bins[0], bins[-1], 300)
+        thr = np.log10(mobile_d_threshold)
+
+        def _logd_kde(vals):
+            v = np.asarray(vals, float); v = v[np.isfinite(v)]
+            if len(v) < 2 or np.ptp(v) < 1e-9:
+                return None
+            try:
+                return _stats.gaussian_kde(v)(xk)
+            except Exception:
+                return None
+
+        if len(pooled_per_group) >= 4:
+            # ── Ridgeline: one filled KDE per group, stacked with a vertical
+            # offset and directly labelled.  A 4+-group KDE overlay turns to
+            # spaghetti; a ridgeline stays legible (Wilke / r-graph-gallery).
+            dens = [(lbl, col, _logd_kde(p)) for lbl, col, p in pooled_per_group]
+            maxd = max((float(np.nanmax(y)) for _, _, y in dens if y is not None),
+                       default=1.0) or 1.0
+            step = maxd * 0.45                      # overlap between ridges
+            for i, (lbl, col, y) in enumerate(reversed(dens)):
+                base = i * step
+                ax.axhline(base, color=pal["GRD"], lw=0.5, alpha=0.4, zorder=1)
+                if y is not None:
+                    ax.fill_between(xk, base, base + y, color=col, alpha=0.75,
+                                    linewidth=0, zorder=2 + i)
+                    ax.plot(xk, base + y, color=pal["BG"], lw=0.8, zorder=2 + i)
+                ax.text(bins[0], base, f" {lbl}", va="bottom", ha="left",
+                        fontsize=7.5, color=col, fontweight="bold", zorder=20)
+            ax.axvline(thr, color=pal["GRD"], ls="--", lw=0.8, zorder=15)
+            ax.set_yticks([])
+            ax.set_ylim(-step * 0.3, (len(dens) - 1) * step + maxd * 1.15)
+            ax.set_xlabel("log₁₀ D  (µm²/s)")
+            ax.set_title("LogD Distribution  (ridgeline)")
+        else:
+            # ── Overlaid filled KDEs (≤3 groups) ─────────────────────────────
+            for lbl, col, pooled in pooled_per_group:
+                y = _logd_kde(pooled)
+                if y is not None:
+                    ax.fill_between(xk, 0.0, y, color=col, alpha=0.22,
+                                    linewidth=0, zorder=2)
+                    ax.plot(xk, y, color=col, lw=1.6, label=lbl, zorder=3)
+                else:
+                    # singular / sparse → original frequency line
+                    counts, edges = np.histogram(pooled, bins=bins)
+                    centers = 0.5 * (edges[:-1] + edges[1:])
+                    frac = counts / counts.sum() if counts.sum() else counts
+                    ax.plot(centers, frac, "-o", color=col, label=lbl, ms=4, lw=1.2)
+            ax.axvline(thr, color=pal["GRD"], ls="--", lw=0.8,
+                       label=f"D = {mobile_d_threshold} µm²/s")
+            ax.set_xlabel("log₁₀ D  (µm²/s)")
+            ax.set_ylabel("Density")
+            ax.set_title("LogD Frequency Distribution")
+            ax.legend(frameon=False, loc="best")
 
     # ── 4. Mobile/Immobile ratio bar ──────────────────────────────────────────
     if "mob_immob" in panels:

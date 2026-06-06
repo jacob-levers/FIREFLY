@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.28.0
+
+### Cleaner distributions: filled KDEs + ridgeline (Phase 3)
+
+Overlaid semi-transparent histograms turn to mud once several classes/groups
+stack up. Replaced them with smooth **filled KDE** curves (Wilke /
+r-graph-gallery practice) — same data, far easier to read.
+
+- **Single-run figure — panels E (log₁₀ D), G (α), N (MSS slope).** Each motion
+  class is now a translucent filled KDE with a thin saturated outline instead of
+  overlaid histogram bars. The curves are **count-scaled** so the y-axis stays a
+  count and every reference line/annotation is unchanged. Sparse or
+  zero-variance classes fall back to a histogram automatically.
+  - Panel E keeps the immobile floor honest: the KDE traces only the *resolved*
+    (mobile) tracks, and the immobile fraction stays shown as the dotted floor
+    line + "X%" label (it is not smeared into a fake bump).
+- **Comparison figure — LogD distribution.** Up to 3 groups: overlaid filled
+  KDEs. **4+ groups: a ridgeline plot** — one filled KDE per group, stacked with
+  a small offset and labelled directly in the group's colour, so a many-group
+  comparison stays legible instead of becoming spaghetti. The mobile-D threshold
+  line and the sub-resolution clip are preserved.
+
+Presentation only — the underlying values, classifications and statistics are
+unchanged.
+
 ## v2.27.0
 
 ### Single-run figure: pie chart → 100% stacked bar (Phase 2)

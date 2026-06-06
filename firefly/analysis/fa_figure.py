@@ -76,6 +76,39 @@ def _draw_track(grp, color, ax, lw=0.8, alpha=0.6):
     ax.add_collection(lc)
 
 
+def _filled_kde(ax, x_grid, binwidth, values, color, label, *,
+                bins=None, fill_alpha=0.25, lw=1.4):
+    """Draw one motion class's distribution as a translucent **filled KDE**
+    (Wilke / r-graph-gallery: a smooth curve reads far better than overlaid
+    semi-transparent histogram bars, which turn to mud once several classes pile
+    up).
+
+    The KDE is **count-scaled** (``density × n × binwidth``) so the y-axis stays
+    a count — matching the histogram idiom this replaces, keeping every existing
+    annotation/limit valid.  Robust by design: a class with <2 finite values,
+    zero variance, or a singular covariance (a value pile-up) can't be KDE'd, so
+    it falls back to that class's histogram; empty input is a no-op.
+    """
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if len(v) == 0:
+        return
+    if len(v) >= 2 and np.ptp(v) > 1e-9:
+        try:
+            kde = gaussian_kde(v)
+            y = kde(x_grid) * len(v) * binwidth
+            ax.fill_between(x_grid, 0.0, y, color=color, alpha=fill_alpha,
+                            linewidth=0, zorder=2)
+            ax.plot(x_grid, y, color=color, lw=lw, label=label, zorder=3)
+            return
+        except Exception:
+            pass
+    # Fallback — sparse / singular: this class's histogram (still labelled).
+    if bins is not None:
+        ax.hist(v, bins=bins, color=color, alpha=0.55, label=label,
+                edgecolor="none", zorder=2)
+
+
 def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 pixel_size, frame_interval, output_path=None, roi_mask=None,
                 fig_theme="Dark", proj_cmap="Inferno", jdd=None,
@@ -293,19 +326,20 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         pct_imm = 100.0 * n_imm / n_total
         ld   = np.log10(dv.clip(lower=_D_RES_FLOOR))
         bins = np.linspace(ld.min(), ld.max(), 40)
+        bw   = bins[1] - bins[0]
+        # Per-class filled KDE of the RESOLVED (mobile, D > floor) values only —
+        # the smooth curves aren't distorted by the hard pile-up at the floor,
+        # which is shown separately as the axvline + % below (don't smear the
+        # delta into a fake bump).
+        mob_all = np.log10(dv[dv > _D_RES_FLOOR])
+        xk = (np.linspace(float(mob_all.min()), float(ld.max()), 300)
+              if len(mob_all) else np.linspace(float(ld.min()), float(ld.max()), 300))
         for m in MORD:
-            sub = diff_df[(diff_df["motion"]==m) & (diff_df["D"]>0)]
+            sub = diff_df[(diff_df["motion"] == m) & (diff_df["D"] > _D_RES_FLOOR)]
             if len(sub):
-                ax.hist(np.log10(sub["D"].clip(lower=_D_RES_FLOOR)),bins=bins,
-                        color=MC[m],alpha=0.7,label=m,edgecolor="none")
-        # KDE traces the RESOLVED (mobile) distribution only, so it isn't
-        # distorted by the hard pile-up at the floor.
-        mob = np.log10(dv[dv > _D_RES_FLOOR])
-        if len(mob) > 10:
-            kde = gaussian_kde(mob)
-            xk  = np.linspace(np.log10(_D_RES_FLOOR), ld.max(), 300)
-            ax.plot(xk, kde(xk)*len(mob)*(bins[1]-bins[0]),
-                    "-",color=_kde_col,lw=2)
+                _filled_kde(ax, xk, bw,
+                            np.log10(sub["D"].clip(lower=_D_RES_FLOOR)),
+                            MC[m], m, bins=bins)
         ax.axvline(np.log10(dv.median()),color=ACC,ls="--",lw=1.5,
                    label=f"Median={dv.median():.4f}")
         # Honest label for the floor pile-up.
@@ -373,11 +407,13 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     av = av[(av>-1) & (av<4)]
     if len(av) > 5:
         ba = np.linspace(av.min(), av.max(), 40)
+        bw = ba[1] - ba[0]
+        xk = np.linspace(float(av.min()), float(av.max()), 300)
         for m in MORD:
             sub = diff_df[(diff_df["motion"]==m) & diff_df["alpha"].notna()]
             if len(sub):
-                ax.hist(sub["alpha"].clip(-1,4),bins=ba,
-                        color=MC[m],alpha=0.7,label=m,edgecolor="none")
+                _filled_kde(ax, xk, bw, sub["alpha"].clip(-1, 4),
+                            MC[m], m, bins=ba)
         for xv,lb,ls in [(0.5,"a=0.5",":"),(1.0,"a=1 Brownian","--"),(2.0,"a=2 directed",":")]:
             ax.axvline(xv,color=GRD,ls=ls,lw=1.2,label=lb)
         # Honest note: immobile / jitter-dominated tracks have a flat MSD, so no
@@ -564,12 +600,13 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ms = diff_df["mss_slope"].dropna()
         ms = ms[ms.between(-0.5, 1.5)]
         bins = np.linspace(ms.min(), ms.max(), 40)
+        bw = bins[1] - bins[0]
+        xk = np.linspace(float(ms.min()), float(ms.max()), 300)
         for m in MORD:
             sub = diff_df[(diff_df["motion"] == m) & diff_df["mss_slope"].notna()]
             sub = sub[sub["mss_slope"].between(-0.5, 1.5)]
             if len(sub):
-                ax.hist(sub["mss_slope"], bins=bins, color=MC[m],
-                        alpha=0.7, label=m, edgecolor="none")
+                _filled_kde(ax, xk, bw, sub["mss_slope"], MC[m], m, bins=bins)
         for xv, lb, ls_ in [(0.25, "Confined", ":"), (0.5, "Brownian", "--"), (0.75, "Directed", ":")]:
             ax.axvline(xv, color=GRD, ls=ls_, lw=1.2, label=lb)
         ax.set_xlabel("MSS slope  (ν)", fontsize=9)
