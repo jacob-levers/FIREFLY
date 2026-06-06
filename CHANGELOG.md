@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.25.0
+
+### Cleaner, more modern figures (global style pass)
+
+A consistent restyle of every panel in both the single-run figure and the
+comparison figure, following modern data-viz practice (r-graph-gallery / Wilke):
+
+- **Removed the top and right spines** from every data panel (the classic
+  "chart junk") and thinned the remaining axes — panels now read as open L-shaped
+  axes instead of heavy boxes. Trajectory / image / polar panels keep their frame.
+- **Lighter, subtler gridlines** (thin dashed, low alpha) everywhere.
+- **The Publication theme now uses a clean sans-serif font** (the journal
+  standard) instead of serif. The screen themes are unchanged — Dark/AMOLED keep
+  their monospace look, Light stays sans-serif.
+
+Same data and numbers — purely a styling pass (new shared `style_axes` helper).
+This is the foundation; later releases improve specific charts (the pie, the
+distribution plots, and the SuperPlots).
+
 ## v2.24.0
 
 ### Presets show when you've changed something

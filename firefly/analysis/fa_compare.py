@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
                                            motion_class_colors)
-from firefly.analysis.fa_theme import _theme_palette
+from firefly.analysis.fa_theme import _theme_palette, style_axes
 from firefly.analysis.fa_palmtracer import load_summary_from_folder
 
 import numpy as np
@@ -646,7 +646,7 @@ def compare_groups(groups,
         "axes.edgecolor":  pal["GRD"], "axes.facecolor":  pal["PNL"],
         "figure.facecolor": pal["BG"], "figure.edgecolor": pal["BG"],
         "savefig.facecolor": pal["BG"], "savefig.edgecolor": pal["BG"],
-        "grid.color":      pal["GRD"], "grid.alpha": 0.4,
+        "grid.color":      pal["GRD"], "grid.alpha": 0.22,
         "font.family":     pal["FONT"],
         "legend.facecolor": pal["PNL"], "legend.edgecolor": pal["GRD"],
     })
@@ -1160,7 +1160,7 @@ def compare_groups(groups,
                          "its own total)", pad=14, fontsize=9)
             ax.legend(loc="upper right", bbox_to_anchor=(1.20, 1.10),
                       frameon=False, fontsize=8)
-            ax.grid(True, ls=":", alpha=0.4)
+            ax.grid(True, ls="--", alpha=0.22, lw=0.5)
         else:
             ax.text(0.5, 0.5, "No turning-angle data",
                     ha="center", va="center", transform=ax.transAxes,
@@ -1250,8 +1250,11 @@ def compare_groups(groups,
     fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"])
     for ax in axes[:n_plots]:
         ax.set_facecolor(pal["PNL"])
-        for spine in ax.spines.values():
-            spine.set_edgecolor(pal["GRD"])
+        # Modern look: drop the top/right spines, thin the rest (polar +
+        # image panels keep their frame — handled inside style_axes).
+        style_axes(ax, pal,
+                   kind=("polar" if getattr(ax, "name", "") == "polar"
+                         else "cartesian"))
     # Reserve a bottom strip for the shared legend (grows with its row count).
     bottom = min(0.18, 0.03 + 0.026 * legend_rows) if legend_rows else 0.0
     fig.tight_layout(rect=[0, bottom, 1, 0.96])

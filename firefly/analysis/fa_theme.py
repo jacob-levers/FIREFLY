@@ -40,7 +40,7 @@ def _theme_palette(theme: str) -> dict:
                "TXT":  "#000000", "MUT":  "#444444",
                "GRD":  "#cccccc", "ACC":  "#333333",
                "HDR_BG":"#000000", "HDR_TXT":"#ffffff",
-               "ZEBRA":"#f2f2f2", "FONT": "serif",
+               "ZEBRA":"#f2f2f2", "FONT": "DejaVu Sans",
                "ARROW":"#000000",
                "BAR_FILL":"#333333", "SIG":"#000000"}
     elif t == "AMOLED":
@@ -74,3 +74,36 @@ def _theme_palette(theme: str) -> dict:
         def __missing__(self, key):
             return self.get("TXT", "#000000")
     return _PalDict(pal)
+
+
+def style_axes(ax, pal, *, kind="cartesian"):
+    """Give a figure axes a clean, modern look: drop the top + right spines
+    (chart junk) and thin/lighten the remaining ones.  Theme-aware via
+    ``pal["GRD"]`` / ``pal["TXT"]`` (accepts the full palette dict or a small
+    ``{"GRD":..,"TXT":..}``).
+
+    Polar axes (the radial panels) and image panels (imshow) keep their full
+    frame — despining those looks wrong — so only their spine colour/width is
+    tidied.  Pass ``kind="image"`` for imshow panels; image axes are also
+    auto-detected via ``ax.images``.  Grids are left to the caller."""
+    try:
+        grd = pal["GRD"]
+        txt = pal["TXT"]
+    except Exception:
+        return
+    try:
+        if ax.name == "polar":
+            return
+        if kind == "image" or bool(ax.images):
+            for sp in ax.spines.values():
+                sp.set_edgecolor(grd)
+                sp.set_linewidth(0.8)
+            return
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        for s in ("left", "bottom"):
+            ax.spines[s].set_edgecolor(grd)
+            ax.spines[s].set_linewidth(0.8)
+        ax.tick_params(length=3, width=0.7, colors=txt)
+    except Exception:
+        pass
