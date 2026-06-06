@@ -88,11 +88,14 @@ def _filled_kde(ax, x_grid, binwidth, values, color, label, *,
     annotation/limit valid.  Robust by design: a class with <2 finite values,
     zero variance, or a singular covariance (a value pile-up) can't be KDE'd, so
     it falls back to that class's histogram; empty input is a no-op.
+
+    Returns the peak height drawn (so the caller can size the y-axis headroom),
+    or 0.0 if nothing was drawn.
     """
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]
     if len(v) == 0:
-        return
+        return 0.0
     if len(v) >= 2 and np.ptp(v) > 1e-9:
         try:
             kde = gaussian_kde(v)
@@ -100,13 +103,15 @@ def _filled_kde(ax, x_grid, binwidth, values, color, label, *,
             ax.fill_between(x_grid, 0.0, y, color=color, alpha=fill_alpha,
                             linewidth=0, zorder=2)
             ax.plot(x_grid, y, color=color, lw=lw, label=label, zorder=3)
-            return
+            return float(np.nanmax(y)) if len(y) else 0.0
         except Exception:
             pass
     # Fallback — sparse / singular: this class's histogram (still labelled).
     if bins is not None:
-        ax.hist(v, bins=bins, color=color, alpha=0.55, label=label,
-                edgecolor="none", zorder=2)
+        n_, _, _ = ax.hist(v, bins=bins, color=color, alpha=0.55, label=label,
+                           edgecolor="none", zorder=2)
+        return float(np.nanmax(n_)) if len(n_) else 0.0
+    return 0.0
 
 
 def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
@@ -327,33 +332,42 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ld   = np.log10(dv.clip(lower=_D_RES_FLOOR))
         bins = np.linspace(ld.min(), ld.max(), 40)
         bw   = bins[1] - bins[0]
+        floor_x = float(np.log10(_D_RES_FLOOR))
+        peaks = []
         # Per-class filled KDE of the RESOLVED (mobile, D > floor) values only —
-        # the smooth curves aren't distorted by the hard pile-up at the floor,
-        # which is shown separately as the axvline + % below (don't smear the
-        # delta into a fake bump).
+        # the smooth curves aren't distorted by the hard pile-up at the floor.
         mob_all = np.log10(dv[dv > _D_RES_FLOOR])
         xk = (np.linspace(float(mob_all.min()), float(ld.max()), 300)
               if len(mob_all) else np.linspace(float(ld.min()), float(ld.max()), 300))
         for m in MORD:
             sub = diff_df[(diff_df["motion"] == m) & (diff_df["D"] > _D_RES_FLOOR)]
             if len(sub):
-                _filled_kde(ax, xk, bw,
-                            np.log10(sub["D"].clip(lower=_D_RES_FLOOR)),
-                            MC[m], m, bins=bins)
+                peaks.append(_filled_kde(
+                    ax, xk, bw, np.log10(sub["D"].clip(lower=_D_RES_FLOOR)),
+                    MC[m], m, bins=bins))
+        # Below-resolution (immobile) tracks are a true delta at the floor — they
+        # can't be resolved, so they're drawn as a hatched bar AT the floor (not
+        # smeared into a fake KDE bump), on the same count axis as the curves so
+        # the immobile peak is visible alongside the mobile distribution.
+        if n_imm > 0:
+            ax.bar(floor_x, n_imm, width=bw * 1.8,
+                   color=MC.get("Immobile", "#e05252"), edgecolor=PNL,
+                   linewidth=1.0, hatch="///", alpha=0.9, zorder=3,
+                   label="Immobile / below res.")
+            peaks.append(float(n_imm))
         ax.axvline(np.log10(dv.median()),color=ACC,ls="--",lw=1.5,
                    label=f"Median={dv.median():.4f}")
-        # Honest label for the floor pile-up.
+        # Headroom above the tallest peak so nothing (a sharp KDE peak or the
+        # floor bar) is clipped by the top axis.
+        ymax = max(peaks) if peaks else 1.0
+        ax.set_ylim(0, ymax * 1.42)
+        # Label the floor bar directly with its share.
         if pct_imm >= 0.5:
-            ax.axvline(np.log10(_D_RES_FLOOR),color=TXT,ls=":",lw=1.0,alpha=0.5)
-            # Sit the note in the empty gap to the RIGHT of the floor pile-up
-            # bar (which hugs the left edge) so the text never overlaps it.
-            ax.text(0.30, 0.97,
-                    f"immobile / below\nresolution: {pct_imm:.0f}%",
-                    transform=ax.transAxes, fontsize=7, color=TXT,
-                    va="top", ha="left", alpha=0.9)
+            ax.text(floor_x, n_imm + ymax * 0.03, f"{pct_imm:.0f}%",
+                    ha="center", va="bottom", fontsize=7, color=TXT, alpha=0.9)
         ax.set_xlabel("log10(D)  [µm²/s]",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
-        ax.legend(fontsize=8,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
+        ax.legend(fontsize=7.5,loc="upper right",framealpha=0.9,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
     ax.grid(True,ls="--",alpha=0.22,lw=0.5)
     sax(ax,"E","Diffusion Coefficient Distribution")
 

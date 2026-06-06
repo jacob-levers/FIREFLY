@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.31.0
+
+### Diffusion Coefficient panel (E): show the immobile peak + fix clipped curves
+
+Two fixes to the single-run "Diffusion Coefficient Distribution" panel after the
+move to filled KDEs:
+
+- **The below-resolution (immobile) population is visible again.** Tracks with D
+  below the resolution floor are a true delta — they're now drawn as a hatched
+  bar at the floor (labelled with their %), on the same count axis as the curves,
+  so the immobile peak shows up instead of only a faint dotted line + caption.
+- **Curves are no longer clipped.** The y-axis now adds headroom above the
+  tallest KDE peak (and the floor bar), so a sharp peak like Confined is fully
+  visible instead of being cut off at the top, and the legend clears the curves.
+
 ## v2.30.0
 
 ### Single-run Motion Classification: vertical bars
