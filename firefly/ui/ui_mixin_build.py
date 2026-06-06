@@ -1862,13 +1862,12 @@ class BuildMixin:
         # ── Single-sample figure ──────────────────────────────────────────
         sec, gl = self._make_form_section("Single-sample figure (Analysis tab)")
         self.c_fig_theme = _QuietComboBox()
-        self.c_fig_theme.addItems(["Dark", "AMOLED", "Light", "Publication"])
+        self.c_fig_theme.addItems(["Dark", "Light", "Publication"])
         self.c_fig_theme.setToolTip(
             "Overall colour scheme for figure backgrounds, axes, and text.\n"
             "• Dark         — GitHub-dark (matches the GUI).\n"
-            "• AMOLED       — pure-black backgrounds, matches AMOLED app theme.\n"
             "• Light        — GitHub-light, sans-serif.\n"
-            "• Publication  — White background, black axes, serif font.")
+            "• Publication  — White background, black axes, sans-serif.")
         gl.addRow("Theme", self.c_fig_theme)
         self.c_fig_proj_cmap = _QuietComboBox()
         self.c_fig_proj_cmap.addItems(
@@ -1878,6 +1877,15 @@ class BuildMixin:
             "default — perceptually uniform with deep blacks for dark\n"
             "backgrounds.  Greys flips automatically for light themes.")
         gl.addRow("Projection colormap", self.c_fig_proj_cmap)
+        self.c_fig_traj_bg = QtWidgets.QCheckBox(
+            "Show cell image behind trajectories")
+        self.c_fig_traj_bg.setChecked(True)
+        self.c_fig_traj_bg.setToolTip(
+            "Draw the faint max-projection (the 'cell') behind the trajectory\n"
+            "panels (B — Trajectories, C — Trajectories by D value).\n"
+            "Turn off to plot the tracks on a plain background — only the\n"
+            "trajectories, no cell image.")
+        gl.addRow("", self.c_fig_traj_bg)
         self.s_fig_dpi = self._spin_int(150, 72, 600, step=10,
             tip="Pixel density for the combined PNG.  150 DPI matches the\n"
                 "default print size; bump to 300 for posters / publications.")
@@ -1917,7 +1925,7 @@ class BuildMixin:
         # ── Comparison figure (moved from Compare tab) ────────────────────
         sec, gl = self._make_form_section("Comparison figure (Compare tab)")
         self.c_cmp_theme = _QuietComboBox()
-        self.c_cmp_theme.addItems(["Dark", "AMOLED", "Light", "Publication"])
+        self.c_cmp_theme.addItems(["Dark", "Light", "Publication"])
         self.c_cmp_theme.setToolTip(
             "Theme for the multi-group comparison figure.  Independent\n"
             "from the single-sample theme so you can mix and match.")
@@ -3084,6 +3092,7 @@ class BuildMixin:
             # ── Figures-tab knobs (single-sample figure output) ───────────
             "fig_theme":         self.c_fig_theme.currentText(),
             "fig_proj_cmap":     self.c_fig_proj_cmap.currentText(),
+            "fig_traj_bg":       bool(self.c_fig_traj_bg.isChecked()),
             "fig_dpi":           int(self.s_fig_dpi.value()),
             "fig_save_pdf":      bool(self.c_fig_save_pdf.isChecked()),
             "fig_per_panel":     bool(self.c_fig_per_panel.isChecked()),

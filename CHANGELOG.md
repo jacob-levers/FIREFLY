@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.26.0
+
+### Figure & results readability fixes (lab feedback)
+
+A round of fixes responding to feedback from the lab:
+
+- **Fixed the VACF directional-persistence bar.** This metric (the lag-1 velocity
+  autocorrelation) is the one comparison metric that can legitimately be
+  *negative* — anti-persistent / caged motion, or the localisation-noise
+  anti-correlation between consecutive steps. The bar renderer assumed every
+  metric was ≥ 0 and pinned the y-axis floor to 0, which clipped the downward bar
+  below the baseline and made it look "impossibly low / broken." The bar chart is
+  now sign-aware: negative bars draw correctly from a **0 reference line**, with
+  the y-axis spanning the real data range. The numbers were always correct — only
+  the drawing was wrong.
+- **Trajectory panels can now hide the cell image.** New Preferences → figure
+  setting **"Show cell image behind trajectories"** (on by default). Turn it off
+  to plot the tracks on a plain background — panels *B (Trajectories)* and
+  *C (Trajectories by D value)* show only the trajectories, no faint
+  max-projection behind them.
+- **Removed the AMOLED figure theme.** The figure-theme menus (single-sample and
+  comparison) now offer Dark / Light / Publication — dark is enough for figures.
+  The AMOLED *app* theme is unchanged.
+- **More readable section titles** on the post-run results readout (full-contrast,
+  slightly larger headers instead of the faint muted labels).
+
 ## v2.25.0
 
 ### Cleaner, more modern figures (global style pass)

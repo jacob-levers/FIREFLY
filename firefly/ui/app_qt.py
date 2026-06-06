@@ -1787,6 +1787,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             # ── Figures tab ───────────────────────────────────────────────
             ("figures/theme",            self.c_fig_theme,       "combo"),
             ("figures/proj_cmap",        self.c_fig_proj_cmap,   "combo"),
+            ("figures/traj_bg",          self.c_fig_traj_bg,     "check", _bool_cast),
             ("figures/dpi",              self.s_fig_dpi,         "spin",  int),
             ("figures/save_pdf",         self.c_fig_save_pdf,    "check", _bool_cast),
             ("figures/per_panel",        self.c_fig_per_panel,   "check", _bool_cast),

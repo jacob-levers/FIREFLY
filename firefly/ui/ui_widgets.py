@@ -1676,10 +1676,10 @@ class _ResultsPanel(QtWidgets.QFrame):
         hairline divider above it to group the stats into sections."""
         hdr = QtWidgets.QLabel(text)
         hdr.setStyleSheet(
-            "color: %s; font-size: 10.5px; font-weight: 700; "
-            "text-transform: uppercase; letter-spacing: 0.8px; "
+            "color: %s; font-size: 12px; font-weight: 700; "
+            "text-transform: uppercase; letter-spacing: 0.5px; "
             "border-top: 1px solid %s; padding-top: 10px; margin-top: 12px;"
-            % (_THEME['TXT_MUTED'], _THEME['BORDER']))
+            % (_THEME['TXT'], _THEME['BORDER']))
         self._stats_grid.addWidget(hdr, row, 0, 1, 2,
                                    Qt.AlignmentFlag.AlignLeft)
 

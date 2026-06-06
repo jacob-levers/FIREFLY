@@ -1413,6 +1413,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     _prog(90, "Rendering figure…")
     fig_theme    = p.get("fig_theme", "Dark")
     fig_proj_cmap = p.get("fig_proj_cmap", "Inferno")
+    fig_traj_bg  = bool(p.get("fig_traj_bg", True))
     want_pdf     = bool(p.get("fig_save_pdf", False))
     # Per-panel PNG rendering is the dominant figure-save cost (one full
     # figure rasterisation per panel).  Only render the panels that will
@@ -1430,7 +1431,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         cluster_labels=cluster_labels, cluster_locs=cluster_xy,
         dwell_df=dwell_df, dwell_tau=dwell_tau,
         van_hove=van_hove, vacf=vacf,
-        return_pdf_bytes=want_pdf, want_panels=want_panels)
+        return_pdf_bytes=want_pdf, want_panels=want_panels,
+        traj_background=fig_traj_bg)
     del proj_sample
 
     # ── Save outputs ──────────────────────────────────────────────────────

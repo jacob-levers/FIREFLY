@@ -167,23 +167,61 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
             return "\n".join(lines)
         return None
 
-    # Annotation (draw + register for the optional across-metric post-pass)
-    top_data = max([a.max() if len(a) else 0 for a in arrs]
-                   + [max(means) * 1.2 if max(means) > 0 else 1])
+    # Data extent — INCLUDING negatives.  Most metrics (D, mobile fraction,
+    # α, …) are ≥ 0, but signed metrics such as the VACF lag-1 persistence can
+    # be < 0 (anti-persistent / caged motion, or the localisation-noise
+    # anti-correlation between consecutive steps).  For those we must NOT pin
+    # the y-axis to a 0 floor or the negative bars get clipped below the
+    # baseline and read as "impossibly low / broken".
+    _have = any(len(a) for a in arrs)
+    _allv = (np.concatenate([a for a in arrs if len(a)])
+             if _have else np.array([0.0]))
+    dmin, dmax = float(_allv.min()), float(_allv.max())
+    has_neg = dmin < 0.0
+
+    # A 0 reference line so a downward bar reads as a sign, not an error.
+    if has_neg:
+        ax.axhline(0.0, color=palette.get("GRD", "#cccccc"), lw=0.8, zorder=1)
+
     txt = None
     text = _annot_text("within")
-    if text is not None and n == 2:
-        top = top_data * 1.05
-        ax.plot([0, 0, 1, 1], [top, top * 1.03, top * 1.03, top],
-                color=sig_col, lw=0.8)
-        txt = ax.text(0.5, top * 1.05, text, ha="center", va="bottom",
-                      fontsize=7.5, color=sig_col)
-        ax.set_ylim(0, top * 1.62)
-    elif text is not None and n > 2:
-        txt = ax.text(0.02, 0.98, text, transform=ax.transAxes,
-                      ha="left", va="top", fontsize=7.5, color=sig_col,
-                      bbox=dict(facecolor=palette["PNL"], edgecolor="none",
-                                alpha=0.7, pad=3))
+    if not has_neg:
+        # ── all-positive metric: original layout (unchanged) ──────────────
+        top_data = max([a.max() if len(a) else 0 for a in arrs]
+                       + [max(means) * 1.2 if max(means) > 0 else 1])
+        if text is not None and n == 2:
+            top = top_data * 1.05
+            ax.plot([0, 0, 1, 1], [top, top * 1.03, top * 1.03, top],
+                    color=sig_col, lw=0.8)
+            txt = ax.text(0.5, top * 1.05, text, ha="center", va="bottom",
+                          fontsize=7.5, color=sig_col)
+            ax.set_ylim(0, top * 1.62)
+        elif text is not None and n > 2:
+            txt = ax.text(0.02, 0.98, text, transform=ax.transAxes,
+                          ha="left", va="top", fontsize=7.5, color=sig_col,
+                          bbox=dict(facecolor=palette["PNL"], edgecolor="none",
+                                    alpha=0.7, pad=3))
+    else:
+        # ── signed metric: span-aware limits, brackets above the max ──────
+        lo, hi = min(0.0, dmin), max(0.0, dmax)
+        span = (hi - lo) or 1.0
+        if text is not None and n == 2:
+            bracket = hi + span * 0.06
+            ax.plot([0, 0, 1, 1],
+                    [bracket, bracket + span * 0.03,
+                     bracket + span * 0.03, bracket],
+                    color=sig_col, lw=0.8)
+            txt = ax.text(0.5, bracket + span * 0.05, text,
+                          ha="center", va="bottom",
+                          fontsize=7.5, color=sig_col)
+            ax.set_ylim(lo - span * 0.08, bracket + span * 0.55)
+        else:
+            ax.set_ylim(lo - span * 0.08, hi + span * 0.30)
+            if text is not None and n > 2:
+                txt = ax.text(0.02, 0.98, text, transform=ax.transAxes,
+                              ha="left", va="top", fontsize=7.5, color=sig_col,
+                              bbox=dict(facecolor=palette["PNL"],
+                                        edgecolor="none", alpha=0.7, pad=3))
     if txt is not None and annot_sink is not None and metric_name:
         annot_sink[metric_name] = (txt, _annot_text)
 

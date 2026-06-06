@@ -83,7 +83,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 cluster_labels=None, cluster_locs=None,
                 dwell_df=None, dwell_tau=None, return_pdf_bytes=False,
                 van_hove=None, vacf=None,
-                want_panels=None):
+                want_panels=None, traj_background=True):
     # want_panels controls the per-panel PNG export, which is expensive:
     # each panel is produced by a full-figure savefig() cropped to that
     # panel's bbox, so rendering all 15 panels means ~15 full rasterisations
@@ -199,7 +199,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
 
     # B — trajectory map coloured by motion type (subsample if very many tracks)
     ax = fig.add_subplot(gs[0,1])
-    ax.imshow(proj_eq,cmap=_traj_bg,origin="lower",aspect="equal",alpha=0.35)
+    if traj_background:
+        ax.imshow(proj_eq,cmap=_traj_bg,origin="lower",aspect="equal",alpha=0.35)
     all_pids  = list(tracks["particle"].unique())
     draw_pids = set(np.random.default_rng(42).choice(
         all_pids, min(2000, len(all_pids)), replace=False))
@@ -220,7 +221,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
 
     # C — trajectories coloured by D value
     ax = fig.add_subplot(gs[0,2])
-    ax.imshow(proj_eq, cmap=_traj_bg, origin="lower", aspect="equal", alpha=0.35)
+    if traj_background:
+        ax.imshow(proj_eq, cmap=_traj_bg, origin="lower", aspect="equal", alpha=0.35)
     d_map = diff_df.set_index("particle")["D"].to_dict()
     d_vals_valid = [v for v in d_map.values() if v is not None and np.isfinite(v) and v > 0]
     if d_vals_valid:
