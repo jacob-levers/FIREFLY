@@ -18,7 +18,7 @@ from firefly.analysis.fa_theme import (_theme_palette, _THEME_REQUIRED_KEYS,
                                        style_axes)
 from firefly.analysis.fa_diffusion import classify_motion, msd_linear
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
-                                           motion_class_colors, label_text_color)
+                                           motion_class_colors)
 
 
 # Canonical motion-class colours / order — shared with the comparison figure and
@@ -357,12 +357,11 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     ax.grid(True,ls="--",alpha=0.22,lw=0.5)
     sax(ax,"E","Diffusion Coefficient Distribution")
 
-    # F — motion-class composition as a 100% stacked bar (replaces the old pie;
-    # pies are hard to compare by angle — a stacked bar lets the eye read the
-    # shares off a common baseline).  Mirrors the comparison figure's
-    # Motion-Class Fractions panel: same data (value_counts over the named
-    # MORD classes, renormalised to 100%), same colours, on-segment % labels
-    # with a WCAG-contrast text colour, and a compact 2-column class legend.
+    # F — motion-class composition as a simple vertical bar chart: one bar per
+    # class (height = % of classified tracks), the class names on the x-axis and
+    # a fixed 0–100% y-axis so the proportions are read on an absolute scale.
+    # Each bar keeps its class colour so it matches the trajectory / distribution
+    # panels (Immobile=red, Confined=orange, Brownian=blue, Directed=green).
     ax = fig.add_subplot(gs[1,2])
     mc_ = diff_df["motion"].value_counts()
     classes = [m for m in MORD if m in mc_]
@@ -375,30 +374,19 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         for sp in ax.spines.values():
             sp.set_visible(False)
     else:
-        fracs = counts / total
-        left = 0.0
-        for cname, fr in zip(classes, fracs):
-            ccol = MC[cname]
-            ax.barh(0, fr, left=left, height=0.8, color=ccol,
-                    edgecolor=PNL, linewidth=1.2, zorder=2)
-            if fr >= 0.06:                       # only label segments wide enough
-                ax.text(left + fr / 2, 0, f"{fr*100:.0f}%",
-                        ha="center", va="center", fontsize=8,
-                        color=label_text_color(ccol), zorder=4)
-            left += fr
-        ax.set_xlim(0, 1)
-        ax.set_ylim(-0.55, 0.95)                 # chunky bar + headroom for legend
-        ax.set_yticks([])
-        ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
-        ax.set_xticklabels(["0", "25", "50", "75", "100%"], fontsize=7)
-        ax.spines["left"].set_visible(False)     # y has no meaning on a 100% bar
-        # Compact 2-col colour→class legend, inside the headroom above the bar.
-        els = [Line2D([0], [0], marker="s", linestyle="", markersize=9,
-                      markerfacecolor=MC[c], markeredgecolor=PNL, label=c)
-               for c in classes]
-        ax.legend(handles=els, loc="lower center", bbox_to_anchor=(0.5, 0.66),
-                  ncol=2, fontsize=7.5, frameon=False, labelcolor=TXT,
-                  handletextpad=0.4, columnspacing=1.0, borderaxespad=0.0)
+        pct = counts / total * 100.0
+        x = np.arange(len(classes))
+        ax.bar(x, pct, width=0.72, color=[MC[c] for c in classes],
+               edgecolor=PNL, linewidth=1.0, zorder=2)
+        for xi, p in zip(x, pct):                # value label above each bar
+            ax.text(xi, p + 2.0, f"{p:.0f}%", ha="center", va="bottom",
+                    fontsize=8, color=TXT, zorder=4)
+        ax.set_xticks(x)
+        ax.set_xticklabels(classes, fontsize=8)
+        ax.set_ylim(0, 100)
+        ax.set_yticks([0, 25, 50, 75, 100])
+        ax.set_ylabel("% of classified tracks", fontsize=9)
+        ax.grid(True, axis="y", ls="--", alpha=0.22, lw=0.5)
     sax(ax,"F","Motion Classification")
 
     # G — alpha distribution

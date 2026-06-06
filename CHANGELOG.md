@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.30.0
+
+### Single-run Motion Classification: vertical bars
+
+Panel F (Motion Classification) is now a **simple vertical bar chart** instead of
+a horizontal 100% stacked bar: one bar per class, the class names
+(Immobile / Confined / Brownian / Directed) on the x-axis, and a fixed **0–100%**
+y-axis ("% of classified tracks") so each proportion is read on an absolute
+scale. Each bar keeps its class colour, with the % printed above it. Same data
+and percentages — just an easier-to-read layout.
+
 ## v2.29.0
 
 ### SuperPlot polish + direct line-end labels (Phase 4)
