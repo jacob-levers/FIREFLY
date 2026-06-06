@@ -84,8 +84,13 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     # are the per-replicate values the stats are actually computed on — a
     # SuperPlot (Lord et al. 2020): each replicate gets its own colour so the
     # reader sees the true unit of replication, not pooled localisations.
+    # SuperPlot styling: the bar is just a faint backdrop for the mean — the
+    # per-replicate DOTS and the mean±SEM error bar carry the information.  So
+    # the bar face is a very pale wash (blended 88% toward the background) at low
+    # opacity, while the EDGE keeps the saturated group colour and the error bars
+    # stay solid — the dots read as the data, not the bar.
     ax.bar(x, means, yerr=sems, capsize=4,
-           color=[_bar_fill_for(i) for i in range(n)],
+           color=[(*_bar_fill_for(i, frac=0.88), 0.45) for i in range(n)],
            edgecolor=colors, linewidth=1.6,
            ecolor=sig_col)
     rng = np.random.default_rng(0)
@@ -224,6 +229,36 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                                         edgecolor="none", alpha=0.7, pad=3))
     if txt is not None and annot_sink is not None and metric_name:
         annot_sink[metric_name] = (txt, _annot_text)
+
+
+def _maybe_end_labels(ax, ends, colors, labels, *,
+                      pad_frac=0.08, min_gap_frac=0.045):
+    """Label a set of curves DIRECTLY at their right-hand ends, each in its own
+    colour (the r-graph-gallery preference — the eye follows a line to its label
+    instead of bouncing to a legend key).
+
+    Bails out (returns False, draws nothing) when any two end-points are closer
+    than ``min_gap_frac`` of the y-range — the labels would collide and overlap,
+    so the caller keeps the shared bottom legend instead.  On success it pads the
+    right x-limit by ``pad_frac`` so the labels are not clipped, and returns True.
+    """
+    pts = [(xe, ye, c, l) for (xe, ye), c, l in zip(ends, colors, labels)
+           if xe is not None and ye is not None
+           and np.isfinite(xe) and np.isfinite(ye)]
+    if len(pts) < 2:
+        return False
+    y0, y1 = ax.get_ylim()
+    yr = (y1 - y0) or 1.0
+    ys = sorted(p[1] for p in pts)
+    if any((b - a) < min_gap_frac * yr for a, b in zip(ys, ys[1:])):
+        return False                       # collision → keep the shared legend
+    x0, x1 = ax.get_xlim()
+    xr = (x1 - x0) or 1.0
+    ax.set_xlim(x0, x1 + xr * pad_frac)
+    for xe, ye, c, l in pts:
+        ax.text(xe + xr * 0.012, ye, str(l), color=c, fontsize=7.5,
+                va="center", ha="left", clip_on=False, zorder=6)
+    return True
 
 
 # Qualitative colours for the time-point series in two-factor interaction plots.
@@ -709,6 +744,7 @@ def compare_groups(groups,
     # ── 1. MSD overlay ────────────────────────────────────────────────────────
     if "msd" in panels:
         ax = _next_ax()
+        msd_ends, msd_cols, msd_labs = [], [], []
         for grp_label, summaries, color in _zip_groups():
             curves = []
             tref = None
@@ -733,10 +769,15 @@ def compare_groups(groups,
             ax.plot(tref, mean, "-o", color=color, label=grp_label, ms=4, lw=1.5)
             if sem is not None:
                 ax.fill_between(tref, mean - sem, mean + sem, color=color, alpha=0.15)
+            msd_ends.append((float(tref[-1]), float(mean[-1])))
+            msd_cols.append(color); msd_labs.append(grp_label)
         ax.set_xlabel("Time delta (s)")
         ax.set_ylabel("MSD (µm²)")
         ax.set_title("Mean Square Displacement")
-        ax.legend(frameon=False, loc="best")
+        # Direct line-end labels (curves fan out at the largest lag); keep the
+        # shared legend only when the ends are too close to label without overlap.
+        if not _maybe_end_labels(ax, msd_ends, msd_cols, msd_labs):
+            ax.legend(frameon=False, loc="best")
 
     # ── 2. AUC bar chart ──────────────────────────────────────────────────────
     if "auc" in panels:
@@ -1128,19 +1169,24 @@ def compare_groups(groups,
                 if ta is None or len(ta) == 0: continue
                 pooled.extend(np.abs(np.asarray(ta).ravel()))
             pooled_per_group.append((grp_label, color, pooled))
+        ta_ends, ta_cols, ta_labs = [], [], []
         for grp_label, color, pooled in pooled_per_group:
             if not pooled: continue
             any_data = True
             counts, _ = np.histogram(pooled, bins=bins)
             frac = counts / counts.sum() if counts.sum() else counts
             ax.plot(centers, frac, "-o", color=color, lw=1.5, ms=3, label=grp_label)
+            ta_ends.append((float(centers[-1]), float(frac[-1])))
+            ta_cols.append(color); ta_labs.append(grp_label)
         if any_data:
             ax.set_xlabel("|Turning angle|  (°)")
             ax.set_ylabel("Relative frequency")
             ax.set_xlim(0, 180)
             ax.set_xticks([0, 45, 90, 135, 180])
             ax.set_title("Turning Angle Distribution")
-            ax.legend(frameon=False, loc="best")
+            # Direct end labels when the curves separate at 180°; else shared legend.
+            if not _maybe_end_labels(ax, ta_ends, ta_cols, ta_labs):
+                ax.legend(frameon=False, loc="best")
         else:
             ax.text(0.5, 0.5, "No turning-angle data\n(re-run analysis to generate)",
                     ha="center", va="center", transform=ax.transAxes,

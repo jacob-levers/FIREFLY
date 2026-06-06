@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.29.0
+
+### SuperPlot polish + direct line-end labels (Phase 4)
+
+The final pass of the figure-modernization work, both on the comparison figure.
+
+- **Lighter SuperPlot bars.** In the comparison bar charts (AUC, Mobile/Immobile
+  ratio, α₂, VACF persistence, …) the bar was visually competing with the data.
+  The bar face is now a very pale, low-opacity wash while the **edge keeps the
+  saturated group colour** and the **mean ± SEM error bars stay solid** — so the
+  per-replicate dots (the actual unit of replication) read as the data, not the
+  bar. The dots, error bars and all statistics are unchanged.
+- **Direct line-end labels.** On the MSD overlay and the turning-angle
+  distribution, each curve is now labelled in its own colour at its right-hand
+  end, so you follow a line straight to its name instead of hunting the legend
+  (r-graph-gallery practice). When two line-ends are too close to label without
+  overlapping, it automatically falls back to the shared legend.
+
+Presentation only — no change to any value or statistic.
+
 ## v2.28.0
 
 ### Cleaner distributions: filled KDEs + ridgeline (Phase 3)
