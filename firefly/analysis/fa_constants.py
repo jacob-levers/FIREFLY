@@ -100,3 +100,29 @@ def motion_class_colors(theme="Dark"):
     Directed/Unknown).  Falls back to the Dark palette for unknown theme names."""
     return MOTION_CLASS_COLORS_BY_THEME.get(
         (theme or "Dark").strip(), MOTION_CLASS_COLORS_BY_THEME["Dark"])
+
+
+def label_text_color(hexcol):
+    """Black or white label text — whichever has the higher WCAG contrast
+    against the given fill colour.
+
+    Used for on-segment labels in stacked bars / waffle-style charts so the
+    text stays legible on every segment.  Robust across themes including the
+    Publication colour-blind palette, where a naive luminance cut mislabels
+    amber.  Shared by the single-run figure and the comparison figure so a
+    segment label is coloured the same way everywhere.
+    """
+    h = str(hexcol).lstrip("#")
+    if len(h) < 6:
+        return "#ffffff"
+    try:
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return "#ffffff"
+
+    def _lin(c):
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    L = 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+    # contrast(black) = (L+0.05)/0.05 ; contrast(white) = 1.05/(L+0.05)
+    return "#101010" if (L + 0.05) / 0.05 >= 1.05 / (L + 0.05) else "#ffffff"

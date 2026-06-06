@@ -18,7 +18,7 @@ from firefly.analysis.fa_theme import (_theme_palette, _THEME_REQUIRED_KEYS,
                                        style_axes)
 from firefly.analysis.fa_diffusion import classify_motion, msd_linear
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
-                                           motion_class_colors)
+                                           motion_class_colors, label_text_color)
 
 
 # Canonical motion-class colours / order — shared with the comparison figure and
@@ -101,7 +101,6 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ACC       = "#0969da"
         _kde_col  = "#000000"
         _traj_bg  = "Greys"
-        _pie_text = "#ffffff"
         _font     = "sans-serif"
     elif fig_theme == "Publication":
         BG, PNL   = "#ffffff", "#ffffff"
@@ -109,7 +108,6 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ACC       = "#333333"
         _kde_col  = "#000000"
         _traj_bg  = "Greys"
-        _pie_text = "#ffffff"
         _font     = "DejaVu Sans"
     elif fig_theme == "AMOLED":
         # Pure-black BG variant of Dark.
@@ -118,7 +116,6 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ACC       = "#58a6ff"
         _kde_col  = "white"
         _traj_bg  = "Greys_r"
-        _pie_text = "#000000"
         _font     = "monospace"
     else:                                    # Dark (default)
         BG, PNL   = "#0d1117", "#161b22"
@@ -126,7 +123,6 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ACC       = "#58a6ff"
         _kde_col  = "white"
         _traj_bg  = "Greys_r"
-        _pie_text = "#0d1117"
         _font     = "monospace"
 
     # Theme-specific motion-class colours (shadow the module-global `MC` for the
@@ -327,16 +323,48 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     ax.grid(True,ls="--",alpha=0.22,lw=0.5)
     sax(ax,"E","Diffusion Coefficient Distribution")
 
-    # F — pie chart
+    # F — motion-class composition as a 100% stacked bar (replaces the old pie;
+    # pies are hard to compare by angle — a stacked bar lets the eye read the
+    # shares off a common baseline).  Mirrors the comparison figure's
+    # Motion-Class Fractions panel: same data (value_counts over the named
+    # MORD classes, renormalised to 100%), same colours, on-segment % labels
+    # with a WCAG-contrast text colour, and a compact 2-column class legend.
     ax = fig.add_subplot(gs[1,2])
     mc_ = diff_df["motion"].value_counts()
-    lbl = [m for m in MORD if m in mc_]
-    sz  = [mc_[m] for m in lbl]
-    co  = [MC[m] for m in lbl]
-    _,_,ats = ax.pie(sz,labels=lbl,colors=co,autopct="%1.1f%%",startangle=140,
-                      textprops={"color":TXT,"fontsize":9},
-                      wedgeprops={"edgecolor":PNL,"linewidth":2})
-    for at in ats: at.set_fontsize(8); at.set_color(_pie_text)
+    classes = [m for m in MORD if m in mc_]
+    counts  = np.array([float(mc_[m]) for m in classes])
+    total   = float(counts.sum())
+    if total <= 0:
+        ax.text(0.5, 0.5, "No classified tracks", transform=ax.transAxes,
+                ha="center", va="center", color=TXT, fontsize=10, alpha=0.7)
+        ax.set_xticks([]); ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+    else:
+        fracs = counts / total
+        left = 0.0
+        for cname, fr in zip(classes, fracs):
+            ccol = MC[cname]
+            ax.barh(0, fr, left=left, height=0.8, color=ccol,
+                    edgecolor=PNL, linewidth=1.2, zorder=2)
+            if fr >= 0.06:                       # only label segments wide enough
+                ax.text(left + fr / 2, 0, f"{fr*100:.0f}%",
+                        ha="center", va="center", fontsize=8,
+                        color=label_text_color(ccol), zorder=4)
+            left += fr
+        ax.set_xlim(0, 1)
+        ax.set_ylim(-0.55, 0.95)                 # chunky bar + headroom for legend
+        ax.set_yticks([])
+        ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+        ax.set_xticklabels(["0", "25", "50", "75", "100%"], fontsize=7)
+        ax.spines["left"].set_visible(False)     # y has no meaning on a 100% bar
+        # Compact 2-col colour→class legend, inside the headroom above the bar.
+        els = [Line2D([0], [0], marker="s", linestyle="", markersize=9,
+                      markerfacecolor=MC[c], markeredgecolor=PNL, label=c)
+               for c in classes]
+        ax.legend(handles=els, loc="lower center", bbox_to_anchor=(0.5, 0.66),
+                  ncol=2, fontsize=7.5, frameon=False, labelcolor=TXT,
+                  handletextpad=0.4, columnspacing=1.0, borderaxespad=0.0)
     sax(ax,"F","Motion Classification")
 
     # G — alpha distribution
@@ -354,7 +382,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
             ax.axvline(xv,color=GRD,ls=ls,lw=1.2,label=lb)
         # Honest note: immobile / jitter-dominated tracks have a flat MSD, so no
         # anomalous exponent can be fitted (alpha = NaN) — they are NOT in this
-        # histogram (they're counted as Immobile in the pie chart F instead).
+        # histogram (they're counted as Immobile in the motion-class bar F instead).
         n_tot = int(len(diff_df)); n_nan = int(diff_df["alpha"].isna().sum())
         if n_tot and (100.0 * n_nan / n_tot) >= 0.5:
             ax.text(0.02, 0.97,

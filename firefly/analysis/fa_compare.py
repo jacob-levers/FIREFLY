@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
-                                           motion_class_colors)
+                                           motion_class_colors, label_text_color)
 from firefly.analysis.fa_theme import _theme_palette, style_axes
 from firefly.analysis.fa_palmtracer import load_summary_from_folder
 
@@ -811,19 +811,10 @@ def compare_groups(groups,
         # Directed=green.
         classes = list(MOTION_CLASS_ORDER)
         class_colors = [motion_class_colors(theme)[c] for c in classes]
-        def _txt_on(hexcol):
-            """Black or white label text, whichever has the higher WCAG contrast
-            against the fill (robust across themes incl. the Publication
-            colour-blind palette, where a naive luminance cut mislabels amber)."""
-            h = hexcol.lstrip("#")
-            r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
-            def _lin(c):
-                return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
-            L = 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
-            return "#101010" if (L + 0.05) / 0.05 >= 1.05 / (L + 0.05) else "#ffffff"
         # Each replicate's 4 named-class fractions are renormalised to sum to 1
-        # (matching the single-run pie, which auto-normalises the same 4
-        # classes), so the stacked bars reach the top.  The dropped mass is the
+        # (matching the single-run figure's panel-F stacked bar, which
+        # renormalises the same 4 classes), so the stacked bars reach the top.
+        # The dropped mass is the
         # "Unknown" share — tracks too short to fit a D/α (common on dense
         # palmTRACER data) — which is surfaced honestly in the x-axis labels
         # below, never silently hidden.
@@ -859,7 +850,7 @@ def compare_groups(groups,
                 if seg[gi] >= 0.06:
                     ax.text(x[gi], bottom[gi] + seg[gi] / 2, f"{seg[gi]*100:.0f}%",
                             ha="center", va="center", fontsize=7,
-                            color=_txt_on(ccol), zorder=4)
+                            color=label_text_color(ccol), zorder=4)
             bottom += seg
         # Per-class one-way stats — only meaningful when each card is an
         # independent group.  In two-factor mode the cards are paired across

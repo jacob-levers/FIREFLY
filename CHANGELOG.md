@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.27.0
+
+### Single-run figure: pie chart → 100% stacked bar (Phase 2)
+
+The single-run master figure's **panel F (Motion Classification)** was a pie
+chart. Pies are hard to read — the eye can't compare wedge angles accurately, and
+small slices vanish. It is now a **100% stacked bar**, the modern replacement
+(r-graph-gallery / Wilke): shares are read off a common baseline.
+
+- Mirrors the comparison figure's Motion-Class Fractions panel — same data
+  (the named Immobile / Confined / Brownian / Directed classes, renormalised to
+  100%), same theme-aware, colour-blind-safe colours, on-segment **%** labels
+  (shown when a class is ≥ 6% wide), a compact 2-column class legend tucked above
+  the bar, and a 0–100% axis. Same percentages as the old pie.
+- **Per-segment label contrast.** The on-bar **%** text now picks black or white
+  per segment by WCAG contrast, so labels stay legible on every class colour and
+  every theme (including the Publication colour-blind palette). This logic was
+  duplicated inline in the comparison figure; it is now a single shared
+  `label_text_color()` helper used by both figures.
+
+Purely a presentation change — the classification and the numbers are unchanged.
+
 ## v2.26.0
 
 ### Figure & results readability fixes (lab feedback)
