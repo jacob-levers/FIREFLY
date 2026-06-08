@@ -420,16 +420,21 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         f"https://api.github.com/repos/jacob-levers/FIREFLY/releases/latest")
 
     def _kick_off_update_check(self):
-        """Hit GitHub Releases asynchronously and show the update pill
-        in the header if a newer tag is available than __version__."""
+        """On startup, ask GitHub Releases asynchronously and light the
+        header pill if a newer tag than __version__ exists.  Skipped when
+        the user has turned off automatic checks (Preferences → Updates)."""
         try:
-            from firefly import sptpalm_analysis as _sa
-            current = str(getattr(_sa, "__version__", "0.0.0"))
+            auto = QtCore.QSettings("jacoblevers", "FIREFLY").value(
+                "updates/auto_check", True)
+            if isinstance(auto, str):
+                auto = auto.lower() not in ("false", "0", "no", "")
+            if not auto:
+                return
         except Exception:
-            current = "0.0.0"
+            pass
 
         self._update_thread = _UpdateCheckThread(
-            self._UPDATE_API_URL, current, parent=self)
+            self._UPDATE_API_URL, self._current_version(), parent=self)
         self._update_thread.update_available.connect(self._on_update_available)
         self._update_thread.start()
 
@@ -2150,6 +2155,24 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             _cu.set_log_callback(None)
         except Exception: pass
 
+        # 5b. Stop any in-flight update download / check threads.  Like the
+        # CUDA worker these may be blocked in urlopen; we ask them to quit
+        # but don't hang on the join — daemon/detached cleanup handles the
+        # rest as the process exits below.
+        for _attr in ("_update_dl_thread", "_force_update_thread",
+                      "_update_thread"):
+            try:
+                t = getattr(self, _attr, None)
+                if t is not None:
+                    t.quit()
+                    t.wait(500)
+            except Exception:
+                pass
+        try:
+            from firefly import net_download as _nd
+            _nd.set_log_callback(None)
+        except Exception: pass
+
         # 6. Close every embedded napari viewer.  On macOS the Vispy
         # backend holds a Metal CAMetalLayer that prevents Cocoa from
         # tearing down the QApplication until the layer is released —
@@ -3539,6 +3562,15 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         act_prefs.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         act_prefs.triggered.connect(self._open_preferences)
         file_menu.addAction(act_prefs)
+
+        # Check for Updates — manual trigger.  macOS promotes this into the
+        # application menu; Windows users reach the same check via
+        # Preferences → Updates (no menubar off macOS).
+        act_update = QtGui.QAction("Check for Updates…", self)
+        act_update.setMenuRole(
+            QtGui.QAction.MenuRole.ApplicationSpecificRole)
+        act_update.triggered.connect(self._force_check_for_updates)
+        file_menu.addAction(act_update)
 
         # Belt-and-braces backup — a standalone QShortcut at the same
         # application-wide context.  If something downstream resets

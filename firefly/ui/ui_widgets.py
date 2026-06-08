@@ -583,57 +583,384 @@ class _StackedBar(QtWidgets.QWidget):
 
 
 class _UpdateCheckThread(QtCore.QThread):
-    """Tiny background thread that hits GitHub's Releases API and emits
-    `update_available(tag, html_url)` if the latest tag is newer than
-    the running FIREFLY version.  Silent on every other outcome — no
-    network, no nag, no error popup."""
+    """Background thread that asks GitHub for the latest release.
 
-    update_available = QtCore.Signal(str, str)
+    Two modes:
+      • auto  (force=False) — emits ``update_available(tag, release)``
+        ONLY when the latest tag is newer than the running version;
+        silent on every other outcome (offline, up-to-date, error).
+        Drives the startup check that lights the header pill.
+      • force (force=True)  — emits ``check_finished(release_or_None)``
+        ALWAYS (the parsed release dict, or None if GitHub was
+        unreachable) so a user-triggered "Check for updates…" can show a
+        result even when already up to date.
 
-    def __init__(self, api_url: str, current_version: str, parent=None):
+    ``release`` is the dict from ``updater.parse_release`` (tag / html_url
+    / body / asset).  All network + parsing is delegated to
+    ``firefly.updater`` so the version-compare logic lives in one place.
+    """
+
+    update_available = QtCore.Signal(str, object)   # (tag, release dict)
+    check_finished   = QtCore.Signal(object)        # release dict or None
+
+    def __init__(self, api_url: str, current_version: str,
+                 parent=None, force: bool = False):
         super().__init__(parent)
         self._api_url = api_url
         self._current = current_version
+        self._force = force
 
     @staticmethod
     def _parse_version(s: str) -> "tuple[int, ...]":
-        """Parse a 'v2.2.0' / '2.2.0-dev3' style tag into a comparable
-        tuple of ints.  Non-numeric suffix segments compare as 0."""
-        import re
-        s = s.lstrip("vV").split("-", 1)[0]
-        parts = []
-        for chunk in s.split("."):
-            m = re.match(r"(\d+)", chunk)
-            parts.append(int(m.group(1)) if m else 0)
-        # Pad to length 3 for tidy comparisons
-        while len(parts) < 3: parts.append(0)
-        return tuple(parts)
+        """Delegates to the single canonical comparator in firefly.updater."""
+        from firefly import updater
+        return updater.parse_version(s)
 
     def run(self):
         try:
-            import json
-            import urllib.request
+            from firefly import updater
         except Exception:
+            if self._force:
+                self.check_finished.emit(None)
             return
-        try:
-            req = urllib.request.Request(
-                self._api_url,
-                headers={"Accept": "application/vnd.github+json",
-                         "User-Agent": "FIREFLY-app"})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                blob = resp.read()
-        except Exception:
-            return    # offline / rate-limited / etc. — silently no-op
-        try:
-            data = json.loads(blob)
-            tag      = data.get("tag_name") or ""
-            html_url = data.get("html_url") or ""
-            if not tag:
-                return
-            if self._parse_version(tag) > self._parse_version(self._current):
-                self.update_available.emit(tag, html_url)
-        except Exception:
+        rel = updater.fetch_latest_release(self._api_url)
+        info = updater.parse_release(rel) if rel else None
+        if self._force:
+            self.check_finished.emit(info)      # may be None on failure
             return
+        if not info:
+            return
+        tag = info.get("tag") or ""
+        if tag and updater.is_newer(tag, self._current):
+            self.update_available.emit(tag, info)
+
+
+class _UpdateWorker(QtCore.QObject):
+    """Downloads the release asset on a background QThread.  Emits
+    ``progress(pct, label)`` / ``finished(path)`` / ``failed(msg)`` back
+    to the GUI thread.  Network + file I/O only — never touches napari —
+    so a QThread is safe here."""
+
+    progress = QtCore.Signal(int, str)
+    finished = QtCore.Signal(str)
+    failed   = QtCore.Signal(str)
+
+    def __init__(self, asset: dict, cancel_check):
+        super().__init__()
+        self._asset = asset
+        self._cancel_check = cancel_check
+
+    @QtCore.Slot()
+    def run(self):
+        from firefly import updater
+        self.progress.emit(0, "Connecting to GitHub…")
+        try:
+            def _cb(done, total):
+                mb = done / 1e6
+                if total > 0:
+                    pct = int(done * 100 / total)
+                    self.progress.emit(
+                        pct, f"Downloading… {mb:.0f} / {total/1e6:.0f} MB")
+                else:
+                    self.progress.emit(0, f"Downloading… {mb:.0f} MB")
+            path = updater.download_asset(
+                self._asset, progress_cb=_cb, cancel_cb=self._cancel_check)
+            self.finished.emit(path)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _UpdateDialog(QtWidgets.QDialog):
+    """Software-update dialog.
+
+    Shows current vs latest version + release notes.  On a frozen build
+    with a matching release asset it offers a one-click "Update now" that
+    downloads the new build (progress + cancel) and hands off to the
+    MainWindow to install + relaunch.  Otherwise it just points the user
+    at the release page.
+
+    Construct with the parsed release dict from ``updater.parse_release``
+    (or None if the check itself failed)."""
+
+    def __init__(self, main_window: "MainWindow", current_version: str,
+                 release):
+        super().__init__(main_window)
+        self._main = main_window
+        self._current = current_version
+        self._release = release or {}
+        self._tag = self._release.get("tag") or ""
+        self._asset = self._release.get("asset")
+        self._html_url = (self._release.get("html_url")
+                          or getattr(main_window, "_UPDATE_RELEASES_URL", ""))
+        self._downloaded_path = None
+        self._thread = None
+        self._worker = None
+        self._relay = None
+        self._cancel_event = None
+        self._can_auto = False
+
+        self.setWindowTitle("FIREFLY — Software Update")
+        self.setModal(True)
+        self.setMinimumWidth(560)
+        self._build()
+
+    # ── construction ──────────────────────────────────────────────────
+    def _build(self):
+        from firefly import updater
+        newer = bool(self._tag) and updater.is_newer(self._tag, self._current)
+        self._can_auto = bool(newer and updater.is_frozen() and self._asset)
+
+        v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(22, 22, 22, 18)
+        v.setSpacing(12)
+
+        if not self._release:
+            head, sub = ("Couldn't check for updates",
+                         "FIREFLY couldn't reach GitHub. Check your internet "
+                         "connection and try again.")
+        elif newer:
+            head, sub = (f"FIREFLY {self._tag} is available",
+                         f"You're currently on {self._current}.")
+        else:
+            head, sub = ("You're up to date",
+                         f"FIREFLY {self._current} is the latest version.")
+
+        title = QtWidgets.QLabel(head)
+        tf = title.font(); tf.setBold(True); tf.setPointSize(16)
+        title.setFont(tf)
+        title.setStyleSheet(f"color: {_THEME['TXT']};")
+        v.addWidget(title)
+        sub_lbl = QtWidgets.QLabel(sub)
+        sub_lbl.setWordWrap(True)
+        sub_lbl.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        v.addWidget(sub_lbl)
+
+        body = self._release.get("body") if self._release else ""
+        if body:
+            notes_lbl = QtWidgets.QLabel("Release notes:")
+            notes_lbl.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; "
+                                    f"font-weight: 600; padding-top: 4px;")
+            v.addWidget(notes_lbl)
+            notes = QtWidgets.QTextBrowser()
+            notes.setOpenExternalLinks(True)
+            notes.setPlainText(body)
+            notes.setMinimumHeight(170)
+            v.addWidget(notes, 1)
+
+        # Download progress (hidden until "Update now").
+        self._status = QtWidgets.QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setVisible(False)
+        self._status.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        v.addWidget(self._status)
+        self._progress = QtWidgets.QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.setVisible(False)
+        v.addWidget(self._progress)
+
+        if self._can_auto:
+            note = QtWidgets.QLabel(self._platform_note())
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; "
+                               f"font-style: italic; font-size: 11px;")
+            v.addWidget(note)
+        elif newer and not updater.is_frozen():
+            hint = QtWidgets.QLabel(
+                "This is a from-source install — update with "
+                "<code>git pull</code>, or use the release page.")
+            hint.setTextFormat(Qt.TextFormat.RichText)
+            hint.setWordWrap(True)
+            hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; "
+                               f"font-style: italic;")
+            v.addWidget(hint)
+
+        # Button row.
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(8)
+        self._btn_page = QtWidgets.QPushButton("View release page")
+        self._btn_page.clicked.connect(self._open_page)
+        row.addWidget(self._btn_page)
+        row.addStretch(1)
+
+        self._btn_cancel = QtWidgets.QPushButton("Cancel")
+        self._btn_cancel.clicked.connect(self._on_cancel)
+        self._btn_cancel.setVisible(False)
+        row.addWidget(self._btn_cancel)
+
+        self._btn_skip = self._btn_later = self._btn_update = None
+        self._btn_close = None
+        if self._can_auto:
+            self._btn_skip = QtWidgets.QPushButton("Skip this version")
+            self._btn_skip.clicked.connect(self._on_skip)
+            row.addWidget(self._btn_skip)
+            self._btn_later = QtWidgets.QPushButton("Later")
+            self._btn_later.clicked.connect(self.reject)
+            row.addWidget(self._btn_later)
+            self._btn_update = QtWidgets.QPushButton("Update now")
+            self._btn_update.setDefault(True)
+            self._btn_update.clicked.connect(self._on_update_now)
+            row.addWidget(self._btn_update)
+        else:
+            self._btn_close = QtWidgets.QPushButton("Close")
+            self._btn_close.setDefault(True)
+            self._btn_close.clicked.connect(self.reject)
+            row.addWidget(self._btn_close)
+        v.addLayout(row)
+
+    def _platform_note(self) -> str:
+        if sys.platform == "win32":
+            return ("FIREFLY will download the new version and restart. "
+                    "Windows may show a SmartScreen prompt — choose "
+                    "“More info → Run anyway”.")
+        return ("FIREFLY will download the new version, replace itself, and "
+                "restart automatically.")
+
+    # ── actions ───────────────────────────────────────────────────────
+    def _open_page(self):
+        try:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._html_url))
+        except Exception:
+            pass
+
+    def _on_skip(self):
+        try:
+            QtCore.QSettings("jacoblevers", "FIREFLY").setValue(
+                "updates/skip_version", self._tag)
+        except Exception:
+            pass
+        self.reject()
+
+    def _on_update_now(self):
+        import threading
+        if not self._asset:
+            QtWidgets.QMessageBox.warning(
+                self, "No installer",
+                "No installer is available for your platform.")
+            return
+        self._cancel_event = threading.Event()
+        for b in (self._btn_skip, self._btn_later, self._btn_update,
+                  self._btn_page):
+            if b is not None:
+                b.setVisible(False)
+        self._btn_cancel.setVisible(True)
+        self._btn_cancel.setEnabled(True)
+        self._status.setVisible(True)
+        self._status.setText("Connecting to GitHub…")
+        self._progress.setVisible(True)
+        self._progress.setValue(0)
+
+        thread = QtCore.QThread(self)
+        worker = _UpdateWorker(self._asset, self._cancel_event.is_set)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        # Relay so the worker's signals are delivered on the GUI thread
+        # (real @Slot methods → AutoConnection picks QueuedConnection).
+        dlg = self
+
+        class _Relay(QtCore.QObject):
+            @QtCore.Slot(int, str)
+            def on_progress(self, pct, label):
+                dlg._on_progress(pct, label)
+
+            @QtCore.Slot(str)
+            def on_finished(self, path):
+                dlg._on_finished(path)
+
+            @QtCore.Slot(str)
+            def on_failed(self, msg):
+                dlg._on_failed(msg)
+
+        relay = _Relay()
+        worker.progress.connect(relay.on_progress)
+        worker.finished.connect(relay.on_finished)
+        worker.failed.connect(relay.on_failed)
+
+        self._thread = thread
+        self._worker = worker
+        self._relay = relay
+        try:
+            self._main._update_dl_thread = thread
+        except Exception:
+            pass
+        thread.start()
+
+    def _on_cancel(self):
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+        self._btn_cancel.setEnabled(False)
+        self._status.setText("Cancelling…")
+
+    def _on_progress(self, pct, label):
+        try:
+            self._status.setText(label)
+            self._progress.setValue(max(0, min(100, int(pct))))
+        except Exception:
+            pass
+
+    def _restore_action_buttons(self):
+        self._btn_cancel.setVisible(False)
+        self._progress.setVisible(False)
+        for b in (self._btn_skip, self._btn_later, self._btn_update,
+                  self._btn_page):
+            if b is not None:
+                b.setVisible(True)
+
+    def _cleanup_thread(self):
+        try:
+            if self._thread is not None:
+                self._thread.quit()
+                self._thread.wait(2000)
+        except Exception:
+            pass
+        self._thread = None
+        self._worker = None
+        self._relay = None
+        try:
+            self._main._update_dl_thread = None
+        except Exception:
+            pass
+
+    def _on_finished(self, path):
+        self._cleanup_thread()
+        self._downloaded_path = path
+        self._progress.setValue(100)
+        self._status.setText("Download complete — restarting FIREFLY…")
+        ok = False
+        try:
+            ok = bool(self._main._apply_downloaded_update(path))
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Update failed", str(exc))
+        if ok:
+            self.accept()          # the app is quitting to swap + relaunch
+        else:
+            self._restore_action_buttons()
+            self._status.setText(
+                "Couldn't install the update automatically — the downloaded "
+                "installer was revealed so you can finish manually.")
+
+    def _on_failed(self, msg):
+        self._cleanup_thread()
+        self._restore_action_buttons()
+        cancelled = "cancel" in (msg or "").lower()
+        self._status.setText("Download cancelled." if cancelled
+                             else f"Download failed: {msg}")
+        if not cancelled:
+            box = QtWidgets.QMessageBox(
+                QtWidgets.QMessageBox.Icon.Warning,
+                "Update download failed", msg or "Unknown error",
+                QtWidgets.QMessageBox.StandardButton.Ok, self)
+            box.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            box.exec()
+
+    def reject(self):
+        # If a download is in flight, cancel + tear it down before closing.
+        if self._thread is not None:
+            if self._cancel_event is not None:
+                self._cancel_event.set()
+            self._cleanup_thread()
+        super().reject()
 
 
 class _ModeTile(QtWidgets.QFrame):
@@ -3630,6 +3957,9 @@ class _PreferencesDialog(QtWidgets.QDialog):
         if _sys.platform == "win32":
             self._build_gpu_page()
 
+        # ── Page: Updates ───────────────────────────────────────────────
+        self._build_updates_page()
+
         # Connect rail → stack
         self._rail.currentRowChanged.connect(self._pages.setCurrentIndex)
         self._rail.setCurrentRow(0)
@@ -3766,6 +4096,64 @@ class _PreferencesDialog(QtWidgets.QDialog):
         QtWidgets.QMessageBox.information(
             self, "Location updated", f"CUDA location is now:\n{new_base}")
         self._refresh_gpu_status()
+
+    # ── Updates page ──────────────────────────────────────────────────────
+    def _build_updates_page(self) -> None:
+        from firefly import updater
+        page = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(page)
+        v.setContentsMargins(24, 24, 24, 24); v.setSpacing(14)
+        v.addWidget(self._heading("Updates"))
+
+        cur = "unknown"
+        try:
+            from firefly import sptpalm_analysis as _sa
+            cur = str(getattr(_sa, "__version__", "unknown"))
+        except Exception:
+            pass
+        ver_lbl = QtWidgets.QLabel(f"Current version: FIREFLY {cur}")
+        ver_lbl.setStyleSheet(f"color: {_THEME['TXT']};")
+        v.addWidget(ver_lbl)
+
+        s = QtCore.QSettings("jacoblevers", "FIREFLY")
+        auto = s.value("updates/auto_check", True)
+        if isinstance(auto, str):            # some backends stringify bools
+            auto = auto.lower() not in ("false", "0", "no", "")
+        self.chk_auto_update = QtWidgets.QCheckBox(
+            "Automatically check for updates on startup")
+        self.chk_auto_update.setChecked(bool(auto))
+        self.chk_auto_update.toggled.connect(self._on_auto_update_toggled)
+        v.addWidget(self.chk_auto_update)
+
+        btn = QtWidgets.QPushButton("Check for updates now")
+        btn.clicked.connect(self._on_check_updates_now)
+        row = QtWidgets.QHBoxLayout(); row.addWidget(btn); row.addStretch(1)
+        v.addLayout(row)
+
+        if not updater.is_frozen():
+            v.addWidget(self._restart_hint(
+                "Automatic updates apply to the packaged FIREFLY app only. "
+                "This is a from-source install — update with 'git pull'."))
+
+        v.addStretch(1)
+        self._pages.addWidget(page)
+        self._add_rail_entry("Updates")
+
+    def _on_auto_update_toggled(self, on: bool) -> None:
+        try:
+            QtCore.QSettings("jacoblevers", "FIREFLY").setValue(
+                "updates/auto_check", bool(on))
+        except Exception:
+            pass
+
+    def _on_check_updates_now(self) -> None:
+        # Close Preferences first so the (modal) update dialog is visible.
+        main = self._main
+        self.accept()
+        try:
+            main._force_check_for_updates()
+        except Exception:
+            pass
 
     def _heading(self, txt: str) -> QtWidgets.QLabel:
         lbl = QtWidgets.QLabel(txt)

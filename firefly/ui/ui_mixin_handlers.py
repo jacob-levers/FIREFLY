@@ -23,7 +23,7 @@ from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _make_napari_container_layout_opaque, _hide_napari_chrome,
                         _register_motion_colormap, _open_folder,
                         _MOTION_PALETTE, _MOTION_ORDER, _MOTION_CMAP_NAME)
-from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _QuietSpinBox,
+from firefly.ui.ui_widgets import (_UpdateCheckThread, _UpdateDialog, _ModeTile, _ActionTile, _QuietSpinBox,
                         _QuietDoubleSpinBox, _QuietComboBox, _CollapsibleSection,
                         _ResourceMonitor, _MassHistogram, _LiveFrameView,
                         _TrackInspector, _ResultsPanel, _RoiDialog, _RoiViewer,
@@ -33,23 +33,110 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
 
 
 class HandlersMixin:
-    def _on_update_available(self, latest_tag: str, html_url: str):
-        """Slot called when the background thread finds a newer release."""
+    def _current_version(self) -> str:
+        try:
+            from firefly import sptpalm_analysis as _sa
+            return str(getattr(_sa, "__version__", "0.0.0"))
+        except Exception:
+            return "0.0.0"
+
+    def _on_update_available(self, latest_tag: str, release):
+        """Slot called when the startup check finds a newer release.  Stash
+        the full release dict and light the header pill; clicking it opens
+        the in-app update dialog (download + install + relaunch)."""
         if not hasattr(self, "btn_update_pill"):
             return
-        self._update_url = html_url or self._UPDATE_RELEASES_URL
+        # Respect a "skip this version" choice from a previous session — but
+        # still surface anything strictly newer than the skipped tag.
+        try:
+            from firefly import updater
+            skip = QtCore.QSettings("jacoblevers", "FIREFLY").value(
+                "updates/skip_version", "") or ""
+            if skip and (updater.parse_version(latest_tag)
+                         <= updater.parse_version(str(skip))):
+                return
+        except Exception:
+            pass
+        self._latest_release = release if isinstance(release, dict) else {}
+        self._update_url = (self._latest_release.get("html_url")
+                            or self._UPDATE_RELEASES_URL)
         self.btn_update_pill.setText(f"  ●  Update available: {latest_tag}  ")
         self.btn_update_pill.setToolTip(
-            f"FIREFLY {latest_tag} is available on GitHub.  "
-            "Click to open the Releases page.")
+            f"FIREFLY {latest_tag} is available.  Click to update.")
         self.btn_update_pill.setVisible(True)
 
     def _on_update_pill_clicked(self):
-        url = getattr(self, "_update_url", self._UPDATE_RELEASES_URL)
+        release = getattr(self, "_latest_release", None)
+        dlg = _UpdateDialog(self, self._current_version(), release)
+        dlg.exec()
+
+    def _force_check_for_updates(self):
+        """User-triggered check (menu / Preferences).  Always opens the
+        update dialog with the result — even when up to date or offline."""
+        thread = _UpdateCheckThread(self._UPDATE_API_URL,
+                                    self._current_version(),
+                                    parent=self, force=True)
+        self._force_update_thread = thread
         try:
-            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+            self.statusBar().showMessage("Checking for updates…", 3000)
         except Exception:
             pass
+        thread.check_finished.connect(self._on_force_check_finished)
+        thread.start()
+
+    def _on_force_check_finished(self, release):
+        try:
+            self.statusBar().clearMessage()
+        except Exception:
+            pass
+        try:
+            t = getattr(self, "_force_update_thread", None)
+            if t is not None:
+                t.quit(); t.wait(1000)
+        except Exception:
+            pass
+        self._force_update_thread = None
+        dlg = _UpdateDialog(self, self._current_version(), release)
+        dlg.exec()
+
+    def _apply_downloaded_update(self, path) -> bool:
+        """Install a downloaded update and quit so the staged helper can
+        swap files + relaunch.  Returns True if the swap was initiated (the
+        app is quitting); False if it couldn't be applied (an error box was
+        shown and the download folder revealed)."""
+        from firefly import updater
+        if not updater.is_frozen():
+            QtWidgets.QMessageBox.information(
+                self, "Update downloaded",
+                "The update was downloaded, but in-app install only works in "
+                "the packaged FIREFLY app. Use 'git pull' for a source "
+                "install.")
+            return False
+        try:
+            updater.apply_update(path)
+        except updater.UpdaterError as exc:
+            box = QtWidgets.QMessageBox(
+                QtWidgets.QMessageBox.Icon.Warning,
+                "Couldn't install update", str(exc),
+                QtWidgets.QMessageBox.StandardButton.Ok, self)
+            box.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            box.exec()
+            reveal = getattr(exc, "reveal_path", None)
+            if reveal:
+                try:
+                    _open_folder(reveal)
+                except Exception:
+                    pass
+            return False
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Couldn't install update",
+                                          str(exc))
+            return False
+        # Success — quit (deferred so the modal update dialog can close
+        # first) so the detached helper can replace the app + relaunch.
+        QtCore.QTimer.singleShot(0, self.close)
+        return True
 
     def _on_console_visibility(self, visible: bool):
         """Keep the status-bar toggle button's checked state in sync."""

@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.41.0
+
+### One-click in-app updates
+
+The packaged app can now update itself — no more downloading a fresh DMG/EXE from
+the Releases page by hand. When a newer release is found, the header "Update
+available" pill (and **File → Check for Updates…** / **Preferences → Updates**)
+opens a dialog with the release notes and an **Update now** button:
+
+- **Fully automatic** — FIREFLY downloads the new build (with a progress bar you
+  can cancel), replaces itself in place, and relaunches. On macOS it clears the
+  Gatekeeper quarantine flag on the new bundle (the app is unsigned), so no
+  manual "right-click → Open" is needed after updating.
+- **Frozen builds only** — running from source the feature is hidden (use
+  `git pull`). If the install lives somewhere needing admin rights, the download
+  is kept and revealed so you can finish by hand.
+- **Preferences → Updates** — toggle the automatic startup check, see the current
+  version, or check on demand. "Skip this version" suppresses the pill until a
+  newer one ships.
+
+Under the hood: a new `firefly/net_download.py` holds the shared, hardened
+downloader (atomic write, resume, stall-watchdog, throttled progress, retry —
+extracted so the CUDA installer and the updater share one implementation), and
+`firefly/updater.py` handles release discovery + the per-OS swap-and-relaunch.
+16 new pure-logic tests (`tests/test_updater.py`) cover version compare, asset
+selection, release parsing, helper-script generation, and the frozen-only guards.
+
 ## v2.40.0
 
 ### Packaging & developer onboarding (Phase 3)

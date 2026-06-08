@@ -73,6 +73,16 @@ release on the [Releases page](https://github.com/jacob-levers/FIREFLY/releases)
 > users already get MPS acceleration from the bundled torch — no
 > extra setup needed.
 
+### Updating
+
+FIREFLY checks GitHub for new releases on launch. When one is available an
+**Update available** pill appears in the header — click it (or **File → Check
+for Updates…**, or **Preferences → Updates**) and choose **Update now**. The app
+downloads the new version, replaces itself, and restarts automatically — no need
+to re-download from the Releases page by hand. On macOS the first launch after an
+update no longer needs the right-click → **Open** step. (Source installs update
+with `git pull`.)
+
 ### From source (advanced)
 
 Python 3.10 or newer. Clone the repo and run the launcher for your OS — it

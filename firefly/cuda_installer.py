@@ -27,6 +27,8 @@ import urllib.request
 import zipfile
 from typing import Callable, List, Optional
 
+from firefly import net_download
+
 
 # ── Diagnostic log plumbing ───────────────────────────────────────────────────
 # When a user reports "it gets stuck", we need a step-by-step breadcrumb
@@ -49,6 +51,9 @@ def set_log_callback(cb: Optional[Callable[[str], None]]) -> None:
     global _log_cb, _log_t0
     _log_cb = cb
     _log_t0 = time.monotonic()
+    # Forward to the shared downloader so its progress lines reach the
+    # same UI log callback during a wheel download.
+    net_download.set_log_callback(cb)
 
 
 def _log(msg: str) -> None:
@@ -729,32 +734,19 @@ def download_wheel(url: str,
                    progress_cb: Optional[Callable[[int, int], None]] = None,
                    cancel_cb: Optional[Callable[[], bool]] = None,
                    max_attempts: int = 3) -> None:
-    """Download `url` → `dest_path` with progress + cancel support.
+    """Download a CUDA torch wheel `url` → `dest_path` with progress +
+    cancel support.
 
-    Bulletproofing (Murphy's Law mode):
-      * Atomic write — bytes land in `<dest>.part`; rename to `dest`
-        only after the full download verifies.  No partial file ever
-        looks like a complete one.
-      * Resumable — if `<dest>.part` is left over from a prior crash
-        we resume with a `Range: bytes=N-` header instead of starting
-        over.  Saves 2.5 GB of bandwidth on every retry.
-      * Retry-with-backoff — transient network failures (URLError,
-        TimeoutError, stall watchdog tripping, short reads) re-enter
-        the attempt loop up to `max_attempts` times with exponential
-        backoff.  Permanent failures (HTTP 4xx, user cancel) abort
-        immediately.
-      * BITS demoted to opt-in — historically caused more hangs than
-        it prevented (Defender / corp-proxy compatibility was the
-        original justification, but urllib turns out to be just as
-        compatible and we control the timeout behaviour).  Set the
-        env var `FIREFLY_USE_BITS=1` to opt back in.
-      * Zip-validity check — once the download finishes, the file is
-        opened with zipfile.is_zipfile; if it's not a zip we retry
-        rather than handing extract_wheel a corrupt archive.
+    The general-purpose download robustness (atomic write, resume, stall
+    watchdog, throttled progress, retry/backoff, plus the post-download
+    validity check) now lives in ``firefly.net_download``; this thin
+    wrapper adds the two CUDA-specific bits: the optional Windows BITS
+    path (opt-in via ``FIREFLY_USE_BITS=1``) and the wheel-flavoured
+    error guidance.  BITS is opt-in only — historically it caused more
+    hangs than it prevented; urllib turned out just as compatible and we
+    control its timeout behaviour.
     """
-    # BITS path: opt-in only via env var.  The default fall-through is
-    # urllib with retry/resume below — every problem we've seen on
-    # Windows traces to BITS's opaque state machine, not urllib.
+    import zipfile
     if is_windows() and os.environ.get("FIREFLY_USE_BITS") == "1":
         try:
             _download_via_bits(url, dest_path,
@@ -765,347 +757,25 @@ def download_wheel(url: str,
             # Re-raise user-cancel and BITS-specific errors as-is.
             raise
         except Exception as exc:
-            _log(f"  BITS path unavailable ({exc!r}); falling back "
-                 f"to urllib")
-            # fall through to urllib path
-    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
-
-    # Retry loop.  Backoff schedule (seconds): 2, 5, 10 — enough to ride
-    # out a transient firewall hiccup but not enough to bore the user.
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            _download_wheel_once(url, dest_path,
-                                  progress_cb=progress_cb,
-                                  cancel_cb=cancel_cb,
-                                  attempt=attempt,
-                                  max_attempts=max_attempts)
-            return
-        except RuntimeError as exc:
-            # User cancel + permanent server errors are RuntimeError
-            # and propagate immediately — don't burn retries on a 404.
-            msg = str(exc).lower()
-            if ("cancel" in msg or "http 4" in msg or "no cuda wheel" in msg):
-                raise
-            last_exc = exc
-            _log(f"  attempt {attempt}/{max_attempts} failed: {exc}")
-        except (urllib.error.URLError, TimeoutError, ConnectionError,
-                OSError) as exc:
-            last_exc = exc
-            _log(f"  attempt {attempt}/{max_attempts} failed "
-                 f"({type(exc).__name__}: {exc})")
-        if attempt < max_attempts:
-            backoff = (2, 5, 10)[min(attempt - 1, 2)]
-            _log(f"  backing off {backoff}s before retry "
-                 f"(part file kept for resume)")
-            for _ in range(backoff):
-                if cancel_cb is not None:
-                    try:
-                        if cancel_cb():
-                            raise RuntimeError("Download cancelled by user.")
-                    except RuntimeError:
-                        raise
-                    except Exception:
-                        pass
-                time.sleep(1)
-    # All attempts exhausted — clean up the .part and report failure.
-    part_path = dest_path + ".part"
+            _log(f"  BITS path unavailable ({exc!r}); falling back to urllib")
     try:
-        if os.path.exists(part_path): os.remove(part_path)
-    except Exception:
-        pass
-    raise RuntimeError(
-        f"CUDA wheel download failed after {max_attempts} attempts.  "
-        f"Last error: {last_exc}\n\n"
-        f"Try again later, switch networks, or install FIREFLY from "
-        f"source (README → 'Enabling CUDA') to use pip's downloader "
-        f"instead."
-    )
-
-
-def _download_wheel_once(url: str,
-                          dest_path: str,
-                          *,
-                          progress_cb: Optional[Callable[[int, int], None]] = None,
-                          cancel_cb: Optional[Callable[[], bool]] = None,
-                          attempt: int = 1,
-                          max_attempts: int = 1) -> None:
-    """One attempt at downloading the wheel.  Writes to `<dest>.part`,
-    resumes from any prior `<dest>.part`, atomic-renames to `dest` on
-    success.  Raises on any failure — `download_wheel` decides whether
-    to retry.
-    """
-    part_path = dest_path + ".part"
-    # Resume support — if a previous attempt left bytes behind, send a
-    # Range header and append to the existing file.  download.pytorch.org
-    # supports Range; if the server doesn't (we'd see HTTP 200 instead
-    # of 206), we transparently fall back to a fresh download.
-    resume_from = 0
-    try:
-        if os.path.exists(part_path):
-            resume_from = int(os.path.getsize(part_path))
-    except Exception:
-        resume_from = 0
-    # Bigger chunks → fewer read() syscalls AND fewer progress signals
-    # queued to the GUI thread.  At ~50 MB/s on a 64 KB chunk that's
-    # ~800 signal emissions per second, which overwhelms Qt's event
-    # queue and starves paint events — Windows then marks the app
-    # "Not Responding" even though the download is fine.  256 KB cuts
-    # that to ~200/s and we additionally throttle progress_cb to
-    # ~10 Hz below.
-    chunk_size = 256 * 1024
-    progress_throttle_s = 0.1   # 10 Hz cap on progress callbacks
-    last_progress_t = 0.0
-    # Remove any pre-existing FINAL file (we always re-derive it from
-    # .part).  Leave the .part in place — that's our resume buffer.
-    try:
-        if os.path.exists(dest_path):
-            os.remove(dest_path)
-    except Exception:
-        pass
-
-    # Surface the URL in the FIREFLY console log — when the dialog
-    # appears stuck, the user (and we) can read the log to see if the
-    # URL itself is 404 (wrong torch version → no matching cu wheel)
-    # vs a real network problem.
-    _log(f"GET {url}  (attempt {attempt}/{max_attempts}"
-         + (f", resume from {resume_from/1e6:.1f} MB" if resume_from else "")
-         + ")")
-    _log(f"  dest: {dest_path}  (writing to {os.path.basename(part_path)})")
-
-    # Watchdog for stalled reads.  resp.read(N) can block forever on
-    # Windows when the TLS connection stalls mid-stream (same bug class
-    # that hung HEAD on cu118) or when Windows Defender / a corporate
-    # firewall is intercepting the .whl write.  We sample `downloaded`
-    # every 1 s in a daemon thread; if no bytes arrive for
-    # `read_stall_s` seconds we tear the response down.  The worker's
-    # read call then returns cleanly (or raises) and we fail with a
-    # clear error instead of hanging the app forever.
-    #
-    # We ALSO emit an "activity heartbeat" log line every 2 s from the
-    # same daemon thread so the debug-log window keeps updating while
-    # the worker thread is blocked in resp.read() — without this, the
-    # log appears frozen at "Starting read loop" and the user can't
-    # tell whether anything is happening at all.
-    import threading
-    read_stall_s = 10.0
-    progress_state = {"downloaded": 0, "last_change_t": time.monotonic(),
-                       "should_abort": False, "done": False}
-    resp_holder: dict = {"resp": None}
-
-    def _stall_watchdog():
-        wd_start = time.monotonic()
-        last_heartbeat_at = wd_start
-        last_reported_bytes = 0
-        while not progress_state["should_abort"]:
-            time.sleep(1.0)
-            now = time.monotonic()
-            elapsed = now - progress_state["last_change_t"]
-            if progress_state.get("done"):
-                return
-            # Heartbeat every 2 s — proves the watchdog thread (and
-            # therefore the Python interpreter / main loop) is alive,
-            # and shows whether bytes are trickling in slowly.
-            dl = progress_state["downloaded"]
-            if now - last_heartbeat_at >= 2.0:
-                last_heartbeat_at = now
-                if dl == last_reported_bytes:
-                    _log(f"  … still waiting for first chunk "
-                         f"({elapsed:.0f}s since last activity)")
-                else:
-                    _log(f"  … downloading slowly: {dl/1e6:.1f} MB so far "
-                         f"({(dl/1e6)/(now-wd_start):.2f} MB/s avg)")
-                last_reported_bytes = dl
-            if elapsed > read_stall_s:
-                _log(f"  → STALL WATCHDOG: no data for {elapsed:.0f}s, "
-                     f"aborting (downloaded {dl/1e6:.1f} MB)")
-                progress_state["should_abort"] = True
-                try:
-                    r = resp_holder.get("resp")
-                    if r is not None:
-                        r.close()
-                except Exception:
-                    pass
-                return
-
-    try:
-        headers = {"User-Agent": "FIREFLY-CUDA-installer/1.0"}
-        if resume_from > 0:
-            headers["Range"] = f"bytes={resume_from}-"
-        req = urllib.request.Request(url, headers=headers)
-        # 20 s timeout (was 30) so a dead URL fails fast instead of
-        # leaving the user staring at a frozen-looking dialog.
-        t0 = time.monotonic()
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            resp_holder["resp"] = resp
-            status = int(getattr(resp, "status", 0) or 0)
-            _log(f"  HTTP {status} in {time.monotonic()-t0:.2f}s")
-            # If we asked for a range but the server returned 200, it's
-            # ignoring our Range header — discard the .part and start
-            # fresh.  Better to re-download than corrupt the file.
-            if resume_from > 0 and status != 206:
-                _log(f"  server returned {status} (not 206 Partial Content) "
-                     f"— discarding {resume_from/1e6:.1f} MB resume buffer")
-                resume_from = 0
-                try: os.remove(part_path)
-                except Exception: pass
-            try:
-                cl = int(resp.headers.get("Content-Length") or 0)
-            except Exception:
-                cl = 0
-            # On a 206 Partial Content, Content-Length is the REMAINDER,
-            # not the total.  Total file size = resume_from + remainder.
-            total = (resume_from + cl) if (status == 206 and cl > 0) else cl
-            _log(f"  Content-Length: {cl/1e6:.1f} MB"
-                 + (f"   (total wheel: {total/1e6:.1f} MB)"
-                    if status == 206 else ""))
-            _log(f"  Starting read loop (chunk={chunk_size//1024} KB, "
-                 f"stall watchdog={read_stall_s:.0f}s)")
-            wdog = threading.Thread(target=_stall_watchdog, daemon=True,
-                                     name="cuda-download-stall-watchdog")
-            wdog.start()
-            downloaded = resume_from
-            # Seed the watchdog so the "no progress yet" check doesn't
-            # immediately fire on resume.
-            progress_state["downloaded"] = downloaded
-            chunk_count = 0
-            last_diag_t = time.monotonic()
-            # Append-mode for resume, write-mode for fresh download.
-            file_mode = "ab" if resume_from > 0 else "wb"
-            with open(part_path, file_mode) as out:
-                while True:
-                    if cancel_cb is not None:
-                        try:
-                            if cancel_cb():
-                                # Cancelled — leave .part in place so
-                                # the user can resume by re-running the
-                                # installer; only delete on full
-                                # uninstall.
-                                progress_state["should_abort"] = True
-                                raise RuntimeError(
-                                    "Download cancelled by user.")
-                        except RuntimeError:
-                            raise
-                        except Exception:
-                            pass
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
-                        break
-                    if progress_state["should_abort"]:
-                        # Don't delete .part — let the retry loop resume.
-                        raise RuntimeError(
-                            "Download stalled — no data received from "
-                            "download.pytorch.org for 10 seconds.")
-                    out.write(chunk)
-                    downloaded += len(chunk)
-                    chunk_count += 1
-                    # Diagnostic log: first 3 chunks individually (so we
-                    # can see bytes ARE arriving), then once every 1 s.
-                    now = time.monotonic()
-                    if chunk_count <= 3 or (now - last_diag_t) >= 1.0:
-                        last_diag_t = now
-                        _log(f"  + chunk {chunk_count}: "
-                             f"{downloaded/1e6:.1f} MB / {total/1e6:.0f} MB")
-                    progress_state["downloaded"] = downloaded
-                    progress_state["last_change_t"] = now
-                    # Throttle progress emissions to ~10 Hz.  Without
-                    # this, a fast connection floods the main Qt event
-                    # queue with thousands of queued slot calls per
-                    # second, paint events get starved, and Windows
-                    # marks the app "Not Responding".
-                    if progress_cb is not None:
-                        if (now - last_progress_t) >= progress_throttle_s:
-                            last_progress_t = now
-                            try:
-                                progress_cb(downloaded, total)
-                            except Exception:
-                                pass
-                # Final 100 % tick so the bar visibly hits the end.
-                progress_state["done"] = True
-                _log(f"  ✓ download complete: {downloaded/1e6:.1f} MB "
-                     f"in {time.monotonic()-t0:.1f}s "
-                     f"({(downloaded/1e6)/(time.monotonic()-t0):.1f} MB/s)")
-                if progress_cb is not None:
-                    try:
-                        progress_cb(downloaded, total)
-                    except Exception:
-                        pass
-
-        # ── Post-download integrity gauntlet ─────────────────────────
-        # 1) File size matches Content-Length (if the server sent one).
-        try:
-            actual = os.path.getsize(part_path)
-        except Exception:
-            actual = 0
-        if total > 0 and actual != total:
-            # Short read — keep the .part so the next attempt can
-            # resume, but raise so the retry loop fires.
-            raise RuntimeError(
-                f"Short read: got {actual/1e6:.1f} MB but Content-Length "
-                f"indicated {total/1e6:.1f} MB.")
-        # 2) Looks like a valid zip (wheels are zips).  Catches the
-        # case where a captive portal / proxy returned an HTML page
-        # but the urllib stack didn't notice.
-        try:
-            ok_zip = zipfile.is_zipfile(part_path)
-        except Exception:
-            ok_zip = False
-        if not ok_zip:
-            # NOT a valid zip — almost certainly an HTML error page
-            # or a transparent proxy page got captured.  Discard.
-            try:    os.remove(part_path)
-            except Exception: pass
-            raise RuntimeError(
-                "Downloaded file is not a valid .whl/.zip — likely an "
-                "intercepting proxy returned an HTML error page.  "
-                "Try again on a different network.")
-        # 3) Atomic rename to the final path — only happens if every
-        # earlier check passed.  os.replace is atomic on POSIX and
-        # near-atomic on Windows (NTFS); either the final file exists
-        # complete or it doesn't.
-        try:
-            os.replace(part_path, dest_path)
-        except OSError as exc:
-            # Most common on Windows: Defender has the .part open for
-            # scanning.  Wait a beat and retry once before giving up.
-            _log(f"  rename failed ({exc}); retrying after 1s "
-                 f"(Defender scan?)")
-            time.sleep(1.0)
-            os.replace(part_path, dest_path)
-    except urllib.error.HTTPError as exc:
-        progress_state["should_abort"] = True
-        # 416 = "Requested Range Not Satisfiable" — our .part is now
-        # bigger than the server's file (rare, but happens when the
-        # server's wheel was updated between attempts).  Discard.
-        if getattr(exc, "code", 0) == 416:
-            _log("  HTTP 416 — discarding stale .part and retrying fresh")
-            try: os.remove(part_path)
-            except Exception: pass
-            raise urllib.error.URLError(f"416: {exc.reason}") from exc
-        # 4xx other than 416 → permanent.  Tag with HTTP so the retry
-        # loop sees it and aborts immediately instead of burning 3
-        # attempts on a 404.
-        if 400 <= getattr(exc, "code", 0) < 500:
-            raise RuntimeError(
-                f"HTTP {exc.code} when downloading {url}\n"
-                f"The exact wheel build for this Python/torch "
-                f"combination may not be on download.pytorch.org."
-            ) from exc
-        # 5xx → transient, let the retry loop have it.
-        raise urllib.error.URLError(
-            f"{exc.code}: {exc.reason}") from exc
-    except urllib.error.URLError:
-        # Let the outer retry loop catch this — keep .part for resume.
-        raise
-    except RuntimeError:
-        # Includes user-cancel + our own short-read / stalled errors.
-        raise
-    except Exception as exc:
-        # Unknown exception — convert so the retry loop sees it; keep
-        # .part on disk for the next attempt to resume from.
+        net_download.download_file(
+            url, dest_path,
+            progress_cb=progress_cb,
+            cancel_cb=cancel_cb,
+            validate_cb=zipfile.is_zipfile,
+            headers={"User-Agent": "FIREFLY-CUDA-installer/1.0"},
+            max_attempts=max_attempts)
+    except net_download.DownloadError as exc:
+        # User-cancel propagates as-is; everything else gets the
+        # CUDA-specific "try source install" guidance appended.
+        if "cancel" in str(exc).lower():
+            raise
         raise RuntimeError(
-            f"Unexpected error while downloading the CUDA PyTorch wheel: "
-            f"{exc}"
+            f"CUDA wheel download failed.  {exc}\n\n"
+            f"Try again later, switch networks, or install FIREFLY from "
+            f"source (README → 'Enabling CUDA') to use pip's downloader "
+            f"instead."
         ) from exc
 
 
