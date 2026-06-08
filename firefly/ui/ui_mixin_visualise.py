@@ -708,6 +708,19 @@ class VisualiseMixin:
             f"({stem})")
         self._ws_set_cluster_banner(n_clu)
 
+    @staticmethod
+    def _ws_add_points_compat(viewer, data, **kw):
+        """add_points robust to napari's Points `edge_color` → `border_color`
+        rename (0.5/0.6; the old name was removed in 0.6.x).  Callers pass
+        `border_color`; on older napari we retry with `edge_color`."""
+        try:
+            return viewer.add_points(data, **kw)
+        except TypeError as exc:
+            if "border_color" in kw and "border_color" in str(exc):
+                kw["edge_color"] = kw.pop("border_color")
+                return viewer.add_points(data, **kw)
+            raise
+
     def _ws_render_cluster_layer(self):
         """(Re-)create the napari Points layer from the current
         `_ws_cluster_xy_px` + `_ws_cluster_labels` buffers.  Called on
@@ -772,21 +785,21 @@ class VisualiseMixin:
                     _MOTION_COLORS.get(str(m), _MOTION_COLORS["Unknown"])
                     for m in self._ws_cluster_motion
                 ], dtype=float)
-                layer = v.add_points(
-                    self._ws_cluster_xy_px,
+                layer = self._ws_add_points_compat(
+                    v, self._ws_cluster_xy_px,
                     properties={"cluster_id": ids,
                                 "motion":     self._ws_cluster_motion},
                     face_color=colors,
-                    edge_color="transparent",
+                    border_color="transparent",
                     size=pt_size, opacity=0.85,
                     name="DBSCAN clusters")
             else:
-                layer = v.add_points(
-                    self._ws_cluster_xy_px,
+                layer = self._ws_add_points_compat(
+                    v, self._ws_cluster_xy_px,
                     properties={"cluster_id": ids},
                     face_color="cluster_id",
                     face_colormap="turbo",
-                    edge_color="transparent",
+                    border_color="transparent",
                     size=pt_size, opacity=0.85,
                     name="DBSCAN clusters")
         except Exception as exc:

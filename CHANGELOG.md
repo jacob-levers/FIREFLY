@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.37.1
+
+### Fix: cluster overlay failed to render on napari 0.6+
+
+napari 0.5/0.6 renamed the Points layer's `edge_color` to `border_color` (and
+removed the old name in 0.6.x), so loading the Visualise tab's DBSCAN cluster
+overlay errored with *"add_points() got an unexpected keyword argument
+'edge_color'"*. The overlay now uses `border_color`, falling back to
+`edge_color` on older napari — so it renders across napari versions.
+
 ## v2.37.0
 
 ### Clustering: honest subsample warning + radius of gyration (Phase 3)
