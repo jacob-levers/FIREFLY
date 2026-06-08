@@ -987,6 +987,14 @@ class VisualiseMixin:
         if req_id != getattr(self, "_ws_recluster_req", req_id):
             return                         # superseded by a newer tune — drop
         import numpy as _np
+        # eps was too large to cluster safely — keep the previous overlay and
+        # tell the user to lower it, rather than showing an all-noise field.
+        if (getattr(stats_df, "attrs", {}) or {}).get("eps_too_large"):
+            self._ws_cluster_status.setText(
+                f"eps = {eps_nm:.0f} nm is too large for this data — lower it "
+                f"(clustering skipped to avoid a memory blow-up).")
+            self._ws_set_cluster_banner(0)
+            return
         self._ws_cluster_labels = _np.asarray(labels, dtype=_np.int32)
         self._ws_cluster_stats_df = stats_df
         self._ws_render_cluster_layer()
@@ -1044,13 +1052,22 @@ class VisualiseMixin:
                     d, _ = nn.kneighbors(self._xy)
                     kd = _np2.sort(d[:, -1])          # k-th NN dist (µm), asc
                     m = len(kd)
-                    x = _np2.arange(m, dtype=float)
-                    x0, y0, x1, y1 = 0.0, kd[0], float(m - 1), kd[-1]
-                    num = _np2.abs((y1 - y0) * x - (x1 - x0) * kd
+                    # Clip the extreme 2% tails so a few far outliers can't skew
+                    # the chord (and push the knee toward an absurdly large eps).
+                    lo = max(0, int(0.02 * m))
+                    hi = min(m - 1, int(0.98 * m))
+                    seg = kd[lo:hi + 1]
+                    mm = len(seg)
+                    if mm < 3:
+                        self.done.emit(float(_np2.median(kd)) * 1000.0)
+                        return
+                    x = _np2.arange(mm, dtype=float)
+                    x0, y0, x1, y1 = 0.0, seg[0], float(mm - 1), seg[-1]
+                    num = _np2.abs((y1 - y0) * x - (x1 - x0) * seg
                                    + x1 * y0 - y1 * x0)
                     den = _np2.hypot(y1 - y0, x1 - x0) or 1.0
                     knee = int(_np2.argmax(num / den))
-                    self.done.emit(float(kd[knee]) * 1000.0)   # → nm
+                    self.done.emit(float(seg[knee]) * 1000.0)   # → nm
                 except Exception as exc:
                     self.failed.emit(str(exc))
 

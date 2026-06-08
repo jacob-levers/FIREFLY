@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.37.2
+
+### Fix: an over-large eps could crash clustering (incl. "Suggest eps")
+
+Re-clustering with a very large eps made DBSCAN's neighbourhood graph blow up
+(O(n²) memory) and could crash the app — which is what happened when "Suggest
+eps" returned an outsized value and jumped the slider to its maximum.
+
+- **`compute_clusters` now guards against it:** it cheaply estimates the average
+  neighbourhood size first and, if an eps would be enormous, skips DBSCAN and
+  returns "no clusters" with a clear message instead of exhausting memory. The
+  Visualise tab keeps the previous overlay and shows *"eps too large — lower it"*.
+- **"Suggest eps" is more robust:** the k-distance knee now clips outlier tails
+  so a few far points can't skew it toward an absurd value.
+
 ## v2.37.1
 
 ### Fix: cluster overlay failed to render on napari 0.6+
