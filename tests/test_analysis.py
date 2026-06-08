@@ -2091,3 +2091,28 @@ def test_self_corrected_not_double_corrected(tmp_path):
                 found = True
                 assert pw["p_within"] == pytest.approx(pw["p"], abs=1e-12)
     assert found, "expected at least one self-corrected (Tukey) pairwise record"
+
+
+@pytest.mark.parametrize("style", ["faceted", "ridgeline", "overlaid", "violin"])
+def test_logd_plot_styles_render(tmp_path, style):
+    """Every LogD distribution style renders without error and writes a PNG."""
+    import matplotlib; matplotlib.use("Agg")
+    from firefly.analysis.fa_compare import compare_groups
+    root = tmp_path / "runs"
+    groups = []
+    for gi, gname in enumerate(["A", "B"]):
+        folders = [_write_run_folder(str(root), gname, f"{gname}_r{r}",
+                                     n_tracks=25, seed=gi * 3 + r)
+                   for r in range(3)]
+        groups.append({"label": gname, "color": "#777777", "folders": folders})
+    out = tmp_path / ("out_" + style)
+    fig, _summary, _stats = compare_groups(
+        groups=groups, output_dir=str(out), output_stem="cmp",
+        pdf_report=False, panels=["logd_dist"], logd_plot_style=style)
+    assert (out / "cmp.png").exists()
+    # An unknown style must fall back to the default, not crash.
+    out2 = tmp_path / "out_bogus"
+    compare_groups(groups=groups, output_dir=str(out2), output_stem="cmp",
+                   pdf_report=False, panels=["logd_dist"],
+                   logd_plot_style="not-a-real-style")
+    assert (out2 / "cmp.png").exists()

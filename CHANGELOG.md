@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.44.0
+
+### Choose your LogD distribution graph style (Preferences)
+
+**Preferences → Appearance → "LogD graph style"** now lets you pick how the
+Compare tab's LogD-distribution panel is drawn:
+
+- **Faceted (per-replicate)** — default; one panel per group, PRE vs POST
+  overlaid, with a per-cell median dot strip.
+- **Ridgeline** — the classic stacked filled KDEs (now with a per-cell median
+  tick on each ridge).
+- **Overlaid KDEs** — every group's curve on one axes.
+- **Violins + points** — per-group violins with a per-cell median dot strip
+  (SuperPlot style).
+
+The choice persists and applies to the next comparison you run.
+
+### Faceted legend no longer overlaps the curves
+
+The faceted panel's key now lives in its own dedicated strip above the facets
+(title + a neutral PRE/POST/● per-cell-median/threshold key), so it can never
+sit on top of a density curve regardless of how the distribution is shaped — the
+previous in-axes placement could overlap broad distributions on real data.
+
 ## v2.43.0
 
 ### LogD distribution panel: honest, faceted redesign

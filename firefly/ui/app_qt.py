@@ -2909,6 +2909,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             "pdf_report":  bool(self.c_cmp_pdf.isChecked()),
             "panels":      list(selected_panels),
             "mobile_d_threshold": float(self.s_mobile_d_threshold.value()),
+            "logd_plot_style": str(self._settings.value(
+                "figures/logd_style", "faceted") or "faceted"),
             "stats_config": self._collect_stats_config(),
         }
 

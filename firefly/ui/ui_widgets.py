@@ -3893,6 +3893,15 @@ class _PreferencesDialog(QtWidgets.QDialog):
     Settings persist via QSettings — closing the dialog auto-saves.
     """
 
+    # Display-name ↔ stored-value for the Compare-tab LogD distribution style.
+    _LOGD_STYLE_MAP = {
+        "Faceted (per-replicate)": "faceted",
+        "Ridgeline":               "ridgeline",
+        "Overlaid KDEs":           "overlaid",
+        "Violins + points":        "violin",
+    }
+    _LOGD_STYLE_DISP = {v: k for k, v in _LOGD_STYLE_MAP.items()}
+
     def __init__(self, parent: "MainWindow"):
         super().__init__(parent)
         self.setWindowTitle("FIREFLY Preferences")
@@ -3950,6 +3959,34 @@ class _PreferencesDialog(QtWidgets.QDialog):
         ap.addLayout(theme_row)
         ap.addWidget(self._restart_hint(
             "App-theme changes take effect after restarting FIREFLY."))
+
+        # ── Compare-figure: LogD distribution style ──────────────────────
+        logd_row = QtWidgets.QFormLayout()
+        logd_row.setHorizontalSpacing(12); logd_row.setVerticalSpacing(8)
+        self.c_logd_style = _QuietComboBox()
+        self.c_logd_style.addItems(list(self._LOGD_STYLE_MAP.keys()))
+        self.c_logd_style.setMaximumWidth(220)
+        try:
+            _cur = str(QtCore.QSettings("jacoblevers", "FIREFLY").value(
+                "figures/logd_style", "faceted") or "faceted")
+            self.c_logd_style.setCurrentText(
+                self._LOGD_STYLE_DISP.get(_cur, "Faceted (per-replicate)"))
+        except Exception:
+            pass
+        self.c_logd_style.setToolTip(
+            "How the Compare tab's LogD-distribution panel is drawn:\n"
+            "• Faceted — one panel per group; PRE/POST overlaid + per-cell "
+            "median dots\n"
+            "• Ridgeline — classic stacked filled KDEs\n"
+            "• Overlaid KDEs — every group on one axes\n"
+            "• Violins + points — per-group violins with per-cell medians\n"
+            "Applies to the next comparison you run.")
+        self.c_logd_style.currentTextChanged.connect(self._on_logd_style_changed)
+        logd_row.addRow("LogD graph style:", self.c_logd_style)
+        ap.addLayout(logd_row)
+        ap.addWidget(self._restart_hint(
+            "LogD graph style applies to the next comparison you run."))
+
         ap.addStretch(1)
 
         self._pages.addWidget(appearance_page)
@@ -4203,6 +4240,20 @@ class _PreferencesDialog(QtWidgets.QDialog):
                     self, "Restart to apply theme",
                     f"App theme set to {name}.  Restart FIREFLY to see "
                     f"the change take effect.")
+        except Exception:
+            pass
+
+    def _on_logd_style_changed(self, name: str) -> None:
+        """Persist the chosen LogD-distribution style to the main settings
+        store (read by _start_compare_run when launching a comparison)."""
+        try:
+            val = self._LOGD_STYLE_MAP.get(name, "faceted")
+            store = getattr(self._main, "_settings", None)
+            if store is not None:
+                store.setValue("figures/logd_style", val)
+            else:
+                QtCore.QSettings("jacoblevers", "FIREFLY").setValue(
+                    "figures/logd_style", val)
         except Exception:
             pass
 

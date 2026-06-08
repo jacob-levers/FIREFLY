@@ -549,9 +549,37 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
         ax.text(0.5, 0.5, "No diffusion data", ha="center", va="center",
                 color=pal["TXT_MUTED"], transform=ax.transAxes)
         return
-    sub = subplotspec.subgridspec(len(facets), 1, hspace=0.18)
+    # A DEDICATED strip above the facets holds the title + a neutral key, so the
+    # legend can never overlap a density curve — its placement no longer depends
+    # on the distribution's shape (which broke an in-axes legend on real data).
+    from matplotlib.lines import Line2D
+    nF = len(facets)
+    sub = subplotspec.subgridspec(nF + 1, 1,
+                                  height_ratios=[0.7] + [1.0] * nF, hspace=0.16)
+
+    lax = fig.add_subplot(sub[0]); lax.axis("off")
+    lax.set_title(title)
+    key = pal.get("TXT_MUTED", "#9aa4b2")
+    handles = []
+    if any(d for (_ft, _fc, ser) in facets for (*_s, d) in ser):  # PRE/POST present
+        handles += [
+            Line2D([0], [0], color=key, lw=1.5, ls="-", label="PRE"),
+            Line2D([0], [0], color=key, lw=1.5, ls="--", label="POST"),
+        ]
+    handles.append(Line2D([0], [0], color=key, ls="none", marker="o",
+                          mfc=key, markersize=6, label="per-cell median"))
+    if threshold_label:
+        handles.append(Line2D([0], [0], color=pal["GRD"], lw=0.9, ls="--",
+                              label=threshold_label))
+    leg = lax.legend(handles=handles, loc="center",
+                     ncol=(2 if len(handles) >= 4 else len(handles)),
+                     frameon=False, fontsize=6.8, handlelength=1.6,
+                     columnspacing=1.4, labelspacing=0.35, borderaxespad=0.0)
+    for _t in leg.get_texts():
+        _t.set_color(pal["TXT"])
+
     for fi, (ftitle, fcolor, series) in enumerate(facets):
-        ax = fig.add_subplot(sub[fi])
+        ax = fig.add_subplot(sub[fi + 1])
         maxd = 1e-9
         for (scolor, pooled, _medians, slabel, dashed) in series:
             v = np.asarray(pooled, float); v = v[np.isfinite(v)]
@@ -588,40 +616,121 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
             ax.text(0.015, 0.93, ftitle, transform=ax.transAxes, ha="left",
                     va="top", fontsize=8, fontweight="bold", color=fcolor,
                     zorder=20)
-        if fi == 0:
-            ax.set_title(title)
-            # A NEUTRAL key (line-style + marker meaning, not a drug's colours —
-            # those live in the figure-wide legend) placed in the empty
-            # upper-left, below the facet label, with a subtle background so it
-            # never sits on top of a curve.
-            from matplotlib.lines import Line2D
-            key = pal.get("TXT_MUTED", "#9aa4b2")
-            handles = []
-            if any(d for (*_s, d) in series):          # PRE/POST present
-                handles += [
-                    Line2D([0], [0], color=key, lw=1.5, ls="-", label="PRE"),
-                    Line2D([0], [0], color=key, lw=1.5, ls="--", label="POST"),
-                ]
-            handles.append(Line2D([0], [0], color=key, ls="none", marker="o",
-                                  mfc=key, markersize=6,
-                                  label="per-cell median"))
-            if threshold_label:
-                handles.append(Line2D([0], [0], color=pal["GRD"], lw=0.9,
-                                      ls="--", label=threshold_label))
-            leg = ax.legend(handles=handles, loc="upper left",
-                            bbox_to_anchor=(0.0, 0.80), frameon=True,
-                            fontsize=6.5, handlelength=1.6, labelspacing=0.28,
-                            borderpad=0.4)
-            fr = leg.get_frame()
-            fr.set_facecolor(pal.get("PNL", pal["BG"]))
-            fr.set_edgecolor(pal["GRD"])
-            fr.set_alpha(0.78)
-            for _t in leg.get_texts():
-                _t.set_color(pal["TXT"])
-        if fi < len(facets) - 1:
+        if fi < nF - 1:
             ax.set_xticklabels([])
         else:
             ax.set_xlabel("log₁₀ D  (µm²/s)")
+
+
+def _logd_kde_or_none(pooled, xk):
+    """gaussian_kde(pooled) sampled on xk, or None when undefined."""
+    from scipy import stats as _stats
+    if pooled is None:
+        return None
+    v = np.asarray(pooled, float); v = v[np.isfinite(v)]
+    if len(v) < 2 or np.ptp(v) < 1e-9:
+        return None
+    try:
+        return _stats.gaussian_kde(v)(xk)
+    except Exception:
+        return None
+
+
+def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold):
+    """Classic ridgeline: one filled KDE per group, stacked with a vertical
+    offset and directly labelled, plus a tick per replicate (per-cell median)
+    on each ridge baseline so the honest n is still visible."""
+    xlo, xhi = -5.0, 1.0
+    xk = np.linspace(xlo, xhi, 300)
+    dens = [(lbl, col, _logd_kde_or_none(pooled, xk), medians)
+            for (lbl, col, pooled, medians) in per_card]
+    maxd = max((float(np.nanmax(y)) for _, _, y, _ in dens if y is not None),
+               default=1.0) or 1.0
+    step = maxd * 0.55
+    for i, (lbl, col, y, medians) in enumerate(reversed(dens)):
+        base = i * step
+        ax.axhline(base, color=pal["GRD"], lw=0.5, alpha=0.4, zorder=1)
+        if y is not None:
+            ax.fill_between(xk, base, base + y, color=col, alpha=0.75,
+                            linewidth=0, zorder=2 + i)
+            ax.plot(xk, base + y, color=pal["BG"], lw=0.8, zorder=2 + i)
+        meds = [m for m in (medians or []) if np.isfinite(m)]
+        if meds:
+            ax.scatter(meds, np.full(len(meds), base), s=11, color=pal["BG"],
+                       edgecolor=col, linewidth=0.8, zorder=12 + i, clip_on=False)
+        ax.text(xlo, base, f" {lbl}", va="bottom", ha="left", fontsize=7.5,
+                color=col, fontweight="bold", zorder=20)
+    ax.axvline(thr, color=pal["GRD"], ls="--", lw=0.8, zorder=15)
+    ax.set_yticks([])
+    ax.set_xlim(xlo, xhi)
+    ax.set_ylim(-step * 0.3, (len(dens) - 1) * step + maxd * 1.15)
+    ax.set_xlabel("log₁₀ D  (µm²/s)")
+    ax.set_title("LogD distribution  (ridgeline)")
+
+
+def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold):
+    """All groups' KDEs overlaid on one axes (best for ≤3 groups)."""
+    xlo, xhi = -5.0, 1.0
+    xk = np.linspace(xlo, xhi, 300)
+    bins = np.linspace(xlo, xhi, 31)
+    for (lbl, col, pooled, _medians) in per_card:
+        if pooled is None:
+            continue
+        y = _logd_kde_or_none(pooled, xk)
+        if y is not None:
+            ax.fill_between(xk, 0.0, y, color=col, alpha=0.18, linewidth=0,
+                            zorder=2)
+            ax.plot(xk, y, color=col, lw=1.6, label=lbl, zorder=3)
+        else:
+            v = np.asarray(pooled, float); v = v[np.isfinite(v)]
+            counts, edges = np.histogram(v, bins=bins)
+            centers = 0.5 * (edges[:-1] + edges[1:])
+            frac = counts / counts.sum() if counts.sum() else counts
+            ax.plot(centers, frac, "-o", color=col, label=lbl, ms=4, lw=1.2)
+    ax.axvline(thr, color=pal["GRD"], ls="--", lw=0.8,
+               label=f"D = {mobile_d_threshold:g} µm²/s")
+    ax.set_xlim(xlo, xhi)
+    ax.set_xlabel("log₁₀ D  (µm²/s)")
+    ax.set_ylabel("Density")
+    ax.set_title("LogD distribution  (overlaid)")
+    ax.legend(frameon=False, loc="best", fontsize=7)
+
+
+def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold):
+    """Per-group violins (log₁₀ D on y) with a per-cell median dot strip — a
+    SuperPlot-style view that shows shape AND the replicate-level data."""
+    valid = []
+    for (lbl, col, pooled, medians) in per_card:
+        if pooled is None:
+            continue
+        v = np.asarray(pooled, float); v = v[np.isfinite(v)]
+        if len(v) >= 2 and np.ptp(v) > 1e-9:
+            valid.append((lbl, col, v, medians))
+    if not valid:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No diffusion data", ha="center", va="center",
+                color=pal["TXT_MUTED"], transform=ax.transAxes)
+        return
+    positions = list(range(1, len(valid) + 1))
+    parts = ax.violinplot([v for _, _, v, _ in valid], positions=positions,
+                          showmeans=False, showextrema=False, widths=0.82)
+    for pc, (_lbl, col, _v, _m) in zip(parts["bodies"], valid):
+        pc.set_facecolor(col); pc.set_edgecolor(col); pc.set_alpha(0.38)
+    rng = np.random.default_rng(0)
+    for pos, (_lbl, col, _v, medians) in zip(positions, valid):
+        meds = [m for m in (medians or []) if np.isfinite(m)]
+        if meds:
+            jit = (rng.random(len(meds)) - 0.5) * 0.24
+            ax.scatter(np.full(len(meds), pos) + jit, meds, s=18, color=col,
+                       edgecolor=pal["BG"], linewidth=0.6, zorder=6)
+    ax.axhline(thr, color=pal["GRD"], ls="--", lw=0.8, zorder=2,
+               label=f"D = {mobile_d_threshold:g} µm²/s")
+    ax.set_xticks(positions)
+    ax.set_xticklabels([l for l, _, _, _ in valid], rotation=30, ha="right",
+                       fontsize=7)
+    ax.set_ylabel("log₁₀ D  (µm²/s)")
+    ax.set_title("LogD distribution  (violins + per-cell medians)")
+    ax.legend(frameon=False, loc="lower right", fontsize=7)
 
 
 def compare_groups(groups,
@@ -629,6 +738,7 @@ def compare_groups(groups,
                    panels=None, theme="Dark",
                    pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
+                   logd_plot_style="faceted",
                    progress_cb=None, stats_config=None):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
@@ -940,15 +1050,15 @@ def compare_groups(groups,
 
     # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────
     if "logd_dist" in panels:
-        # Distribution SHAPE, done honestly: facet by drug (PRE vs POST
-        # overlaid) and overlay a strip of per-replicate MEDIAN log₁₀ D dots,
-        # so the pooled-per-track KDE can't masquerade as the replicate-level
-        # truth (a few high-track cells would otherwise dominate the curve).
-        # The immobile tail is clipped INTO range (not dropped) so an
-        # immobilising drug effect stays visible.
+        # LogD distribution — the rendering STYLE is chosen in Preferences
+        # (Faceted / Ridgeline / Overlaid / Violin).  Every style is fed the
+        # per-replicate MEDIANS so the pooled-per-track KDE can't masquerade as
+        # the replicate-level truth (a few high-track cells would otherwise
+        # dominate).  The immobile tail is clipped INTO range (not dropped) so
+        # an immobilising drug effect stays visible.
+        _styles = ("faceted", "ridgeline", "overlaid", "violin")
+        style = logd_plot_style if logd_plot_style in _styles else "faceted"
         ax = _next_ax()
-        ss = ax.get_subplotspec()
-        ax.remove()
         thr = np.log10(mobile_d_threshold)
         thr_lbl = f"D = {mobile_d_threshold:g} µm²/s"
 
@@ -973,44 +1083,52 @@ def compare_groups(groups,
                     medians.append(float(np.median(lg)))
             return (np.concatenate(pooled) if pooled else None), medians
 
-        facets = []
-        if two_factor:
-            # One facet per drug; PRE vs POST overlaid (each in its card colour;
-            # POST dashed line + open dots so the pair is unmistakable).
-            for drug in group_order:
-                series = []
-                for ti, tp in enumerate(tp_order):
-                    idx = [gi for gi in range(n_groups)
-                           if group_factor[gi] == drug
-                           and timepoints_per_card[gi] == tp]
-                    pooled, medians = _gather(idx)
-                    if pooled is not None:
-                        scol = (card_colors.get((drug, tp))
-                                or group_colors.get(drug) or "#3b6ed8")
-                        series.append((scol, pooled, medians, str(tp), ti > 0))
-                facets.append((str(drug),
-                               group_colors.get(drug, pal["TXT"]), series))
-        elif n_groups <= 3:
-            # Few groups → a single facet, KDEs overlaid + one per-cell median
-            # strip row per group (still directly comparable, now honest).
-            series = []
-            for gi in range(n_groups):
-                pooled, medians = _gather([gi])
-                if pooled is not None:
-                    series.append((colors[gi], pooled, medians, labels[gi], False))
-            facets = [("", pal["TXT"], series)]
-        else:
-            # Many groups → one facet each (avoids KDE spaghetti).
-            for gi in range(n_groups):
-                pooled, medians = _gather([gi])
-                if pooled is not None:
-                    facets.append((labels[gi], colors[gi],
-                                   [(colors[gi], pooled, medians, labels[gi],
-                                     False)]))
+        # One entry per card/group — used by ridgeline / overlaid / violin.
+        per_card = []
+        for gi in range(n_groups):
+            pooled, medians = _gather([gi])
+            per_card.append((labels[gi], colors[gi], pooled, medians))
 
-        _render_logd_facets(fig, ss, facets, thr, pal,
-                            "LogD distribution  (● per-cell median)",
-                            threshold_label=thr_lbl)
+        if style == "ridgeline":
+            _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold)
+        elif style == "overlaid":
+            _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold)
+        elif style == "violin":
+            _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold)
+        else:
+            # ── Faceted (default): facet by drug, PRE vs POST overlaid, with a
+            # per-replicate median dot strip beneath each density. ──
+            ss = ax.get_subplotspec()
+            ax.remove()
+            facets = []
+            if two_factor:
+                for drug in group_order:
+                    series = []
+                    for ti, tp in enumerate(tp_order):
+                        idx = [gi for gi in range(n_groups)
+                               if group_factor[gi] == drug
+                               and timepoints_per_card[gi] == tp]
+                        pooled, medians = _gather(idx)
+                        if pooled is not None:
+                            scol = (card_colors.get((drug, tp))
+                                    or group_colors.get(drug) or "#3b6ed8")
+                            series.append((scol, pooled, medians, str(tp), ti > 0))
+                    facets.append((str(drug),
+                                   group_colors.get(drug, pal["TXT"]), series))
+            elif n_groups <= 3:
+                series = [(colors[gi], pld, med, labels[gi], False)
+                          for gi in range(n_groups)
+                          for pld, med in [_gather([gi])] if pld is not None]
+                facets = [("", pal["TXT"], series)]
+            else:
+                for gi in range(n_groups):
+                    pld, med = _gather([gi])
+                    if pld is not None:
+                        facets.append((labels[gi], colors[gi],
+                                       [(colors[gi], pld, med, labels[gi], False)]))
+            _render_logd_facets(fig, ss, facets, thr, pal,
+                                "LogD distribution  (● per-cell median)",
+                                threshold_label=thr_lbl)
 
     # ── 4. Mobile/Immobile ratio bar ──────────────────────────────────────────
     if "mob_immob" in panels:
