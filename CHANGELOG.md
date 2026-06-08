@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.44.1
+
+- Moved the **"LogD graph style"** picker from Preferences → Appearance to
+  Preferences → **Figure defaults** (it's a figure-look choice). Same behaviour
+  and persistence; just a tidier home.
+
 ## v2.44.0
 
 ### Choose your LogD distribution graph style (Preferences)

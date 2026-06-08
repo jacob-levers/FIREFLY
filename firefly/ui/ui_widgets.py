@@ -3960,9 +3960,22 @@ class _PreferencesDialog(QtWidgets.QDialog):
         ap.addWidget(self._restart_hint(
             "App-theme changes take effect after restarting FIREFLY."))
 
-        # ── Compare-figure: LogD distribution style ──────────────────────
-        logd_row = QtWidgets.QFormLayout()
-        logd_row.setHorizontalSpacing(12); logd_row.setVerticalSpacing(8)
+        ap.addStretch(1)
+
+        self._pages.addWidget(appearance_page)
+        self._add_rail_entry("Appearance")
+
+        # ── Page: Figure defaults (re-parent the figures widget) ────────
+        fig_page = QtWidgets.QWidget()
+        fp = QtWidgets.QVBoxLayout(fig_page)
+        fp.setContentsMargins(0, 0, 0, 0); fp.setSpacing(0)
+
+        # Compare-tab LogD distribution style — lives at the top of the
+        # Figure-defaults page (it's a figure-look choice).
+        _logd_box = QtWidgets.QWidget()
+        _logd_form = QtWidgets.QFormLayout(_logd_box)
+        _logd_form.setContentsMargins(24, 18, 24, 4)
+        _logd_form.setHorizontalSpacing(12); _logd_form.setVerticalSpacing(6)
         self.c_logd_style = _QuietComboBox()
         self.c_logd_style.addItems(list(self._LOGD_STYLE_MAP.keys()))
         self.c_logd_style.setMaximumWidth(220)
@@ -3982,20 +3995,11 @@ class _PreferencesDialog(QtWidgets.QDialog):
             "• Violins + points — per-group violins with per-cell medians\n"
             "Applies to the next comparison you run.")
         self.c_logd_style.currentTextChanged.connect(self._on_logd_style_changed)
-        logd_row.addRow("LogD graph style:", self.c_logd_style)
-        ap.addLayout(logd_row)
-        ap.addWidget(self._restart_hint(
-            "LogD graph style applies to the next comparison you run."))
+        _logd_form.addRow("LogD graph style:", self.c_logd_style)
+        _logd_form.addRow(self._restart_hint(
+            "Applies to the next comparison you run."))
+        fp.addWidget(_logd_box)
 
-        ap.addStretch(1)
-
-        self._pages.addWidget(appearance_page)
-        self._add_rail_entry("Appearance")
-
-        # ── Page: Figure defaults (re-parent the figures widget) ────────
-        fig_page = QtWidgets.QWidget()
-        fp = QtWidgets.QVBoxLayout(fig_page)
-        fp.setContentsMargins(0, 0, 0, 0); fp.setSpacing(0)
         self._fig_widget = parent._figures_widget
         # Re-parent into this dialog — but we restore the parent back to
         # MainWindow in `done()` so the widget survives multiple open
