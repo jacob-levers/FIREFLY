@@ -247,7 +247,17 @@ TARGET="{target_app}"
 LOG="{log_path}"
 exec >>"$LOG" 2>&1
 echo "[firefly-update] waiting for pid $PID to exit"
-while kill -0 "$PID" 2>/dev/null; do sleep 0.3; done
+waited=0
+while kill -0 "$PID" 2>/dev/null; do
+  sleep 0.3
+  waited=$((waited + 1))
+  if [ "$waited" -ge 50 ]; then
+    echo "[firefly-update] pid $PID still alive after ~15s; force-killing"
+    kill -9 "$PID" 2>/dev/null || true
+    sleep 1
+    break
+  fi
+done
 echo "[firefly-update] mounting $DMG"
 MNT="$(mktemp -d /tmp/firefly_upd.XXXXXX)"
 if ! hdiutil attach -nobrowse -noverify -noautoopen "$DMG" -mountpoint "$MNT"; then
@@ -303,18 +313,26 @@ set "NEWEXE={new_exe}"
 set "TARGET={target_exe}"
 set "LOG={log_path}"
 echo [firefly-update] waiting for pid %PID% to exit >>"%LOG%" 2>&1
+set /a WAITED=0
 :waitloop
 tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
-if not errorlevel 1 (
-  ping -n 2 127.0.0.1 >NUL
-  goto waitloop
+if errorlevel 1 goto gone
+set /a WAITED+=1
+if !WAITED! GEQ 8 (
+  echo [firefly-update] pid %PID% still alive after ~16s; force-killing >>"%LOG%" 2>&1
+  taskkill /F /T /PID %PID% >>"%LOG%" 2>&1
+  ping -n 3 127.0.0.1 >NUL
+  goto gone
 )
+ping -n 2 127.0.0.1 >NUL
+goto waitloop
+:gone
 set /a TRIES=0
 :replace
 copy /Y "%NEWEXE%" "%TARGET%" >>"%LOG%" 2>&1
 if errorlevel 1 (
   set /a TRIES+=1
-  if !TRIES! LSS 15 (
+  if !TRIES! LSS 20 (
     ping -n 2 127.0.0.1 >NUL
     goto replace
   )
@@ -401,15 +419,18 @@ def apply_update(downloaded_path: str) -> None:
             "firefly_update.bat",
             windows_helper_script(pid, downloaded_path, target_exe, log_path),
             executable=False)
-        DETACHED_PROCESS = 0x00000008
+        # NB: CREATE_NO_WINDOW must NOT be combined with DETACHED_PROCESS —
+        # Windows ignores CREATE_NO_WINDOW in that combination (per the
+        # CreateProcess docs), which pops a visible console.  CREATE_NO_WINDOW
+        # alone gives a hidden console; the child still outlives us (Windows
+        # doesn't kill orphans), so no DETACHED_PROCESS is needed.
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         CREATE_NO_WINDOW = 0x08000000
         try:
             subprocess.Popen(
                 ["cmd", "/c", helper, str(pid), downloaded_path,
                  target_exe, log_path],
-                creationflags=(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-                               | CREATE_NO_WINDOW),
+                creationflags=(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP),
                 close_fds=True,
                 stdin=devnull, stdout=devnull, stderr=devnull)
         except Exception as exc:

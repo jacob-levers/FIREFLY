@@ -91,6 +91,7 @@ def test_macos_helper_script():
     assert "hdiutil attach" in s
     assert "xattr -dr com.apple.quarantine" in s
     assert 'open "$TARGET"' in s
+    assert "kill -9" in s            # force-kill fallback if the app hangs
 
 
 def test_windows_helper_script():
@@ -98,6 +99,7 @@ def test_windows_helper_script():
                                 r"C:\app\FIREFLY.exe", r"C:\u\relaunch.log")
     assert 'set "PID=4321"' in s
     assert 'tasklist /FI "PID eq %PID%"' in s
+    assert "taskkill /F /T /PID %PID%" in s   # force-kill if the app hangs
     assert "copy /Y" in s
     assert 'start "" "%TARGET%"' in s
     assert 'del "%~f0"' in s

@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.41.3
+
+### Updater: fix Windows install/relaunch (hidden helper + force-exit)
+
+Two Windows-only bugs in the self-update helper:
+
+- **A console window popped up** during the update. The helper was spawned with
+  `DETACHED_PROCESS | CREATE_NO_WINDOW`, but Windows *ignores* `CREATE_NO_WINDOW`
+  in that combination — so a visible terminal appeared. Now spawned with
+  `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` (no window; the child still
+  outlives the app).
+- **The update could stall forever** if the app didn't fully exit. On Windows,
+  napari/Qt teardown can hold the GIL during close and there's no `SIGALRM`
+  fallback, so the process occasionally hung — and the helper waited for that
+  PID indefinitely, so the swap never happened. The helper now waits a bounded
+  ~16 s and then **force-kills** the stuck process (`taskkill /F /T`) before
+  swapping and relaunching. The macOS helper gained the same `kill -9` safety
+  net (after ~15 s) for parity, and the post-swap copy retries longer to ride
+  out the one-file bootloader briefly holding the `.exe` lock.
+
 ## v2.41.2
 
 ### Updater: ride out transient GitHub 504s
