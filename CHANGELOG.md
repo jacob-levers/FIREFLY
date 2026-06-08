@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.41.4
+
+Patch release with no functional changes — a target to verify the Windows
+in-app updater end-to-end (running v2.41.3 should detect v2.41.4, download it,
+close + relaunch with no visible helper window).
+
 ## v2.41.3
 
 ### Updater: fix Windows install/relaunch (hidden helper + force-exit)
