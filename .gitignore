@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 dist/
 build/
+*.egg-info/
 *.spec.bak
 
 # Calibration / backend-comparison tooling — kept local, not shipped with

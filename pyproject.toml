@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "firefly-sptpalm"
+description = "FIREFLY — sptPALM single-particle-tracking PALM analysis (PySide6 GUI + analysis pipeline)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE.md"]
+authors = [{ name = "jacob-levers" }]
+dynamic = ["version"]
+
+# Mirrors requirements.txt (kept in sync).  requirements.txt carries the
+# detailed rationale comments; this list is what `pip install -e .` resolves.
+dependencies = [
+    "numpy>=2,<3",
+    "pandas>=2.2,<3",
+    "scipy",
+    "matplotlib",
+    "scikit-image",
+    "trackpy",
+    "numba>=0.60",
+    "joblib",
+    "tqdm",
+    "czifile",
+    "imagecodecs",
+    "aicspylibczi",
+    "tifffile",
+    "imageio",
+    "Pillow",
+    "psutil",
+    "scikit-learn",
+    "pingouin>=0.6,<0.7",
+    "threadpoolctl",
+    "torch>=2.6,<3",
+    "roifile>=2024.5.24",
+    "PySide6>=6.7,<7",
+    "napari[pyside6]>=0.6,<0.7",
+    "dask[array]",
+    "lxml_html_clean",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/jacob-levers/sptPALM"
+
+# Launch the GUI with:  python run_firefly.py
+# (run_firefly.py is the multiprocessing "spawn" main module — it carries the
+# freeze_support() guard worker children need, so it is NOT exposed as a plain
+# console-script entry point, which would re-launch the GUI in each spawn child.)
+
+[tool.setuptools]
+packages = ["firefly", "firefly.analysis", "firefly.ui"]
+
+[tool.setuptools.dynamic]
+# Single source of truth for the version — read statically (no import) from the
+# same line the CI release job stamps (firefly/sptpalm_analysis.py).
+version = { attr = "firefly.sptpalm_analysis.__version__" }

@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.40.0
+
+### Packaging & developer onboarding (Phase 3)
+
+- **`pyproject.toml`** — FIREFLY is now a proper installable package
+  (`pip install -e ".[dev]"`), with dependencies mirroring `requirements.txt` and
+  a **single-sourced version** read statically from
+  `firefly/sptpalm_analysis.__version__` (the same line CI stamps), so the package
+  metadata and runtime version can't drift.
+- **`DEVELOPER.md`** — onboarding for contributors: setup, the
+  analysis/UI/worker architecture, the layering + threading invariants (why heavy
+  compute must stay off the napari thread), how to add an analysis step + test,
+  and the release process/conventions.
+- `.gitignore`: ignore `*.egg-info/`.
+
+No runtime/behaviour change.
+
 ## v2.39.0
 
 ### Reliability: clearer errors on bad input (Phase 2)
