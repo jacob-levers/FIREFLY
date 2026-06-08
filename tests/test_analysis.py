@@ -2219,3 +2219,20 @@ def test_results_view_builds(tmp_path):
     data2, base2 = _run(g2, "tf2")
     v.load(data2, base2)                      # idempotent reload, twoway branch
     assert v._body_v.count() > 2
+
+
+def test_ui_anim_respects_reduce_motion(monkeypatch):
+    pytest.importorskip("PySide6")
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from firefly.ui import ui_anim
+    # Reduced motion → helpers are no-ops (return None).
+    monkeypatch.setattr(ui_anim, "reduce_motion", lambda: True)
+    assert ui_anim.fade_in(QtWidgets.QLabel("x")) is None
+    assert ui_anim.animate_height(QtWidgets.QWidget(), 0, 50) is None
+    # Motion on → real animations are created.
+    monkeypatch.setattr(ui_anim, "reduce_motion", lambda: False)
+    assert ui_anim.fade_in(QtWidgets.QLabel("y")) is not None
+    assert ui_anim.animate_height(QtWidgets.QWidget(), 0, 50) is not None

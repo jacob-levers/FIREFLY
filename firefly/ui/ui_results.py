@@ -242,6 +242,25 @@ class _ResultsView(QtWidgets.QWidget):
             self._body_v.addWidget(_AlertBanner(
                 "danger", "Couldn't fully render these results."))
         self._body_v.addStretch(1)
+        self._stagger_fade_in()
+
+    def _stagger_fade_in(self):
+        """Gently fade the top cards in as the results 'arrive'.  Capped to the
+        first few (light) cards — the heavy per-replicate table / circular cards
+        near the bottom just appear, so nothing stutters.  No-op under
+        reduce-motion."""
+        from firefly.ui import ui_anim
+        if ui_anim.reduce_motion():
+            return
+        shown = 0
+        for i in range(self._body_v.count()):
+            w = self._body_v.itemAt(i).widget()
+            if w is None:
+                continue
+            if shown >= 9:
+                break
+            ui_anim.fade_in(w, duration=ui_anim.NORMAL, delay=shown * 35)
+            shown += 1
 
     # ── helpers ──────────────────────────────────────────────────────────
     def _card(self, title):

@@ -1183,10 +1183,36 @@ class _CollapsibleSection(QtWidgets.QWidget):
         self._content_layout.setContentsMargins(10, 8, 10, 10)
         self._content_layout.setSpacing(6)
         outer.addWidget(self._content)
+        # User-driven header clicks animate; programmatic set_expanded stays
+        # instant (so e.g. the Results tab doesn't animate every section on load).
+        self._animate_next = True
 
     def _on_toggled(self, checked: bool):
         self._header.setText(f"{'▾' if checked else '▸'}  {self._title}")
-        self._content.setVisible(checked)
+        if self._animate_next:
+            self._animate_content(checked)
+        else:
+            self._animate_next = True
+            self._content.setVisible(checked)
+            self._content.setMaximumHeight(16777215)   # QWIDGETSIZE_MAX
+
+    def _animate_content(self, expand: bool):
+        from firefly.ui import ui_anim
+        c = self._content
+        if expand:
+            c.setMaximumHeight(0)
+            c.setVisible(True)
+            target = max(0, c.sizeHint().height())
+            ui_anim.animate_height(
+                c, 0, target,
+                on_finish=lambda: c.setMaximumHeight(16777215))
+        else:
+            start = c.height()
+
+            def _fin():
+                c.setVisible(False)
+                c.setMaximumHeight(16777215)
+            ui_anim.animate_height(c, start, 0, on_finish=_fin)
 
     @property
     def content_layout(self) -> QtWidgets.QVBoxLayout:
@@ -1194,6 +1220,7 @@ class _CollapsibleSection(QtWidgets.QWidget):
 
     def set_expanded(self, expanded: bool):
         if self._header.isChecked() != expanded:
+            self._animate_next = False          # programmatic → instant
             self._header.setChecked(expanded)
 
     def set_badge(self, text: str, kind: str | None = None):
@@ -3960,6 +3987,23 @@ class _PreferencesDialog(QtWidgets.QDialog):
         ap.addWidget(self._restart_hint(
             "App-theme changes take effect after restarting FIREFLY."))
 
+        # Reduce motion — disable UI animations (instant transitions).
+        self.c_reduce_motion = QtWidgets.QCheckBox(
+            "Reduce motion (disable UI animations)")
+        try:
+            rm = QtCore.QSettings("jacoblevers", "FIREFLY").value(
+                "ui/reduce_motion", False)
+            if isinstance(rm, str):
+                rm = rm.strip().lower() in ("1", "true", "yes", "on")
+            self.c_reduce_motion.setChecked(bool(rm))
+        except Exception:
+            pass
+        self.c_reduce_motion.setToolTip(
+            "Turn off the small fade / expand animations for instant, static "
+            "transitions. Takes effect immediately.")
+        self.c_reduce_motion.toggled.connect(self._on_reduce_motion_toggled)
+        ap.addWidget(self.c_reduce_motion)
+
         ap.addStretch(1)
 
         self._pages.addWidget(appearance_page)
@@ -4247,6 +4291,13 @@ class _PreferencesDialog(QtWidgets.QDialog):
         lbl.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; font-style: italic;")
         lbl.setWordWrap(True)
         return lbl
+
+    def _on_reduce_motion_toggled(self, on: bool) -> None:
+        try:
+            QtCore.QSettings("jacoblevers", "FIREFLY").setValue(
+                "ui/reduce_motion", bool(on))
+        except Exception:
+            pass
 
     def _add_rail_entry(self, name: str) -> None:
         item = QtWidgets.QListWidgetItem(name)

@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.47.0
+
+### Subtle, smooth UI animations (+ Reduce motion)
+
+- Collapsible sections (the "Details" expanders, glossary, sidebar groups) now
+  **animate open/closed** instead of snapping.
+- The **Results tab cards fade in** as a comparison's results arrive.
+- New **Preferences → Appearance → "Reduce motion"** turns all of it off for
+  instant, static transitions (takes effect immediately).
+
+Built for high-refresh-rate displays: animations are short, eased, and — most
+importantly — each fade's `QGraphicsOpacityEffect` is **removed the moment it
+finishes** (a lingering one re-buffers the widget on every repaint, which is the
+usual cause of "choppy" Qt UIs). Per-frame work is kept tiny and bounded, and
+the heavy bottom tables simply appear rather than animate, so nothing stutters.
+All via Qt's built-in animation framework — no new dependencies.
+
+Note: classic Qt widgets animate at ~60 fps (the vsync-native path is QML, not
+widgets), so motion is smooth-60 rather than literally 144 fps — but jank-free,
+which is what reads as smooth on a high-refresh monitor.
+
 ## v2.46.0
 
 ### New interactive "Results" tab
