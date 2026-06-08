@@ -791,11 +791,19 @@ class VisualiseMixin:
         try:
             if mode == "Motion":
                 # Build the colour array directly — napari's categorical
-                # face_color only works for numeric properties.
+                # face_color only works for numeric properties.  Clustered
+                # points get their motion-class colour (matching the legend);
+                # NOISE points (cluster_id == -1) are greyed, so re-tuning eps
+                # is visibly reflected (more noise → more grey) — otherwise the
+                # overlay looks identical at every eps because motion class is
+                # independent of the clustering.
                 colors = _np.array([
                     _MOTION_COLORS.get(str(m), _MOTION_COLORS["Unknown"])
                     for m in self._ws_cluster_motion
                 ], dtype=float)
+                noise = ids == -1
+                if colors.shape[0] == ids.shape[0] and noise.any():
+                    colors[noise] = [0.30, 0.30, 0.30, 0.45]
                 layer = self._ws_add_points_compat(
                     v, self._ws_cluster_xy_px,
                     properties={"cluster_id": ids,
@@ -818,9 +826,10 @@ class VisualiseMixin:
                 self, "Cluster overlay failed",
                 f"napari refused to render the Points layer:\n\n{exc}")
             return
-        # In Cluster-ID mode dim noise points (cluster_id == -1) to grey.
-        # In Motion-class mode that's already handled by the colour map
-        # above (Unmatched → grey).
+        # Dim noise (cluster_id == -1) to grey.  Motion mode already did this in
+        # its branch above; ID mode does it here because its colours come from
+        # napari's turbo colormap, which we can only override after the layer
+        # exists.
         if mode == "ID":
             try:
                 colors = _np.asarray(layer.face_color, dtype=float).copy()

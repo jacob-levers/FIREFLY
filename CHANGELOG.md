@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.37.6
+
+### Cluster overlay: eps changes are now visible in Motion colour mode
+
+In Motion colour mode the overlay coloured every point by its motion class —
+including noise points — so re-tuning eps changed the cluster assignments but the
+view looked identical (motion class is independent of clustering). Now **noise
+points (not in any cluster) are greyed in Motion mode too**, while clustered
+points keep their motion colour. So as you change eps, more/fewer points drop to
+grey and the effect of tuning is clearly visible (and still matches the legend).
+
 ## v2.37.5
 
 ### Wider eps range for clustering (up to 2000 nm)
