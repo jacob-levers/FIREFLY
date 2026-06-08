@@ -99,10 +99,19 @@ def _filled_kde(ax, x_grid, binwidth, values, color, label, *,
     if len(v) >= 2 and np.ptp(v) > 1e-9:
         try:
             kde = gaussian_kde(v)
-            y = kde(x_grid) * len(v) * binwidth
-            ax.fill_between(x_grid, 0.0, y, color=color, alpha=fill_alpha,
+            # Evaluate on a grid that runs ≥3.5 KDE bandwidths past THIS class's
+            # own data on both sides, so the curve always tapers fully to ~0
+            # instead of being cut off mid-air at the shared grid's edge — a wide
+            # class (e.g. Directed) otherwise ends abruptly on the right.  The
+            # passed x_grid only sets a lower bound on the span.
+            bw = float(getattr(kde, "factor", 0.2)) * (float(np.std(v)) or 1.0)
+            g_lo = min(float(x_grid[0]),  float(v.min()) - 3.5 * bw)
+            g_hi = max(float(x_grid[-1]), float(v.max()) + 3.5 * bw)
+            grid = np.linspace(g_lo, g_hi, 320)
+            y = kde(grid) * len(v) * binwidth
+            ax.fill_between(grid, 0.0, y, color=color, alpha=fill_alpha,
                             linewidth=0, zorder=2)
-            ax.plot(x_grid, y, color=color, lw=lw, label=label, zorder=3)
+            ax.plot(grid, y, color=color, lw=lw, label=label, zorder=3)
             return float(np.nanmax(y)) if len(y) else 0.0
         except Exception:
             pass

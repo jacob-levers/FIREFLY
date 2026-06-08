@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.33.0
+
+### Distribution KDEs taper fully (even wide classes like Directed)
+
+The v2.32.0 fix padded the KDE grid by a fixed fraction of the data range, which
+still left a wide class (e.g. Directed, which spans decades of D) cut off before
+its right tail reached zero. Each class's filled KDE is now evaluated on a grid
+that extends a few of *its own* bandwidths past *its own* data on both sides, so
+every curve — narrow or wide — tapers smoothly to ~0 regardless of how spread out
+it is. Affects the single-run E (log₁₀ D), G (α) and N (MSS) panels.
+
 ## v2.32.0
 
 ### Distribution panels: KDE curves taper instead of cutting off
