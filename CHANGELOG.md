@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.43.0
+
+### LogD distribution panel: honest, faceted redesign
+
+Replaced the LogD ridgeline (which stacked all groups and showed only pooled
+per-track density) with a per-replicate-honest view:
+
+- **Faceted by group/drug**, with **PRE vs POST overlaid** in each facet (PRE
+  solid, POST dashed, in their card colours) — so the paired shift is read
+  directly instead of hunting across a stack.
+- A strip of **per-cell median dots** beneath each density (filled = PRE, open =
+  POST) — one dot per replicate, i.e. the level the statistics actually use. The
+  pooled-per-track KDE shows shape; the dots keep it honest (a few high-track
+  cells can't masquerade as the distribution).
+- The mobile/immobile **D threshold** is kept as a vertical guide, and the
+  legend is a neutral key (line style + the dot meaning) parked in the empty
+  upper-left so it never overlaps the curves.
+- Many flat groups now small-multiple (one facet each) instead of overlaying
+  into spaghetti; ≤3 flat groups overlay in one facet with per-cell dots.
+
 ## v2.42.0
 
 ### Compare page: many more statistical tests & options
