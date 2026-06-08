@@ -1940,3 +1940,154 @@ def test_compare_groups_too_few_groups_is_friendly():
     import pytest
     with pytest.raises(CompareInputError):
         compare_groups([{"label": "A", "folders": ["/x"]}])
+
+
+# ── Expanded Compare-page statistics (v2.42.0) ───────────────────────────────
+def test_correction_sidak_and_hochberg():
+    from firefly.analysis.fa_stats_config import correct_pvalues
+    p = [0.01, 0.04, 0.03]
+    sid = correct_pvalues(p, "sidak")
+    hoch = correct_pvalues(p, "hochberg")
+    bonf = correct_pvalues(p, "bonferroni")
+    # all corrected ≥ raw, and Šidák ≤ Bonferroni elementwise
+    assert all(s >= pp - 1e-12 for s, pp in zip(sid, p))
+    assert all(s <= b + 1e-12 for s, b in zip(sid, bonf))
+    assert all(0.0 <= h <= 1.0 for h in hoch)
+    # NaN / None entries pass through and don't inflate the family size
+    nan_in = correct_pvalues([0.01, None, 0.02], "hochberg")
+    assert np.isnan(nan_in[1])
+
+
+def test_cliffs_delta_sign_and_magnitude():
+    rng = np.random.default_rng(0)
+    a = rng.normal(0, 1, 30)
+    b_far = a + 50.0                      # b strictly greater → δ ≈ -1
+    assert fc._cliffs_delta(a, b_far) == pytest.approx(-1.0, abs=1e-9)
+    assert fc._cliffs_delta(b_far, a) == pytest.approx(1.0, abs=1e-9)
+    # identical-ish → near 0, CI brackets it
+    d, lo, hi = fc._cliffs_delta_ci(a, a + rng.normal(0, 0.01, 30), seed=1)
+    assert abs(d) < 0.3 and lo is not None and lo <= d <= hi
+    # rank-biserial agrees in sign with Cliff's delta
+    assert fc._rank_biserial(b_far, a) > 0
+    assert fc._rank_biserial(a, b_far) < 0
+
+
+def test_alternative_nonparametric_tests_finite():
+    rng = np.random.default_rng(1)
+    a = rng.normal(0, 1, 8)
+    b = rng.normal(1.5, 1, 8)
+    for leaf, name in (("brunner_munzel", "Brunner-Munzel"),
+                       ("permutation", "Permutation"),
+                       ("mann_whitney", "Mann-Whitney U")):
+        om, pw = fc._stat_test_n(
+            [a, b], ["A", "B"],
+            {"parametric_strategy": "force_nonparametric",
+             "nonparametric_test": leaf})
+        assert om["test"] == name
+        assert np.isfinite(om["p"]) and np.isfinite(pw[0]["p"])
+        # robust effect sizes always present
+        assert pw[0]["cliffs_delta"] is not None
+        assert pw[0]["rank_biserial"] is not None
+
+
+def test_posthoc_games_howell_and_dunn():
+    rng = np.random.default_rng(2)
+    g = [rng.normal(m, 1, 7) for m in (0.0, 1.5, 3.0)]
+    labels = ["A", "B", "C"]
+    # Dunn (non-parametric, NOT self-correcting → flows through correction)
+    _om, pw = fc._stat_test_n(g, labels, {"posthoc": "dunn"})
+    assert all(p["test"] == "Dunn" for p in pw)
+    assert all(p["self_corrected"] is False for p in pw)
+    assert all(np.isfinite(p["p"]) for p in pw)
+    # Games-Howell (self-correcting) — needs pingouin
+    pytest.importorskip("pingouin")
+    _om2, pw2 = fc._stat_test_n(g, labels, {"posthoc": "games_howell"})
+    assert all(p["test"] == "Games-Howell" for p in pw2)
+    assert all(p["self_corrected"] is True for p in pw2)
+
+
+def test_dunnett_vs_control():
+    rng = np.random.default_rng(3)
+    ctrl = rng.normal(0.0, 1, 8)
+    near = rng.normal(0.1, 1, 8)
+    far = rng.normal(5.0, 1, 8)
+    _om, pw = fc._stat_test_n(
+        [ctrl, near, far], ["WT", "Near", "Far"],
+        {"dunnett": True, "control_group": "WT"})
+    dun = [p for p in pw if p.get("family") == "dunnett"]
+    assert len(dun) == 2 and all(p["self_corrected"] for p in dun)
+    by = {p["label_i"]: p for p in dun}
+    assert by["Far"]["p"] < 0.05 < by["Near"]["p"]
+
+
+def test_tost_equivalence():
+    pytest.importorskip("pingouin")
+    rng = np.random.default_rng(4)
+    a = rng.normal(0, 1, 12)
+    _om, pw = fc._stat_test_n(
+        [a, a + rng.normal(0, 0.02, 12)], ["A", "A2"],
+        {"equivalence_tost": True, "tost_margin": 1.0})
+    assert pw[0]["tost_equivalent"] is True
+    b = a + 5.0
+    _om2, pw2 = fc._stat_test_n(
+        [a, b], ["A", "B"],
+        {"equivalence_tost": True, "tost_margin": 0.2})
+    assert pw2[0]["tost_equivalent"] is False
+
+
+def test_omnibus_effect_size_present():
+    rng = np.random.default_rng(5)
+    g = [rng.normal(m, 1, 8) for m in (0.0, 1.0, 2.0)]
+    # parametric → eta²
+    om_p, _ = fc._stat_test_n(g, ["A", "B", "C"],
+                              {"parametric_strategy": "force_parametric"})
+    assert om_p["effect_size_kind"] == "eta_sq"
+    assert 0.0 <= om_p["effect_size"] <= 1.0
+    # non-parametric → epsilon²
+    om_np, _ = fc._stat_test_n(g, ["A", "B", "C"],
+                               {"parametric_strategy": "force_nonparametric"})
+    assert om_np["effect_size_kind"] == "epsilon_sq"
+
+
+def test_normalize_stats_config_backward_compat():
+    from firefly.analysis.fa_stats_config import (
+        normalize_stats_config, DEFAULT_STATS_CONFIG)
+    # empty / None get all new keys at defaults
+    for cfg in ({}, None):
+        n = normalize_stats_config(cfg)
+        for k in ("nonparametric_test", "posthoc", "control_group", "dunnett",
+                  "equivalence_tost", "tost_margin"):
+            assert n[k] == DEFAULT_STATS_CONFIG[k]
+    # legacy alias + bad values fall back; tost_margin clamps
+    n = normalize_stats_config({"posthoc": "pairwise", "nonparametric_test": "xx",
+                                "tost_margin": 999, "correction": "sidak"})
+    assert n["posthoc"] == "auto"
+    assert n["nonparametric_test"] == "mann_whitney"
+    assert n["tost_margin"] == DEFAULT_STATS_CONFIG["tost_margin"]
+    assert n["correction"] == "sidak"
+
+
+def test_self_corrected_not_double_corrected(tmp_path):
+    """End-to-end: with a self-correcting post-hoc the CSV's corrected p must
+    equal the raw post-hoc p (no extra multiplication)."""
+    import matplotlib; matplotlib.use("Agg")
+    from firefly.analysis.fa_compare import compare_groups
+    root = tmp_path / "runs"
+    groups = []
+    for gi, gname in enumerate(["A", "B", "C"]):
+        folders = [_write_run_folder(str(root), gname, f"{gname}_r{r}",
+                                     n_tracks=30, seed=gi * 7 + r)
+                   for r in range(3)]
+        groups.append({"label": gname, "color": "#888888", "folders": folders})
+    out = tmp_path / "out"
+    _fig, _summary, stats = compare_groups(
+        groups=groups, output_dir=str(out), output_stem="cmp",
+        pdf_report=False, stats_config={"posthoc": "tukey", "correction": "holm"})
+    # every pairwise record from a self-correcting post-hoc keeps p_within == p
+    found = False
+    for rec in stats.values():
+        for pw in rec.get("pairwise", []):
+            if pw.get("self_corrected") and np.isfinite(pw.get("p", np.nan)):
+                found = True
+                assert pw["p_within"] == pytest.approx(pw["p"], abs=1e-12)
+    assert found, "expected at least one self-corrected (Tukey) pairwise record"

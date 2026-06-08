@@ -25,6 +25,13 @@ DEFAULT_STATS_CONFIG = {
     "anova3plus":                 "welch",  # welch | oneway | auto   (3+ groups, parametric)
     "ci_level":                   0.95,     # effect-size confidence-interval coverage
     "figure_stars_use_corrected": True,     # on-figure stars use corrected p (not raw)
+    # ── Alternative tests / post-hocs / equivalence ──────────────────────────
+    "nonparametric_test":         "mann_whitney",  # mann_whitney | brunner_munzel | permutation
+    "posthoc":                    "auto",   # auto | games_howell | dunn | tukey (3+ groups)
+    "control_group":              "",       # label of the control group, or "" (none)
+    "dunnett":                    False,    # all-vs-control Dunnett test when a control is set
+    "equivalence_tost":           False,    # report TOST equivalence per pair
+    "tost_margin":                0.5,      # equivalence margin in pooled-SD units
     # ── Circular (turning-angle) statistics ──────────────────────────────────
     # The circular per-replicate comparison tests REUSE the keys above (alpha,
     # correction, parametric_strategy, anova3plus, figure_stars_use_corrected)
@@ -37,9 +44,11 @@ DEFAULT_STATS_CONFIG = {
     "circ_test_circlin":          True,     # report circular-linear (angle vs D) correlation
 }
 
-_CORRECTIONS = ("none", "bonferroni", "holm", "fdr_bh")
-_STRATEGIES  = ("auto", "force_parametric", "force_nonparametric")
-_ANOVA3      = ("welch", "oneway", "auto")
+_CORRECTIONS   = ("none", "bonferroni", "holm", "fdr_bh", "sidak", "hochberg")
+_STRATEGIES    = ("auto", "force_parametric", "force_nonparametric")
+_ANOVA3        = ("welch", "oneway", "auto")
+_NONPARAMETRIC = ("mann_whitney", "brunner_munzel", "permutation")
+_POSTHOC       = ("auto", "games_howell", "dunn", "tukey")
 
 # Human-readable names for labels on figures / CSV / PDF.
 _CORRECTION_DISPLAY = {
@@ -47,6 +56,8 @@ _CORRECTION_DISPLAY = {
     "bonferroni": "Bonferroni",
     "holm":       "Holm",
     "fdr_bh":     "Benjamini-Hochberg FDR",
+    "sidak":      "Šidák",
+    "hochberg":   "Hochberg",
 }
 
 
@@ -89,9 +100,33 @@ def normalize_stats_config(cfg):
     if out["anova3plus"] not in _ANOVA3:
         out["anova3plus"] = DEFAULT_STATS_CONFIG["anova3plus"]
 
+    out["nonparametric_test"] = str(out["nonparametric_test"]).lower()
+    if out["nonparametric_test"] not in _NONPARAMETRIC:
+        out["nonparametric_test"] = DEFAULT_STATS_CONFIG["nonparametric_test"]
+
+    # post-hoc: accept the legacy alias "pairwise" as "auto"
+    out["posthoc"] = str(out["posthoc"]).lower()
+    if out["posthoc"] == "pairwise":
+        out["posthoc"] = "auto"
+    if out["posthoc"] not in _POSTHOC:
+        out["posthoc"] = DEFAULT_STATS_CONFIG["posthoc"]
+
+    # control_group is a free-text group label (validity vs the actual labels is
+    # checked at run time in the test engine, since this module is data-free).
+    out["control_group"] = str(out["control_group"] or "")
+
+    # tost_margin ∈ (0, 5]  (pooled-SD units)
+    try:
+        m = float(out["tost_margin"])
+        out["tost_margin"] = m if (0.0 < m <= 5.0) else DEFAULT_STATS_CONFIG["tost_margin"]
+    except (TypeError, ValueError):
+        out["tost_margin"] = DEFAULT_STATS_CONFIG["tost_margin"]
+
     # bools
     out["across_metric_correction"]   = bool(out["across_metric_correction"])
     out["figure_stars_use_corrected"] = bool(out["figure_stars_use_corrected"])
+    out["dunnett"]          = bool(out["dunnett"])
+    out["equivalence_tost"] = bool(out["equivalence_tost"])
     for _k in ("include_circular_outputs", "circ_test_kappa", "circ_test_rbar",
                "circ_test_mu", "circ_test_circlin"):
         out[_k] = bool(out[_k])
@@ -120,6 +155,22 @@ def correct_pvalues(pvals, method="holm"):
         corr = np.clip(finite, 0.0, 1.0)
     elif method == "bonferroni":
         corr = np.clip(finite * m, 0.0, 1.0)
+    elif method in ("sidak", "šidák", "sidák"):
+        # Single-step Šidák: slightly sharper than Bonferroni under
+        # independence.  adj = 1 - (1 - p)^m.
+        corr = np.clip(1.0 - np.power(1.0 - finite, m), 0.0, 1.0)
+    elif method == "hochberg":
+        # Step-up (Hochberg, 1988): like the BH sweep below but with the
+        # Holm-style multiplier (m - rank) — more powerful than Holm.
+        order = np.argsort(finite, kind="stable")
+        corr_sorted = np.empty(m, dtype=float)
+        prev = 1.0
+        for rank in range(m - 1, -1, -1):
+            oi = order[rank]
+            prev = min(prev, (m - rank) * finite[oi])
+            corr_sorted[rank] = min(prev, 1.0)
+        corr = np.empty(m, dtype=float)
+        corr[order] = corr_sorted
     elif method == "holm":
         # Step-down: sort ascending, corrected_(k) = max_{l≤k} (m-l)·p_(l),
         # enforced monotone non-decreasing, clipped to 1.
@@ -262,6 +313,52 @@ STATS_GLOSSARY = {
     "Figure stars":
         "Whether the asterisks drawn on the figure use the corrected p-values "
         "(matching the CSV) rather than the raw ones.",
+    # ── Alternative tests / post-hocs / equivalence / robust effect sizes ─────
+    "Non-parametric test":
+        "Which rank/permutation-based test to use when the non-parametric "
+        "branch is taken: Mann-Whitney, Brunner-Munzel, or a permutation test.",
+    "Šidák":
+        "A multiple-comparison correction slightly sharper than Bonferroni "
+        "when the tests are independent (adjusted p = 1 − (1 − p)ᵐ).",
+    "Hochberg":
+        "A step-up correction that controls the chance of any false positive — "
+        "uniformly more powerful than Holm under independence.",
+    "Brunner–Munzel":
+        "A robust two-group rank test that — unlike Mann-Whitney — does NOT "
+        "assume the two groups have the same shape/spread.",
+    "Permutation test":
+        "Builds the null by reshuffling the group labels thousands of times — "
+        "makes no distributional assumption, ideal for very small samples.",
+    "Post-hoc test":
+        "Which pairwise follow-up to run after a 3+-group omnibus test: "
+        "per-pair, Games-Howell, Dunn, or Tukey HSD.",
+    "Games–Howell":
+        "A pairwise post-hoc for 3+ groups that does not assume equal "
+        "variances or equal group sizes; it controls the family-wise error itself.",
+    "Dunn's test":
+        "The standard rank-based pairwise follow-up after a Kruskal-Wallis "
+        "test (non-parametric).",
+    "Tukey HSD":
+        "The classic pairwise post-hoc after one-way ANOVA; assumes equal "
+        "variances and controls the family-wise error itself.",
+    "Dunnett's test":
+        "Compares every group to one designated control group (not all pairs), "
+        "with built-in family-wise control — fewer, more powerful comparisons.",
+    "Control group":
+        "The reference group (e.g. wild-type / untreated) that Dunnett's test "
+        "compares every other group against.",
+    "Cliff's delta":
+        "A distribution-free effect size from −1 to +1: the probability a value "
+        "from one group exceeds one from the other, minus the reverse.",
+    "Rank-biserial":
+        "A rank-based effect size paired with Mann-Whitney — the standardized "
+        "difference expressed on a −1 to +1 scale.",
+    "Omnibus effect size":
+        "How much of the total variation the grouping explains overall — η² for "
+        "ANOVA-type tests, ε² for Kruskal-Wallis.",
+    "Equivalence (TOST)":
+        "Two one-sided tests asking whether two groups are practically the same "
+        "within a chosen margin — the opposite question to a difference test.",
     # ── Circular (turning-angle) statistics ──────────────────────────────────
     "Turning angle":
         "The change in direction between two consecutive steps of a track — 0° "
@@ -414,11 +511,17 @@ def config_summary_rows(cfg):
     return [
         ("Significance level (alpha)",   f"{cfg['alpha']:g}"),
         ("Parametric strategy",          cfg["parametric_strategy"]),
+        ("Non-parametric test",          cfg["nonparametric_test"]),
         ("Test for 3+ groups",           cfg["anova3plus"]),
+        ("Post-hoc (3+ groups)",         cfg["posthoc"]),
         ("Within-metric correction",     correction_display(cfg["correction"])),
         ("Across-metric correction",
          (f"yes ({correction_display(cfg['correction'])})"
           if cfg["across_metric_correction"] else "no")),
+        ("Control group",                cfg["control_group"] or "none"),
+        ("Dunnett (all-vs-control)",     "yes" if cfg["dunnett"] else "no"),
+        ("Equivalence (TOST)",
+         (f"yes (±{cfg['tost_margin']:g} SD)" if cfg["equivalence_tost"] else "no")),
         ("Effect-size CI level",         f"{cfg['ci_level']:g}"),
         ("Figure stars use corrected p", "yes" if cfg["figure_stars_use_corrected"] else "no"),
     ]

@@ -2156,11 +2156,11 @@ def _stat_test(a, b, stats_config=None):
     if len(a) < 2 or len(b) < 2:
         return (np.nan, "")
     try:
-        from scipy.stats import ttest_ind, mannwhitneyu
+        from scipy.stats import ttest_ind
         if _decide_parametric((a, b), cfg["parametric_strategy"], cfg["alpha"]):
             p = ttest_ind(a, b, equal_var=False).pvalue
         else:
-            p = mannwhitneyu(a, b, alternative="two-sided").pvalue
+            p, _ = _two_group_nonparametric(a, b, cfg["nonparametric_test"])
         if not np.isfinite(p):
             return (np.nan, "")
         return (float(p), stars_for(p, cfg["alpha"]))
@@ -2303,6 +2303,226 @@ def _n_per_group_for_power(d, power=0.80, alpha=0.05, n_max=500):
     return n_max + 1
 
 
+# ── Robust / distribution-free effect sizes ──────────────────────────────────
+def _cliffs_delta(a, b):
+    """Cliff's delta — distribution-free effect size in [-1, 1].  Positive
+    means group `a` tends to exceed group `b`.  None if either group < 2."""
+    a = np.asarray(a, dtype=float); a = a[np.isfinite(a)]
+    b = np.asarray(b, dtype=float); b = b[np.isfinite(b)]
+    if len(a) < 2 or len(b) < 2:
+        return None
+    return float(np.sign(a[:, None] - b[None, :]).mean())
+
+
+def _cliffs_delta_ci(a, b, n_boot=2000, seed=0, ci_level=0.95):
+    """Cliff's delta with a percentile bootstrap CI (mirrors `_hedges_g_ci`)."""
+    a = np.asarray(a, dtype=float); a = a[np.isfinite(a)]
+    b = np.asarray(b, dtype=float); b = b[np.isfinite(b)]
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return (None, None, None)
+    delta = _cliffs_delta(a, b)
+    if delta is None:
+        return (None, None, None)
+    lo_pct = 100.0 * (1.0 - ci_level) / 2.0
+    hi_pct = 100.0 - lo_pct
+    try:
+        rng = np.random.default_rng(seed)
+        boot = np.empty(n_boot, dtype=float)
+        k = 0
+        for _ in range(n_boot):
+            da = _cliffs_delta(rng.choice(a, na, replace=True),
+                               rng.choice(b, nb, replace=True))
+            if da is not None and np.isfinite(da):
+                boot[k] = da; k += 1
+        if k >= max(20, n_boot // 10):
+            lo, hi = np.percentile(boot[:k], [lo_pct, hi_pct])
+            return (delta, float(lo), float(hi))
+    except Exception:
+        pass
+    return (delta, None, None)
+
+
+def _rank_biserial(a, b):
+    """Rank-biserial correlation from the Mann-Whitney U, in [-1, 1].
+    Positive means `a` > `b`.  None if undefined."""
+    a = np.asarray(a, dtype=float); a = a[np.isfinite(a)]
+    b = np.asarray(b, dtype=float); b = b[np.isfinite(b)]
+    na, nb = len(a), len(b)
+    if na < 1 or nb < 1:
+        return None
+    try:
+        from scipy.stats import mannwhitneyu
+        U = float(mannwhitneyu(a, b, alternative="two-sided").statistic)
+        return float(2.0 * U / (na * nb) - 1.0)
+    except Exception:
+        return None
+
+
+def _omnibus_effect_size(valid_arrs, test_name):
+    """Omnibus effect size: ε² (epsilon-squared) for rank-based tests,
+    η² (eta-squared) otherwise.  Returns (value, kind) or (None, None)."""
+    try:
+        k = len(valid_arrs)
+        n = int(sum(len(a) for a in valid_arrs))
+        if k < 2 or n <= k:
+            return (None, None)
+        name = (test_name or "").lower()
+        rank_based = any(s in name for s in
+                         ("kruskal", "mann", "brunner", "permutation"))
+        if rank_based:
+            from scipy.stats import kruskal
+            H = float(kruskal(*valid_arrs).statistic)
+            eps2 = (H - k + 1.0) / (n - k)
+            return (max(0.0, min(1.0, eps2)), "epsilon_sq")
+        grand = np.concatenate(valid_arrs)
+        gm = float(grand.mean())
+        ss_total = float(((grand - gm) ** 2).sum())
+        if ss_total <= 0:
+            return (None, None)
+        ss_between = float(sum(len(a) * (float(a.mean()) - gm) ** 2
+                              for a in valid_arrs))
+        return (max(0.0, min(1.0, ss_between / ss_total)), "eta_sq")
+    except Exception:
+        return (None, None)
+
+
+# ── Alternative two-group non-parametric tests ───────────────────────────────
+def _two_group_nonparametric(a, b, which="mann_whitney", seed=0):
+    """Two-group non-parametric p-value + test name for the chosen leaf
+    (`mann_whitney` | `brunner_munzel` | `permutation`)."""
+    which = (which or "mann_whitney").lower()
+    try:
+        if which == "brunner_munzel":
+            from scipy.stats import brunnermunzel
+            return (float(brunnermunzel(a, b, alternative="two-sided").pvalue),
+                    "Brunner-Munzel")
+        if which == "permutation":
+            from scipy.stats import permutation_test
+            res = permutation_test(
+                (a, b), lambda x, y: np.mean(x) - np.mean(y),
+                permutation_type="independent", vectorized=False,
+                n_resamples=9999, alternative="two-sided", random_state=seed)
+            return (float(res.pvalue), "Permutation")
+    except Exception:
+        pass
+    from scipy.stats import mannwhitneyu
+    return (float(mannwhitneyu(a, b, alternative="two-sided").pvalue),
+            "Mann-Whitney U")
+
+
+def _pooled_sd(a, b):
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return None
+    va, vb = float(np.var(a, ddof=1)), float(np.var(b, ddof=1))
+    sp = np.sqrt(((na - 1) * va + (nb - 1) * vb) / (na + nb - 2))
+    return float(sp) if (np.isfinite(sp) and sp > 0) else None
+
+
+def _tost_pair(a, b, margin_sd, alpha=0.05):
+    """TOST equivalence for two groups; margin in pooled-SD units.  Returns
+    (p, equivalent_bool) or (None, None)."""
+    try:
+        import pingouin as pg
+        sp = _pooled_sd(a, b)
+        if sp is None or margin_sd <= 0:
+            return (None, None)
+        res = pg.tost(a, b, bound=float(margin_sd) * sp, paired=False)
+        p = float(res["pval"].iloc[0])
+        return (p, bool(p < alpha))
+    except Exception:
+        return (None, None)
+
+
+def _posthoc_pvals(valid_arrs, valid_idx, labels, method):
+    """Return {(i,j): (p, test_name)} over ORIGINAL indices for a 3+-group
+    post-hoc.  Games-Howell/Tukey are self-correcting (family-wise); Dunn is
+    not (caller corrects it).  Empty dict on failure → caller keeps per-pair."""
+    out = {}
+    try:
+        if method == "tukey":
+            from scipy.stats import tukey_hsd
+            P = tukey_hsd(*valid_arrs).pvalue
+            for k1 in range(len(valid_arrs)):
+                for k2 in range(k1 + 1, len(valid_arrs)):
+                    out[(valid_idx[k1], valid_idx[k2])] = (float(P[k1, k2]),
+                                                           "Tukey HSD")
+        elif method == "games_howell":
+            import pingouin as pg
+            import pandas as pd
+            vals, grps = [], []
+            for k, arr in enumerate(valid_arrs):
+                vals.extend(list(map(float, arr)))
+                grps.extend([str(labels[valid_idx[k]])] * len(arr))
+            gh = pg.pairwise_gameshowell(
+                data=pd.DataFrame({"val": vals, "grp": grps}),
+                dv="val", between="grp")
+            lbl_to_idx = {str(labels[valid_idx[k]]): valid_idx[k]
+                          for k in range(len(valid_arrs))}
+            for _, row in gh.iterrows():
+                ia, ib = lbl_to_idx.get(str(row["A"])), lbl_to_idx.get(str(row["B"]))
+                if ia is None or ib is None:
+                    continue
+                out[(min(ia, ib), max(ia, ib))] = (float(row["pval"]),
+                                                   "Games-Howell")
+        elif method == "dunn":
+            from scipy.stats import norm, rankdata
+            pooled = np.concatenate(valid_arrs)
+            N = len(pooled)
+            if N <= 1:
+                return {}
+            ranks = rankdata(pooled)
+            _, counts = np.unique(pooled, return_counts=True)
+            tie = float(np.sum(counts ** 3 - counts))
+            sigma2 = (N * (N + 1) / 12.0) - tie / (12.0 * (N - 1))
+            mean_ranks, pos = [], 0
+            for arr in valid_arrs:
+                nlen = len(arr)
+                mean_ranks.append(float(ranks[pos:pos + nlen].mean()))
+                pos += nlen
+            for k1 in range(len(valid_arrs)):
+                for k2 in range(k1 + 1, len(valid_arrs)):
+                    n1, n2 = len(valid_arrs[k1]), len(valid_arrs[k2])
+                    se = np.sqrt(sigma2 * (1.0 / n1 + 1.0 / n2))
+                    if not np.isfinite(se) or se <= 0:
+                        continue
+                    z = (mean_ranks[k1] - mean_ranks[k2]) / se
+                    p = 2.0 * (1.0 - float(norm.cdf(abs(z))))
+                    out[(valid_idx[k1], valid_idx[k2])] = (float(p), "Dunn")
+    except Exception:
+        return {}
+    return out
+
+
+def _dunnett_records(valid_arrs, valid_idx, labels, control_label):
+    """Dunnett many-to-one vs control.  Returns list of
+    {orig_i, orig_ctrl, label_i, label_ctrl, p}.  Empty if no valid control."""
+    try:
+        from scipy.stats import dunnett
+        ctrl_k = next((k for k in range(len(valid_arrs))
+                       if str(labels[valid_idx[k]]) == str(control_label)), None)
+        if ctrl_k is None:
+            return []
+        others_k = [k for k in range(len(valid_arrs)) if k != ctrl_k]
+        if not others_k:
+            return []
+        res = dunnett(*[valid_arrs[k] for k in others_k],
+                      control=valid_arrs[ctrl_k], random_state=0)
+        pj = np.atleast_1d(res.pvalue)
+        recs = []
+        for pos, k in enumerate(others_k):
+            recs.append({
+                "orig_i": valid_idx[k], "orig_ctrl": valid_idx[ctrl_k],
+                "label_i": labels[valid_idx[k]],
+                "label_ctrl": labels[valid_idx[ctrl_k]],
+                "p": float(pj[pos]),
+            })
+        return recs
+    except Exception:
+        return []
+
+
 def _stat_test_n(arrays, labels, stats_config=None):
     """Statistical test across N≥2 groups.
 
@@ -2351,7 +2571,12 @@ def _stat_test_n(arrays, labels, stats_config=None):
                     "cohens_d": None,
                     "hedges_g": None, "hedges_g_ci_low": None,
                     "hedges_g_ci_high": None,
+                    "cliffs_delta": None, "cliffs_delta_ci_low": None,
+                    "cliffs_delta_ci_high": None, "rank_biserial": None,
                     "n_needed_80": None, "n_needed_90": None,
+                    "self_corrected": False, "p_self": None,
+                    "tost_p": None, "tost_equivalent": None,
+                    "family": "pairwise",
                 })
         return omnibus, pairwise
 
@@ -2364,13 +2589,13 @@ def _stat_test_n(arrays, labels, stats_config=None):
                                         cfg["alpha"])
 
         if len(valid_arrs) == 2:
-            from scipy.stats import ttest_ind, mannwhitneyu
+            from scipy.stats import ttest_ind
             if parametric:
                 p = ttest_ind(*valid_arrs, equal_var=False).pvalue
                 test_name = "Welch's t-test"
             else:
-                p = mannwhitneyu(*valid_arrs, alternative="two-sided").pvalue
-                test_name = "Mann-Whitney U"
+                p, test_name = _two_group_nonparametric(
+                    valid_arrs[0], valid_arrs[1], cfg["nonparametric_test"])
         else:
             if parametric:
                 p, test_name = _anova_3plus(valid_arrs, cfg["anova3plus"])
@@ -2406,13 +2631,16 @@ def _stat_test_n(arrays, labels, stats_config=None):
                         p = ttest_ind(a, b, equal_var=False).pvalue
                         test_name = "Welch's t-test"
                     else:
-                        p = mannwhitneyu(a, b, alternative="two-sided").pvalue
-                        test_name = "Mann-Whitney U"
+                        p, test_name = _two_group_nonparametric(
+                            a, b, cfg["nonparametric_test"])
                 # Effect size + power-based sample-size estimate: how many
                 # replicates PER GROUP would be needed to detect this
                 # observed effect at 80% / 90% power (α=0.05, two-sided).
                 d_eff = _cohens_d_pooled(a, b)
                 g_eff, g_lo, g_hi = _hedges_g_ci(a, b)
+                cd_eff, cd_lo, cd_hi = _cliffs_delta_ci(a, b,
+                                                        ci_level=cfg["ci_level"])
+                rb_eff = _rank_biserial(a, b)
                 # Validity guard: with < 3 replicates per group the test is
                 # uninterpretable (n=2 has 1 d.o.f.).  Keep the p-value for
                 # reference but DON'T advertise significance — blank the stars
@@ -2437,10 +2665,104 @@ def _stat_test_n(arrays, labels, stats_config=None):
                     "hedges_g":    g_eff,
                     "hedges_g_ci_low":  g_lo,
                     "hedges_g_ci_high": g_hi,
+                    "cliffs_delta": cd_eff,
+                    "cliffs_delta_ci_low":  cd_lo,
+                    "cliffs_delta_ci_high": cd_hi,
+                    "rank_biserial": rb_eff,
                     "n_needed_80": _n_per_group_for_power(d_eff, 0.80),
                     "n_needed_90": _n_per_group_for_power(d_eff, 0.90),
+                    "self_corrected": False,
+                    "p_self": None,
+                    "tost_p": None,
+                    "tost_equivalent": None,
+                    "family": "pairwise",
                 })
     except Exception:
         pass
+
+    # ── Omnibus effect size (η² / ε²) ────────────────────────────────────────
+    try:
+        if omnibus is not None and len(valid_idx) >= 2:
+            es, kind = _omnibus_effect_size([arrs[i] for i in valid_idx],
+                                            omnibus.get("test", ""))
+            omnibus["effect_size"] = es
+            omnibus["effect_size_kind"] = kind
+    except Exception:
+        pass
+
+    # ── Post-hoc overlay for 3+ groups (auto leaves the per-pair tests) ──────
+    try:
+        method = cfg["posthoc"]
+        if method in ("games_howell", "tukey", "dunn") and len(valid_idx) >= 3:
+            ph = _posthoc_pvals([arrs[i] for i in valid_idx], valid_idx,
+                                labels, method)
+            self_corr = method in ("games_howell", "tukey")
+            by_key = {(min(pw["i"], pw["j"]), max(pw["i"], pw["j"])): pw
+                      for pw in pairwise}
+            for key, (p_ph, tname) in ph.items():
+                pw = by_key.get(key)
+                if pw is None:
+                    continue
+                underp = (pw["n_i"] < 3 or pw["n_j"] < 3)
+                pw["p"] = float(p_ph) if np.isfinite(p_ph) else np.nan
+                pw["test"] = tname
+                pw["self_corrected"] = self_corr
+                pw["p_self"] = (float(p_ph) if (self_corr and np.isfinite(p_ph))
+                                else None)
+                pw["stars"] = ("" if underp else
+                               (_star(p_ph) if np.isfinite(p_ph) else ""))
+    except Exception:
+        pass
+
+    # ── Equivalence (TOST) per ordinary pair ─────────────────────────────────
+    if cfg["equivalence_tost"]:
+        try:
+            for pw in pairwise:
+                a2, b2 = arrs[pw["i"]], arrs[pw["j"]]
+                if len(a2) >= 2 and len(b2) >= 2:
+                    tp, teq = _tost_pair(a2, b2, cfg["tost_margin"], cfg["alpha"])
+                    pw["tost_p"] = tp
+                    pw["tost_equivalent"] = teq
+        except Exception:
+            pass
+
+    # ── Dunnett many-to-one vs control (appended as its own family) ──────────
+    if cfg["dunnett"] and cfg["control_group"]:
+        try:
+            for r in _dunnett_records([arrs[i] for i in valid_idx], valid_idx,
+                                      labels, cfg["control_group"]):
+                i0, ic = r["orig_i"], r["orig_ctrl"]
+                a2, b2 = arrs[i0], arrs[ic]
+                cd2, clo2, chi2 = _cliffs_delta_ci(a2, b2,
+                                                   ci_level=cfg["ci_level"])
+                underp = (len(a2) < 3 or len(b2) < 3)
+                pairwise.append({
+                    "i": i0, "j": ic,
+                    "label_i": r["label_i"], "label_j": r["label_ctrl"],
+                    "test": "Dunnett",
+                    "p": r["p"],
+                    "stars": "" if underp else _star(r["p"]),
+                    "note": ("n<3 replicates - underpowered, not interpretable"
+                             if underp else "vs control"),
+                    "n_i": int(len(a2)), "n_j": int(len(b2)),
+                    "mean_i": float(a2.mean()) if len(a2) else np.nan,
+                    "mean_j": float(b2.mean()) if len(b2) else np.nan,
+                    "sem_i": (float(a2.std(ddof=1) / np.sqrt(len(a2)))
+                              if len(a2) > 1 else np.nan),
+                    "sem_j": (float(b2.std(ddof=1) / np.sqrt(len(b2)))
+                              if len(b2) > 1 else np.nan),
+                    "cohens_d": _cohens_d_pooled(a2, b2),
+                    "hedges_g": _hedges_g_ci(a2, b2)[0],
+                    "hedges_g_ci_low": None, "hedges_g_ci_high": None,
+                    "cliffs_delta": cd2,
+                    "cliffs_delta_ci_low": clo2, "cliffs_delta_ci_high": chi2,
+                    "rank_biserial": _rank_biserial(a2, b2),
+                    "n_needed_80": None, "n_needed_90": None,
+                    "self_corrected": True, "p_self": r["p"],
+                    "tost_p": None, "tost_equivalent": None,
+                    "family": "dunnett",
+                })
+        except Exception:
+            pass
 
     return omnibus, pairwise

@@ -119,10 +119,19 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     omnibus, pairwise = _stat_test_n(arrs, labels, cfg)
     # Within-metric correction onto the pairwise list (also done centrally for
     # the CSV; computed here so the initial draw is already correct).
-    _wp = correct_pvalues([pw["p"] for pw in pairwise], cfg["correction"])
+    # Self-correcting post-hocs (Games-Howell / Tukey / Dunnett) already control
+    # their own family — don't double-correct them here either.
+    _corr_idx = [k for k, pw in enumerate(pairwise)
+                 if not pw.get("self_corrected")]
+    _wp = correct_pvalues([pairwise[k]["p"] for k in _corr_idx], cfg["correction"])
+    _wmap = dict(zip(_corr_idx, _wp))
     for k, pw in enumerate(pairwise):
-        pw["p_within"] = _wp[k]
-        pw["stars_within"] = stars_for(_wp[k], cfg["alpha"])
+        if pw.get("self_corrected"):
+            pw["p_within"] = pw.get("p")
+            pw["stars_within"] = stars_for(pw.get("p"), cfg["alpha"])
+        else:
+            pw["p_within"] = _wmap[k]
+            pw["stars_within"] = stars_for(_wmap[k], cfg["alpha"])
     if record_stats is not None and metric_name:
         record_stats[metric_name] = {"omnibus": omnibus, "pairwise": pairwise}
 
@@ -135,6 +144,29 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
             return f"g = {g:.2f} [95% CI {lo:.2f}, {hi:.2f}]"
         return f"g = {g:.2f}"
+
+    def _delta_str(rec):
+        """Cliff's delta line: 'δ = 0.62 [0.20, 0.90]' or '' if unavailable."""
+        d = rec.get("cliffs_delta")
+        if d is None or not np.isfinite(d):
+            return ""
+        lo, hi = rec.get("cliffs_delta_ci_low"), rec.get("cliffs_delta_ci_high")
+        if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
+            return f"δ = {d:.2f} [{lo:.2f}, {hi:.2f}]"
+        return f"δ = {d:.2f}"
+
+    def _tost_str(rec):
+        """Equivalence verdict line (only when TOST is on)."""
+        if not cfg["equivalence_tost"]:
+            return ""
+        teq = rec.get("tost_equivalent")
+        if teq is None:
+            return ""
+        tp = rec.get("tost_p")
+        tail = (f" (TOST p={tp:.3f})"
+                if (tp is not None and np.isfinite(tp)) else "")
+        verdict = "equivalent" if teq else "not equivalent"
+        return f"±{cfg['tost_margin']:g} SD: {verdict}{tail}"
 
     use_corr = cfg["figure_stars_use_corrected"]
     corr_caption = describe_test_label("", cfg["correction"],
@@ -158,6 +190,12 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
             g_str = _g_ci_str(pair)
             if g_str:
                 lines.append(g_str)
+            d_str = _delta_str(pair)
+            if d_str:
+                lines.append(d_str)
+            t_str = _tost_str(pair)
+            if t_str:
+                lines.append(t_str)
             lines.append(corr_caption)
             if pair.get("note"):
                 lines.append(pair["note"])
@@ -165,8 +203,12 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         if n > 2 and omnibus:
             pv = omnibus["p"]
             p_str = f"p = {pv:.2e}" if pv < 0.001 else f"p = {pv:.3f}"
-            lines = [omnibus["test"], f"{p_str}   {omnibus['stars']}",
-                     f"pairwise: {corr_caption}"]
+            lines = [omnibus["test"], f"{p_str}   {omnibus['stars']}"]
+            es = omnibus.get("effect_size")
+            if es is not None and np.isfinite(es):
+                sym = "η²" if omnibus.get("effect_size_kind") == "eta_sq" else "ε²"
+                lines.append(f"{sym} = {es:.3f}")
+            lines.append(f"pairwise: {corr_caption}")
             if omnibus.get("note"):
                 lines.append(omnibus["note"])
             return "\n".join(lines)
@@ -1424,13 +1466,27 @@ def compare_groups(groups,
     across_pw = []
     for metric, rec in stats_records.items():
         pairs = rec.get("pairwise", [])
-        wcorr = correct_pvalues([pw.get("p") for pw in pairs], _method)
+        # Self-correcting post-hocs (Games-Howell / Tukey / Dunnett) already
+        # control their own family — DON'T double-correct them.  Only ordinary
+        # pairwise + Dunn rows pass through correct_pvalues.
+        corr_idx = [k for k, pw in enumerate(pairs)
+                    if not pw.get("self_corrected")]
+        wcorr = correct_pvalues([pairs[k].get("p") for k in corr_idx], _method)
+        wmap = dict(zip(corr_idx, wcorr))
         for k, pw in enumerate(pairs):
-            pw["p_within"] = wcorr[k]
-            pw["stars_within"] = stars_for(wcorr[k], _alpha)
+            if pw.get("self_corrected"):
+                pw["p_within"] = pw.get("p")
+                pw["stars_within"] = stars_for(pw.get("p"), _alpha)
+            else:
+                pw["p_within"] = wmap[k]
+                pw["stars_within"] = stars_for(wmap[k], _alpha)
             pw.setdefault("p_across", np.nan)
             pw.setdefault("stars_across", "")
-            if metric in _ACROSS_FAMILY and np.isfinite(pw.get("p", np.nan)):
+            # Across-metric family = ordinary pairwise only; exclude
+            # self-corrected post-hocs + the Dunnett family (separate regimes).
+            if (metric in _ACROSS_FAMILY and not pw.get("self_corrected")
+                    and pw.get("family", "pairwise") == "pairwise"
+                    and np.isfinite(pw.get("p", np.nan))):
                 across_pw.append(pw)
     family_size = len(across_pw)
     if cfg["across_metric_correction"] and across_pw:
@@ -1454,16 +1510,26 @@ def compare_groups(groups,
                 "sem_a": "", "sem_b": "", "label_a": "all groups", "label_b": "",
                 "cohens_d": "", "hedges_g": "",
                 "hedges_g_ci_low": "", "hedges_g_ci_high": "",
+                "cliffs_delta": "", "cliffs_delta_ci_low": "",
+                "cliffs_delta_ci_high": "", "rank_biserial": "",
+                "tost_p": "", "tost_equivalent": "",
+                "omnibus_effect_size": (omn.get("effect_size")
+                    if omn.get("effect_size") is not None else ""),
+                "omnibus_effect_size_kind": omn.get("effect_size_kind") or "",
                 "n_per_group_for_80pct_power": "",
                 "n_per_group_for_90pct_power": "",
                 "note": omn.get("note", ""),
             })
         for pw in rec.get("pairwise", []):
+            _is_dunnett = pw.get("family") == "dunnett"
             stats_rows.append({
-                "metric": metric, "comparison": f"{pw['label_i']} vs {pw['label_j']}",
+                "metric": metric,
+                "comparison": (f"{pw['label_i']} vs {pw['label_j']}"
+                               + (" (Dunnett)" if _is_dunnett else "")),
                 "test": pw["test"],
                 "p_value": pw["p"], "stars": pw["stars"],
-                "correction_method": correction_display(_method),
+                "correction_method": (f"{pw['test']} (family-wise)"
+                    if pw.get("self_corrected") else correction_display(_method)),
                 "p_value_corrected": pw.get("p_within"),
                 "stars_corrected": pw.get("stars_within", ""),
                 "p_value_across_metric": (pw.get("p_across")
@@ -1478,6 +1544,14 @@ def compare_groups(groups,
                 "hedges_g": pw.get("hedges_g"),
                 "hedges_g_ci_low": pw.get("hedges_g_ci_low"),
                 "hedges_g_ci_high": pw.get("hedges_g_ci_high"),
+                "cliffs_delta": pw.get("cliffs_delta"),
+                "cliffs_delta_ci_low": pw.get("cliffs_delta_ci_low"),
+                "cliffs_delta_ci_high": pw.get("cliffs_delta_ci_high"),
+                "rank_biserial": pw.get("rank_biserial"),
+                "tost_p": (pw.get("tost_p") if cfg["equivalence_tost"] else ""),
+                "tost_equivalent": (pw.get("tost_equivalent")
+                    if cfg["equivalence_tost"] else ""),
+                "omnibus_effect_size": "", "omnibus_effect_size_kind": "",
                 "n_per_group_for_80pct_power": _fmt_n_needed(pw.get("n_needed_80")),
                 "n_per_group_for_90pct_power": _fmt_n_needed(pw.get("n_needed_90")),
                 "note": pw.get("note", ""),
@@ -1741,8 +1815,15 @@ def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
                        color=pal["TXT"])
             ax = page4.add_axes([0.03, 0.04, 0.94, 0.86])
             ax.axis("off")
-            disp = stats_df.copy()
-            for c in ("p_value", "mean_a", "mean_b", "sem_a", "sem_b"):
+            # Curated column subset — the full stats_df has ~30 columns now
+            # (effect sizes, CIs, TOST, power), which overflow a landscape
+            # page; the complete set lives in the CSV.
+            _pdf_cols = ["metric", "comparison", "test", "p_value",
+                         "p_value_corrected", "stars_corrected",
+                         "hedges_g", "cliffs_delta", "note"]
+            disp = stats_df[[c for c in _pdf_cols
+                             if c in stats_df.columns]].copy()
+            for c in ("p_value", "p_value_corrected", "hedges_g", "cliffs_delta"):
                 if c in disp.columns:
                     disp[c] = disp[c].apply(
                         lambda x: f"{x:.4g}" if isinstance(x, (int, float)) and np.isfinite(x) else x)
@@ -1848,8 +1929,13 @@ def _write_prism_ttests(path, stats_df, stats_config=None):
                 w.writerow(["    P value (raw)", _prism_p(p)])
                 w.writerow(["    P value summary", _prism_summary(p)])
                 w.writerow(["    Significantly different (P<0.05)?", _prism_sig(p)])
-                w.writerow([f"    Adjusted P value ({corr_disp}, within metric)",
-                            _prism_p(padj)])
+                # Self-correcting post-hocs (Games-Howell / Tukey / Dunnett)
+                # carry their own family-wise label; everyone else gets the
+                # chosen within-metric correction.
+                cm = str(r.get("correction_method") or "")
+                _adj_lbl = (f"    Adjusted P value ({cm})" if "family-wise" in cm
+                            else f"    Adjusted P value ({corr_disp}, within metric)")
+                w.writerow([_adj_lbl, _prism_p(padj)])
                 w.writerow(["    Adjusted summary", _prism_summary(padj)])
                 if cfg["across_metric_correction"] and pax is not None:
                     w.writerow([f"    Adjusted P value ({corr_disp}, across metrics)",
@@ -1863,6 +1949,24 @@ def _write_prism_ttests(path, stats_df, stats_config=None):
                 w.writerow(["    SEM of " + str(la), _fnum(_f(r.get("sem_a")))])
                 w.writerow(["    SEM of " + str(lb), _fnum(_f(r.get("sem_b")))])
                 w.writerow(["    Effect size (Cohen's d)", _fnum(_f(r.get("cohens_d")), "{:.3f}")])
+                w.writerow(["    Effect size (Hedges' g)", _fnum(_f(r.get("hedges_g")), "{:.3f}")])
+                cd = _f(r.get("cliffs_delta"))
+                if cd is not None:
+                    clo, chi = _f(r.get("cliffs_delta_ci_low")), _f(r.get("cliffs_delta_ci_high"))
+                    ci_txt = (f"  [{clo:.2f}, {chi:.2f}]"
+                              if (clo is not None and chi is not None) else "")
+                    w.writerow(["    Effect size (Cliff's delta)",
+                                f"{cd:.3f}" + ci_txt])
+                rb = _f(r.get("rank_biserial"))
+                if rb is not None:
+                    w.writerow(["    Rank-biserial r", _fnum(rb, "{:.3f}")])
+                if cfg["equivalence_tost"]:
+                    teq = r.get("tost_equivalent")
+                    tp = _f(r.get("tost_p"))
+                    verdict = ("Yes" if teq is True
+                               else "No" if teq is False else "—")
+                    w.writerow([f"    Equivalent within ±{cfg['tost_margin']:g} SD (TOST)?",
+                                verdict + (f"  (p={tp:.4g})" if tp is not None else "")])
                 w.writerow(["Data analyzed", ""])
                 w.writerow([f"    Sample size, {la}", r.get("n_a", "")])
                 w.writerow([f"    Sample size, {lb}", r.get("n_b", "")])

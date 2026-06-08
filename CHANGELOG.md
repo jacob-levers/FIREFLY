@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.42.0
+
+### Compare page: many more statistical tests & options
+
+The Statistics panel on the Compare tab gained a much richer, still-guided set of
+options (all driven by the same config that's recorded in the CSV/PDF headers, so
+results stay self-describing):
+
+- **Alternative tests** — pick the non-parametric two-group test (Mann-Whitney,
+  **Brunner-Munzel** for unequal spread, or a **permutation test** that assumes no
+  distribution), and a proper 3+-group **post-hoc**: **Games-Howell** (unequal
+  variance), **Dunn** (after Kruskal-Wallis), or **Tukey HSD**.
+- **Dunnett's test** — set a **control group** and compare every group to it
+  (many-to-one), with built-in family-wise control.
+- **Equivalence testing (TOST)** — ask whether two groups are *practically the
+  same* within a margin (in pooled-SD units), not just whether they differ.
+- **Robust effect sizes** — every pairwise comparison now also reports **Cliff's
+  delta** (with bootstrap CI) and **rank-biserial**, and each omnibus test reports
+  **η² / ε²** — alongside the existing Cohen's d / Hedges' g.
+- **More corrections** — **Šidák** and **Hochberg** added to None / Bonferroni /
+  Holm / Benjamini-Hochberg.
+- **Richer "Recommended for your data"** — new advice for tiny groups (→
+  permutation), unbalanced designs (→ Welch + Games-Howell), many groups (→ Dunnett
+  / strong correction), and a set control group (→ Dunnett). "Apply recommended
+  settings" sets the new controls too.
+
+Self-correcting post-hocs (Games-Howell / Tukey / Dunnett) are never
+double-corrected — they're labelled as family-wise in the figure/CSV and excluded
+from the across-metric family. Everything round-trips through the config validator,
+so existing saved settings keep working. 9 new tests cover the additions.
+
 ## v2.41.5
 
 ### Updater: clearer message during the cross-platform publish window

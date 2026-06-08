@@ -2181,12 +2181,18 @@ class BuildMixin:
 
     # ── Statistics config (the Compare-tab "Analysis Configuration" wizard) ──
     _STAT_CORR_MAP   = {"None": "none", "Bonferroni": "bonferroni",
-                        "Holm": "holm", "Benjamini-Hochberg (FDR)": "fdr_bh"}
+                        "Holm": "holm", "Benjamini-Hochberg (FDR)": "fdr_bh",
+                        "Šidák": "sidak", "Hochberg": "hochberg"}
     _STAT_STRAT_MAP  = {"Auto (normality test)": "auto",
                         "Force parametric": "force_parametric",
                         "Force non-parametric": "force_nonparametric"}
     _STAT_ANOVA_MAP  = {"Welch's ANOVA": "welch", "One-way ANOVA": "oneway",
                         "Auto": "auto"}
+    _STAT_NONPARAM_MAP = {"Mann-Whitney U": "mann_whitney",
+                          "Brunner-Munzel": "brunner_munzel",
+                          "Permutation": "permutation"}
+    _STAT_POSTHOC_MAP  = {"Auto (pairwise)": "auto", "Games-Howell": "games_howell",
+                          "Dunn": "dunn", "Tukey HSD": "tukey"}
     # Scalar metrics shown in the preview (label · whether it's in the
     # across-metric family).
     _STAT_PREVIEW_METRICS = [
@@ -2320,7 +2326,8 @@ class BuildMixin:
 
         self.c_stat_correction = _QuietComboBox()
         self.c_stat_correction.addItems(
-            ["None", "Bonferroni", "Holm", "Benjamini-Hochberg (FDR)"])
+            ["None", "Bonferroni", "Holm", "Benjamini-Hochberg (FDR)",
+             "Šidák", "Hochberg"])
         self.c_stat_correction.setCurrentText("Holm")
         self.c_stat_correction.setMaximumWidth(_CTRL_W)
         self.c_stat_correction.setToolTip(
@@ -2351,6 +2358,18 @@ class BuildMixin:
         gl.addRow(_label_with_info("Parametric strategy", "Parametric strategy"),
                   self.c_stat_strategy)
 
+        self.c_stat_nonparam = _QuietComboBox()
+        self.c_stat_nonparam.addItems(
+            ["Mann-Whitney U", "Brunner-Munzel", "Permutation"])
+        self.c_stat_nonparam.setMaximumWidth(_CTRL_W)
+        self.c_stat_nonparam.setToolTip(
+            "Which non-parametric two-group test to use when the non-parametric\n"
+            "branch is taken (by Auto or by Force). Brunner-Munzel tolerates\n"
+            "unequal spread; Permutation makes no distributional assumption\n"
+            "(best for very small n).")
+        gl.addRow(_label_with_info("Non-parametric test", "Non-parametric test"),
+                  self.c_stat_nonparam)
+
         self.c_stat_anova3 = _QuietComboBox()
         self.c_stat_anova3.addItems(["Welch's ANOVA", "One-way ANOVA", "Auto"])
         self.c_stat_anova3.setMaximumWidth(_CTRL_W)
@@ -2360,6 +2379,54 @@ class BuildMixin:
             "one-way ANOVA does. Auto = Welch's.")
         gl.addRow(_label_with_info("Test for 3+ groups", "Welch's ANOVA"),
                   self.c_stat_anova3)
+
+        self.c_stat_posthoc = _QuietComboBox()
+        self.c_stat_posthoc.addItems(
+            ["Auto (pairwise)", "Games-Howell", "Dunn", "Tukey HSD"])
+        self.c_stat_posthoc.setMaximumWidth(_CTRL_W)
+        self.c_stat_posthoc.setToolTip(
+            "Pairwise follow-up after a 3+-group omnibus test. Auto = per-pair\n"
+            "t / non-parametric. Games-Howell (unequal variance) and Tukey HSD\n"
+            "(equal variance) self-correct; Dunn is the rank-based follow-up\n"
+            "after Kruskal-Wallis.")
+        gl.addRow(_label_with_info("Post-hoc (3+ groups)", "Post-hoc test"),
+                  self.c_stat_posthoc)
+
+        self.c_stat_control = _QuietComboBox()
+        self.c_stat_control.addItem("(none)")
+        self.c_stat_control.setMaximumWidth(_CTRL_W)
+        self.c_stat_control.setToolTip(
+            "Designate a control / reference group (e.g. wild-type, untreated)\n"
+            "to enable Dunnett's all-vs-control test. The list stays in sync\n"
+            "with your group labels.")
+        gl.addRow(_label_with_info("Control group", "Control group"),
+                  self.c_stat_control)
+
+        self.c_stat_dunnett = QtWidgets.QCheckBox(
+            "Dunnett's test (every group vs the control)")
+        self.c_stat_dunnett.setToolTip(
+            "Compares every group to the chosen control with built-in\n"
+            "family-wise control — fewer, more powerful comparisons than\n"
+            "all-pairs. Needs a control group set above.")
+        gl.addRow(_label_with_info("Dunnett's test", "Dunnett's test"),
+                  self.c_stat_dunnett)
+
+        self.c_stat_tost = QtWidgets.QCheckBox("Report equivalence (TOST)")
+        self.c_stat_tost.setToolTip(
+            "Two one-sided tests: asks whether two groups are practically the\n"
+            "SAME within a margin — the opposite question to a difference test.")
+        gl.addRow(_label_with_info("Equivalence (TOST)", "Equivalence (TOST)"),
+                  self.c_stat_tost)
+
+        self.s_stat_tost_margin = self._spin_dbl(
+            0.5, 0.05, 5.0, step=0.05, decimals=2,
+            tip="Equivalence margin in pooled-SD units (works across all "
+                "metrics).\nGroups count as 'equivalent' when the difference "
+                "stays within\n±this many SD. 0.5 SD is a conventional 'small' "
+                "margin.")
+        self.s_stat_tost_margin.setMaximumWidth(_CTRL_W)
+        gl.addRow(_label_with_info("Equivalence margin (SD)", "Equivalence (TOST)"),
+                  self.s_stat_tost_margin)
 
         self.s_stat_ci = self._spin_dbl(
             0.95, 0.50, 0.999, step=0.01, decimals=3,
@@ -2474,6 +2541,12 @@ class BuildMixin:
             "Holm", "Benjamini–Hochberg FDR", "Hedges' g", "Replicate",
             "Two-way mixed ANOVA", "Sphericity", "Greenhouse–Geisser",
             "Interaction effect",
+            # Alternative tests / post-hocs / robust effect sizes / equivalence
+            "Non-parametric test", "Brunner–Munzel", "Permutation test",
+            "Post-hoc test", "Games–Howell", "Dunn's test", "Tukey HSD",
+            "Dunnett's test", "Control group", "Šidák", "Hochberg",
+            "Cliff's delta", "Rank-biserial", "Omnibus effect size",
+            "Equivalence (TOST)",
             # Circular (turning-angle) statistics
             "Turning angle", "Sign convention", "Concentration κ",
             "Mean resultant length R̄", "Watson-Williams",
@@ -2500,11 +2573,13 @@ class BuildMixin:
         v.addWidget(cap)
         v.addStretch(1)
 
-        for _w in (self.s_stat_alpha, self.s_stat_ci):
+        for _w in (self.s_stat_alpha, self.s_stat_ci, self.s_stat_tost_margin):
             _w.valueChanged.connect(lambda *_: self._refresh_stats_preview())
-        for _w in (self.c_stat_correction, self.c_stat_strategy, self.c_stat_anova3):
+        for _w in (self.c_stat_correction, self.c_stat_strategy, self.c_stat_anova3,
+                   self.c_stat_nonparam, self.c_stat_posthoc, self.c_stat_control):
             _w.currentIndexChanged.connect(lambda *_: self._refresh_stats_preview())
         for _w in (self.c_stat_across_metric, self.c_stat_fig_corrected,
+                   self.c_stat_dunnett, self.c_stat_tost,
                    self.c_circ_include, self.c_circ_kappa, self.c_circ_rbar,
                    self.c_circ_mu, self.c_circ_circlin):
             _w.toggled.connect(lambda *_: self._refresh_stats_preview())
@@ -2524,6 +2599,15 @@ class BuildMixin:
                 self.c_stat_strategy.currentText(), "auto"),
             "anova3plus": self._STAT_ANOVA_MAP.get(
                 self.c_stat_anova3.currentText(), "welch"),
+            "nonparametric_test": self._STAT_NONPARAM_MAP.get(
+                self.c_stat_nonparam.currentText(), "mann_whitney"),
+            "posthoc": self._STAT_POSTHOC_MAP.get(
+                self.c_stat_posthoc.currentText(), "auto"),
+            "control_group": ("" if self.c_stat_control.currentText() == "(none)"
+                              else self.c_stat_control.currentText()),
+            "dunnett": bool(self.c_stat_dunnett.isChecked()),
+            "equivalence_tost": bool(self.c_stat_tost.isChecked()),
+            "tost_margin": float(self.s_stat_tost_margin.value()),
             "ci_level": float(self.s_stat_ci.value()),
             "figure_stars_use_corrected": bool(self.c_stat_fig_corrected.isChecked()),
             # Circular (turning-angle) statistics — reuse the alpha/correction
@@ -2571,11 +2655,17 @@ class BuildMixin:
         # compare_groups).
         paired = len(tps) >= 2
         strat = cfg["parametric_strategy"]
+        _NP_NAME = {"mann_whitney": "Mann-Whitney U",
+                    "brunner_munzel": "Brunner-Munzel",
+                    "permutation": "permutation test"}
+        _np = _NP_NAME.get(cfg["nonparametric_test"], "Mann-Whitney U")
+        _PH_NAME = {"games_howell": "Games-Howell", "dunn": "Dunn",
+                    "tukey": "Tukey HSD"}
 
         def _two_group():
             if strat == "force_parametric":     return "Welch's t-test"
-            if strat == "force_nonparametric":  return "Mann-Whitney U"
-            return "Welch's t-test <i>or</i> Mann-Whitney U <i>(auto)</i>"
+            if strat == "force_nonparametric":  return _np
+            return f"Welch's t-test <i>or</i> {_np} <i>(auto)</i>"
 
         def _paired_change():
             if strat == "force_parametric":     return "paired t-test"
@@ -2600,6 +2690,29 @@ class BuildMixin:
                        for c in cards if str(c.get("label", "")) == lbl)
         group_counts = [_reps(lbl) for lbl in labels]
         min_reps = min(group_counts) if group_counts else 0
+
+        # ── Keep the control-group combo in sync with the live group labels ───
+        # (single authority — a persisted/stale label gracefully falls back to
+        # "(none)", so Dunnett degrades safely rather than naming a dead group).
+        try:
+            combo = self.c_stat_control
+            prev = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("(none)")
+            for lbl in labels:
+                combo.addItem(str(lbl))
+            combo.setCurrentText(prev if prev in
+                                 ([str(x) for x in labels] + ["(none)"]) else "(none)")
+            combo.blockSignals(False)
+            control_label = ("" if combo.currentText() == "(none)"
+                             else combo.currentText())
+            # Dunnett only makes sense with a control set and ≥2 groups.
+            self.c_stat_dunnett.setEnabled(bool(control_label) and n_groups >= 2)
+            if not (bool(control_label) and n_groups >= 2):
+                self.c_stat_dunnett.setChecked(False)
+        except Exception:
+            control_label = ""
 
         # ── 1 · Design summary: colour chips + a paired/unpaired note ─────────
         while self._stats_design_grid.count():
@@ -2653,9 +2766,18 @@ class BuildMixin:
             else:
                 items.append(f"<b>Each metric ({n_groups} groups):</b> {_n_group()}")
                 if n_groups > 2:
-                    items.append(f"<b>Pairwise follow-up:</b> {_two_group()}")
+                    _ph = _PH_NAME.get(cfg["posthoc"])
+                    items.append("<b>Pairwise follow-up:</b> "
+                                 + (f"{_ph}" if _ph else _two_group()))
+            if cfg.get("dunnett") and cfg.get("control_group"):
+                items.append("<b>Vs control:</b> Dunnett's test (every group vs "
+                             f"“{cfg['control_group']}”)")
             items.append(f"<b>Multiple-comparison correction:</b> {corr}")
-            items.append(f"<b>Effect size:</b> Hedges' g with {ci_pct} CI")
+            items.append("<b>Effect size:</b> Hedges' g, Cliff's δ "
+                         f"(both with {ci_pct} CI) + rank-biserial")
+            if cfg.get("equivalence_tost"):
+                items.append("<b>Equivalence:</b> TOST at "
+                             f"±{cfg['tost_margin']:g} SD")
             items.append(f"<b>Significance:</b> α = {cfg['alpha']:g}; "
                          f"on-figure stars use <b>{stars_src}</b> p-values")
             if cfg.get("include_circular_outputs", True):
@@ -2707,30 +2829,37 @@ class BuildMixin:
             _w = _it.widget()
             if _w is not None:
                 _w.deleteLater()
-        rec_items, rec = self._stats_recommendation(n_groups, paired, min_reps,
-                                                     _have_pg)
+        rec_items, rec = self._stats_recommendation(
+            n_groups, paired, group_counts, control_label, _have_pg)
         for _item in rec_items:
             self._stats_banner_layout.addWidget(
                 _AlertBanner(_item["severity"], _item["html"]))
         self._stats_recommended_cfg = rec
         self.btn_stats_apply_rec.setEnabled(rec is not None)
 
-    def _stats_recommendation(self, n_groups, paired, min_reps, have_pg=True):
+    def _stats_recommendation(self, n_groups, paired, group_counts,
+                              control_label="", have_pg=True):
         """Data-aware advice as a list of {severity, html} banner items, plus a
         recommended config dict (None when there's nothing to recommend yet).
 
         Severity drives the banner colour: danger / warn / success / info.  The
-        returned `rec` dict shape is unchanged (consumed by
-        `_apply_stats_recommendation`)."""
+        recommendation is design/count-based (it sees the per-group replicate
+        counts + control label, not the metric values themselves)."""
         if n_groups < 2:
             return ([{"severity": "muted",
                       "html": "Add at least 2 groups (each with ≥1 folder) in "
                               "the sidebar and I'll recommend settings for your "
                               "data."}], None)
+        group_counts = list(group_counts or [])
+        min_reps = min(group_counts) if group_counts else 0
+        max_reps = max(group_counts) if group_counts else 0
         rec = {"alpha": 0.05, "correction": "holm",
                "across_metric_correction": True, "parametric_strategy": "auto",
                "anova3plus": "welch", "ci_level": 0.95,
-               "figure_stars_use_corrected": True}
+               "figure_stars_use_corrected": True,
+               "nonparametric_test": "mann_whitney", "posthoc": "auto",
+               "control_group": "", "dunnett": False,
+               "equivalence_tost": False, "tost_margin": 0.5}
         items = []
         # Replicate-count guidance — the dominant issue in SPT statistics.
         if min_reps < 3:
@@ -2753,6 +2882,23 @@ class BuildMixin:
                 "html": f"<b>{min_reps}+</b> replicates per group — enough for "
                         "the normality test to choose sensibly. <b>Auto</b> is a "
                         "good default."})
+        # Very small n → a permutation test makes no distributional assumption.
+        if 0 < min_reps <= 4:
+            items.append({"severity": "info",
+                "html": "Tiny groups — a <b>permutation test</b> builds the null "
+                        "by reshuffling labels and assumes nothing about the "
+                        "distribution; a robust choice at this n."})
+            rec["nonparametric_test"] = "permutation"
+        # Unbalanced design → unequal-variance-robust tests.
+        if min_reps >= 1 and max_reps >= int(1.5 * max(min_reps, 1)):
+            items.append({"severity": "warn",
+                "html": f"Unbalanced design (n = {', '.join(map(str, group_counts))}) "
+                        "— prefer <b>Welch's ANOVA</b> with <b>Games-Howell</b> "
+                        "follow-ups (neither assumes equal variance or equal n), "
+                        "and report effect sizes."})
+            rec["anova3plus"] = "welch"
+            if n_groups > 2:
+                rec["posthoc"] = "games_howell"
         if paired:
             if have_pg:
                 items.append({"severity": "info",
@@ -2768,6 +2914,22 @@ class BuildMixin:
             items.append({"severity": "info",
                 "html": "3+ groups → <b>Welch's ANOVA</b> (robust to unequal "
                         "variances) with Holm-corrected pairwise follow-ups."})
+        # Many groups → all-pairs explodes; a control-vs-all design is leaner.
+        if n_groups >= 4:
+            n_pairs = n_groups * (n_groups - 1) // 2
+            items.append({"severity": "info",
+                "html": f"{n_groups} groups means <b>{n_pairs}</b> pairwise "
+                        "comparisons — keep a strong correction (Holm/Hochberg), "
+                        "and if one group is a control, a <b>Dunnett</b> "
+                        "all-vs-control test is fewer, more powerful comparisons."})
+        # Control group set → recommend Dunnett.
+        if control_label:
+            items.append({"severity": "info",
+                "html": f"Control group “<b>{control_label}</b>” set → "
+                        "<b>Dunnett's test</b> compares every group to it with "
+                        "built-in family-wise control."})
+            rec["control_group"] = control_label
+            rec["dunnett"] = True
         items.append({"severity": "info",
             "html": "You're comparing 8 metrics, so <b>family-wise correction "
                     "across metrics</b> is recommended to keep false positives "
@@ -2788,10 +2950,20 @@ class BuildMixin:
             for combo, dmap, key in (
                     (self.c_stat_correction, self._STAT_CORR_MAP, "correction"),
                     (self.c_stat_strategy, self._STAT_STRAT_MAP, "parametric_strategy"),
-                    (self.c_stat_anova3, self._STAT_ANOVA_MAP, "anova3plus")):
-                disp = inv(dmap, rec[key])
+                    (self.c_stat_anova3, self._STAT_ANOVA_MAP, "anova3plus"),
+                    (self.c_stat_nonparam, self._STAT_NONPARAM_MAP, "nonparametric_test"),
+                    (self.c_stat_posthoc, self._STAT_POSTHOC_MAP, "posthoc")):
+                disp = inv(dmap, rec.get(key))
                 if disp is not None:
                     combo.setCurrentText(disp)
+            if "tost_margin" in rec:
+                self.s_stat_tost_margin.setValue(float(rec["tost_margin"]))
+            if rec.get("control_group"):
+                self.c_stat_control.setCurrentText(str(rec["control_group"]))
+            if "dunnett" in rec:
+                self.c_stat_dunnett.setChecked(bool(rec["dunnett"]))
+            if "equivalence_tost" in rec:
+                self.c_stat_tost.setChecked(bool(rec["equivalence_tost"]))
         except Exception:
             pass
         self._refresh_stats_preview()
