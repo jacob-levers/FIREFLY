@@ -2996,6 +2996,16 @@ class BuildMixin:
             lambda _=None: self._ws_render_cluster_layer())
         dbscan_form.addRow("Colour by", self._ws_cluster_color_mode)
 
+        self._ws_cluster_point_size = QtWidgets.QSpinBox()
+        self._ws_cluster_point_size.setRange(1, 20)
+        self._ws_cluster_point_size.setValue(3)
+        self._ws_cluster_point_size.setToolTip(
+            "Marker size (px) for the cluster-overlay points.  Increase if the\n"
+            "points are hard to see when zoomed out, decrease if they merge.")
+        self._ws_cluster_point_size.valueChanged.connect(
+            self._ws_on_point_size_changed)
+        dbscan_form.addRow("Point size", self._ws_cluster_point_size)
+
         self._ws_cluster_status = QtWidgets.QLabel("")
         self._ws_cluster_status.setStyleSheet("color: #888;")
         self._ws_cluster_status.setWordWrap(True)
@@ -3008,6 +3018,21 @@ class BuildMixin:
                     "<b>min&nbsp;samples</b>.")
         self._ws_cluster_banner.hide()
         dbscan_form.addRow(self._ws_cluster_banner)
+
+        # Save the live-tuned clustering back to the run as *_tuned.csv files
+        # and sync the tuned params into the Analysis sidebar.  Disabled until
+        # a run's clusters are loaded.
+        self.btn_ws_export_clusters = QtWidgets.QPushButton(
+            "Export tuned clusters…")
+        self.btn_ws_export_clusters.setEnabled(False)
+        self.btn_ws_export_clusters.setToolTip(
+            "Save the current (live-tuned) clustering as new\n"
+            "*_cluster_labels_tuned.csv / *_cluster_stats_tuned.csv next to the\n"
+            "loaded run (the originals are kept), and copy the tuned eps /\n"
+            "min-samples into the Analysis sidebar so a re-run uses them.")
+        self.btn_ws_export_clusters.clicked.connect(
+            self._ws_export_tuned_clusters)
+        dbscan_form.addRow(self.btn_ws_export_clusters)
 
         # Debounce re-clustering so the slider doesn't fire on every
         # pixel of drag — coalesce to one re-cluster call per 300 ms.

@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.35.0
+
+### Visualise tab — the DBSCAN live tuner is now usable (Phase 1)
+
+The interactive cluster overlay gains the pieces it was missing:
+
+- **Save your tuning.** A new **"Export tuned clusters…"** button writes the
+  current live-tuned clustering to `*_cluster_labels_tuned.csv` /
+  `*_cluster_stats_tuned.csv` next to the run (the originals are untouched) and
+  copies the tuned **eps / min-samples into the Analysis sidebar**, so a re-run
+  reproduces it.
+- **Sliders match the run.** Loading a cluster map now sets the eps / min-samples
+  sliders to the run's *actual* clustering parameters (from its `params.json`),
+  instead of leaving them at a generic default — so a nudge refines the loaded
+  result rather than jumping away from it.
+- **No more silent "Motion" fallback.** When a run has no per-localisation motion
+  data, the "Colour by: Motion" option is disabled (with a tooltip) instead of
+  silently showing ID colours under a "Motion" label.
+- **Adjustable point size.** A point-size control resizes the overlay markers
+  (live, no re-render) and is remembered across sessions.
+
 ## v2.34.0
 
 ### Circular statistics: full customization + in-app explanation (Compare tab)

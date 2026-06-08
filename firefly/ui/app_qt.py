@@ -1814,6 +1814,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
 
             # ── Visualise tab ─────────────────────────────────────────────
             ("visualise/motion_colours", self._ws_motion_colour_mode, "combo"),
+            ("visualise/cluster_point_size", self._ws_cluster_point_size, "spin", int),
         ]
 
     def _restore_settings(self):

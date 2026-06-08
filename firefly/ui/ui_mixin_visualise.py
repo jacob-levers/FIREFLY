@@ -628,12 +628,19 @@ class VisualiseMixin:
         # from params.json if present so the points align with any
         # image stack already loaded in the viewer.
         px_um = 1.0
+        run_eps_nm = None
+        run_min_samples = None
         params_path = os.path.join(extras_dir, f"{stem}_params.json")
         if os.path.isfile(params_path):
             try:
                 import json as _json
                 with open(params_path) as fh:
-                    px_um = float(_json.load(fh).get("pixel_size_um", 1.0))
+                    _pj = _json.load(fh)
+                px_um = float(_pj.get("pixel_size_um", 1.0))
+                if _pj.get("cluster_eps_nm") is not None:
+                    run_eps_nm = float(_pj.get("cluster_eps_nm"))
+                if _pj.get("cluster_min_samples") is not None:
+                    run_min_samples = int(_pj.get("cluster_min_samples"))
             except Exception:
                 pass
         # Cache for live re-clustering and click-inspection.
@@ -666,6 +673,32 @@ class VisualiseMixin:
             self._ws_cluster_xy_um[:, 0] / self._ws_cluster_pixel_size_um,
         ])
         self._ws_cluster_stats_df = stats_df
+        # Remember the source run so "Export tuned clusters" can write back.
+        self._ws_cluster_extras_dir = extras_dir
+        self._ws_cluster_stem = stem
+        # Sync the live-tune sliders to the run's ACTUAL clustering params, so
+        # the displayed eps / min-samples match the loaded labels (and nudging
+        # refines from there).  Signals blocked so this doesn't fire a
+        # re-cluster on load.
+        try:
+            if run_eps_nm is not None:
+                self._ws_eps_slider.blockSignals(True)
+                self._ws_eps_slider.setValue(int(round(run_eps_nm)))
+                self._ws_eps_slider.blockSignals(False)
+                if getattr(self, "_ws_eps_value", None) is not None:
+                    self._ws_eps_value.setText(
+                        f"{int(self._ws_eps_slider.value())} nm")
+            if run_min_samples is not None:
+                self._ws_minsamp_spin.blockSignals(True)
+                self._ws_minsamp_spin.setValue(int(run_min_samples))
+                self._ws_minsamp_spin.blockSignals(False)
+        except Exception:
+            pass
+        # "Colour by: Motion" only works when the run saved per-loc motion.
+        self._ws_set_motion_colour_enabled(self._ws_cluster_motion is not None)
+        # Export is now possible (a run is loaded).
+        if getattr(self, "btn_ws_export_clusters", None) is not None:
+            self.btn_ws_export_clusters.setEnabled(True)
         self._ws_render_cluster_layer()
         n_clu = int((self._ws_cluster_labels >= 0).any() and
                     self._ws_cluster_labels.max() + 1) or 0
@@ -693,6 +726,11 @@ class VisualiseMixin:
                 pass
             self._ws_cluster_layer = None
         ids = self._ws_cluster_labels.astype(_np.int32)
+        pt_size = 3
+        try:
+            pt_size = int(self._ws_cluster_point_size.value())
+        except Exception:
+            pass
         # Decide colouring mode.  When the user picks "Motion" but no
         # per-loc motion column is available (older runs), fall back to
         # ID silently — the dropdown stays on the user's choice but the
@@ -740,7 +778,7 @@ class VisualiseMixin:
                                 "motion":     self._ws_cluster_motion},
                     face_color=colors,
                     edge_color="transparent",
-                    size=3, opacity=0.85,
+                    size=pt_size, opacity=0.85,
                     name="DBSCAN clusters")
             else:
                 layer = v.add_points(
@@ -749,7 +787,7 @@ class VisualiseMixin:
                     face_color="cluster_id",
                     face_colormap="turbo",
                     edge_color="transparent",
-                    size=3, opacity=0.85,
+                    size=pt_size, opacity=0.85,
                     name="DBSCAN clusters")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
@@ -901,6 +939,95 @@ class VisualiseMixin:
             f"{n_clu:,} clusters  |  {n_noise:,} noise locs  "
             f"(eps={eps_nm:.0f} nm, min={min_samples})")
         self._ws_set_cluster_banner(n_clu)
+
+    def _ws_set_motion_colour_enabled(self, enabled: bool):
+        """Enable/disable the 'Motion' colour option depending on whether the
+        loaded run carries per-localisation motion data.  If it's disabled
+        while selected, fall back to 'ID' so the overlay never silently shows
+        ID colours under a 'Motion' label."""
+        combo = getattr(self, "_ws_cluster_color_mode", None)
+        if combo is None:
+            return
+        try:
+            idx = combo.findText("Motion")
+            if idx < 0:
+                return
+            item = combo.model().item(idx)
+            if item is not None:
+                item.setEnabled(enabled)
+                item.setToolTip("" if enabled else
+                                "This run has no per-localisation motion data.")
+            if not enabled and combo.currentText().startswith("Motion"):
+                combo.blockSignals(True)
+                combo.setCurrentText("ID")
+                combo.blockSignals(False)
+        except Exception:
+            pass
+
+    def _ws_on_point_size_changed(self, val):
+        """Resize the existing cluster-overlay points live (no full re-render);
+        rebuild only if the live resize isn't possible."""
+        layer = getattr(self, "_ws_cluster_layer", None)
+        if layer is None:
+            return
+        try:
+            layer.size = int(val)
+        except Exception:
+            try:
+                self._ws_render_cluster_layer()
+            except Exception:
+                pass
+
+    def _ws_export_tuned_clusters(self):
+        """Write the current (live-tuned) cluster labels + stats as new
+        *_tuned.csv files next to the loaded run (originals untouched), and
+        copy the tuned eps / min-samples into the Analysis sidebar so a re-run
+        reproduces them."""
+        if (getattr(self, "_ws_cluster_labels", None) is None
+                or getattr(self, "_ws_cluster_xy_um", None) is None
+                or getattr(self, "_ws_cluster_extras_dir", None) is None):
+            QtWidgets.QMessageBox.information(
+                self, "No clusters loaded",
+                "Load a run's cluster map first, tune eps / min-samples, "
+                "then export.")
+            return
+        import numpy as _np, pandas as _pd
+        extras = self._ws_cluster_extras_dir
+        stem = self._ws_cluster_stem or "clusters"
+        xy = self._ws_cluster_xy_um
+        labels = self._ws_cluster_labels
+        # Same schema the worker writes for {stem}_cluster_labels.csv.
+        cols = {
+            "loc_index": _np.arange(len(labels), dtype=_np.int64),
+            "x_um": _np.asarray(xy[:, 0], dtype=float),
+            "y_um": _np.asarray(xy[:, 1], dtype=float),
+            "cluster_id": _np.asarray(labels, dtype=_np.int64),
+        }
+        if (self._ws_cluster_motion is not None
+                and len(self._ws_cluster_motion) == len(labels)):
+            cols["motion"] = self._ws_cluster_motion
+        labels_path = os.path.join(extras, f"{stem}_cluster_labels_tuned.csv")
+        stats_path = os.path.join(extras, f"{stem}_cluster_stats_tuned.csv")
+        try:
+            _pd.DataFrame(cols).to_csv(labels_path, index=False)
+            if (self._ws_cluster_stats_df is not None
+                    and len(self._ws_cluster_stats_df)):
+                self._ws_cluster_stats_df.to_csv(stats_path, index=False)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "Export failed",
+                f"Couldn't write the tuned cluster CSVs:\n\n{exc}")
+            return
+        # Sync the tuned params into the Analysis sidebar.
+        try:
+            self.s_cluster_eps_nm.setValue(float(self._ws_eps_slider.value()))
+            self.s_cluster_min_samples.setValue(
+                int(self._ws_minsamp_spin.value()))
+        except Exception:
+            pass
+        self._ws_cluster_status.setText(
+            f"Exported → {os.path.basename(labels_path)} (+ stats); "
+            f"Analysis eps/min-samples updated.")
 
     def _ws_load_run_folder(self, run_dir: str):
         """Load a complete FIREFLY analysis run:  finds the stack via the
