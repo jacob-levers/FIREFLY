@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.39.0
+
+### Reliability: clearer errors on bad input (Phase 2)
+
+Malformed input now fails with a readable message instead of a cryptic traceback
+deep inside trackpy/pandas (valid runs are unchanged):
+
+- **`link_trajectories`** — raises a clear error if the localisations are missing
+  a required column (x / y / frame), and drops negative-frame rows with a warning
+  (mirroring the importer) instead of crashing trackpy's frame indexing.
+- **`load_external_locs`** — raises a clear "no localisations found" error when a
+  file parses but yields zero rows after column-mapping/filtering (wrong preset,
+  empty file, or all-bad frames), rather than returning an empty frame that
+  crashes a later stage.
+
+(The codebase's many `except: pass` sites were reviewed and found to be mostly
+*intentional* graceful degradation — e.g. per-track fit fallbacks that correctly
+yield NaN — so they were deliberately left silent rather than made noisy.)
+
 ## v2.38.0
 
 ### Reliability: test coverage for previously-untested science (Phase 1)

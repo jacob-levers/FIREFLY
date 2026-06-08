@@ -1718,6 +1718,11 @@ def load_external_locs(csv_path: str, preset: str = "auto",
                   f"parsed as integers: {exc}.  Falling back to "
                   f"re-linking via FIREFLY's linker.")
 
+    if len(out) == 0:
+        raise ValueError(
+            f"No localisations found in {csv_path} (preset={preset}): the file "
+            f"parsed but produced zero rows after column mapping / filtering. "
+            f"Check the preset matches the file format, or that it isn't empty.")
     print(f"  Loaded {len(out):,} external localisations "
           f"(preset={preset}, frames {int(out['frame'].min())}–"
           f"{int(out['frame'].max())})")

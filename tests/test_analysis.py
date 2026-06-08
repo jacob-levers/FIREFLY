@@ -205,6 +205,34 @@ def test_load_external_locs_formats(tmp_path):
     assert out["x"].iloc[0] == 5.0
 
 
+def test_load_external_locs_empty_raises(tmp_path):
+    """A file that parses to zero localisations raises a clear error rather than
+    silently returning an empty frame that crashes downstream."""
+    from firefly.analysis import fa_loaders as L
+    p = tmp_path / "empty.csv"
+    p.write_text("frame,x,y,photons\n")          # header only, no data
+    with pytest.raises(ValueError, match="No localisations found"):
+        L.load_external_locs(str(p), preset="Picasso", pixel_size_um=0.1)
+
+
+def test_link_trajectories_validates_input():
+    """link_trajectories gives a clear error for a missing required column and
+    drops negative-frame rows (with a warning) instead of a cryptic trackpy
+    failure — valid rows still link."""
+    from firefly.analysis.fa_linking import link_trajectories
+    # missing 'y' → clear ValueError (not a deep trackpy KeyError)
+    bad = pd.DataFrame({"x": [1.0, 2.0], "frame": [0, 1], "mass": [1, 1]})
+    with pytest.raises(ValueError, match="missing required"):
+        link_trajectories(bad)
+    # negative frames dropped; the valid 3-point track still links
+    locs = pd.DataFrame({
+        "x": [10.0, 10.1, 10.2, 5.0], "y": [10.0, 10.1, 10.2, 5.0],
+        "frame": [0, 1, 2, -1], "mass": [100, 100, 100, 100]})
+    out = link_trajectories(locs, search_range=3, memory=1, min_len=2)
+    assert (out["frame"] >= 0).all()             # the frame=-1 row was dropped
+    assert len(out) >= 3                          # the valid track survived
+
+
 def test_hedges_g_ci_and_small_n_guard():
     """Hedges' g returns a finite value bracketed by its bootstrap CI; the
     n<3-replicate guard blanks the significance stars and flags the comparison."""

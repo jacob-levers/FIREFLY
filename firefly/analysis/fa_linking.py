@@ -41,6 +41,26 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
             cols = cols + ["particle"]
         return pd.DataFrame(columns=cols)
 
+    # Validate the required schema up front so a malformed input yields a clear
+    # message instead of a cryptic trackpy KeyError/IndexError deep in linking.
+    _missing = [c for c in ("x", "y", "frame") if c not in locs.columns]
+    if _missing:
+        raise ValueError(
+            f"link_trajectories: localisations are missing required "
+            f"column(s) {_missing}; got {list(locs.columns)}.")
+    # Negative frames break trackpy's frame indexing — drop them with a clear
+    # warning (mirrors the external-loader behaviour) rather than crashing.
+    if (locs["frame"] < 0).any():
+        _n_bad = int((locs["frame"] < 0).sum())
+        print(f"  WARN: dropping {_n_bad:,} localisation(s) with frame < 0 "
+              f"before linking.")
+        locs = locs[locs["frame"] >= 0].reset_index(drop=True)
+        if len(locs) == 0:
+            _cols = list(locs.columns)
+            if "particle" not in _cols:
+                _cols = _cols + ["particle"]
+            return pd.DataFrame(columns=_cols)
+
     print(f"  Linking {len(locs):,} localisations  "
           f"(linker=trackpy, search_range={search_range}px, "
           f"memory={memory}) ...")
