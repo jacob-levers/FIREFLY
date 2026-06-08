@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.41.1
+
+Patch release with no functional changes — used to verify the new one-click
+in-app updater end-to-end (running v2.41.0 should detect v2.41.1, download it,
+replace itself, and relaunch).
+
 ## v2.41.0
 
 ### One-click in-app updates
