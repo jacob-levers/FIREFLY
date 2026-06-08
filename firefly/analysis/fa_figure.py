@@ -337,8 +337,14 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         # Per-class filled KDE of the RESOLVED (mobile, D > floor) values only —
         # the smooth curves aren't distorted by the hard pile-up at the floor.
         mob_all = np.log10(dv[dv > _D_RES_FLOOR])
-        xk = (np.linspace(float(mob_all.min()), float(ld.max()), 300)
-              if len(mob_all) else np.linspace(float(ld.min()), float(ld.max()), 300))
+        if len(mob_all):
+            _xlo, _xhi = float(mob_all.min()), float(ld.max())
+        else:
+            _xlo, _xhi = float(ld.min()), float(ld.max())
+        # Pad the grid so each class's filled KDE tapers smoothly to ~0 at its
+        # tails instead of being cut off vertically at the data min/max.
+        _xpad = 0.10 * (_xhi - _xlo)
+        xk = np.linspace(_xlo - _xpad, _xhi + _xpad, 300)
         for m in MORD:
             sub = diff_df[(diff_df["motion"] == m) & (diff_df["D"] > _D_RES_FLOOR)]
             if len(sub):
@@ -410,7 +416,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     if len(av) > 5:
         ba = np.linspace(av.min(), av.max(), 40)
         bw = ba[1] - ba[0]
-        xk = np.linspace(float(av.min()), float(av.max()), 300)
+        _xpad = 0.10 * (float(av.max()) - float(av.min()))
+        xk = np.linspace(float(av.min()) - _xpad, float(av.max()) + _xpad, 300)
         for m in MORD:
             sub = diff_df[(diff_df["motion"]==m) & diff_df["alpha"].notna()]
             if len(sub):
@@ -603,7 +610,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ms = ms[ms.between(-0.5, 1.5)]
         bins = np.linspace(ms.min(), ms.max(), 40)
         bw = bins[1] - bins[0]
-        xk = np.linspace(float(ms.min()), float(ms.max()), 300)
+        _xpad = 0.10 * (float(ms.max()) - float(ms.min()))
+        xk = np.linspace(float(ms.min()) - _xpad, float(ms.max()) + _xpad, 300)
         for m in MORD:
             sub = diff_df[(diff_df["motion"] == m) & diff_df["mss_slope"].notna()]
             sub = sub[sub["mss_slope"].between(-0.5, 1.5)]

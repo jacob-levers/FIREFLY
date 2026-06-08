@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.32.0
+
+### Distribution panels: KDE curves taper instead of cutting off
+
+The filled-KDE distribution panels (single-run E log₁₀ D, G α, N MSS slope) drew
+each class's curve on an x-grid clamped to exactly that data's min/max. Because a
+KDE still has non-zero density at the edge data point, the curve was drawn with a
+vertical "cut" at the lowest/highest value (most visible on the Immobile class,
+which sits at the left edge). The KDE grid is now padded slightly on both ends so
+every class tapers smoothly to ~0 at its tails. Data and counts are unchanged.
+
 ## v2.31.0
 
 ### Diffusion Coefficient panel (E): show the immobile peak + fix clipped curves
