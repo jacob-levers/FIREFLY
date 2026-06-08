@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.41.2
+
+### Updater: ride out transient GitHub 504s
+
+A freshly-published GitHub release asset can have its download edge return
+**HTTP 504 (Gateway Time-out)** in bursts for a minute or two — which made the
+in-app update fail ("Download failed after 3 attempts… 504") if you clicked
+*Update now* in that window. The downloader is now much more patient:
+
+- Retry budget for update downloads raised to **6 attempts** with backoff
+  stretched out to ~30 s (so a ~1–2 min 504 burst is ridden out automatically).
+- A second-by-second **"Server busy — retrying in Ns…"** status keeps the
+  progress dialog alive (and cancellable) during backoff instead of looking
+  frozen.
+- New `tests/test_net_download.py` covers retry-through-504, exhaustion, and
+  immediate-abort on a permanent 4xx.
+
+(Bursty 504s are server-side and intermittent; the manual **View release page**
+download remains the fallback if GitHub is having a bad moment.)
+
 ## v2.41.1
 
 Patch release with no functional changes — used to verify the new one-click

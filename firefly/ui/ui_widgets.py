@@ -663,8 +663,15 @@ class _UpdateWorker(QtCore.QObject):
                         pct, f"Downloading… {mb:.0f} / {total/1e6:.0f} MB")
                 else:
                     self.progress.emit(0, f"Downloading… {mb:.0f} MB")
+
+            def _status(msg):
+                # Retry-backoff messages ("Server busy — retrying in Ns…")
+                # so the bar/label keep moving during a transient 504.
+                self.progress.emit(0, msg)
+
             path = updater.download_asset(
-                self._asset, progress_cb=_cb, cancel_cb=self._cancel_check)
+                self._asset, progress_cb=_cb, cancel_cb=self._cancel_check,
+                status_cb=_status)
             self.finished.emit(path)
         except Exception as exc:
             self.failed.emit(str(exc))

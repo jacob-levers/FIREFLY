@@ -82,12 +82,22 @@ class DownloadError(RuntimeError):
     permanent HTTP error (4xx), validation failure, or user cancel."""
 
 
+# Backoff schedule (seconds) between retries.  Indexed by (attempt-1) and
+# clamped to the last entry.  Deliberately stretches to ~30 s so a transient
+# server-side 5xx burst — e.g. GitHub's release-download edge returning HTTP
+# 504 for a minute or two right after a large asset is published — is ridden
+# out instead of erroring.  A 504 comes back in ~0.2 s, so the wall-clock cost
+# of an extra retry is almost entirely the backoff itself.
+_RETRY_BACKOFFS = (2, 5, 10, 20, 30, 30)
+
+
 def download_file(url: str,
                   dest_path: str,
                   *,
                   progress_cb: Optional[Callable[[int, int], None]] = None,
                   cancel_cb: Optional[Callable[[], bool]] = None,
                   validate_cb: Optional[Callable[[str], bool]] = None,
+                  status_cb: Optional[Callable[[str], None]] = None,
                   headers: Optional[dict] = None,
                   max_attempts: int = 3,
                   timeout: float = 20.0,
@@ -102,6 +112,9 @@ def download_file(url: str,
       validate_cb(path) -> bool: called on the finished ``.part`` before
         the atomic rename; return False to reject (treated as a corrupt
         download and retried).
+      status_cb(msg): called with a human-readable status line during
+        retry backoff (e.g. "Server busy — retrying in 12s…") so a
+        watching UI stays informative while waiting out a transient 5xx.
       headers: extra request headers (merged over a default User-Agent).
       max_attempts: total tries before giving up (backoff 2/5/10 s).
 
@@ -136,16 +149,26 @@ def download_file(url: str,
             _log(f"  attempt {attempt}/{max_attempts} failed "
                  f"({type(exc).__name__}: {exc})")
         if attempt < max_attempts:
-            backoff = (2, 5, 10)[min(attempt - 1, 2)]
+            backoff = _RETRY_BACKOFFS[min(attempt - 1,
+                                          len(_RETRY_BACKOFFS) - 1)]
             _log(f"  backing off {backoff}s before retry "
                  f"(resume buffer kept)")
-            for _ in range(backoff):
+            # Count down second-by-second so a watching UI sees the app is
+            # alive (and can cancel) during a long backoff, and honour
+            # cancellation promptly.
+            for rem in range(backoff, 0, -1):
                 if cancel_cb is not None:
                     try:
                         if cancel_cb():
                             raise DownloadError("Download cancelled by user.")
                     except DownloadError:
                         raise
+                    except Exception:
+                        pass
+                if status_cb is not None:
+                    try:
+                        status_cb(f"Server busy — retrying in {rem}s… "
+                                  f"(attempt {attempt + 1}/{max_attempts})")
                     except Exception:
                         pass
                 time.sleep(1)

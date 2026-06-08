@@ -191,10 +191,16 @@ def _validate_download(path: str) -> bool:
 def download_asset(asset: dict,
                    *,
                    progress_cb: Optional[Callable[[int, int], None]] = None,
-                   cancel_cb: Optional[Callable[[], bool]] = None) -> str:
+                   cancel_cb: Optional[Callable[[], bool]] = None,
+                   status_cb: Optional[Callable[[str], None]] = None) -> str:
     """Download ``asset`` (from ``select_asset``/``parse_release``) into
     the updates staging dir.  Returns the path to the verified file.
-    Raises ``UpdaterError`` on failure."""
+    Raises ``UpdaterError`` on failure.
+
+    Uses a generous retry budget (6 attempts, backoff out to ~30 s): a
+    freshly-published GitHub asset can have its download edge return HTTP
+    504 in bursts for a minute or two, and we want the update to ride that
+    out rather than fail the user."""
     if not asset or not asset.get("url"):
         raise UpdaterError("No installer is available for your platform.")
     dest = os.path.join(updates_dir(), asset["name"])
@@ -203,8 +209,9 @@ def download_asset(asset: dict,
             asset["url"], dest,
             progress_cb=progress_cb,
             cancel_cb=cancel_cb,
+            status_cb=status_cb,
             validate_cb=_validate_download,
-            max_attempts=3)
+            max_attempts=6)
     except net_download.DownloadError as exc:
         raise UpdaterError(str(exc), reveal_path=updates_dir()) from exc
     return dest
