@@ -696,6 +696,17 @@ class VisualiseMixin:
             pass
         # "Colour by: Motion" only works when the run saved per-loc motion.
         self._ws_set_motion_colour_enabled(self._ws_cluster_motion is not None)
+        # Default to Motion colouring (so the dots match the sidebar motion
+        # legend out of the box) when the run has per-loc motion; fall back to
+        # ID otherwise.  Signals blocked so it doesn't fire an extra render
+        # before the one below.
+        try:
+            self._ws_cluster_color_mode.blockSignals(True)
+            self._ws_cluster_color_mode.setCurrentText(
+                "Motion" if self._ws_cluster_motion is not None else "ID")
+            self._ws_cluster_color_mode.blockSignals(False)
+        except Exception:
+            pass
         # Export is now possible (a run is loaded).
         if getattr(self, "btn_ws_export_clusters", None) is not None:
             self.btn_ws_export_clusters.setEnabled(True)

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.37.4
+
+### Cluster overlay defaults to Motion colours
+
+Loading a cluster map now colours the overlay **by motion class by default**
+(when the run has per-localisation motion data), so the dots match the sidebar
+motion legend out of the box instead of the per-cluster "ID" rainbow. The
+"Colour by" dropdown still lets you switch back to ID (one colour per cluster)
+whenever you want to tell individual clusters apart.
+
 ## v2.37.3
 
 ### Fix: cluster re-tuning crashed the app on macOS (background thread)
