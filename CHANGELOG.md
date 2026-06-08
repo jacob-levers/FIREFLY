@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.36.0
+
+### Visualise tab — DBSCAN tuning no longer freezes; eps helper (Phase 2)
+
+- **No-freeze re-clustering.** Dragging the eps / min-samples controls now runs
+  DBSCAN on a **background thread**, so the window stays responsive instead of
+  hanging on large localisation sets. Only the latest tune's result is applied
+  (superseded runs are dropped), with a "clustering…" status while it works.
+- **"Suggest eps" button.** Estimates a sensible eps from the **k-distance knee**
+  (k = min-samples) — the standard DBSCAN heuristic — sets the slider to it, and
+  re-clusters. (Also runs off the GUI thread.)
+
 ## v2.35.0
 
 ### Visualise tab — the DBSCAN live tuner is now usable (Phase 1)

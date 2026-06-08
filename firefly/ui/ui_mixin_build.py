@@ -2984,6 +2984,14 @@ class BuildMixin:
         dbscan_form.addRow(_label_with_info("min samples", "min samples"),
                            self._ws_minsamp_spin)
 
+        self.btn_ws_suggest_eps = QtWidgets.QPushButton("Suggest eps")
+        self.btn_ws_suggest_eps.setToolTip(
+            "Estimate a good eps from the k-distance knee (k = min samples) on\n"
+            "the loaded localisations — the standard DBSCAN heuristic — then\n"
+            "set the eps slider to it and re-cluster.")
+        self.btn_ws_suggest_eps.clicked.connect(self._ws_suggest_eps)
+        dbscan_form.addRow("", self.btn_ws_suggest_eps)
+
         self._ws_cluster_color_mode = _QuietComboBox()
         self._ws_cluster_color_mode.addItems(["ID", "Motion"])
         self._ws_cluster_color_mode.setToolTip(
