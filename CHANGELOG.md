@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.37.3
+
+### Fix: cluster re-tuning crashed the app on macOS (background thread)
+
+The v2.36.0 "no-freeze" background-thread re-clustering caused napari/vispy to
+crash hard on macOS (a native segfault — *"Python quit unexpectedly"* — preceded
+by `vispy: Cannot set parent … in a different thread`). napari's GL rendering is
+not safe to drive alongside a worker thread there.
+
+Re-clustering and "Suggest eps" now run **synchronously on the main thread**. The
+eps memory guard (v2.37.2) keeps the work bounded, so this is a brief
+wait-cursor pause rather than a freeze — and there's no longer any background
+thread to crash the renderer. (Trade-off accepted: a momentary pause on a heavy
+re-cluster instead of a crash.)
+
 ## v2.37.2
 
 ### Fix: an over-large eps could crash clustering (incl. "Suggest eps")

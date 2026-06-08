@@ -913,82 +913,38 @@ class VisualiseMixin:
         except Exception:
             pass
 
-    def _ws_run_bg(self, worker, signal_slots):
-        """Run a QObject `worker` (with a `run` slot) on a fresh QThread; each
-        (signal, slot) in `signal_slots` is connected main-thread‑side (the
-        slots are MainWindow methods → AutoConnection picks QueuedConnection, so
-        they run on the GUI thread).  Handles teardown and keeps a ref so the
-        thread isn't garbage‑collected mid‑run."""
-        thread = QtCore.QThread(self)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        for sig, slot in signal_slots:
-            sig.connect(slot)
-            sig.connect(thread.quit)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(worker.deleteLater)
-        if not hasattr(self, "_ws_bg_threads"):
-            self._ws_bg_threads = []
-        pair = (thread, worker)
-        self._ws_bg_threads.append(pair)
-        thread.finished.connect(
-            lambda: self._ws_bg_threads.remove(pair)
-            if pair in self._ws_bg_threads else None)
-        thread.start()
-
     def _ws_recluster_now(self):
         """Re-run DBSCAN on the loaded localisations with the slider's eps +
-        min_samples, OFF the GUI thread so dragging never freezes the window.
-        Only the latest request's result is applied (stale ones are dropped)."""
+        min_samples and refresh the overlay.
+
+        Runs SYNCHRONOUSLY on the GUI thread: a background QThread here caused
+        napari/vispy cross-thread crashes on macOS ("Cannot set parent … in a
+        different thread" → hard segfault).  The eps guard in compute_clusters
+        bounds the work, so this is a brief wait-cursor pause, not a freeze."""
         if self._ws_cluster_xy_um is None:
             return
-        import numpy as _np
+        import numpy as _np, pandas as _pd
         eps_nm = float(self._ws_eps_slider.value())
         min_samples = int(self._ws_minsamp_spin.value())
-        # Monotonic request id — a late result from a superseded run is ignored.
-        self._ws_recluster_req = getattr(self, "_ws_recluster_req", 0) + 1
-        req_id = self._ws_recluster_req
         self._ws_cluster_status.setText(
             f"clustering…  (eps={eps_nm:.0f} nm, min={min_samples})")
-        xy_um = _np.array(self._ws_cluster_xy_um, dtype=float, copy=True)
-
-        class _ReclusterWorker(QtCore.QObject):
-            done = QtCore.Signal(int, object, object, float, int)
-            failed = QtCore.Signal(int, str)
-
-            def __init__(self, req, xy, eps_um, ms):
-                super().__init__()
-                self._req, self._xy, self._eps, self._ms = req, xy, eps_um, ms
-
-            @QtCore.Slot()
-            def run(self):
-                try:
-                    from firefly.sptpalm_analysis import compute_clusters
-                    import numpy as _np2, pandas as _pd
-                    locs = _pd.DataFrame({
-                        "x": self._xy[:, 0], "y": self._xy[:, 1],
-                        "frame": _np2.zeros(len(self._xy), dtype=_np2.int32)})
-                    labels, stats_df, _, _ = compute_clusters(
-                        locs, pixel_size_um=1.0,
-                        eps_um=self._eps, min_samples=self._ms)
-                    self.done.emit(self._req,
-                                   _np2.asarray(labels, dtype=_np2.int32),
-                                   stats_df, self._eps * 1000.0, self._ms)
-                except Exception as exc:
-                    self.failed.emit(self._req, str(exc))
-
-        worker = _ReclusterWorker(req_id, xy_um, eps_nm / 1000.0, min_samples)
-        self._ws_run_bg(worker, [(worker.done, self._ws_on_recluster_done),
-                                 (worker.failed, self._ws_on_recluster_failed)])
-
-    @QtCore.Slot(int, object, object, float, int)
-    def _ws_on_recluster_done(self, req_id, labels, stats_df, eps_nm,
-                              min_samples):
-        if req_id != getattr(self, "_ws_recluster_req", req_id):
-            return                         # superseded by a newer tune — drop
-        import numpy as _np
-        # eps was too large to cluster safely — keep the previous overlay and
-        # tell the user to lower it, rather than showing an all-noise field.
+        QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            from firefly.sptpalm_analysis import compute_clusters
+            locs = _pd.DataFrame({
+                "x": self._ws_cluster_xy_um[:, 0],
+                "y": self._ws_cluster_xy_um[:, 1],
+                "frame": _np.zeros(len(self._ws_cluster_xy_um), dtype=_np.int32)})
+            labels, stats_df, _, _ = compute_clusters(
+                locs, pixel_size_um=1.0,
+                eps_um=eps_nm / 1000.0, min_samples=min_samples)
+        except Exception as exc:
+            self._ws_cluster_status.setText(f"re-cluster failed: {exc}")
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        # eps too large to cluster safely — keep the previous overlay and tell
+        # the user to lower it, rather than showing an all-noise field.
         if (getattr(stats_df, "attrs", {}) or {}).get("eps_too_large"):
             self._ws_cluster_status.setText(
                 f"eps = {eps_nm:.0f} nm is too large for this data — lower it "
@@ -1002,91 +958,57 @@ class VisualiseMixin:
             self._ws_cluster_labels.size
             and (self._ws_cluster_labels >= 0).any()) else 0
         n_noise = int((self._ws_cluster_labels == -1).sum())
-        sub = ""
-        try:
-            a = getattr(stats_df, "attrs", {}) or {}
-            if a.get("n_used_locs") and a.get("n_input_locs") \
-                    and a["n_used_locs"] < a["n_input_locs"]:
-                sub = f"  · sub-sampled to {a['n_used_locs']:,}"
-        except Exception:
-            pass
+        a = getattr(stats_df, "attrs", {}) or {}
+        sub = (f"  · sub-sampled to {a['n_used_locs']:,}"
+               if a.get("n_used_locs") and a.get("n_input_locs")
+               and a["n_used_locs"] < a["n_input_locs"] else "")
         self._ws_cluster_status.setText(
             f"{n_clu:,} clusters  |  {n_noise:,} noise locs  "
             f"(eps={eps_nm:.0f} nm, min={min_samples}){sub}")
         self._ws_set_cluster_banner(n_clu)
 
-    @QtCore.Slot(int, str)
-    def _ws_on_recluster_failed(self, req_id, msg):
-        if req_id != getattr(self, "_ws_recluster_req", req_id):
-            return
-        self._ws_cluster_status.setText(f"re-cluster failed: {msg}")
-
     def _ws_suggest_eps(self):
-        """Estimate a good eps from the k-distance knee (the standard DBSCAN
-        heuristic): for k = min_samples, sort every point's k-th nearest-
-        neighbour distance and take the knee (point of greatest curvature).
-        Runs off the GUI thread; on success sets the eps slider (which kicks
-        off a re-cluster at the suggested value)."""
+        """Estimate a good eps from the k-distance knee (k = min_samples) — the
+        standard DBSCAN heuristic — and set the eps slider to it (which triggers
+        a re-cluster).  Synchronous; the k-distance is cheap.  Outlier tails are
+        clipped so a few far points can't skew the knee to an absurd value."""
         if self._ws_cluster_xy_um is None:
             return
         import numpy as _np
+        xy = _np.asarray(self._ws_cluster_xy_um, dtype=float)
         k = int(self._ws_minsamp_spin.value())
-        xy = _np.array(self._ws_cluster_xy_um, dtype=float, copy=True)
         self._ws_cluster_status.setText("estimating eps (k-distance knee)…")
-
-        class _EpsWorker(QtCore.QObject):
-            done = QtCore.Signal(float)
-            failed = QtCore.Signal(str)
-
-            def __init__(self, xy, k):
-                super().__init__(); self._xy, self._k = xy, k
-
-            @QtCore.Slot()
-            def run(self):
-                try:
-                    import numpy as _np2
-                    from sklearn.neighbors import NearestNeighbors
-                    n = len(self._xy)
-                    k = max(2, min(self._k, n - 1))
-                    nn = NearestNeighbors(n_neighbors=k).fit(self._xy)
-                    d, _ = nn.kneighbors(self._xy)
-                    kd = _np2.sort(d[:, -1])          # k-th NN dist (µm), asc
-                    m = len(kd)
-                    # Clip the extreme 2% tails so a few far outliers can't skew
-                    # the chord (and push the knee toward an absurdly large eps).
-                    lo = max(0, int(0.02 * m))
-                    hi = min(m - 1, int(0.98 * m))
-                    seg = kd[lo:hi + 1]
-                    mm = len(seg)
-                    if mm < 3:
-                        self.done.emit(float(_np2.median(kd)) * 1000.0)
-                        return
-                    x = _np2.arange(mm, dtype=float)
-                    x0, y0, x1, y1 = 0.0, seg[0], float(mm - 1), seg[-1]
-                    num = _np2.abs((y1 - y0) * x - (x1 - x0) * seg
-                                   + x1 * y0 - y1 * x0)
-                    den = _np2.hypot(y1 - y0, x1 - x0) or 1.0
-                    knee = int(_np2.argmax(num / den))
-                    self.done.emit(float(seg[knee]) * 1000.0)   # → nm
-                except Exception as exc:
-                    self.failed.emit(str(exc))
-
-        worker = _EpsWorker(xy, k)
-        self._ws_run_bg(worker, [(worker.done, self._ws_on_suggest_eps_done),
-                                 (worker.failed, self._ws_on_recluster_failed_simple)])
-
-    @QtCore.Slot(float)
-    def _ws_on_suggest_eps_done(self, eps_nm):
+        QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            from sklearn.neighbors import NearestNeighbors
+            n = len(xy)
+            k = max(2, min(k, n - 1))
+            nn = NearestNeighbors(n_neighbors=k).fit(xy)
+            d, _ = nn.kneighbors(xy)
+            kd = _np.sort(d[:, -1])              # k-th NN dist (µm), ascending
+            m = len(kd)
+            lo = max(0, int(0.02 * m)); hi = min(m - 1, int(0.98 * m))
+            seg = kd[lo:hi + 1]; mm = len(seg)
+            if mm < 3:
+                eps_nm = float(_np.median(kd)) * 1000.0
+            else:
+                x = _np.arange(mm, dtype=float)
+                x0, y0, x1, y1 = 0.0, seg[0], float(mm - 1), seg[-1]
+                num = _np.abs((y1 - y0) * x - (x1 - x0) * seg
+                              + x1 * y0 - y1 * x0)
+                den = _np.hypot(y1 - y0, x1 - x0) or 1.0
+                eps_nm = float(seg[int(_np.argmax(num / den))]) * 1000.0
+        except Exception as exc:
+            self._ws_cluster_status.setText(f"eps estimate failed: {exc}")
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
         v = int(round(max(5, min(500, eps_nm))))
-        self._ws_eps_slider.setValue(v)    # triggers a debounced re-cluster
+        self._ws_cluster_status.setText(
+            f"suggested eps ≈ {v} nm (k-distance knee)")
         if getattr(self, "_ws_eps_value", None) is not None:
             self._ws_eps_value.setText(f"{v} nm")
-        self._ws_cluster_status.setText(
-            f"suggested eps ≈ {v} nm (k-distance knee) — re-clustering…")
-
-    @QtCore.Slot(str)
-    def _ws_on_recluster_failed_simple(self, msg):
-        self._ws_cluster_status.setText(f"eps estimate failed: {msg}")
+        self._ws_eps_slider.setValue(v)        # triggers the debounced re-cluster
 
     def _ws_set_motion_colour_enabled(self, enabled: bool):
         """Enable/disable the 'Motion' colour option depending on whether the
