@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.37.5
+
+### Wider eps range for clustering (up to 2000 nm)
+
+The Visualise tab's eps slider was capped at 500 nm, so spread-out data — where a
+larger neighbourhood is appropriate — couldn't be tuned past it, and "Suggest
+eps" just pinned to the ceiling. The eps range (both the Visualise slider and the
+Analysis sidebar) now goes up to **2000 nm**, and "Suggest eps" clamps to the
+slider's actual range rather than a hardcoded 500. The memory guard still safely
+refuses an eps so large it would exhaust memory, so the wider range can't crash.
+(Tip: use the arrow keys on the slider for fine 1 nm steps.)
+
 ## v2.37.4
 
 ### Cluster overlay defaults to Motion colours

@@ -1014,9 +1014,14 @@ class VisualiseMixin:
             return
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
-        v = int(round(max(5, min(500, eps_nm))))
+        # Clamp to the slider's actual range (not a hardcoded 500) so a genuinely
+        # large knee on spread-out data isn't silently pinned to an old ceiling.
+        _lo, _hi = self._ws_eps_slider.minimum(), self._ws_eps_slider.maximum()
+        v = int(round(max(_lo, min(_hi, eps_nm))))
+        capped = "  (slider max — raise the range if you need more)" \
+            if v >= _hi and eps_nm > _hi else ""
         self._ws_cluster_status.setText(
-            f"suggested eps ≈ {v} nm (k-distance knee)")
+            f"suggested eps ≈ {v} nm (k-distance knee){capped}")
         if getattr(self, "_ws_eps_value", None) is not None:
             self._ws_eps_value.setText(f"{v} nm")
         self._ws_eps_slider.setValue(v)        # triggers the debounced re-cluster

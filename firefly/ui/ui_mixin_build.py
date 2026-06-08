@@ -931,7 +931,7 @@ class BuildMixin:
         # ── Clustering ────────────────────────────────────────────────────
         sec, gl = self._make_form_section("Clustering (DBSCAN)")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.s_cluster_eps_nm = self._spin_dbl(50.0, 5.0, 1000.0, 5.0, decimals=1,
+        self.s_cluster_eps_nm = self._spin_dbl(50.0, 5.0, 2000.0, 5.0, decimals=1,
             tip="DBSCAN neighbourhood radius (nm). Two localisations are in the\n"
                 "same cluster if they're within this distance.")
         gl.addRow(_label_with_info("eps (nm)", "DBSCAN eps"), self.s_cluster_eps_nm)
@@ -2962,13 +2962,15 @@ class BuildMixin:
         eps_row = QtWidgets.QHBoxLayout(eps_w)
         eps_row.setContentsMargins(0, 0, 0, 0); eps_row.setSpacing(6)
         self._ws_eps_slider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
-        self._ws_eps_slider.setRange(5, 500)
+        self._ws_eps_slider.setRange(5, 2000)
         self._ws_eps_slider.setValue(50)
         self._ws_eps_slider.setMinimumWidth(80)
         self._ws_eps_slider.setToolTip(
             "Maximum distance between two points for them to be considered\n"
             "neighbours (nm).  Larger values merge nearby clusters; smaller\n"
-            "splits them.  Default 50 nm matches the standard sptPALM preset.")
+            "splits them.  Default 50 nm matches the standard sptPALM preset;\n"
+            "spread-out data may need several hundred nm (use 'Suggest eps').\n"
+            "Tip: use the arrow keys for fine 1 nm steps.")
         self._ws_eps_value = QtWidgets.QLabel("50 nm")
         self._ws_eps_value.setMinimumWidth(50)
         eps_row.addWidget(self._ws_eps_slider, 1)
