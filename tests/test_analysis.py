@@ -251,22 +251,25 @@ def test_compute_clusters_rg_and_subsample_attrs():
 
 
 def test_compute_clusters_guards_oversized_eps():
-    """A too-large eps must be refused safely (all-noise + eps_too_large flag),
-    never allowed to explode DBSCAN's neighbour graph and crash."""
+    """A too-large eps must be handled safely by SUB-SAMPLING (never an O(n²)
+    neighbour-graph blow-up / crash) — it still returns a result, with the
+    sub-sample recorded so callers can surface it."""
     from firefly.sptpalm_analysis import compute_clusters
     rng = np.random.default_rng(0)
     xy = rng.uniform(0, 0.5, (8000, 2))          # dense, in a 0.5 µm box
     locs = pd.DataFrame({"x": xy[:, 0], "y": xy[:, 1],
                          "frame": np.zeros(len(xy), int)})
-    # eps spanning the whole box → guarded
-    labels, stats, ncl, _ = compute_clusters(
+    # eps spanning the whole box → guard kicks in and sub-samples
+    labels, stats, ncl, used = compute_clusters(
         locs, pixel_size_um=1.0, eps_um=0.5, min_samples=8)
-    assert stats.attrs.get("eps_too_large") is True
-    assert ncl == 0 and (labels == -1).all()
-    # a sane eps is not flagged and clusters normally
+    assert stats.attrs["subsampled"] is True
+    assert stats.attrs["n_used_locs"] < stats.attrs["n_input_locs"]
+    assert len(used) == stats.attrs["n_used_locs"]   # labels/xy aligned to sub-sample
+    assert len(labels) == len(used)
+    # a sane eps clusters the full set (no sub-sampling)
     _, stats2, _, _ = compute_clusters(
         locs, pixel_size_um=1.0, eps_um=0.01, min_samples=8)
-    assert stats2.attrs.get("eps_too_large") is False
+    assert stats2.attrs["subsampled"] is False
 
 
 # ── localisation ─────────────────────────────────────────────────────────────

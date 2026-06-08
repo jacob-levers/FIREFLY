@@ -742,6 +742,18 @@ class VisualiseMixin:
         if v is None:
             return
         import numpy as _np
+        # Preserve the user's zoom/pan across a re-render: removing + re-adding
+        # the Points layer otherwise makes napari auto-fit the camera to the new
+        # layer, throwing away the current view.  Only capture on a RE-render (a
+        # layer already exists); on the first render we let napari fit the data.
+        _cam_state = None
+        if self._ws_cluster_layer is not None:
+            try:
+                _cam_state = (tuple(v.camera.center),
+                              float(v.camera.zoom),
+                              tuple(v.camera.angles))
+            except Exception:
+                _cam_state = None
         # Drop the old layer if present so colours refresh cleanly.
         if self._ws_cluster_layer is not None:
             try:
@@ -855,6 +867,15 @@ class VisualiseMixin:
                 self._ws_show_cluster_in_inspector(int(cid))
         except Exception:
             pass
+        # Restore the pre-render camera on a re-render so tuning eps / point
+        # size / colour doesn't snap the view back to the default fit.
+        if _cam_state is not None:
+            try:
+                v.camera.center = _cam_state[0]
+                v.camera.zoom = _cam_state[1]
+                v.camera.angles = _cam_state[2]
+            except Exception:
+                pass
 
     def _ws_nearest_cluster_id(self, world_pos):
         """Find the cluster_id of the loaded point nearest to a napari

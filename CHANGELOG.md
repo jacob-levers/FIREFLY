@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.37.7
+
+### Cluster tuning: keep the view, and never freeze at large eps
+
+- **Re-tuning no longer resets the camera.** Changing eps / min-samples / point
+  size / colour rebuilds the napari Points layer, which made napari auto-fit the
+  view and throw away your zoom/pan. The overlay now saves and restores the
+  camera across a re-render, so you stay where you were.
+- **Large eps always produces a result.** The over-large-eps guard used to
+  *refuse* (returning no clusters and leaving the overlay frozen, so tuning above
+  a point appeared to do nothing). It now **sub-samples to a memory-safe size and
+  still clusters**, so a large eps gives a real, changing result (with the
+  sub-sample noted) instead of a frozen overlay.
+
+Note: in **Motion** colour mode, raising eps mostly *merges* clusters, which
+motion colouring doesn't show (points are coloured by motion class, not by
+cluster) — switch "Colour by" to **ID** to see clusters merge/split as you tune,
+or watch the "N clusters | M noise" readout.
+
 ## v2.37.6
 
 ### Cluster overlay: eps changes are now visible in Motion colour mode

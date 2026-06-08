@@ -26,15 +26,16 @@ def compute_clusters(locs, pixel_size_um, eps_um=0.05, min_samples=5,
         print(f"  Cluster analysis  : {len(xy):,} localisations  "
               f"(eps={eps_um*1000:.0f} nm, min_samples={min_samples})")
 
-    # ── Safety guard: refuse an eps so large the neighbourhood graph explodes ──
+    # ── Safety guard: bound the neighbourhood graph for a large eps ───────────
     # DBSCAN's region queries return ~all points when eps approaches the data's
     # spatial extent, so memory grows as O(n × avg_neighbours) and can crash the
-    # process (an over-large "Suggest eps" used to do exactly this).  Estimate
-    # the average neighbourhood size cheaply (count-only on a small sample, so
-    # the guard itself can't blow up) and skip DBSCAN if it would be enormous —
-    # returning all-noise + an `eps_too_large` flag instead of crashing.
-    eps_too_large = False
-    avg_nbr = None
+    # process.  Estimate the average neighbourhood size cheaply (count-only on a
+    # small sample, so the guard itself can't blow up); if it would be enormous,
+    # SUB-SAMPLE down to a size where DBSCAN at this eps stays bounded — so
+    # large-eps exploration still returns a (changing) result instead of being
+    # refused.  Sub-sampling lowers the realised neighbour count too, so
+    # n_safe = LIMIT / avg_nbr is a conservative cap.
+    _LIMIT = 25_000_000          # ~ neighbour entries ≈ a few hundred MB
     try:
         from sklearn.neighbors import KDTree
         _tree = KDTree(xy)
@@ -43,25 +44,17 @@ def compute_clusters(locs, pixel_size_um, eps_um=0.05, min_samples=5,
                  if len(xy) > 1000 else xy)
         avg_nbr = float(np.mean(
             _tree.query_radius(_samp, r=eps_um, count_only=True)))
-        # ~25M total neighbour entries ≈ a few hundred MB — comfortably above a
-        # real clustering (tens of neighbours/point) but well below a blow-up.
-        eps_too_large = (avg_nbr * len(xy)) > 25_000_000
     except Exception:
-        eps_too_large = False
-
-    if eps_too_large:
-        print(f"  Cluster analysis  : eps={eps_um*1000:.0f} nm is too large for "
-              f"this data (~{avg_nbr:.0f} neighbours/point) — skipped to avoid a "
-              f"memory blow-up; lower eps.")
-        labels = np.full(len(xy), -1, dtype=int)
-        df = pd.DataFrame(columns=["cluster_id", "n_locs", "area_um2",
-                                   "density_locs_per_um2", "rg_um",
-                                   "centroid_x_um", "centroid_y_um"])
-        df.attrs["n_input_locs"] = int(n_input)
-        df.attrs["n_used_locs"] = int(len(xy))
-        df.attrs["subsampled"] = bool(subsampled)
-        df.attrs["eps_too_large"] = True
-        return labels, df, 0, xy
+        avg_nbr = 0.0
+    if avg_nbr * len(xy) > _LIMIT:
+        n_safe = max(2000, int(_LIMIT / max(avg_nbr, 1.0)))
+        if n_safe < len(xy):
+            _r2 = np.random.default_rng(7)
+            xy = xy[_r2.choice(len(xy), n_safe, replace=False)]
+            subsampled = True
+            print(f"  Cluster analysis  : eps={eps_um*1000:.0f} nm large for this "
+                  f"data — sub-sampled to {n_safe:,} localisations to stay within "
+                  f"memory")
 
     labels = DBSCAN(eps=eps_um, min_samples=min_samples).fit_predict(xy)
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
