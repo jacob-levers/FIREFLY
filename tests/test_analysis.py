@@ -95,6 +95,116 @@ def test_alpha_offset_aware_unbiased_under_localisation_error():
     assert diff["MSD0"].median() > 0
 
 
+def test_msd_fit_serial_matches_parallel():
+    """compute_msd_and_fit must give identical D/alpha whether run on 1 worker
+    or several — parallelism is a performance detail, not a numerical one."""
+    px, dt = 0.1, 0.05
+    tracks = _synthetic_brownian_tracks(n_tracks=40, n_frames=40, sigma_px=1.5,
+                                        seed=5)
+    _i1, _e1, d1 = fd.compute_msd_and_fit(tracks, px, dt, max_lagtime=15,
+                                          n_fit=5, workers=1)
+    _i2, _e2, d2 = fd.compute_msd_and_fit(tracks, px, dt, max_lagtime=15,
+                                          n_fit=5, workers=2)
+    d1 = d1.sort_values("particle").reset_index(drop=True)
+    d2 = d2.sort_values("particle").reset_index(drop=True)
+    pd.testing.assert_series_equal(d1["D"], d2["D"], rtol=1e-9, atol=1e-12)
+    pd.testing.assert_series_equal(d1["alpha"], d2["alpha"],
+                                   rtol=1e-9, atol=1e-12)
+
+
+def test_msd_fit_sparse_short_tracks_finite():
+    """Short/sparse tracks must yield finite-or-NaN D/alpha without crashing or
+    blowing up to inf."""
+    px, dt = 0.1, 0.05
+    tracks = _synthetic_brownian_tracks(n_tracks=20, n_frames=5, sigma_px=1.0,
+                                        seed=9)
+    _i, _e, diff = fd.compute_msd_and_fit(tracks, px, dt, max_lagtime=4,
+                                          n_fit=3, workers=1)
+    assert len(diff) > 0
+    for col in ("D", "alpha"):
+        assert not np.isinf(diff[col].to_numpy()).any(), f"{col} has inf"
+
+
+def test_make_figure_smoke(tmp_path):
+    """The single-run master figure renders headlessly (matplotlib Agg) across
+    all panels on synthetic data and writes a non-empty PNG — a regression guard
+    for the 828-LOC make_figure (panel crashes, bad axis limits, etc.)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from firefly.analysis.fa_figure import make_figure
+    rng = np.random.default_rng(3)
+    stack = rng.poisson(15, (4, 64, 64)).astype(float)
+    nt, nf = 60, 30
+    classes = ["Immobile", "Confined", "Brownian", "Directed"]
+    rows, drows = [], []
+    for pid in range(nt):
+        x = np.cumsum(rng.normal(0, 2, nf)) + 32
+        y = np.cumsum(rng.normal(0, 2, nf)) + 32
+        for f in range(nf):
+            rows.append((pid, f, x[f], y[f]))
+        u = rng.random()
+        D = 1e-6 if u < 0.25 else abs(rng.normal(0.05, 0.03))
+        drows.append((pid, max(D, 1e-7),
+                      float(np.clip(rng.normal(0.9, 0.3), 0.1, 1.8)),
+                      classes[min(3, int(u * 4))],
+                      float(np.clip(rng.normal(0.5, 0.2), 0, 1))))
+    tracks = pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+    diff = pd.DataFrame(drows,
+                        columns=["particle", "D", "alpha", "motion", "mss_slope"])
+    lags = np.arange(1, 11)
+    imsd = pd.DataFrame({pid: np.linspace(0.01, 0.1, 10) * rng.uniform(0.5, 2)
+                         for pid in range(nt)}, index=lags)
+    emsd = pd.Series(np.linspace(0.012, 0.09, 10), index=lags)
+    out_png = tmp_path / "fig.png"
+    make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                output_path=str(out_png), want_panels=set())
+    assert out_png.exists() and out_png.stat().st_size > 0
+
+
+def test_load_external_locs_formats(tmp_path):
+    """External-format CSV import maps columns, converts units (nm/µm→px),
+    applies the per-tool frame offset, and emits a `particle` column from
+    TrackMate TRACK_ID (dropping unlinked spots) — the import path most prone to
+    silent coordinate/frame corruption."""
+    from firefly.analysis import fa_loaders as L
+    px = 0.1   # µm/px
+
+    # Picasso — px coords, 0-indexed → unchanged
+    p = tmp_path / "picasso.csv"
+    p.write_text("frame,x,y,photons\n0,10.0,20.0,500\n1,11.0,21.0,480\n")
+    out = L.load_external_locs(str(p), preset="Picasso", pixel_size_um=px)
+    assert list(out["frame"]) == [0, 1]
+    assert out["x"].iloc[0] == 10.0 and out["y"].iloc[0] == 20.0
+
+    # ThunderSTORM — nm coords + 1-indexed → /(px*1000) and frame-1
+    t = tmp_path / "ts.csv"
+    t.write_text('frame,x [nm],y [nm],intensity [photon]\n'
+                 '1,1000,2000,300\n2,1100,2100,310\n')
+    out = L.load_external_locs(str(t), preset="ThunderSTORM", pixel_size_um=px)
+    assert list(out["frame"]) == [0, 1]                       # 1- → 0-indexed
+    assert out["x"].iloc[0] == pytest.approx(1000 / (px * 1000))   # 1000nm→10px
+    assert out["y"].iloc[0] == pytest.approx(2000 / (px * 1000))   # 2000nm→20px
+
+    # TrackMate — µm coords + TRACK_ID → particle, unlinked (-1) dropped
+    tm = tmp_path / "tm.csv"
+    tm.write_text("FRAME,POSITION_X,POSITION_Y,MEAN_INTENSITY_CH1,TRACK_ID\n"
+                  "0,1.0,2.0,100,0\n"
+                  "1,1.05,2.05,100,0\n"
+                  "0,3.0,4.0,100,-1\n")              # unlinked spot → dropped
+    out = L.load_external_locs(str(tm), preset="TrackMate", pixel_size_um=px)
+    assert "particle" in out.columns
+    assert set(out["particle"]) == {0} and len(out) == 2
+    assert out["x"].iloc[0] == pytest.approx(1.0 / px)        # 1 µm → 10 px
+
+    # PALM-Tracer — px coords + 1-indexed
+    pt = tmp_path / "pt.csv"
+    pt.write_text("Plane,CentroidX(px),CentroidY(px),Integrated_Intensity\n"
+                  "1,5.0,6.0,200\n2,5.5,6.5,210\n")
+    out = L.load_external_locs(str(pt), preset="PALM-Tracer", pixel_size_um=px)
+    assert list(out["frame"]) == [0, 1]
+    assert out["x"].iloc[0] == 5.0
+
+
 def test_hedges_g_ci_and_small_n_guard():
     """Hedges' g returns a finite value bracketed by its bootstrap CI; the
     n<3-replicate guard blanks the significance stars and flags the comparison."""

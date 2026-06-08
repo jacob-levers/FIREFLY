@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.38.0
+
+### Reliability: test coverage for previously-untested science (Phase 1)
+
+Added known-truth regression tests for analysis paths that had no coverage
+(no behaviour change — purely additive safety, run automatically in CI):
+
+- **External-format import (`load_external_locs`)** — verifies column mapping,
+  unit conversion (nm→px, µm→px), per-tool frame offsets, and TrackMate
+  `TRACK_ID → particle` (with unlinked spots dropped) for the
+  ThunderSTORM / Picasso / TrackMate / PALM-Tracer presets. This is the import
+  path most prone to silent coordinate/frame corruption.
+- **MSD fit (`compute_msd_and_fit`)** — serial vs multi-worker give identical
+  D/α; short/sparse tracks return finite-or-NaN (never inf), no crash.
+- **`make_figure` smoke test** — the single-run master figure renders headlessly
+  across all panels and writes a PNG (regression guard for the 828-LOC figure).
+
+(`fa_drift` RCC and `fa_twoway` ANOVA were found to be already well-covered, so
+no redundant tests were added there.)
+
 ## v2.37.7
 
 ### Cluster tuning: keep the view, and never freeze at large eps
