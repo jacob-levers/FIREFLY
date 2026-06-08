@@ -4,6 +4,7 @@ import queue
 
 import os
 import sys
+import json
 import time
 import numpy as np
 import pandas as pd
@@ -18,7 +19,7 @@ from firefly import crash_reporter
 from firefly import cuda_installer
 from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
-                          TAB_VISUALISE, TAB_REPROCESS)
+                          TAB_RESULTS, TAB_VISUALISE, TAB_REPROCESS)
 from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _make_napari_container_layout_opaque, _hide_napari_chrome,
                         _register_motion_colormap, _open_folder,
@@ -192,13 +193,39 @@ class HandlersMixin:
             0: "Analysis Parameters",
             1: "Analysis Parameters",   # Analysis mirrors Import
             2: "Comparison",
-            3: "Visualise",
-            4: "Re-process",
+            3: "Results",
+            4: "Visualise",
+            5: "Re-process",
         }
         try:
             self._sidebar_title.setText(titles.get(idx, ""))
         except Exception:
             pass
+
+    def _open_previous_comparison(self):
+        """Load a saved comparison's results file into the Results tab."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Open a previous comparison",
+            "", "Comparison results (*_results.json);;All files (*)")
+        if not path:
+            return
+        if not path.endswith("_results.json"):
+            QtWidgets.QMessageBox.information(
+                self, "No results file",
+                "That doesn't look like a FIREFLY results file. Pick the "
+                "'*_results.json' written next to a comparison's outputs "
+                "(comparisons run before v2.46 don't have one — just re-run "
+                "the comparison to generate it).")
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            self._results_view.load(data, base_dir=os.path.dirname(path))
+            self._switch_to_tab(TAB_RESULTS)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Couldn't open results",
+                f"Failed to read the results file:\n{exc}")
 
     def _on_import_mode_changed(self, mode):
         """Show whichever sub-panel matches the new mode and hide the

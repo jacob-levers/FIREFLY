@@ -5,6 +5,8 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 from __future__ import annotations
 
 import os
+import json
+import math
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
                                            motion_class_colors, label_text_color)
 from firefly.analysis.fa_theme import _theme_palette, style_axes
@@ -2043,7 +2045,101 @@ def compare_groups(groups,
                 print(f"  Comparison circular-stats skipped "
                       f"({type(exc).__name__}: {exc})")
 
+        # ── Machine-readable results snapshot (drives the Results tab) ──────
+        try:
+            from firefly.analysis.fa_stats_config import config_summary_rows
+            results_json = os.path.join(output_dir,
+                                        f"{output_stem}_results.json")
+            meta = {
+                "stem": output_stem,
+                "output_dir": output_dir,
+                "n_groups": int(n_groups),
+                "two_factor": bool(two_factor),
+                "mobile_d_threshold": float(mobile_d_threshold),
+                "group_labels": list(labels),
+                "group_colors": list(colors),
+                "group_order": list(group_order),
+                "timepoints": list(tp_order),
+                "pair_warn": pair_warn or "",
+                "files": {
+                    "png":          f"{output_stem}.png",
+                    "figure_pdf":   f"{output_stem}.pdf",
+                    "report_pdf":   f"{output_stem}_report.pdf",
+                    "summary_csv":  f"{output_stem}_summary.csv",
+                    "stats_csv":    f"{output_stem}_stats.csv",
+                    "twoway_csv":   f"{output_stem}_twoway_anova.csv",
+                    "circular_per_group":
+                        f"{output_stem}_circular_per_group.csv",
+                    "circular_per_replicate":
+                        f"{output_stem}_circular_per_replicate.csv",
+                    "circular_tests":
+                        f"{output_stem}_circular_tests.csv",
+                },
+            }
+            _write_results_json(results_json, meta=meta,
+                                config_summary=config_summary_rows(cfg),
+                                stats_config=cfg, summary_df=summary_df,
+                                stats_records=stats_records,
+                                twoway_df=twoway_df, twoway_msg=twoway_msg)
+            print(f"  Saved: {results_json}")
+        except Exception as exc:
+            print(f"  Results JSON skipped ({type(exc).__name__}: {exc})")
+
     return fig, summary_df, stats_records
+
+
+def _json_safe(obj):
+    """Recursively coerce numpy/pandas scalars + non-finite floats into
+    JSON-native values, so the results file is strict, valid JSON (no NaN/Inf
+    tokens, no numpy types).  NaN / Inf / pandas-NA → None."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [_json_safe(v) for v in obj.tolist()]
+    if isinstance(obj, (bool, np.bool_)):
+        return bool(obj)
+    if isinstance(obj, (int, np.integer)):
+        return int(obj)
+    if isinstance(obj, (float, np.floating)):
+        f = float(obj)
+        return f if math.isfinite(f) else None
+    if isinstance(obj, (str, bytes)):
+        return obj.decode() if isinstance(obj, bytes) else obj
+    # pandas NA / NaT or any other scalar
+    try:
+        if pd.isna(obj):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(obj)
+
+
+def _write_results_json(path, *, meta, config_summary, stats_config,
+                        summary_df, stats_records, twoway_df, twoway_msg):
+    """Write a compact, machine-readable snapshot of a comparison's results —
+    consumed by the in-app Results tab (auto-show after a run, or 'Open a
+    previous comparison').  Everything is sanitised through `_json_safe` so the
+    file is strict JSON.  Circular stats are NOT duplicated here; the Results
+    tab reads them from the already-clean `_circular_*.csv` files."""
+    payload = {
+        "schema_version": 1,
+        "meta": _json_safe(meta),
+        "config_summary": [[str(lbl), str(val)] for lbl, val in config_summary],
+        "stats_config": _json_safe(stats_config),
+        "summary": _json_safe(summary_df.to_dict(orient="records")),
+        "stats": _json_safe(stats_records),
+        "twoway": {
+            "rows": (_json_safe(twoway_df.to_dict(orient="records"))
+                     if (twoway_df is not None and len(twoway_df)) else []),
+            "message": str(twoway_msg or ""),
+        },
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
 
 
 def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,

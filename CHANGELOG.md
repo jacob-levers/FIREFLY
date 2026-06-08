@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.46.0
+
+### New interactive "Results" tab
+
+A comparison's results now appear in-app in a friendly **Results** tab (after
+Compare) instead of only as CSVs on disk:
+
+- **Per-metric verdict cards** — each metric gets a plain-language sentence
+  (direction + effect-size magnitude + significance, e.g. "Iso is higher than
+  Control — a large difference (g = 1.2 [0.4, 2.0]); statistically significant,
+  p = 0.003") with hover-tooltips, and an **expandable** sortable pairwise table
+  (raw + corrected p, significance, effect size + CI, n). Underpowered (n<3)
+  comparisons are flagged as not interpretable.
+- **The comparison figure is embedded** (it was previously only saved to disk) —
+  click to open full size.
+- **Sortable per-replicate values table** (the per-cell scalars), with
+  group-coloured rows.
+- **Two-way ANOVA** (paired group×time designs) and **circular-statistics**
+  sections when the run produced them.
+- Buttons to open the output folder / PDF report / figure / stats CSV, plus
+  **"Open a previous comparison…"** to reload any past run's results.
+
+Each comparison now also writes a small machine-readable `{stem}_results.json`
+that powers the tab (auto-shown after a run, and loadable later). No new
+dependencies; the figure is shown from its PNG (no matplotlib in the GUI
+process). 4 new tests (results-JSON round-trip + sanitizer + two-way + an
+offscreen Results-view smoke).
+
 ## v2.45.0
 
 ### LogD style picker: live preview + Overlaid is the new default

@@ -2116,3 +2116,106 @@ def test_logd_plot_styles_render(tmp_path, style):
                    pdf_report=False, panels=["logd_dist"],
                    logd_plot_style="not-a-real-style")
     assert (out2 / "cmp.png").exists()
+
+
+# ── Results tab: machine-readable results JSON + view (v2.46.0) ───────────────
+def test_json_safe_sanitizes():
+    from firefly.analysis.fa_compare import _json_safe
+    assert _json_safe(np.int64(5)) == 5 and isinstance(_json_safe(np.int64(5)), int)
+    assert _json_safe(np.float64(2.5)) == 2.5
+    assert _json_safe(float("nan")) is None
+    assert _json_safe(float("inf")) is None
+    assert _json_safe(np.float64("nan")) is None
+    assert _json_safe({"a": np.array([1.0, np.nan])}) == {"a": [1.0, None]}
+    assert _json_safe([np.bool_(True), None, "x"]) == [True, None, "x"]
+
+
+def test_compare_groups_writes_results_json(tmp_path):
+    import matplotlib; matplotlib.use("Agg")
+    import json as _json
+    from firefly.analysis.fa_compare import compare_groups
+    root = str(tmp_path)
+    g1 = [_write_run_folder(root, "Control", f"C{i}", sigma_px=2.0, seed=i)
+          for i in range(3)]
+    g2 = [_write_run_folder(root, "Iso", f"I{i}", sigma_px=3.5, seed=10 + i)
+          for i in range(3)]
+    groups = [{"folders": g1, "label": "Control", "color": "#4a90d9"},
+              {"folders": g2, "label": "Iso", "color": "#e05252"}]
+    out = tmp_path / "out"
+    _fig, _summary, stats = compare_groups(groups, output_dir=str(out),
+                                           output_stem="cmp", pdf_report=False)
+    rj = out / "cmp_results.json"
+    assert rj.exists()
+    txt = rj.read_text()
+    # strict JSON — sanitizer must have removed every non-finite token
+    assert "NaN" not in txt and "Infinity" not in txt
+    data = _json.loads(txt)
+    assert data["schema_version"] == 1
+    assert data["meta"]["n_groups"] == 2
+    assert data["meta"]["group_labels"] == ["Control", "Iso"]
+    assert data["meta"]["two_factor"] is False
+    assert "png" in data["meta"]["files"]
+    assert len(data["summary"]) == 6
+    assert "auc_msd" in data["stats"]
+    assert (data["stats"]["auc_msd"]["pairwise"][0]["label_i"]
+            == stats["auc_msd"]["pairwise"][0]["label_i"])
+
+
+def test_results_json_twoway_present(tmp_path):
+    import matplotlib; matplotlib.use("Agg")
+    import json as _json
+    from firefly.analysis.fa_compare import compare_groups
+    root = str(tmp_path); groups = []; seed = 0
+    for drug in ("DMSO", "Drug"):
+        for tp in ("Pre", "Post"):
+            fs = [_write_run_folder(root, f"{drug}_{tp}", f"{drug}_{tp}_r{r}",
+                                    seed=seed * 5 + r) for r in range(3)]
+            seed += 1
+            groups.append({"folders": fs, "label": drug, "timepoint": tp,
+                           "color": "#888888"})
+    out = tmp_path / "out"
+    compare_groups(groups, output_dir=str(out), output_stem="tf",
+                   pdf_report=False)
+    data = _json.loads((out / "tf_results.json").read_text())
+    assert data["meta"]["two_factor"] is True
+    rows = data["twoway"]["rows"]
+    assert rows and any(r.get("section") == "anova" for r in rows)
+
+
+def test_results_view_builds(tmp_path):
+    pytest.importorskip("PySide6")
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import matplotlib; matplotlib.use("Agg")
+    import json as _json
+    from PySide6 import QtWidgets
+    from firefly.analysis.fa_compare import compare_groups
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])  # noqa: F841
+    from firefly.ui.ui_results import _ResultsView
+
+    def _run(groups, stem):
+        out = tmp_path / stem
+        compare_groups(groups, output_dir=str(out), output_stem=stem,
+                       pdf_report=False)
+        return _json.loads((out / f"{stem}_results.json").read_text()), str(out)
+
+    root = str(tmp_path)
+    flat = [{"folders": [_write_run_folder(root, n, f"{n}{i}", seed=i + 5 * k)
+                         for i in range(3)], "label": n, "color": c}
+            for k, (n, c) in enumerate([("A", "#4a90d9"), ("B", "#e05252")])]
+    data, base = _run(flat, "flat")
+    v = _ResultsView(); v.set_open_previous_callback(lambda: None)
+    v.load(data, base)                       # must not raise
+    assert v._body_v.count() > 3
+    # two-factor exercises the two-way branch
+    g2 = []; seed = 0
+    for drug in ("DMSO", "Drug"):
+        for tp in ("Pre", "Post"):
+            fs = [_write_run_folder(root, f"{drug}_{tp}_v", f"{drug}_{tp}_v{r}",
+                                    seed=100 + seed * 5 + r) for r in range(3)]
+            seed += 1
+            g2.append({"folders": fs, "label": drug, "timepoint": tp,
+                       "color": "#888888"})
+    data2, base2 = _run(g2, "tf2")
+    v.load(data2, base2)                      # idempotent reload, twoway branch
+    assert v._body_v.count() > 2

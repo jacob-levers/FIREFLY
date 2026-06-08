@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 
 # ── HTTPS / CA certificates ───────────────────────────────────────────────────
 # Frozen PyInstaller builds don't reliably ship a usable CA store, so HTTPS
@@ -113,7 +114,8 @@ from firefly.ui.ui_mixin_compare import CompareMixin
 from firefly.ui.ui_mixin_visualise import VisualiseMixin
 # ui_constants extracted; re-exported here.
 from firefly.ui.ui_constants import (
-    TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE, TAB_VISUALISE, TAB_REPROCESS,
+    TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE, TAB_RESULTS, TAB_VISUALISE,
+    TAB_REPROCESS,
 )
 # ui_widgets extracted; re-exported here.
 from firefly.ui.ui_widgets import (
@@ -3074,6 +3076,16 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self.cmp_stage_label.setText("Done")
         self.statusBar().showMessage(
             f"Comparison complete — output at {out_dir}")
+        # Load the machine-readable results into the Results tab and jump to it.
+        rj = payload.get("results_json", "")
+        if rj and os.path.isfile(rj) and getattr(self, "_results_view", None):
+            try:
+                with open(rj, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                self._results_view.load(data, base_dir=out_dir)
+                self._switch_to_tab(TAB_RESULTS)
+            except Exception:
+                crash_reporter.log_exception("failed to load results JSON")
 
     def _handle_compare_error(self, message: str):
         """Expected comparison-input problem (no valid folders, drive unmounted,

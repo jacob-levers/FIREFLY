@@ -2446,19 +2446,21 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
             stats_config=stats_config)
 
         # Compose result paths.  compare_groups saves these by convention:
-        figure_path = os.path.join(out_dir, f"{out_stem}.png")
-        summary_csv = os.path.join(out_dir, f"{out_stem}_summary.csv")
-        stats_csv   = os.path.join(out_dir, f"{out_stem}_stats.csv")
-        pdf_path    = os.path.join(out_dir, f"{out_stem}_report.pdf")
+        figure_path  = os.path.join(out_dir, f"{out_stem}.png")
+        summary_csv  = os.path.join(out_dir, f"{out_stem}_summary.csv")
+        stats_csv    = os.path.join(out_dir, f"{out_stem}_stats.csv")
+        pdf_path     = os.path.join(out_dir, f"{out_stem}_report.pdf")
+        results_json = os.path.join(out_dir, f"{out_stem}_results.json")
 
         _prog(100, "Comparison complete")
         msg_queue.put(("compare_done", {
-            "output_dir":  out_dir,
-            "figure_path": figure_path if os.path.isfile(figure_path) else "",
-            "summary_csv": summary_csv if os.path.isfile(summary_csv) else "",
-            "stats_csv":   stats_csv   if os.path.isfile(stats_csv)   else "",
-            "pdf_report":  pdf_path    if os.path.isfile(pdf_path)    else "",
-            "n_groups":    len(p.get("groups", [])),
+            "output_dir":   out_dir,
+            "figure_path":  figure_path if os.path.isfile(figure_path) else "",
+            "summary_csv":  summary_csv if os.path.isfile(summary_csv) else "",
+            "stats_csv":    stats_csv   if os.path.isfile(stats_csv)   else "",
+            "pdf_report":   pdf_path    if os.path.isfile(pdf_path)    else "",
+            "results_json": results_json if os.path.isfile(results_json) else "",
+            "n_groups":     len(p.get("groups", [])),
         }))
 
     except BaseException as exc:

@@ -16,6 +16,9 @@ TAB_ANALYSIS  = "Analysis"
 TAB_COMPARE   = "Compare"
 
 
+TAB_RESULTS   = "Results"
+
+
 TAB_VISUALISE = "Visualise"
 
 

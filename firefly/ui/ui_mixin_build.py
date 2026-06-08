@@ -18,7 +18,7 @@ from firefly import crash_reporter
 from firefly import cuda_installer
 from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
-                          TAB_VISUALISE, TAB_REPROCESS)
+                          TAB_RESULTS, TAB_VISUALISE, TAB_REPROCESS)
 from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _make_napari_container_layout_opaque, _hide_napari_chrome,
                         _register_motion_colormap, _open_folder,
@@ -170,6 +170,7 @@ class BuildMixin:
         # into the Preferences dialog when it opens.
         self._figures_widget = self._build_figures_widget()
         self._build_compare_tab()
+        self._build_results_tab()
         self._build_visualise_tab()
         # Seal the QTabWidget too — same trick as `_make_napari_container_layout_opaque`.
         # Without this, the natural sizeHint of the widest tab body
@@ -1341,7 +1342,24 @@ class BuildMixin:
         cp_outer.addWidget(cp_scroll)
         self._sidebar_stack.addWidget(compare_page)          # index 2
 
-        # Page 3 — Visualise (re-parents load/filter/DBSCAN widgets).
+        # Page 3 — Results (minimal: just an "open a previous comparison" entry;
+        # the tab body itself carries the same affordance).
+        results_page = QtWidgets.QWidget()
+        rp_v = QtWidgets.QVBoxLayout(results_page)
+        rp_v.setContentsMargins(12, 8, 12, 12); rp_v.setSpacing(8)
+        _rp_hint = QtWidgets.QLabel(
+            "Results from the last comparison appear in this tab. You can also "
+            "open a saved comparison from any past output folder.")
+        _rp_hint.setWordWrap(True)
+        _rp_hint.setStyleSheet(f"color:{_THEME['TXT_MUTED']};")
+        rp_v.addWidget(_rp_hint)
+        _rp_btn = QtWidgets.QPushButton("Open a previous comparison…")
+        _rp_btn.clicked.connect(self._open_previous_comparison)
+        rp_v.addWidget(_rp_btn)
+        rp_v.addStretch(1)
+        self._sidebar_stack.addWidget(results_page)          # index 3
+
+        # Page 4 — Visualise (re-parents load/filter/DBSCAN widgets).
         vis_page = QtWidgets.QWidget()
         vp_outer = QtWidgets.QVBoxLayout(vis_page)
         vp_outer.setContentsMargins(0, 0, 0, 0); vp_outer.setSpacing(0)
@@ -1365,7 +1383,7 @@ class BuildMixin:
         vp_v.addStretch(1)
         vp_scroll.setWidget(vp_inner)
         vp_outer.addWidget(vp_scroll)
-        self._sidebar_stack.addWidget(vis_page)              # index 3
+        self._sidebar_stack.addWidget(vis_page)              # index 4
 
         # Page 4 — Re-process (re-parents source picker).
         pp_page = QtWidgets.QWidget()
@@ -1400,7 +1418,7 @@ class BuildMixin:
         pp_v.addStretch(1)
         pp_scroll.setWidget(pp_inner)
         pp_outer.addWidget(pp_scroll)
-        self._sidebar_stack.addWidget(pp_page)               # index 4
+        self._sidebar_stack.addWidget(pp_page)               # index 5
 
         # ── Bottom-button pages (action stack) ────────────────────────
         # Page 1 — Analysis: no action (empty placeholder).
@@ -1417,10 +1435,12 @@ class BuildMixin:
             _btn.setMinimumHeight(36)
             cmp_av.addWidget(_btn)
         self._sidebar_action.addWidget(cmp_act)               # index 2
-        # Page 3 — Visualise: no action.
+        # Page 3 — Results: no bottom action.
         self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 3
-        # Page 4 — Re-process: the action widget built by the tab.
-        self._sidebar_action.addWidget(self._pp_action_widget)  # index 4
+        # Page 4 — Visualise: no action.
+        self._sidebar_action.addWidget(QtWidgets.QWidget())   # index 4
+        # Page 5 — Re-process: the action widget built by the tab.
+        self._sidebar_action.addWidget(self._pp_action_widget)  # index 5
 
     def _refresh_import_readiness(self, *_args):
         """Update the Import tab's readiness pill: green 'Ready to analyse' once
@@ -2178,6 +2198,16 @@ class BuildMixin:
         # Now that both the sidebar group cards and the centre wizard exist,
         # render the initial test plan.
         self._refresh_stats_preview()
+
+    def _build_results_tab(self):
+        """The interactive Results tab — populated after a comparison (or via
+        'Open a previous comparison…').  Just hosts the _ResultsView; all the
+        rendering lives in firefly.ui.ui_results."""
+        from firefly.ui.ui_results import _ResultsView
+        self._results_view = _ResultsView()
+        self._results_view.set_open_previous_callback(
+            self._open_previous_comparison)
+        self.tabs.addTab(self._results_view, TAB_RESULTS)
 
     # ── Statistics config (the Compare-tab "Analysis Configuration" wizard) ──
     _STAT_CORR_MAP   = {"None": "none", "Bonferroni": "bonferroni",
