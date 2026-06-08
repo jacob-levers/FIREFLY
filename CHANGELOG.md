@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.37.0
+
+### Clustering: honest subsample warning + radius of gyration (Phase 3)
+
+- **The 250k subsample is no longer silent.** DBSCAN caps at 250,000
+  localisations for speed; when it kicks in, it's now surfaced everywhere the
+  cluster results appear — the run log, the Results panel ("DBSCAN clusters …
+  (subsampled)", with a tooltip), the figure's Cluster Map caption
+  ("sub-sampled to N"), and the Visualise status — so the counts/areas are never
+  silently based on a subset.
+- **Radius of gyration per cluster.** A new `rg_um` column (RMS distance of a
+  cluster's localisations from its centroid) is added to the cluster stats CSV
+  and the click-to-inspect panel. Unlike the convex-hull area it's always
+  defined, even for small or collinear clusters — a robust size measure.
+
 ## v2.36.0
 
 ### Visualise tab — DBSCAN tuning no longer freezes; eps helper (Phase 2)

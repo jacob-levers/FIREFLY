@@ -128,6 +128,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 fig_theme="Dark", proj_cmap="Inferno", jdd=None,
                 turning_angles=None, mobile_frac_df=None,
                 cluster_labels=None, cluster_locs=None,
+                cluster_subsampled_n=None,
                 dwell_df=None, dwell_tau=None, return_pdf_bytes=False,
                 van_hove=None, vacf=None,
                 want_panels=None, traj_background=True):
@@ -590,7 +591,10 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     else:
         ax.text(0.5, 0.5, "Cluster analysis\nnot computed",
                 transform=ax.transAxes, ha="center", va="center", color=TXT, fontsize=10)
-    sax(ax, "L", "Cluster Map  (DBSCAN)", kind="image")
+    _clu_title = "Cluster Map  (DBSCAN)"
+    if cluster_subsampled_n:
+        _clu_title += f"  (sub-sampled to {int(cluster_subsampled_n):,})"
+    sax(ax, "L", _clu_title, kind="image")
 
     # M — Dwell Time Distribution
     ax = fig.add_subplot(gs[4, 1])

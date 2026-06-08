@@ -223,6 +223,33 @@ def test_compare_groups_circular_outputs_toggle(tmp_path):
     assert os.path.exists(os.path.join(out, "comparison_summary.csv"))
 
 
+def test_compute_clusters_rg_and_subsample_attrs():
+    """compute_clusters adds a radius-of-gyration column and records subsample
+    provenance in df.attrs (used to surface an honest 'sub-sampled to N')."""
+    from firefly.sptpalm_analysis import compute_clusters
+    rng = np.random.default_rng(0)
+    sig = 0.02
+    xy = np.vstack([rng.normal(c, sig, (60, 2)) for c in ([0, 0], [3, 3])])
+    locs = pd.DataFrame({"x": xy[:, 0], "y": xy[:, 1],
+                         "frame": np.zeros(len(xy), int)})
+    labels, stats, ncl, _ = compute_clusters(
+        locs, pixel_size_um=1.0, eps_um=0.1, min_samples=5)
+    assert ncl == 2
+    assert "rg_um" in stats.columns
+    rg = stats["rg_um"].to_numpy()
+    assert np.all(np.isfinite(rg)) and np.all(rg > 0)
+    assert np.allclose(rg, np.sqrt(2) * sig, rtol=0.4)   # 2-D Gaussian Rg
+    assert stats.attrs["subsampled"] is False
+    assert stats.attrs["n_used_locs"] == len(xy)
+    # forcing a small cap records the subsample provenance
+    _, stats2, _, xy2 = compute_clusters(
+        locs, pixel_size_um=1.0, eps_um=0.1, min_samples=5, max_locs=50)
+    assert stats2.attrs["subsampled"] is True
+    assert stats2.attrs["n_used_locs"] == 50
+    assert stats2.attrs["n_input_locs"] == len(xy)
+    assert len(xy2) == 50
+
+
 # ── localisation ─────────────────────────────────────────────────────────────
 def test_trackpy_localisation_finds_and_locates_spots():
     truth = [(20.5, 30.2), (60.1, 45.7), (75.0, 70.0)]

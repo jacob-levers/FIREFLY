@@ -1393,6 +1393,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         locs, px,
         eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
         min_samples=int(p.get("cluster_min_samples", 10)))
+    # Honest subsample note: compute_clusters caps DBSCAN at 250k localisations.
+    _cl_attrs = getattr(cluster_stats_df, "attrs", {}) or {}
+    cluster_subsampled_n = (int(_cl_attrs["n_used_locs"])
+                            if _cl_attrs.get("subsampled") else None)
+    if cluster_subsampled_n is not None:
+        _log(f"  WARN: cluster analysis sub-sampled to "
+             f"{cluster_subsampled_n:,} of "
+             f"{int(_cl_attrs.get('n_input_locs', 0)):,} localisations "
+             f"(250k cap) — cluster counts/areas reflect the subsample.")
     dwell_df, dwell_tau = compute_dwell_times(tracks, diff_df, fi)
     # MSS slope per track — merged into diff_df so the figure's MSS
     # panel and downstream CSVs see it.  Skipped silently when there
@@ -1429,6 +1438,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
         jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
         cluster_labels=cluster_labels, cluster_locs=cluster_xy,
+        cluster_subsampled_n=cluster_subsampled_n,
         dwell_df=dwell_df, dwell_tau=dwell_tau,
         van_hove=van_hove, vacf=vacf,
         return_pdf_bytes=want_pdf, want_panels=want_panels,
@@ -1941,6 +1951,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 pass
         if cluster_stats_df is not None and len(cluster_stats_df):
             summary["n_clusters"] = int(len(cluster_stats_df))
+        if cluster_subsampled_n is not None:
+            summary["cluster_subsampled_n"] = cluster_subsampled_n
         if dwell_tau is not None:
             try:
                 summary["dwell_tau_s"] = float(dwell_tau)

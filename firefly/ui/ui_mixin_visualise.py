@@ -866,7 +866,7 @@ class VisualiseMixin:
                 if len(row):
                     r = row.iloc[0]
                     for k in ("n_locs", "area_um2",
-                              "density_locs_per_um2",
+                              "density_locs_per_um2", "rg_um",
                               "centroid_x_um", "centroid_y_um"):
                         if k in r.index:
                             kw[k] = float(r[k])

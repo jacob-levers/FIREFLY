@@ -14,12 +14,14 @@ def compute_clusters(locs, pixel_size_um, eps_um=0.05, min_samples=5,
     from sklearn.cluster import DBSCAN
     from scipy.spatial import ConvexHull
     xy = locs[["x", "y"]].values * pixel_size_um
-    subsampled = len(xy) > max_locs
+    n_input = len(xy)
+    subsampled = n_input > max_locs
     if subsampled:
         rng = np.random.default_rng(42)
-        idx = rng.choice(len(xy), max_locs, replace=False)
+        idx = rng.choice(n_input, max_locs, replace=False)
         xy = xy[idx]
-        print(f"  Cluster analysis  : sub-sampled to {max_locs:,} localisations")
+        print(f"  Cluster analysis  : sub-sampled to {max_locs:,} of "
+              f"{n_input:,} localisations")
     else:
         print(f"  Cluster analysis  : {len(xy):,} localisations  "
               f"(eps={eps_um*1000:.0f} nm, min_samples={min_samples})")
@@ -36,8 +38,21 @@ def compute_clusters(locs, pixel_size_um, eps_um=0.05, min_samples=5,
         except Exception:
             area = np.nan
         density = n / area if (area and area > 0) else np.nan
+        centroid = pts.mean(axis=0)
+        # Radius of gyration — RMS distance of a cluster's points from its
+        # centroid.  Always defined (unlike the ConvexHull area, which is NaN
+        # for <3 or collinear points), so it's a robust cluster-size measure.
+        rg = (float(np.sqrt(np.mean(np.sum((pts - centroid) ** 2, axis=1))))
+              if n else np.nan)
         rows.append({"cluster_id": int(c), "n_locs": int(n),
                      "area_um2": area, "density_locs_per_um2": density,
-                     "centroid_x_um": pts[:,0].mean(),
-                     "centroid_y_um": pts[:,1].mean()})
-    return labels, pd.DataFrame(rows), int(n_clusters), xy
+                     "rg_um": rg,
+                     "centroid_x_um": centroid[0],
+                     "centroid_y_um": centroid[1]})
+    df = pd.DataFrame(rows)
+    # In-memory subsample provenance (not written to CSV) so callers can
+    # surface "sub-sampled to N" honestly in the log / figure / Results panel.
+    df.attrs["n_input_locs"] = int(n_input)
+    df.attrs["n_used_locs"] = int(len(xy))
+    df.attrs["subsampled"] = bool(subsampled)
+    return labels, df, int(n_clusters), xy

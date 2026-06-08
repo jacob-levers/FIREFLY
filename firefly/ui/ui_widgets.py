@@ -1488,6 +1488,7 @@ class _TrackInspector(QtWidgets.QFrame):
                       n_locs: int | None = None,
                       area_um2: float | None = None,
                       density_locs_per_um2: float | None = None,
+                      rg_um: float | None = None,
                       centroid_x_um: float | None = None,
                       centroid_y_um: float | None = None,
                       note: str | None = None):
@@ -1526,6 +1527,8 @@ class _TrackInspector(QtWidgets.QFrame):
             if density_locs_per_um2 is not None:
                 _row(r, "Density",
                      f"{density_locs_per_um2:.1f} locs/µm²"); r += 1
+            if rg_um is not None:
+                _row(r, "Radius of gyration", f"{rg_um:.4f} µm"); r += 1
             if centroid_x_um is not None and centroid_y_um is not None:
                 _row(r, "Centroid",
                      f"({centroid_x_um:.3f}, {centroid_y_um:.3f}) µm")
@@ -1787,8 +1790,14 @@ class _ResultsPanel(QtWidgets.QFrame):
         if nc or dwell is not None or frames:
             self._add_section_header(r, "Clustering & acquisition"); r += 1
         if nc:
-            self._add_stat_row(r, "DBSCAN clusters",
-                               _fmt_int(nc)); r += 1
+            _sub = summary.get("cluster_subsampled_n")
+            _cval = f"{_fmt_int(nc)}  (subsampled)" if _sub else _fmt_int(nc)
+            _ctip = (f"DBSCAN ran on a {int(_sub):,}-localisation subsample "
+                     f"(the dataset exceeded the 250k cap), so the cluster "
+                     f"count and per-cluster stats reflect that subset."
+                     if _sub else None)
+            self._add_stat_row(r, "DBSCAN clusters", _cval,
+                               tooltip=_ctip); r += 1
         if dwell is not None:
             self._add_stat_row(r, "Dwell time  τ",
                                _fmt_secs(dwell)); r += 1
