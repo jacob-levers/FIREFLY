@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.41.5
+
+### Updater: clearer message during the cross-platform publish window
+
+The macOS and Windows builds finish (and upload their installers) a few minutes
+apart, so for a short window after a release one platform sees "update available"
+while *its* installer isn't on the release yet. Previously that showed the update
+dialog with only **View release page** and no explanation. It now says plainly:
+*"The installer for your platform is still being published … try again shortly
+(Preferences → Updates → Check for updates now)."*
+
 ## v2.41.4
 
 Patch release with no functional changes — a target to verify the Windows

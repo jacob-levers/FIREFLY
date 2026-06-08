@@ -771,6 +771,21 @@ class _UpdateDialog(QtWidgets.QDialog):
             note.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; "
                                f"font-style: italic; font-size: 11px;")
             v.addWidget(note)
+        elif newer and updater.is_frozen() and not self._asset:
+            # A newer release exists, but the installer for THIS platform
+            # isn't on it yet — the macOS and Windows builds upload a few
+            # minutes apart, so there's a brief window where one OS sees
+            # "update available" with nothing to download.  Say so plainly
+            # instead of silently offering only the release page.
+            hint = QtWidgets.QLabel(
+                "The installer for your platform is still being published "
+                "(the macOS and Windows builds finish a few minutes apart). "
+                "Please try again shortly — Preferences → Updates → "
+                "“Check for updates now”.")
+            hint.setWordWrap(True)
+            hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; "
+                               f"font-style: italic;")
+            v.addWidget(hint)
         elif newer and not updater.is_frozen():
             hint = QtWidgets.QLabel(
                 "This is a from-source install — update with "
