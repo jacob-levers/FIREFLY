@@ -3966,8 +3966,13 @@ class _PreferencesDialog(QtWidgets.QDialog):
         self._add_rail_entry("Appearance")
 
         # ── Page: Figure defaults (re-parent the figures widget) ────────
-        fig_page = QtWidgets.QWidget()
-        fp = QtWidgets.QVBoxLayout(fig_page)
+        # Scrollable so the LogD style picker + preview + the (large) figures
+        # widget never overflow the dialog.
+        fig_page = QtWidgets.QScrollArea()
+        fig_page.setWidgetResizable(True)
+        fig_page.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        _fig_inner = QtWidgets.QWidget()
+        fp = QtWidgets.QVBoxLayout(_fig_inner)
         fp.setContentsMargins(0, 0, 0, 0); fp.setSpacing(0)
 
         # Compare-tab LogD distribution style — lives at the top of the
@@ -3981,9 +3986,9 @@ class _PreferencesDialog(QtWidgets.QDialog):
         self.c_logd_style.setMaximumWidth(220)
         try:
             _cur = str(QtCore.QSettings("jacoblevers", "FIREFLY").value(
-                "figures/logd_style", "faceted") or "faceted")
+                "figures/logd_style", "overlaid") or "overlaid")
             self.c_logd_style.setCurrentText(
-                self._LOGD_STYLE_DISP.get(_cur, "Faceted (per-replicate)"))
+                self._LOGD_STYLE_DISP.get(_cur, "Overlaid KDEs"))
         except Exception:
             pass
         self.c_logd_style.setToolTip(
@@ -3996,6 +4001,17 @@ class _PreferencesDialog(QtWidgets.QDialog):
             "Applies to the next comparison you run.")
         self.c_logd_style.currentTextChanged.connect(self._on_logd_style_changed)
         _logd_form.addRow("LogD graph style:", self.c_logd_style)
+        # Live preview of the chosen style, plus a "best for" description.
+        self._logd_preview_fig = Figure(figsize=(3.8, 2.5))
+        self._logd_preview_canvas = FigureCanvas(self._logd_preview_fig)
+        self._logd_preview_canvas.setMinimumHeight(200)
+        self._logd_preview_canvas.setMaximumHeight(260)
+        _logd_form.addRow(self._logd_preview_canvas)
+        self._logd_style_desc = QtWidgets.QLabel("")
+        self._logd_style_desc.setWordWrap(True)
+        self._logd_style_desc.setMaximumWidth(560)
+        self._logd_style_desc.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        _logd_form.addRow(self._logd_style_desc)
         _logd_form.addRow(self._restart_hint(
             "Applies to the next comparison you run."))
         fp.addWidget(_logd_box)
@@ -4004,14 +4020,16 @@ class _PreferencesDialog(QtWidgets.QDialog):
         # Re-parent into this dialog — but we restore the parent back to
         # MainWindow in `done()` so the widget survives multiple open
         # cycles instead of being destroyed with the dialog.
-        self._fig_widget.setParent(fig_page)
+        self._fig_widget.setParent(_fig_inner)
         fp.addWidget(self._fig_widget)
         # IMPORTANT: setParent() implicitly hides the widget, and we
         # also hide it explicitly in done().  Show it on each open so
         # the second-and-later openings of Preferences aren't blank.
         self._fig_widget.show()
+        fig_page.setWidget(_fig_inner)
         self._pages.addWidget(fig_page)
         self._add_rail_entry("Figure defaults")
+        self._refresh_logd_preview()
 
         # ── Page: GPU acceleration (Windows only) ───────────────────────
         # CUDA install/uninstall/relocate lives here now (it used to be a
@@ -4251,13 +4269,28 @@ class _PreferencesDialog(QtWidgets.QDialog):
         """Persist the chosen LogD-distribution style to the main settings
         store (read by _start_compare_run when launching a comparison)."""
         try:
-            val = self._LOGD_STYLE_MAP.get(name, "faceted")
+            val = self._LOGD_STYLE_MAP.get(name, "overlaid")
             store = getattr(self._main, "_settings", None)
             if store is not None:
                 store.setValue("figures/logd_style", val)
             else:
                 QtCore.QSettings("jacoblevers", "FIREFLY").setValue(
                     "figures/logd_style", val)
+        except Exception:
+            pass
+        self._refresh_logd_preview()
+
+    def _refresh_logd_preview(self) -> None:
+        """Re-render the small example figure for the currently-selected LogD
+        style and update the 'best for' description."""
+        try:
+            from firefly.analysis.fa_compare import (render_logd_preview,
+                                                     LOGD_STYLE_DESCRIPTIONS)
+            val = self._LOGD_STYLE_MAP.get(
+                self.c_logd_style.currentText(), "overlaid")
+            render_logd_preview(self._logd_preview_fig, val, _ACTIVE_THEME_NAME)
+            self._logd_preview_canvas.draw_idle()
+            self._logd_style_desc.setText(LOGD_STYLE_DESCRIPTIONS.get(val, ""))
         except Exception:
             pass
 

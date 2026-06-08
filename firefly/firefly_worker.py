@@ -2441,7 +2441,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
             theme=theme,
             pdf_report=pdf_report,
             mobile_d_threshold=mob_d,
-            logd_plot_style=str(p.get("logd_plot_style", "faceted") or "faceted"),
+            logd_plot_style=str(p.get("logd_plot_style", "overlaid") or "overlaid"),
             progress_cb=_progress_cb,
             stats_config=stats_config)
 

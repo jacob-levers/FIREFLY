@@ -2910,7 +2910,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             "panels":      list(selected_panels),
             "mobile_d_threshold": float(self.s_mobile_d_threshold.value()),
             "logd_plot_style": str(self._settings.value(
-                "figures/logd_style", "faceted") or "faceted"),
+                "figures/logd_style", "overlaid") or "overlaid"),
             "stats_config": self._collect_stats_config(),
         }
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.45.0
+
+### LogD style picker: live preview + Overlaid is the new default
+
+- **Overlaid KDEs is now the default** LogD distribution style (was Faceted).
+- **Preferences → Figure defaults** now shows a **live preview** of the selected
+  style (rendered from a small illustrative example where one “drug” immobilises
+  PRE→POST), plus a one-line **“best for”** description that updates as you switch:
+  - **Overlaid KDEs** — compare overall shape/peak across a few groups at a
+    glance; can get crowded with many groups.
+  - **Faceted (per-replicate)** — paired PRE/POST designs + honest replicate
+    counts (per-cell median dots); most information-dense.
+  - **Ridgeline** — many groups compactly; great for spotting multi-modality;
+    exact peak heights harder to compare.
+  - **Violins + points** — each group’s spread plus the replicate-level data
+    (SuperPlot style).
+- The Figure-defaults page is now scrollable so the picker, preview and figure
+  knobs never overflow the dialog.
+- Fix: the LogD render helpers referenced the UI palette key `TXT_MUTED`; they
+  now use the figure palette's `MUT` (with a fallback), so themed muted colours
+  are correct and the empty-data branch can't raise.
+
 ## v2.44.1
 
 - Moved the **"LogD graph style"** picker from Preferences → Appearance to

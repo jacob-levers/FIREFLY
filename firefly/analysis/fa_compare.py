@@ -547,7 +547,7 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
         ax = fig.add_subplot(subplotspec)
         ax.axis("off")
         ax.text(0.5, 0.5, "No diffusion data", ha="center", va="center",
-                color=pal["TXT_MUTED"], transform=ax.transAxes)
+                color=pal.get("MUT", "#9aa4b2"), transform=ax.transAxes)
         return
     # A DEDICATED strip above the facets holds the title + a neutral key, so the
     # legend can never overlap a density curve — its placement no longer depends
@@ -559,7 +559,7 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
 
     lax = fig.add_subplot(sub[0]); lax.axis("off")
     lax.set_title(title)
-    key = pal.get("TXT_MUTED", "#9aa4b2")
+    key = pal.get("MUT", "#9aa4b2")
     handles = []
     if any(d for (_ft, _fc, ser) in facets for (*_s, d) in ser):  # PRE/POST present
         handles += [
@@ -709,7 +709,7 @@ def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold):
     if not valid:
         ax.axis("off")
         ax.text(0.5, 0.5, "No diffusion data", ha="center", va="center",
-                color=pal["TXT_MUTED"], transform=ax.transAxes)
+                color=pal.get("MUT", "#9aa4b2"), transform=ax.transAxes)
         return
     positions = list(range(1, len(valid) + 1))
     parts = ax.violinplot([v for _, _, v, _ in valid], positions=positions,
@@ -733,12 +733,109 @@ def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold):
     ax.legend(frameon=False, loc="lower right", fontsize=7)
 
 
+# ── Style picker: descriptions + a live preview for the Preferences menu ──────
+LOGD_STYLE_DESCRIPTIONS = {
+    "overlaid": (
+        "Overlaid KDEs — every group's curve on one axes. Best for directly "
+        "comparing overall shape and peak position across a few groups at a "
+        "glance. Gets crowded (“spaghetti”) with many groups."),
+    "faceted": (
+        "Faceted (per-replicate) — one panel per group, PRE vs POST overlaid, "
+        "with a per-cell median dot strip. Best for paired designs and for being "
+        "honest about replicate count; the most information-dense."),
+    "ridgeline": (
+        "Ridgeline — filled KDEs stacked with an offset, directly labelled. Best "
+        "for comparing many groups' shapes compactly and spotting multi-modality. "
+        "The vertical offset makes exact peak heights harder to compare."),
+    "violin": (
+        "Violins + points — a violin per group with a per-cell median dot strip "
+        "(SuperPlot style). Best for showing each group's spread plus the "
+        "replicate-level data; pairs naturally with the stats panels."),
+}
+
+
+def _example_logd_data(rng=None):
+    """Small illustrative synthetic LogD data for the Preferences preview:
+    two 'drugs' A/B × PRE/POST, where drug B immobilises (shifts left) at POST.
+    Returns (per_card, facets) matching the render helpers' shapes."""
+    rng = rng or np.random.default_rng(7)
+    cols = {("A", "PRE"): "#4c8edb", ("A", "POST"): "#e0922f",
+            ("B", "PRE"): "#3fa45b", ("B", "POST"): "#d8534f"}
+
+    def _pool(centers, weights, n=900, sd=0.32):
+        c = np.array(centers)
+        comp = rng.choice(len(centers), size=n, p=weights)
+        return np.clip(rng.normal(c[comp], sd), -5.0, 1.0)
+
+    def _meds(center, n=6, sd=0.13):
+        return list(np.clip(rng.normal(center, sd, n), -5.0, 1.0))
+
+    specs = {
+        ("A", "PRE"):  ([-1.0], [1.0], -1.0),
+        ("A", "POST"): ([-1.05], [1.0], -1.05),
+        ("B", "PRE"):  ([-1.0], [1.0], -1.0),
+        ("B", "POST"): ([-2.2, -1.0], [0.65, 0.35], -1.9),   # immobilised shift
+    }
+    per_card, facets_map = [], {"A": [], "B": []}
+    for (drug, tp), (centers, weights, mc) in specs.items():
+        pooled = _pool(centers, weights)
+        meds = _meds(mc)
+        col = cols[(drug, tp)]
+        per_card.append((f"{drug} / {tp}", col, pooled, meds))
+        facets_map[drug].append((col, pooled, meds, tp, tp == "POST"))
+    grp_col = {"A": "#4c8edb", "B": "#3fa45b"}
+    facets = [(d, grp_col[d], facets_map[d]) for d in ("A", "B")]
+    return per_card, facets
+
+
+def render_logd_preview(fig, style, theme="Dark"):
+    """Render a small illustrative example of a LogD-distribution `style` into
+    `fig` (used by the Preferences preview).  UI-free; safe to call repeatedly."""
+    import matplotlib.pyplot as _plt
+    if style not in ("faceted", "ridgeline", "overlaid", "violin"):
+        style = "overlaid"
+    pal = _theme_palette(theme)
+    fig.clear()
+    fig.set_facecolor(pal["BG"])
+    per_card, facets = _example_logd_data()
+    thr = float(np.log10(0.05))
+    thr_lbl = "D = 0.05 µm²/s"
+    mut = pal.get("MUT", "#9aa4b2")
+    with _plt.rc_context({
+            "font.size": 6.5, "axes.titlesize": 8, "axes.labelsize": 7,
+            "xtick.labelsize": 6, "ytick.labelsize": 6,
+            "axes.facecolor": pal["PNL"], "figure.facecolor": pal["BG"],
+            "text.color": pal["TXT"], "axes.labelcolor": pal["TXT"],
+            "axes.edgecolor": pal["GRD"], "xtick.color": mut,
+            "ytick.color": mut, "axes.titlecolor": pal["TXT"]}):
+        if style == "ridgeline":
+            _render_logd_ridgeline(fig.add_subplot(111), per_card, thr, pal, 0.05)
+        elif style == "violin":
+            _render_logd_violin(fig.add_subplot(111), per_card, thr, pal, 0.05)
+        elif style == "faceted":
+            _render_logd_facets(fig, fig.add_gridspec(1, 1)[0], facets, thr, pal,
+                                "LogD distribution", threshold_label=thr_lbl)
+        else:
+            _render_logd_overlaid(fig.add_subplot(111), per_card, thr, pal, 0.05)
+        # Tidy small previews: drop axes legends for the non-faceted styles
+        # (the faceted strip legend is part of its layout).
+        if style != "faceted":
+            for _ax in fig.axes:
+                _lg = _ax.get_legend()
+                if _lg is not None:
+                    _lg.remove()
+    try:
+        fig.tight_layout(pad=0.4)
+    except Exception:
+        pass
+
+
 def compare_groups(groups,
                    output_dir=None, output_stem="comparison",
                    panels=None, theme="Dark",
                    pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
-                   logd_plot_style="faceted",
+                   logd_plot_style="overlaid",
                    progress_cb=None, stats_config=None):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
@@ -1057,7 +1154,7 @@ def compare_groups(groups,
         # dominate).  The immobile tail is clipped INTO range (not dropped) so
         # an immobilising drug effect stays visible.
         _styles = ("faceted", "ridgeline", "overlaid", "violin")
-        style = logd_plot_style if logd_plot_style in _styles else "faceted"
+        style = logd_plot_style if logd_plot_style in _styles else "overlaid"
         ax = _next_ax()
         thr = np.log10(mobile_d_threshold)
         thr_lbl = f"D = {mobile_d_threshold:g} µm²/s"
