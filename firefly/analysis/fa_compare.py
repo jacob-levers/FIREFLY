@@ -1581,76 +1581,80 @@ def compare_groups(groups,
         #   * {stem}_circular_statistics.pdf  — themed multi-page PDF
         #     (page 1 = summary grid + comparison table; pages 2..N+1 =
         #     per-group detail mirroring the per-file report).
-        try:
-            groups_angles_pooled = []
-            # Per-track (mean_angle_deg, D) pairs per group, used for
-            # the circular-linear correlation between a track's
-            # average turning bias and its diffusion coefficient.
-            # One list of pairs per group; each list pools across
-            # the group's replicates.
-            track_angle_d_pairs = []
-            # Per-replicate angle arrays — one list of arrays per group.
-            # Used to compute per-replicate κ, R̄, μ for the Welch t-test
-            # and per-replicate Watson-Williams F-test (treats each
-            # replicate as one data point, the statistically defensible
-            # framing for n=5 vs n=3 designs).
-            per_replicate_angles = {}
-            for label, ss, color in zip(labels, all_summaries, colors):
-                pooled = []
-                t_angles_g = []
-                t_D_g      = []
-                rep_angle_arrays = []
-                for s in ss:
-                    ta = s.get("turning_angles")
-                    if ta is not None:
-                        arr = np.asarray(ta, dtype=float).ravel()
-                        if arr.size:
-                            pooled.append(arr)
-                            rep_angle_arrays.append(arr)
-                    tracks = s.get("tracks")
-                    diff_df = s.get("diffusion")
-                    if tracks is None or diff_df is None:
-                        continue
-                    if "D" not in diff_df.columns:
-                        continue
-                    try:
-                        pairs = compute_per_track_mean_angle(tracks)
-                        if not pairs:
+        if not cfg["include_circular_outputs"]:
+            print("  Comparison circular-stats: disabled in stats config")
+        else:
+            try:
+                groups_angles_pooled = []
+                # Per-track (mean_angle_deg, D) pairs per group, used for
+                # the circular-linear correlation between a track's
+                # average turning bias and its diffusion coefficient.
+                # One list of pairs per group; each list pools across
+                # the group's replicates.
+                track_angle_d_pairs = []
+                # Per-replicate angle arrays — one list of arrays per group.
+                # Used to compute per-replicate κ, R̄, μ for the Welch t-test
+                # and per-replicate Watson-Williams F-test (treats each
+                # replicate as one data point, the statistically defensible
+                # framing for n=5 vs n=3 designs).
+                per_replicate_angles = {}
+                for label, ss, color in zip(labels, all_summaries, colors):
+                    pooled = []
+                    t_angles_g = []
+                    t_D_g      = []
+                    rep_angle_arrays = []
+                    for s in ss:
+                        ta = s.get("turning_angles")
+                        if ta is not None:
+                            arr = np.asarray(ta, dtype=float).ravel()
+                            if arr.size:
+                                pooled.append(arr)
+                                rep_angle_arrays.append(arr)
+                        tracks = s.get("tracks")
+                        diff_df = s.get("diffusion")
+                        if tracks is None or diff_df is None:
                             continue
-                        d_map = dict(zip(diff_df["particle"].astype(int),
-                                         diff_df["D"].astype(float)))
-                        for pid, mu_deg in pairs:
-                            d_val = d_map.get(int(pid))
-                            if d_val is None or not np.isfinite(d_val):
+                        if "D" not in diff_df.columns:
+                            continue
+                        try:
+                            pairs = compute_per_track_mean_angle(tracks)
+                            if not pairs:
                                 continue
-                            t_angles_g.append(float(mu_deg))
-                            t_D_g.append(float(d_val))
-                    except Exception:
-                        continue
-                pooled_arr = (np.concatenate(pooled)
-                              if pooled else np.array([], dtype=float))
-                groups_angles_pooled.append((label, pooled_arr, color))
-                track_angle_d_pairs.append(
-                    (np.asarray(t_angles_g, dtype=float),
-                     np.asarray(t_D_g,      dtype=float)))
-                per_replicate_angles[label] = rep_angle_arrays
-            # Stem for the split circular CSVs (the function derives
-            # _circular_per_group / _per_replicate / _tests from this and
-            # prints each saved path itself).
-            cs_csv = os.path.join(
-                output_dir, f"{output_stem}_circular_statistics.csv")
-            cs_pdf = os.path.join(
-                output_dir, f"{output_stem}_circular_statistics.pdf")
-            save_comparison_circular_statistics(
-                groups_angles_pooled,
-                csv_path=cs_csv, pdf_path=cs_pdf,
-                fig_theme=theme,
-                track_angle_d_pairs=track_angle_d_pairs,
-                per_replicate_angles=per_replicate_angles)
-            print(f"  Saved: {cs_pdf}")
-        except Exception as exc:
-            print(f"  Comparison circular-stats skipped "
-                  f"({type(exc).__name__}: {exc})")
+                            d_map = dict(zip(diff_df["particle"].astype(int),
+                                             diff_df["D"].astype(float)))
+                            for pid, mu_deg in pairs:
+                                d_val = d_map.get(int(pid))
+                                if d_val is None or not np.isfinite(d_val):
+                                    continue
+                                t_angles_g.append(float(mu_deg))
+                                t_D_g.append(float(d_val))
+                        except Exception:
+                            continue
+                    pooled_arr = (np.concatenate(pooled)
+                                  if pooled else np.array([], dtype=float))
+                    groups_angles_pooled.append((label, pooled_arr, color))
+                    track_angle_d_pairs.append(
+                        (np.asarray(t_angles_g, dtype=float),
+                         np.asarray(t_D_g,      dtype=float)))
+                    per_replicate_angles[label] = rep_angle_arrays
+                # Stem for the split circular CSVs (the function derives
+                # _circular_per_group / _per_replicate / _tests from this and
+                # prints each saved path itself).
+                cs_csv = os.path.join(
+                    output_dir, f"{output_stem}_circular_statistics.csv")
+                cs_pdf = os.path.join(
+                    output_dir, f"{output_stem}_circular_statistics.pdf")
+                save_comparison_circular_statistics(
+                    groups_angles_pooled,
+                    csv_path=cs_csv, pdf_path=cs_pdf,
+                    fig_theme=theme,
+                    track_angle_d_pairs=track_angle_d_pairs,
+                    per_replicate_angles=per_replicate_angles,
+                    stats_config=cfg)
+                print(f"  Saved: {cs_pdf}")
+            except Exception as exc:
+                print(f"  Comparison circular-stats skipped "
+                      f"({type(exc).__name__}: {exc})")
 
     return fig, summary_df, stats_records
 

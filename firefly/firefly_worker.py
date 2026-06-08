@@ -2403,6 +2403,15 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         stats_config = normalize_stats_config(p.get("stats_config"))
         _log(f"  Statistics : {describe_test_label('test=' + stats_config['parametric_strategy'], stats_config['correction'], stats_config['across_metric_correction'])}; "
              f"alpha={stats_config['alpha']:g}; 3+ groups={stats_config['anova3plus']}")
+        if stats_config.get("include_circular_outputs", True):
+            _circ_on = [nm for nm, key in (("kappa", "circ_test_kappa"),
+                        ("Rbar", "circ_test_rbar"), ("mu", "circ_test_mu"),
+                        ("circ-lin", "circ_test_circlin"))
+                        if stats_config.get(key, True)]
+            _log(f"  Circular   : outputs on; tests = "
+                 f"{', '.join(_circ_on) if _circ_on else 'none'}")
+        else:
+            _log("  Circular   : outputs off")
 
         _log(f"  Output dir : {out_dir}")
         _log(f"  Output stem: {out_stem}")

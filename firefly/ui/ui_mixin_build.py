@@ -2382,8 +2382,72 @@ class BuildMixin:
         self._propagate_form_tooltips(self._stats_settings_widget)
         v.addWidget(card3)
 
-        # ── 4 · The resulting plain-language test plan. ──
-        card4, c4 = _card(4, "Tests that will run")
+        # ── 4 · Circular-statistics options (turning-angle direction) ──
+        card_circ, cC = _card(4, "Circular statistics (turning-angle direction)")
+        cC.addWidget(_label_with_info("Circular outputs", "Circular outputs"))
+        self.c_circ_include = QtWidgets.QCheckBox(
+            "Write circular-statistics CSV + PDF outputs")
+        self.c_circ_include.setChecked(True)
+        self.c_circ_include.setToolTip(
+            "When on, the comparison writes the circular-statistics files\n"
+            "(_circular_per_group.csv, _circular_per_replicate.csv,\n"
+            "_circular_tests.csv) and a circular-statistics PDF.  This is\n"
+            "separate from the Turning-angle / Radial-distribution FIGURE panels\n"
+            "in the sidebar — turn this off to skip the extra files while keeping\n"
+            "the figure panels.")
+        cC.addWidget(self.c_circ_include)
+
+        _circ_sign = QtWidgets.QLabel(
+            "<b>Sign convention:</b> turning angles are signed on (−180°, +180°]. "
+            "0° = straight · +θ = left turn (CCW) · −θ = right turn (CW) · "
+            "±180° = reversal.")
+        _circ_sign.setWordWrap(True)
+        _circ_sign.setTextFormat(Qt.TextFormat.RichText)
+        _circ_sign.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        cC.addWidget(_circ_sign)
+
+        cC.addWidget(QtWidgets.QLabel("Between-group tests to report:"))
+        self.c_circ_kappa = QtWidgets.QCheckBox(
+            "Concentration κ  (is motion more tightly directed?)")
+        self.c_circ_kappa.setChecked(True)
+        self.c_circ_kappa.setToolTip(
+            "Per-replicate test of turning-angle concentration κ between groups.\n"
+            "Uses the chosen α, correction and parametric strategy above.")
+        self.c_circ_rbar = QtWidgets.QCheckBox(
+            "Resultant length R̄  (how concentrated the directions are)")
+        self.c_circ_rbar.setChecked(True)
+        self.c_circ_rbar.setToolTip(
+            "Per-replicate test of the mean resultant length R̄ between groups.\n"
+            "Uses the chosen α, correction and parametric strategy above.")
+        self.c_circ_mu = QtWidgets.QCheckBox(
+            "Mean direction μ  (Watson-Williams)")
+        self.c_circ_mu.setChecked(True)
+        self.c_circ_mu.setToolTip(
+            "Watson-Williams F-test on per-replicate mean directions — do groups\n"
+            "point, on average, in different directions?  Reuses your chosen α.")
+        self.c_circ_circlin = QtWidgets.QCheckBox(
+            "Circular-linear correlation  (turning angle vs D)")
+        self.c_circ_circlin.setChecked(True)
+        self.c_circ_circlin.setToolTip(
+            "Per-group correlation between a track's average turning bias and its\n"
+            "diffusion coefficient.")
+        for _cb in (self.c_circ_kappa, self.c_circ_rbar, self.c_circ_mu,
+                    self.c_circ_circlin):
+            cC.addWidget(_cb)
+
+        _circ_cap = QtWidgets.QLabel(
+            "<i>Circular tests run per replicate (each movie / cell = one data "
+            "point) and reuse the α + correction set above, so they agree with "
+            "the scalar results. Pooled-angle tests on every localisation are "
+            "deliberately omitted — at ~10⁵ angles they return p ≈ 0 regardless "
+            "of effect (pseudoreplication).</i>")
+        _circ_cap.setWordWrap(True)
+        _circ_cap.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        cC.addWidget(_circ_cap)
+        v.addWidget(card_circ)
+
+        # ── 5 · The resulting plain-language test plan. ──
+        card4, c4 = _card(5, "Tests that will run")
         self.lbl_stats_plan = QtWidgets.QLabel("—")
         self.lbl_stats_plan.setWordWrap(True)
         self.lbl_stats_plan.setTextFormat(Qt.TextFormat.RichText)
@@ -2392,8 +2456,8 @@ class BuildMixin:
         c4.addWidget(self.lbl_stats_plan)
         v.addWidget(card4)
 
-        # ── 5 · Native decision diagram (live; crisp; on-theme). ──
-        card5, c5 = _card(5, "How the test is chosen")
+        # ── 6 · Native decision diagram (live; crisp; on-theme). ──
+        card5, c5 = _card(6, "How the test is chosen")
         self._stats_diagram = _DecisionDiagram()
         c5.addWidget(self._stats_diagram)
         v.addWidget(card5)
@@ -2410,6 +2474,11 @@ class BuildMixin:
             "Holm", "Benjamini–Hochberg FDR", "Hedges' g", "Replicate",
             "Two-way mixed ANOVA", "Sphericity", "Greenhouse–Geisser",
             "Interaction effect",
+            # Circular (turning-angle) statistics
+            "Turning angle", "Sign convention", "Concentration κ",
+            "Mean resultant length R̄", "Watson-Williams",
+            "Circular-linear correlation", "Rayleigh test",
+            "Directional persistence (VACF)",
         ]
         for _term in _key_terms:
             _row = QtWidgets.QLabel(f"<b>{_term}</b> — {_gdef(_term)}")
@@ -2435,7 +2504,9 @@ class BuildMixin:
             _w.valueChanged.connect(lambda *_: self._refresh_stats_preview())
         for _w in (self.c_stat_correction, self.c_stat_strategy, self.c_stat_anova3):
             _w.currentIndexChanged.connect(lambda *_: self._refresh_stats_preview())
-        for _w in (self.c_stat_across_metric, self.c_stat_fig_corrected):
+        for _w in (self.c_stat_across_metric, self.c_stat_fig_corrected,
+                   self.c_circ_include, self.c_circ_kappa, self.c_circ_rbar,
+                   self.c_circ_mu, self.c_circ_circlin):
             _w.toggled.connect(lambda *_: self._refresh_stats_preview())
 
         scroll.setWidget(body)
@@ -2455,6 +2526,13 @@ class BuildMixin:
                 self.c_stat_anova3.currentText(), "welch"),
             "ci_level": float(self.s_stat_ci.value()),
             "figure_stars_use_corrected": bool(self.c_stat_fig_corrected.isChecked()),
+            # Circular (turning-angle) statistics — reuse the alpha/correction
+            # above; these only gate which circular outputs/tests are produced.
+            "include_circular_outputs": bool(self.c_circ_include.isChecked()),
+            "circ_test_kappa":   bool(self.c_circ_kappa.isChecked()),
+            "circ_test_rbar":    bool(self.c_circ_rbar.isChecked()),
+            "circ_test_mu":      bool(self.c_circ_mu.isChecked()),
+            "circ_test_circlin": bool(self.c_circ_circlin.isChecked()),
         }
 
     def _refresh_stats_preview(self):
@@ -2580,6 +2658,17 @@ class BuildMixin:
             items.append(f"<b>Effect size:</b> Hedges' g with {ci_pct} CI")
             items.append(f"<b>Significance:</b> α = {cfg['alpha']:g}; "
                          f"on-figure stars use <b>{stars_src}</b> p-values")
+            if cfg.get("include_circular_outputs", True):
+                _circ_on = [nm for nm, key in (
+                    ("κ", "circ_test_kappa"), ("R̄", "circ_test_rbar"),
+                    ("μ (Watson-Williams)", "circ_test_mu"),
+                    ("circ-lin", "circ_test_circlin")) if cfg.get(key, True)]
+                _circ_txt = (" · ".join(_circ_on) if _circ_on
+                             else "none selected")
+                items.append("<b>Circular (turning-angle) tests, per replicate:"
+                             f"</b> {_circ_txt} (reuse the α + correction above)")
+            else:
+                items.append("<b>Circular outputs:</b> off")
             html = "<ul style='margin-left:-22px;'>" + "".join(
                 f"<li style='margin-bottom:4px;'>{it}</li>" for it in items) + "</ul>"
             metrics = " · ".join(disp for disp, _ in self._STAT_PREVIEW_METRICS)

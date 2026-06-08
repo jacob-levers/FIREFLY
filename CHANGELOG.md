@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.34.0
+
+### Circular statistics: full customization + in-app explanation (Compare tab)
+
+The circular (turning-angle) statistics were richly computed but had no UI
+customization and almost no in-app explanation. The Compare wizard now has a
+**"Circular statistics" card** that brings them to parity with the scalar stats:
+
+- **Customization.** A master toggle to include/exclude the circular CSV + PDF
+  outputs (separate from the figure panels), plus individual toggles for which
+  between-group tests are reported (concentration κ, resultant length R̄,
+  Watson-Williams mean direction μ, circular-linear correlation). All persist in
+  settings.
+- **They obey your stats settings.** The per-replicate circular comparison tests
+  now reuse the chosen **α + multiple-comparison correction** (and parametric
+  strategy), so the circular results agree with the scalar ones — the tests CSV
+  gains a `p_corrected` column and the stars honour your α.
+- **Explanation.** Glossary entries (Rayleigh, V-test, Watson-Williams, κ, R̄,
+  directional persistence, circular-linear correlation, …), an in-UI
+  **sign-convention note** (previously only in the PDF footer), and the live
+  test-plan now lists the circular tests that will run.
+
+Pooled-angle tests stay omitted by design (pseudoreplication); the per-file
+single-run circular report is unchanged.
+
 ## v2.33.0
 
 ### Distribution KDEs taper fully (even wide classes like Directed)

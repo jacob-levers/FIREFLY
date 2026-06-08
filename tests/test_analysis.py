@@ -149,6 +149,80 @@ def test_circular_comparison_csv_is_split_and_clean(tmp_path):
     assert tst["hedges_g"].notna().any()       # effect size populated
 
 
+def _circ_groups(rng):
+    """3 von-Mises groups + per-replicate angle arrays for circular tests."""
+    def reps(mean_deg, k=4, n=200):
+        return [np.degrees(rng.vonmises(np.radians(mean_deg), 2.0, n))
+                for _ in range(k)]
+    A, B, C = reps(0.0), reps(45.0), reps(120.0)
+    ga = [("A", np.concatenate(A), "#f00"), ("B", np.concatenate(B), "#0f0"),
+          ("C", np.concatenate(C), "#00f")]
+    return ga, {"A": A, "B": B, "C": C}
+
+
+def test_circular_comparison_tests_respect_alpha_and_correction():
+    """The per-replicate circular tests honour the stats_config α + correction:
+    raw p is unchanged but p_corrected differs between 'none' and 'bonferroni',
+    and stars are gated on the chosen α."""
+    rng = np.random.default_rng(3)
+    ga, per_rep = _circ_groups(rng)
+    groups = [(lbl, a) for lbl, a, _ in ga]
+    none = fc.compute_circular_comparison_tests(
+        groups, per_replicate_angles=per_rep,
+        stats_config={"correction": "none", "alpha": 0.05})
+    bonf = fc.compute_circular_comparison_tests(
+        groups, per_replicate_angles=per_rep,
+        stats_config={"correction": "bonferroni", "alpha": 0.05})
+    pw_none = none["per_replicate_kappa_test"]["pairwise"]
+    pw_bonf = bonf["per_replicate_kappa_test"]["pairwise"]
+    # raw p identical; corrected p ≥ raw and ≥ the 'none' corrected p
+    for a, b in zip(pw_none, pw_bonf):
+        assert a["p"] == pytest.approx(b["p"], nan_ok=True)
+        if a["p"] is not None and np.isfinite(a["p"]):
+            assert b["p_corrected"] >= a["p_corrected"] - 1e-12
+    # every pairwise row carries the corrected fields the CSV/PDF read
+    assert all("p_corrected" in r and "stars_corrected" in r for r in pw_bonf)
+    # μ test gets an α-gated star
+    mu = bonf.get("per_replicate_mu_ww")
+    assert mu is not None and "stars" in mu
+
+
+def test_circular_comparison_csv_honors_test_toggles(tmp_path):
+    """Turning off circ_test_rbar/mu/circlin drops their rows from the tests CSV
+    (only the κ test remains), and the file schema is preserved."""
+    rng = np.random.default_rng(4)
+    ga, per_rep = _circ_groups(rng)
+    csv = tmp_path / "K_circular_statistics.csv"
+    fc.save_comparison_circular_statistics(
+        ga, csv_path=str(csv), pdf_path=None, per_replicate_angles=per_rep,
+        stats_config={"circ_test_rbar": False, "circ_test_mu": False,
+                      "circ_test_circlin": False})
+    tst = pd.read_csv(str(tmp_path / "K_circular_tests.csv"))
+    metrics = set(tst["metric"].unique())
+    assert metrics == {"kappa (concentration)"}
+    assert "p_corrected" in tst.columns
+
+
+def test_compare_groups_circular_outputs_toggle(tmp_path):
+    """include_circular_outputs=False writes NO circular files, while the
+    comparison figure + summary CSV are still produced."""
+    import matplotlib; matplotlib.use("Agg")
+    import glob
+    from firefly.analysis.fa_compare import compare_groups
+    root = str(tmp_path)
+    g1 = [_write_run_folder(root, "A", f"A{i}", sigma_px=2.0, seed=i)
+          for i in range(3)]
+    g2 = [_write_run_folder(root, "B", f"B{i}", sigma_px=3.5, seed=10 + i)
+          for i in range(3)]
+    groups = [{"folders": g1, "label": "A", "color": "#4a90d9"},
+              {"folders": g2, "label": "B", "color": "#e05252"}]
+    out = str(tmp_path / "out")
+    compare_groups(groups, output_dir=out, pdf_report=False,
+                   stats_config={"include_circular_outputs": False})
+    assert not glob.glob(os.path.join(out, "*circular*"))
+    assert os.path.exists(os.path.join(out, "comparison_summary.csv"))
+
+
 # ── localisation ─────────────────────────────────────────────────────────────
 def test_trackpy_localisation_finds_and_locates_spots():
     truth = [(20.5, 30.2), (60.1, 45.7), (75.0, 70.0)]
@@ -1458,6 +1532,15 @@ def test_stats_config_normalize_backfills_and_clamps():
     assert c["ci_level"] == 0.95
     # known values preserved
     assert normalize_stats_config({"correction": "fdr_bh"})["correction"] == "fdr_bh"
+    # circular keys: present + defaulted on, and bool-coerced
+    base = normalize_stats_config(None)
+    for k in ("include_circular_outputs", "circ_test_kappa", "circ_test_rbar",
+              "circ_test_mu", "circ_test_circlin"):
+        assert base[k] is True
+    coerced = normalize_stats_config({"include_circular_outputs": 0,
+                                      "circ_test_kappa": 1})
+    assert coerced["include_circular_outputs"] is False
+    assert coerced["circ_test_kappa"] is True
 
 
 def test_correct_pvalues_methods_and_edge_cases():

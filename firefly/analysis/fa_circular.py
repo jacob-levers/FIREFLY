@@ -941,7 +941,8 @@ def _watson_williams_mu_per_replicate(mu_lists_per_group):
 
 
 def compute_circular_comparison_tests(groups, *, track_angle_d_pairs=None,
-                                       per_replicate_angles=None):
+                                       per_replicate_angles=None,
+                                       stats_config=None):
     """Run all the standard 'do these circular samples differ?' tests on
     a list of labelled groups.
 
@@ -976,6 +977,9 @@ def compute_circular_comparison_tests(groups, *, track_angle_d_pairs=None,
     """
     labels = [g[0] for g in groups]
     samples = [g[1] for g in groups]
+    from firefly.analysis.fa_stats_config import (
+        normalize_stats_config, correct_pvalues, stars_for)
+    cfg = normalize_stats_config(stats_config)
     # The pooled-angle inferential tests (Watson-Williams,
     # Mardia-Watson-Wheeler, Wallraff κ-test, Kuiper two-sample, and the
     # circular-linear angle-vs-D correlation) are intentionally NOT
@@ -1047,18 +1051,43 @@ def compute_circular_comparison_tests(groups, *, track_angle_d_pairs=None,
         # Welch's t for 2 groups, ANOVA for N>2 (auto-selected).
         if sum(1 for arr in per_kappa if arr.size >= 1) >= 2:
             try:
-                om_k, pw_k = _stat_test_n(per_kappa, labels)
+                om_k, pw_k = _stat_test_n(per_kappa, labels, cfg)
                 out["per_replicate_kappa_test"] = {
                     "omnibus": om_k, "pairwise": pw_k}
             except Exception:
                 pass
             try:
-                om_r, pw_r = _stat_test_n(per_rbar, labels)
+                om_r, pw_r = _stat_test_n(per_rbar, labels, cfg)
                 out["per_replicate_rbar_test"] = {
                     "omnibus": om_r, "pairwise": pw_r}
             except Exception:
                 pass
         out["per_replicate_mu_ww"] = _watson_williams_mu_per_replicate(per_mu)
+
+    # Central multiple-comparison correction across each metric's pairwise
+    # family (mirrors the scalar path in fa_compare): write p_corrected +
+    # stars_corrected onto each pairwise row using the chosen α + correction,
+    # so the circular stars agree with the rest of the stats output.
+    def _apply_correction(test_dict):
+        if not test_dict:
+            return
+        pw = test_dict.get("pairwise") or []
+        pc = correct_pvalues([r.get("p") for r in pw], cfg["correction"])
+        for r, p_corr in zip(pw, pc):
+            r["p_corrected"] = p_corr
+            # Preserve the underpowered / blank-star convention: only show a
+            # corrected star when the raw star was shown.
+            r["stars_corrected"] = (stars_for(p_corr, cfg["alpha"])
+                                    if r.get("stars") else "")
+        om = test_dict.get("omnibus")
+        if om is not None:
+            om["stars_corrected"] = om.get("stars", "")
+    _apply_correction(out.get("per_replicate_kappa_test"))
+    _apply_correction(out.get("per_replicate_rbar_test"))
+    _mu = out.get("per_replicate_mu_ww")
+    if _mu is not None and _mu.get("p") is not None:
+        _mu["stars"] = stars_for(_mu.get("p"), cfg["alpha"])
+        _mu["stars_corrected"] = _mu["stars"]
 
     return out
 
@@ -1081,7 +1110,8 @@ def save_comparison_circular_statistics(groups_angles, *,
                                          csv_path=None, pdf_path=None,
                                          fig_theme="Dark",
                                          track_angle_d_pairs=None,
-                                         per_replicate_angles=None):
+                                         per_replicate_angles=None,
+                                         stats_config=None):
     """Pool turning angles per group, compute circular statistics for
     each group, write a combined CSV (one row per group) and a multi-
     page themed PDF (one page per group + a comparative summary page).
@@ -1107,6 +1137,17 @@ def save_comparison_circular_statistics(groups_angles, *,
     from matplotlib.backends.backend_pdf import PdfPages
 
     pal = _theme_palette(fig_theme)
+    from firefly.analysis.fa_stats_config import (
+        normalize_stats_config, correction_display)
+    cfg = normalize_stats_config(stats_config)
+    _use_corr = cfg["figure_stars_use_corrected"]
+
+    def _disp_star(d):
+        """The star to display for a test dict, honouring the user's
+        'figure stars use corrected p' choice."""
+        if not d:
+            return ""
+        return ((d.get("stars_corrected") if _use_corr else d.get("stars")) or "")
 
     # ── Per-group stats ────────────────────────────────────────────────
     rows = []
@@ -1144,7 +1185,8 @@ def save_comparison_circular_statistics(groups_angles, *,
     comp_tests = compute_circular_comparison_tests(
         test_groups,
         track_angle_d_pairs=track_angle_d_pairs,
-        per_replicate_angles=per_replicate_angles)
+        per_replicate_angles=per_replicate_angles,
+        stats_config=cfg)
 
     # ── CSV (split into clean single-table files) ──────────────────────
     # Previously every kind of row (per-group descriptive + per-replicate
@@ -1210,14 +1252,16 @@ def save_comparison_circular_statistics(groups_angles, *,
                         "metric": metric, "scope": "omnibus",
                         "label_a": "all groups", "label_b": "",
                         "test": om.get("test"), "p_value": om.get("p"),
-                        "stars": om.get("stars", ""), "note": om.get("note", ""),
+                        "p_corrected": om.get("p_corrected", om.get("p")),
+                        "stars": _disp_star(om), "note": om.get("note", ""),
                     })
                 for pw in (t.get("pairwise") or []):
                     test_rows.append({
                         "metric": metric, "scope": "pairwise",
                         "label_a": pw.get("label_i"), "label_b": pw.get("label_j"),
                         "test": pw.get("test"), "p_value": pw.get("p"),
-                        "stars": pw.get("stars", ""),
+                        "p_corrected": pw.get("p_corrected"),
+                        "stars": _disp_star(pw),
                         "n_rep_a": pw.get("n_i"), "n_rep_b": pw.get("n_j"),
                         "mean_a": pw.get("mean_i"), "mean_b": pw.get("mean_j"),
                         "sem_a": pw.get("sem_i"), "sem_b": pw.get("sem_j"),
@@ -1228,23 +1272,26 @@ def save_comparison_circular_statistics(groups_angles, *,
                         "note": pw.get("note", ""),
                     })
 
-            _add_scalar_test("per_replicate_kappa_test", "kappa (concentration)")
-            _add_scalar_test("per_replicate_rbar_test",  "Rbar (resultant length)")
+            if cfg["circ_test_kappa"]:
+                _add_scalar_test("per_replicate_kappa_test", "kappa (concentration)")
+            if cfg["circ_test_rbar"]:
+                _add_scalar_test("per_replicate_rbar_test",  "Rbar (resultant length)")
 
             mu_ww = comp_tests.get("per_replicate_mu_ww")
-            if mu_ww is not None:
+            if cfg["circ_test_mu"] and mu_ww is not None:
                 test_rows.append({
                     "metric": "mu (mean direction)", "scope": "omnibus",
                     "label_a": "all groups", "label_b": "",
                     "test": "Watson-Williams F (per-replicate)",
                     "statistic_F": mu_ww.get("F"),
                     "df1": mu_ww.get("df1"), "df2": mu_ww.get("df2"),
-                    "p_value": mu_ww.get("p"), "note": mu_ww.get("note", ""),
+                    "p_value": mu_ww.get("p"), "stars": _disp_star(mu_ww),
+                    "note": mu_ww.get("note", ""),
                 })
 
             tests_cols = ["metric", "scope", "label_a", "label_b", "test",
-                          "statistic_F", "df1", "df2", "p_value", "stars",
-                          "n_rep_a", "n_rep_b", "mean_a", "mean_b",
+                          "statistic_F", "df1", "df2", "p_value", "p_corrected",
+                          "stars", "n_rep_a", "n_rep_b", "mean_a", "mean_b",
                           "sem_a", "sem_b", "cohens_d", "hedges_g",
                           "hedges_g_ci_low", "hedges_g_ci_high", "note"]
             tdf = pd.DataFrame(test_rows)
@@ -1524,8 +1571,11 @@ def save_comparison_circular_statistics(groups_angles, *,
                 "Wheeler / Wallraff / Kuiper on all localisations) are "
                 "deliberately NOT shown: with ~10^5 pooled angles they "
                 "return p ≈ 0 regardless of effect (pseudoreplication).",
-                "Significant p (< 0.05, stars) rejects H₀ — i.e. the "
-                "groups DO differ at the replicate level.",
+                (f"Tests use α = {cfg['alpha']:g} with "
+                 f"{correction_display(cfg['correction'])} correction across each "
+                 f"metric's pairwise comparisons; displayed stars are the "
+                 f"{'corrected' if _use_corr else 'raw'} p (full + corrected p in "
+                 f"the tests CSV).  A starred row rejects H₀ — the groups differ."),
             ]
             yE = 0.395
             for line in explain_block:
@@ -1620,7 +1670,8 @@ def save_comparison_circular_statistics(groups_angles, *,
             # tests, but they live in the same table because they share
             # the same "name · stat · p · sig" template.
             corr_rows = []
-            for cl in comp_tests.get("circ_lin_per_group", []):
+            for cl in (comp_tests.get("circ_lin_per_group", [])
+                       if cfg["circ_test_circlin"] else []):
                 res = cl.get("result")
                 grp = cl.get("label", "?")
                 if not res:
@@ -1654,7 +1705,7 @@ def save_comparison_circular_statistics(groups_angles, *,
                         f"{label} · all groups  ({test_name})",
                         "(see CSV for full stats)",
                         _fmt_p(om["p"]),
-                        _p_stars(om["p"]),
+                        _disp_star(om),
                     ])
                 for pw in (t.get("pairwise") or []):
                     if pw.get("p") is None:
@@ -1678,7 +1729,7 @@ def save_comparison_circular_statistics(groups_angles, *,
                         f"{label} · {pair}  ({pw.get('test', '')})",
                         stat_cell,
                         _fmt_p(pw["p"]),
-                        _p_stars(pw["p"]),
+                        _disp_star(pw),
                     ])
 
             # Prefix names the METRIC only — the actual test (auto-selected by a
@@ -1686,17 +1737,19 @@ def save_comparison_circular_statistics(groups_angles, *,
             # Whitney otherwise) is shown in parentheses per row.  (It used to
             # say "Welch κ", which contradicted rows whose test was Kruskal-
             # Wallis / Mann-Whitney.)
-            _push_per_rep("per_replicate_kappa_test", "κ (per-replicate)")
-            _push_per_rep("per_replicate_rbar_test",  "R̄ (per-replicate)")
+            if cfg["circ_test_kappa"]:
+                _push_per_rep("per_replicate_kappa_test", "κ (per-replicate)")
+            if cfg["circ_test_rbar"]:
+                _push_per_rep("per_replicate_rbar_test",  "R̄ (per-replicate)")
 
             mu_ww = comp_tests.get("per_replicate_mu_ww")
-            if mu_ww is not None and mu_ww.get("p") is not None:
+            if cfg["circ_test_mu"] and mu_ww is not None and mu_ww.get("p") is not None:
                 tag = "" if mu_ww.get("valid", False) else "  (κ<2)"
                 per_rep_rows.append([
                     f"Watson-Williams μ · all groups (per-replicate){tag}",
                     f"F({mu_ww['df1']}, {mu_ww['df2']}) = {mu_ww['F']:.3g}",
                     _fmt_p(mu_ww["p"]),
-                    _p_stars(mu_ww["p"]),
+                    _disp_star(mu_ww),
                 ])
 
             # Paginate ALL test rows so page 1 is never overstuffed.  The

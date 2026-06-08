@@ -25,6 +25,16 @@ DEFAULT_STATS_CONFIG = {
     "anova3plus":                 "welch",  # welch | oneway | auto   (3+ groups, parametric)
     "ci_level":                   0.95,     # effect-size confidence-interval coverage
     "figure_stars_use_corrected": True,     # on-figure stars use corrected p (not raw)
+    # ── Circular (turning-angle) statistics ──────────────────────────────────
+    # The circular per-replicate comparison tests REUSE the keys above (alpha,
+    # correction, parametric_strategy, anova3plus, figure_stars_use_corrected)
+    # so they agree with the scalar output.  These extra keys only gate which
+    # circular outputs/tests are produced.
+    "include_circular_outputs":   True,     # write the circular CSV + PDF outputs
+    "circ_test_kappa":            True,     # report between-group concentration-κ test
+    "circ_test_rbar":             True,     # report between-group resultant-length R̄ test
+    "circ_test_mu":               True,     # report Watson-Williams mean-direction μ test
+    "circ_test_circlin":          True,     # report circular-linear (angle vs D) correlation
 }
 
 _CORRECTIONS = ("none", "bonferroni", "holm", "fdr_bh")
@@ -82,6 +92,9 @@ def normalize_stats_config(cfg):
     # bools
     out["across_metric_correction"]   = bool(out["across_metric_correction"])
     out["figure_stars_use_corrected"] = bool(out["figure_stars_use_corrected"])
+    for _k in ("include_circular_outputs", "circ_test_kappa", "circ_test_rbar",
+               "circ_test_mu", "circ_test_circlin"):
+        out[_k] = bool(out[_k])
     return out
 
 
@@ -249,6 +262,43 @@ STATS_GLOSSARY = {
     "Figure stars":
         "Whether the asterisks drawn on the figure use the corrected p-values "
         "(matching the CSV) rather than the raw ones.",
+    # ── Circular (turning-angle) statistics ──────────────────────────────────
+    "Turning angle":
+        "The change in direction between two consecutive steps of a track — 0° "
+        "means it kept going straight, ±180° means it reversed.",
+    "Sign convention":
+        "Turning angles are signed on (−180°, +180°]: 0° = straight ahead, "
+        "+θ = a left turn (counter-clockwise), −θ = a right turn, ±180° = a full "
+        "reversal.",
+    "Radial distribution":
+        "A polar (compass-style) view of the turning angles, highlighting any "
+        "left/right or forward/back asymmetry in the motion.",
+    "Rayleigh test":
+        "Tests whether turning angles are spread uniformly around the circle (no "
+        "preferred direction) versus clustered around one direction.",
+    "V-test":
+        "Like the Rayleigh test but asks specifically whether angles cluster "
+        "around a chosen direction (here 0°, i.e. directed / straight-ahead).",
+    "Directional persistence (VACF)":
+        "How much a particle tends to keep moving in the same direction step to "
+        "step — positive = directed/persistent, near zero = Brownian, negative = "
+        "bouncing back (caged).",
+    "Concentration κ":
+        "How tightly turning angles cluster around their mean direction — larger "
+        "κ means more sharply directed motion (the von Mises 1/variance analogue).",
+    "Mean resultant length R̄":
+        "A 0-to-1 measure of how concentrated the turning angles are: R̄≈0 = "
+        "uniformly scattered, R̄≈1 = all pointing the same way.",
+    "Watson-Williams":
+        "The circular analogue of ANOVA/t-test — tests whether groups share the "
+        "same mean turning direction; assumes reasonably concentrated angles (κ≥2).",
+    "Circular-linear correlation":
+        "Correlates a circular quantity (a track's average turning angle) with a "
+        "linear one (its diffusion coefficient) — do more-directed tracks diffuse "
+        "differently?",
+    "Circular outputs":
+        "The extra circular-statistics CSV files and PDF report produced alongside "
+        "the comparison figure (separate from the turning-angle figure panels).",
 }
 
 
