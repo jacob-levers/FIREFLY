@@ -369,6 +369,53 @@ def test_hyperfly_pill_engage_disengage(monkeypatch):
     pill.disengage()
 
 
+def test_hf_downscale_preview():
+    """Preview frames are subsampled (and spot coords scaled) before crossing
+    the IPC queue to the dashboard tiles."""
+    import numpy as np
+    import firefly.firefly_worker as w
+    frame = np.zeros((512, 512), dtype=np.float32)
+    payload = {"frame": frame.tobytes(), "shape": [512, 512],
+               "xs": [120.0], "ys": [240.0], "idx": 1, "n_frames": 10}
+    out = w._hf_downscale_preview(payload, max_dim=160)
+    assert out["shape"][0] < 512 and out["shape"][0] <= 200
+    # coords scaled by the same stride (512//160 == 3)
+    assert abs(out["xs"][0] - 120.0 / 3) < 1e-6
+    # already-small frames pass through unchanged
+    small = {"frame": np.zeros((64, 64), np.float32).tobytes(),
+             "shape": [64, 64], "xs": [], "ys": []}
+    assert w._hf_downscale_preview(small, max_dim=160)["shape"] == [64, 64]
+
+
+def test_hyperfly_dashboard_routing():
+    """The dashboard routes per-file messages to lane tiles, frees a lane on
+    completion, and reuses it for the next file."""
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import numpy as np
+    from PySide6 import QtWidgets
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from firefly.ui.ui_widgets import _HyperflyDashboard
+
+    d = _HyperflyDashboard()
+    d.build(4)
+    assert len(d._tiles) == 4
+    d.on_running(1, "A"); d.on_running(2, "B")
+    t1, t2 = d._map[1], d._map[2]
+    assert t1 is not t2 and t1._state == "running"
+    d.on_preview(1, np.zeros((80, 80), np.float32), [1.0, 2.0], [3.0, 4.0])
+    d.on_progress(1, 60, "Linking…")
+    assert t1._frame is not None and t1._n_spots == 2 and t1._pct == 60
+    d.on_done(1, 1000, 50)
+    assert t1._state == "done" and 1 not in d._map
+    d.on_running(5, "C")
+    assert d._map[5] is t1 and t1._stem == "C"      # freed lane reused
+    d.on_failed(2, "boom")
+    assert t2._state == "failed" and 2 not in d._map
+    d.stop()
+
+
 def test_msd_fit_sparse_short_tracks_finite():
     """Short/sparse tracks must yield finite-or-NaN D/alpha without crashing or
     blowing up to inf."""

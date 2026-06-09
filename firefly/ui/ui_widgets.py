@@ -1843,6 +1843,284 @@ class _LiveFrameView(QtWidgets.QWidget):
         p.end()
 
 
+class _HyperflyTile(QtWidgets.QFrame):
+    """One lane of the HYPERFLY dashboard: a compact live detection-view for the
+    file currently running in this lane — frame + spot overlay, a header with
+    the file stem, and a footer with stage / progress / counts.  Border colour
+    encodes state (running = accent, done = green, failed = red).
+
+    Painting is driven by the parent dashboard's single shared timer (set
+    ``_dirty`` and it repaints on the next flush) so K tiles don't each run
+    their own timer."""
+
+    _IDLE, _RUNNING, _DONE, _FAILED = "idle", "running", "done", "failed"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(150, 132)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                           QtWidgets.QSizePolicy.Policy.Expanding)
+        self._state = self._IDLE
+        self._stem = ""
+        self._stage = ""
+        self._pct = 0
+        self._frame = None
+        self._xs = None
+        self._ys = None
+        self._n_spots = 0
+        self._n_locs = None
+        self._n_tracks = None
+        self._dirty = True
+
+    def clear(self):
+        self._state = self._IDLE
+        self._stem = ""
+        self._stage = ""
+        self._pct = 0
+        self._frame = self._xs = self._ys = None
+        self._n_spots = 0
+        self._n_locs = self._n_tracks = None
+        self._dirty = True
+
+    # ── state setters (mark dirty; the dashboard timer repaints) ──
+    def set_running(self, stem):
+        self._state = self._RUNNING
+        self._stem = str(stem)
+        self._dirty = True
+
+    def set_preview(self, frame, xs, ys, n_spots=None):
+        try:
+            import numpy as _np
+            self._frame = _np.asarray(frame, dtype=_np.float32)
+            self._xs = _np.asarray(xs, dtype=_np.float32)
+            self._ys = _np.asarray(ys, dtype=_np.float32)
+            self._n_spots = int(self._xs.size if n_spots is None else n_spots)
+            if self._state == self._IDLE:
+                self._state = self._RUNNING
+            self._dirty = True
+        except Exception:
+            pass
+
+    def set_progress(self, pct, stage):
+        try:    self._pct = max(0, min(100, int(pct)))
+        except Exception: pass
+        self._stage = str(stage)
+        self._dirty = True
+
+    def set_done(self, n_locs=None, n_tracks=None):
+        self._state = self._DONE
+        self._n_locs = n_locs
+        self._n_tracks = n_tracks
+        self._pct = 100
+        self._dirty = True
+
+    def set_failed(self, err=""):
+        self._state = self._FAILED
+        self._stage = str(err)[:60]
+        self._dirty = True
+
+    def is_free(self) -> bool:
+        """A tile is reusable once its file finished (or it never started)."""
+        return self._state in (self._IDLE, self._DONE, self._FAILED)
+
+    def _border(self):
+        return {
+            self._RUNNING: _THEME.get("ACC", "#2f81f7"),
+            self._DONE:    _THEME.get("SUCCESS", "#3fb950"),
+            self._FAILED:  _THEME.get("DANGER", "#f85149"),
+        }.get(self._state, _THEME.get("BORDER", "#30363d"))
+
+    def paintEvent(self, _evt):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        r = self.rect()
+        p.fillRect(r, QtGui.QColor(_THEME['PANEL']))
+        pen = QtGui.QPen(QtGui.QColor(self._border())); pen.setWidth(2)
+        p.setPen(pen)
+        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 6, 6)
+
+        pad = 6
+        head_h = 16
+        foot_h = 14
+        # Header — stem + a tiny state glyph.
+        p.setPen(QtGui.QColor(_THEME['TXT']))
+        f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+        glyph = {self._DONE: "✓ ", self._FAILED: "✗ ",
+                 self._RUNNING: "", self._IDLE: ""}.get(self._state, "")
+        head_txt = (glyph + self._stem) if self._stem else "idle"
+        p.drawText(QtCore.QRect(r.left() + pad, r.top() + 3,
+                                r.width() - 2 * pad, head_h),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   p.fontMetrics().elidedText(
+                       head_txt, Qt.TextElideMode.ElideMiddle,
+                       r.width() - 2 * pad))
+
+        img_top = r.top() + 3 + head_h
+        img_rect = QtCore.QRect(r.left() + pad, img_top,
+                                r.width() - 2 * pad,
+                                r.bottom() - img_top - foot_h - pad)
+        # Live frame (greyscale) + detections.
+        if self._frame is not None and img_rect.width() > 4 and img_rect.height() > 4:
+            try:
+                import numpy as _np
+                fr = self._frame
+                lo, hi = _np.percentile(fr, [1.0, 99.5])
+                if hi <= lo:
+                    hi = lo + 1.0
+                u8 = _np.clip((fr - lo) * (255.0 / (hi - lo)), 0, 255
+                              ).astype(_np.uint8, copy=False)
+                u8 = _np.ascontiguousarray(u8)
+                h, w = u8.shape
+                img = QtGui.QImage(u8.tobytes(), w, h, w,
+                                   QtGui.QImage.Format.Format_Grayscale8)
+                scale = min(img_rect.width() / w, img_rect.height() / h)
+                dw = max(1, int(w * scale)); dh = max(1, int(h * scale))
+                dx = img_rect.left() + (img_rect.width() - dw) // 2
+                dy = img_rect.top() + (img_rect.height() - dh) // 2
+                p.drawImage(QtCore.QRect(dx, dy, dw, dh), img)
+                if self._xs is not None and self._xs.size > 0:
+                    cpen = QtGui.QPen(QtGui.QColor(_THEME['ACC']))
+                    cpen.setWidthF(1.0); p.setPen(cpen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    rad = max(2.0, 3.0 * scale)
+                    for x, y in zip(self._xs, self._ys):
+                        p.drawEllipse(QtCore.QPointF(dx + float(x) * scale,
+                                                     dy + float(y) * scale),
+                                      rad, rad)
+            except Exception:
+                pass
+        else:
+            p.setPen(QtGui.QColor(_THEME['TXT_MUTED']))
+            fs = p.font(); fs.setBold(False); fs.setPointSize(8); p.setFont(fs)
+            p.drawText(img_rect, Qt.AlignmentFlag.AlignCenter,
+                       "…" if self._state == self._RUNNING else "")
+
+        # Footer — stage / pct / counts.
+        p.setPen(QtGui.QColor(_THEME['TXT_MUTED']))
+        ff = p.font(); ff.setBold(False); ff.setPointSize(8); p.setFont(ff)
+        if self._state == self._DONE:
+            foot = f"✓ {int(self._n_locs or 0):,} locs · {int(self._n_tracks or 0):,} tracks"
+        elif self._state == self._FAILED:
+            foot = f"✗ {self._stage}"
+        elif self._state == self._RUNNING:
+            bits = []
+            if self._stage: bits.append(self._stage)
+            if self._n_spots: bits.append(f"{self._n_spots} spots")
+            foot = f"{self._pct}%  ·  " + " · ".join(bits) if bits else f"{self._pct}%"
+        else:
+            foot = ""
+        p.drawText(QtCore.QRect(r.left() + pad, r.bottom() - foot_h - 2,
+                                r.width() - 2 * pad, foot_h),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   p.fontMetrics().elidedText(foot, Qt.TextElideMode.ElideRight,
+                                              r.width() - 2 * pad))
+        p.end()
+
+
+class _HyperflyDashboard(QtWidgets.QWidget):
+    """Grid of `_HyperflyTile`s — one lane per concurrent file — for the
+    Analysis cockpit while a HYPERFLY batch runs.  Files are routed to a free
+    tile as they start and release it when they finish, so K tiles cycle
+    through all N files.  A single ~12 Hz timer flushes dirty tiles."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+        self._caption = QtWidgets.QLabel("")
+        self._caption.setStyleSheet(
+            f"color: {_THEME['TXT_MUTED']}; font-size: 11px;")
+        outer.addWidget(self._caption)
+        self._scroll = QtWidgets.QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._grid_host = QtWidgets.QWidget()
+        self._grid = QtWidgets.QGridLayout(self._grid_host)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(6)
+        self._scroll.setWidget(self._grid_host)
+        outer.addWidget(self._scroll, 1)
+
+        self._tiles: list = []
+        self._map: dict = {}          # file index → tile
+        self._timer = QTimer(self)
+        self._timer.setInterval(80)   # ~12 Hz flush
+        self._timer.timeout.connect(self._flush)
+
+    def build(self, n_lanes: int):
+        """(Re)build the grid for `n_lanes` lanes."""
+        self._timer.stop()
+        for t in self._tiles:
+            t.setParent(None)
+            t.deleteLater()
+        self._tiles = []
+        self._map = {}
+        n = max(1, int(n_lanes))
+        import math
+        cols = max(1, min(n, int(math.ceil(math.sqrt(n)))))
+        for i in range(n):
+            t = _HyperflyTile()
+            self._grid.addWidget(t, i // cols, i % cols)
+            self._tiles.append(t)
+        self._timer.start()
+
+    def set_caption(self, text: str):
+        self._caption.setText(text)
+
+    def _slot_for(self, fidx, create=False):
+        t = self._map.get(fidx)
+        if t is not None:
+            return t
+        if not create:
+            return None
+        for t in self._tiles:
+            if t not in self._map.values() and t.is_free():
+                self._map[fidx] = t
+                return t
+        return None
+
+    def _free(self, fidx):
+        self._map.pop(fidx, None)
+
+    # ── routing from the message pump ──
+    def on_running(self, fidx, stem):
+        t = self._slot_for(fidx, create=True)
+        if t is not None:
+            t.set_running(stem)
+
+    def on_preview(self, fidx, frame, xs, ys, n_spots=None):
+        t = self._slot_for(fidx, create=True)
+        if t is not None:
+            t.set_preview(frame, xs, ys, n_spots)
+
+    def on_progress(self, fidx, pct, stage):
+        t = self._slot_for(fidx, create=True)
+        if t is not None:
+            t.set_progress(pct, stage)
+
+    def on_done(self, fidx, n_locs=None, n_tracks=None):
+        t = self._slot_for(fidx)
+        if t is not None:
+            t.set_done(n_locs, n_tracks)
+        self._free(fidx)
+
+    def on_failed(self, fidx, err=""):
+        t = self._slot_for(fidx)
+        if t is not None:
+            t.set_failed(err)
+        self._free(fidx)
+
+    def _flush(self):
+        for t in self._tiles:
+            if getattr(t, "_dirty", False):
+                t._dirty = False
+                t.update()
+
+    def stop(self):
+        self._timer.stop()
+
+
 class _TrackInspector(QtWidgets.QFrame):
     """Right-side panel for the Visualise tab.  Displays per-particle stats
     for whichever track the user clicked on in the embedded napari viewer."""

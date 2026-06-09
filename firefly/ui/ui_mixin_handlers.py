@@ -709,12 +709,18 @@ class HandlersMixin:
                     if blob and shape[0] and shape[1]:
                         arr = _np.frombuffer(blob, dtype=_np.float32) \
                                  .reshape(shape[0], shape[1])
-                        self.live_view.set_frame(
-                            arr,
-                            payload.get("xs", []),
-                            payload.get("ys", []),
-                            payload.get("idx", 0),
-                            payload.get("n_frames", 0))
+                        xs = payload.get("xs", [])
+                        ys = payload.get("ys", [])
+                        fidx = payload.get("file")   # set in HYPERFLY mode
+                        if fidx is not None:
+                            dash = getattr(self, "hyperfly_dashboard", None)
+                            if dash is not None:
+                                dash.on_preview(fidx, arr, xs, ys)
+                        else:
+                            self.live_view.set_frame(
+                                arr, xs, ys,
+                                payload.get("idx", 0),
+                                payload.get("n_frames", 0))
                 except (AttributeError, ValueError, KeyError):
                     pass
             elif kind == "done":
@@ -723,11 +729,11 @@ class HandlersMixin:
                 self._handle_done(payload)
                 worker_done = True
             elif kind == "hyperfly_status":
-                # Big-machine parallel batch engaged — announce it prominently
-                # and light up the animated pill next to the readiness badge.
+                # Big-machine parallel batch engaged — announce it, light up the
+                # animated pill, and switch the cockpit to the live tile grid.
                 try:
                     if isinstance(payload, dict) and payload.get("active"):
-                        nf = payload.get("n_concurrent")
+                        nf = int(payload.get("n_concurrent") or 1)
                         wc = payload.get("per_file_workers")
                         log_buf.append(
                             f"⚡ HYPERFLY ENGAGED — {nf} files at once · "
@@ -737,6 +743,35 @@ class HandlersMixin:
                         pill = getattr(self, "_hyperfly_pill", None)
                         if pill is not None:
                             pill.engage(f"⚡ HYPERFLY · {nf} at once")
+                        dash = getattr(self, "hyperfly_dashboard", None)
+                        if dash is not None:
+                            dash.build(nf)
+                            dash.set_caption(
+                                f"⚡ Processing {nf} files at once · "
+                                f"{wc} cores each — live per-file detection")
+                            try:
+                                self._analysis_stack.setCurrentWidget(dash)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            elif kind == "hf_tile":
+                # Per-file dashboard tile update (running / progress / done / fail).
+                try:
+                    dash = getattr(self, "hyperfly_dashboard", None)
+                    if dash is not None and isinstance(payload, dict):
+                        fidx = payload.get("file")
+                        state = payload.get("state")
+                        if state == "running":
+                            dash.on_running(fidx, payload.get("stem", ""))
+                        elif state == "done":
+                            dash.on_done(fidx, payload.get("n_locs"),
+                                         payload.get("n_tracks"))
+                        elif state == "failed":
+                            dash.on_failed(fidx, payload.get("error", ""))
+                        else:
+                            dash.on_progress(fidx, payload.get("pct", 0),
+                                             payload.get("stage", ""))
                 except Exception:
                     pass
             elif kind == "file_starting":
@@ -849,10 +884,15 @@ class HandlersMixin:
 
         if worker_done:
             # Any terminal state (done / batch_done / stopped / error / process
-            # died) ends a HYPERFLY batch — switch the pill off.
+            # died) ends a HYPERFLY batch — switch the pill off and stop the
+            # dashboard's repaint timer (its final grid stays on screen).
             pill = getattr(self, "_hyperfly_pill", None)
             if pill is not None:
                 try:    pill.disengage()
+                except Exception: pass
+            dash = getattr(self, "hyperfly_dashboard", None)
+            if dash is not None:
+                try:    dash.stop()
                 except Exception: pass
             self._cleanup_after_run()
 

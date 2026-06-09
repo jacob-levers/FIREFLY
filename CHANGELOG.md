@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.53.0
+
+### HYPERFLY live dashboard — a tile per file
+
+When HYPERFLY runs many files at once, the Analysis cockpit now shows a **grid
+of live detection tiles**, one lane per concurrent file. Each tile shows that
+file's **live preview** (frame + detected spots), its **stem**, **stage /
+progress**, and **spot count** — with a colour-coded border (accent while
+running, green ✓ done, red ✗ failed). As a file finishes, its lane is reused by
+the next file, so K tiles cycle through the whole batch.
+
+Built to stay light at scale: previews are **downscaled and throttled
+(~3 Hz/file)** before crossing to the GUI, and a single shared timer repaints
+only the tiles that changed. The dashboard appears automatically when HYPERFLY
+engages and is replaced by the normal single-file cockpit for ordinary runs.
+
 ## v2.52.0
 
 ### HYPERFLY: an "engaged" badge + a readable console

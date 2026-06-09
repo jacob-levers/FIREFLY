@@ -2506,28 +2506,69 @@ def _hf_important(line) -> bool:
     return any(m in str(line) for m in _HF_IMPORTANT_MARKERS)
 
 
+def _hf_downscale_preview(payload: dict, max_dim: int = 160) -> dict:
+    """Shrink a preview_frame payload (cheap stride subsample) so K live tiles
+    don't ship full-resolution frames through the IPC queue.  Scales the spot
+    coordinates to match.  Returns the original on any trouble."""
+    try:
+        import numpy as _np
+        shape = payload.get("shape") or [0, 0]
+        h, w = int(shape[0]), int(shape[1])
+        blob = payload.get("frame")
+        if not blob or h <= 0 or w <= 0:
+            return payload
+        s = max(1, int(max(h, w) / max_dim))
+        if s <= 1:
+            return payload
+        arr = _np.frombuffer(blob, dtype=_np.float32).reshape(h, w)[::s, ::s]
+        arr = _np.ascontiguousarray(arr, dtype=_np.float32)
+        out = dict(payload)
+        out["frame"] = arr.tobytes()
+        out["shape"] = [int(arr.shape[0]), int(arr.shape[1])]
+        out["xs"] = [float(x) / s for x in (payload.get("xs") or [])]
+        out["ys"] = [float(y) / s for y in (payload.get("ys") or [])]
+        return out
+    except Exception:
+        return payload
+
+
 class _HFQueue:
     """Per-worker adapter over the Manager fan-in queue.
 
     * tags every ``("log", line)`` with ``[stem]`` so concurrent files are
-      attributable in the single GUI log, and
-    * drops live-view payloads (``preview_frame`` / ``mass_chunk``) from every
-      file except the designated spotlight one — so we never ship K streams of
-      frames through the IPC queue (Stage A shows one live preview; Stage B
-      adds per-file tiles).
+      attributable in the single GUI log;
+    * routes each ``preview_frame`` to this file's live dashboard tile — tagged
+      with the file index + stem and **downscaled + throttled** (~3 Hz) so K
+      concurrent streams stay light on the IPC queue;
+    * drops the per-file ``mass_chunk`` (not shown per tile).
     Everything else passes through verbatim.
     """
-    def __init__(self, fan_q, stem, spotlight):
+    def __init__(self, fan_q, stem, file_idx):
         self._q = fan_q
         self._stem = stem
-        self._spot = bool(spotlight)
+        self._idx = int(file_idx)
+        self._last_preview_t = 0.0
 
     def put(self, item):
         try:
             kind = item[0] if isinstance(item, tuple) else None
         except Exception:
             kind = None
-        if kind in ("preview_frame", "mass_chunk") and not self._spot:
+        if kind == "mass_chunk":
+            return
+        if kind == "preview_frame":
+            import time as _t
+            now = _t.monotonic()
+            if now - self._last_preview_t < 0.33:      # ~3 Hz per file
+                return
+            self._last_preview_t = now
+            try:
+                payload = _hf_downscale_preview(dict(item[1]))
+                payload["file"] = self._idx
+                payload["stem"] = self._stem
+                self._q.put(("preview_frame", payload))
+            except Exception:
+                pass
             return
         try:
             if kind == "log":
@@ -2564,8 +2605,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
     mgr_cancel = _HF_CANCEL
     stem = str(params.get("stem_override")
                or os.path.splitext(os.path.basename(params["file"]))[0])
-    spotlight = (index == 1)            # Stage A: first file is the live preview
-    hfq = _HFQueue(fan_q, stem, spotlight)
+    hfq = _HFQueue(fan_q, stem, index)   # routes this file's previews to its tile
 
     # Test hook: exercise the engine plumbing (spawn → fan-in → forwarder →
     # collector) without the heavy real pipeline.  Set FIREFLY_HYPERFLY_SELFTEST.
@@ -2610,12 +2650,26 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
         if _hf_important(msg):
             _emit(str(msg))
 
-    def _wprog(_pct, _msg):
-        # Per-file progress isn't streamed to the global bar in HYPERFLY — the
-        # collector drives it on file completion. Drop to avoid K bars fighting.
-        return
+    _prog_state = {"t": 0.0}
+
+    def _wprog(pct, stage):
+        # Don't drive the GLOBAL bar (the collector does that on completion);
+        # instead feed this file's dashboard tile a throttled stage/percent.
+        try:
+            import time as _t
+            now = _t.monotonic()
+            if now - _prog_state["t"] < 0.2:        # ~5 Hz per file
+                return
+            _prog_state["t"] = now
+            fan_q.put(("hf_tile", {"file": index, "stem": stem,
+                                   "pct": int(pct), "stage": str(stage)}))
+        except Exception:
+            pass
 
     try:    fan_q.put(("log", f"▶ [{stem}] ({index}/{n_total}) started"))
+    except Exception: pass
+    try:    fan_q.put(("hf_tile", {"file": index, "stem": stem,
+                                   "state": "running"}))
     except Exception: pass
 
     params = dict(params)
@@ -2727,6 +2781,11 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                         f"  ✓ [{_stem}] {int(payload.get('n_locs', 0)):,} locs · "
                         f"{int(payload.get('n_tracks', 0)):,} tracks   "
                         f"({done}/{n})"))
+                    # Mark this file's dashboard tile done (frees its lane).
+                    msg_queue.put(("hf_tile", {
+                        "file": i, "stem": _stem, "state": "done",
+                        "n_locs": payload.get("n_locs", 0),
+                        "n_tracks": payload.get("n_tracks", 0)}))
                 else:
                     results[i - 1] = {"index": i, "ok": False,
                                       "file": params["file"],
@@ -2738,6 +2797,9 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     msg_queue.put(("log",
                         f"  ✗ [{_stem}] failed: {payload.get('error', '')}   "
                         f"({done}/{n})"))
+                    msg_queue.put(("hf_tile", {
+                        "file": i, "stem": _stem, "state": "failed",
+                        "error": payload.get("error", "")}))
                 _prog(int(100 * done / max(1, n)),
                       f"HYPERFLY: {done}/{n} files done")
                 if cancel_event.is_set():

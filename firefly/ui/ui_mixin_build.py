@@ -31,7 +31,7 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
                         _load_imagej_roi_polygons, _load_tif_mask_polygons,
                         _load_any_roi_file, _info_icon, _InfoIcon,
                         _label_with_info, _AlertBanner, _StatusBadge,
-                        _HyperflyPill,
+                        _HyperflyPill, _HyperflyDashboard,
                         _step_badge, _color_chip, _DecisionDiagram,
                         _PipelineDiagram, _NoHScrollArea)
 
@@ -1870,6 +1870,11 @@ class BuildMixin:
         self.run_results = _ResultsPanel(
             "Results will appear here after analysis.")
         self._analysis_stack.addWidget(self.run_results)
+
+        # Page 2 — HYPERFLY dashboard: a grid of live per-file detection tiles,
+        # shown in place of the single cockpit view while a parallel batch runs.
+        self.hyperfly_dashboard = _HyperflyDashboard()
+        self._analysis_stack.addWidget(self.hyperfly_dashboard)
 
         v.addWidget(self._analysis_stack, stretch=1)
         # Start on the results page (cockpit only shows during runs)
