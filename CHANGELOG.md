@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.50.0
+
+### ⚡ HYPERFLY — high-throughput batch on big machines
+
+On a workstation with lots of cores and RAM, a batch used to crawl through one
+file at a time, leaving most of the machine idle during each file's I/O,
+linking, and figure stages. **HYPERFLY** processes **several files at once,
+RAM-resident**, so the whole box stays busy — batch wall-time drops sharply
+without changing any per-file result.
+
+- **Auto-detects** capable machines (≈≥32 cores AND ≥192 GB RAM) and engages
+  automatically; a one-line banner says when it's active.
+- **Fully automatic concurrency**: picks how many files to run at once and the
+  per-file core budget from free RAM and cores, so the wave fits in memory and
+  the cores aren't oversubscribed.
+- **Manual caps for IT**: Preferences → Performance → *HYPERFLY batch*
+  (Auto / Always on / Off) plus **Max concurrent files** and **Max cores**
+  (0 = automatic) to throttle resource use on shared machines.
+- **Identical results**: files are independent and each writes its own folder —
+  only the scheduling changes, so per-file output is exactly the same as the
+  serial path. Falls back to serial automatically if anything is unavailable.
+
+(This is the engine; a live per-file preview dashboard is coming next.)
+
 ## v2.49.0
 
 ### Torch backend on CPU now uses all your cores

@@ -243,6 +243,92 @@ def test_torch_cpu_mp_env_disable(monkeypatch):
     assert len(df) > 0
 
 
+# ── HYPERFLY (parallel multi-file batch) ──────────────────────────────────────
+def test_hyperfly_active_gate(monkeypatch):
+    """auto engages only with enough cores AND RAM; on/off override."""
+    import firefly.analysis.fa_hyperfly as hf
+    monkeypatch.setenv("FIREFLY_HYPERFLY", "off")
+    assert hf.hyperfly_active() is False
+    monkeypatch.setenv("FIREFLY_HYPERFLY", "on")
+    assert hf.hyperfly_active() is True
+    monkeypatch.setenv("FIREFLY_HYPERFLY", "auto")
+    monkeypatch.setattr(hf, "N_CPUS", 128)
+    monkeypatch.setattr(hf, "_total_ram_gb", lambda: 752.0)
+    assert hf.hyperfly_active() is True               # Falcon-like
+    monkeypatch.setattr(hf, "N_CPUS", 8)              # too few cores
+    assert hf.hyperfly_active() is False
+    monkeypatch.setattr(hf, "N_CPUS", 128)
+    monkeypatch.setattr(hf, "_total_ram_gb", lambda: 64.0)   # too little RAM
+    assert hf.hyperfly_active() is False
+
+
+def test_plan_concurrency_budget(monkeypatch):
+    """K and per-file core budget honour RAM, cores, and the IT caps."""
+    import firefly.analysis.fa_hyperfly as hf
+    monkeypatch.setenv("FIREFLY_HYPERFLY", "on")
+    monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_FILES", raising=False)
+    monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_CORES", raising=False)
+    monkeypatch.setattr(hf, "N_CPUS", 128)
+    monkeypatch.setattr(hf, "_free_ram_gb", lambda: 700.0)
+    monkeypatch.setattr("firefly.analysis.fa_memory._user_ram_reserve_gb",
+                        lambda: 8.0)
+    params = [{"file": f"/x/f{i}.tif"} for i in range(16)]
+
+    # Cores-limited: 16 files fit RAM (20 GB each); K=min(16, 34, 32)=16; 128//16=8
+    monkeypatch.setattr(hf, "_per_file_peak_gb", lambda p: 20.0)
+    plan = hf.plan_concurrency(params)
+    assert plan["active"] and plan["n_concurrent"] == 16
+    assert plan["per_file_workers"] == 8
+
+    # RAM-limited: 200 GB/file → usable 692 // 200 = 3 files at once
+    monkeypatch.setattr(hf, "_per_file_peak_gb", lambda p: 200.0)
+    plan = hf.plan_concurrency(params)
+    assert plan["n_concurrent"] == 3 and plan["per_file_workers"] == 128 // 3
+
+    # IT cap: max 2 concurrent files
+    monkeypatch.setattr(hf, "_per_file_peak_gb", lambda p: 20.0)
+    monkeypatch.setenv("FIREFLY_HYPERFLY_MAX_FILES", "2")
+    assert hf.plan_concurrency(params)["n_concurrent"] == 2
+
+    # IT cap: max 32 total cores → 16 files × 2 cores
+    monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_FILES", raising=False)
+    monkeypatch.setenv("FIREFLY_HYPERFLY_MAX_CORES", "32")
+    assert hf.plan_concurrency(params)["per_file_workers"] == 2
+
+    # Single file / off → inactive (serial path).
+    assert hf.plan_concurrency(params[:1])["active"] is False
+    monkeypatch.setenv("FIREFLY_HYPERFLY", "off")
+    assert hf.plan_concurrency(params)["active"] is False
+
+
+def test_hyperfly_engine_plumbing(monkeypatch):
+    """The parallel engine (spawn → Manager fan-in → forwarder → collector)
+    runs every file, forwards their logs, and emits one file_done each — proven
+    with a no-op worker hook so no real pipeline runs (memory-safe)."""
+    import multiprocessing as mp
+    import firefly.firefly_worker as w
+    monkeypatch.setenv("FIREFLY_HYPERFLY_SELFTEST", "1")
+    n = 4
+    params = [{"file": f"/tmp/hf_fake_{i}.tif"} for i in range(1, n + 1)]
+    plan = {"active": True, "n_concurrent": 2, "per_file_workers": 1,
+            "reason": "selftest"}
+    msg_q = mp.Queue()
+    cancel = mp.Event()
+    results = w._run_batch_hyperfly(params, msg_q, cancel,
+                                    lambda *_: None, lambda *_: None, plan)
+    assert results is not None and len(results) == n
+    assert all(r["ok"] for r in results)
+    msgs = []
+    try:
+        while True:
+            msgs.append(msg_q.get(timeout=1.0))
+    except Exception:
+        pass
+    kinds = [m[0] for m in msgs]
+    assert kinds.count("file_done") == n        # one per file
+    assert any(k == "log" for k in kinds)       # worker logs forwarded
+
+
 def test_msd_fit_sparse_short_tracks_finite():
     """Short/sparse tracks must yield finite-or-NaN D/alpha without crashing or
     blowing up to inf."""

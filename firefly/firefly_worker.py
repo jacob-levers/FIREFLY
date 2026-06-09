@@ -2486,6 +2486,231 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  HYPERFLY — parallel multi-file batch engine (big machines only)
+# ══════════════════════════════════════════════════════════════════════════════
+# Globals set in each spawned file-worker by `_file_worker_init`.
+_HF_FANQ = None        # Manager fan-in queue (worker → forwarder → GUI queue)
+_HF_CANCEL = None      # Manager Event mirrored from the real cancel_event
+_HF_WORKERS = None     # per-file core budget (workers × files ≈ N_CPUS)
+
+
+class _HFQueue:
+    """Per-worker adapter over the Manager fan-in queue.
+
+    * tags every ``("log", line)`` with ``[stem]`` so concurrent files are
+      attributable in the single GUI log, and
+    * drops live-view payloads (``preview_frame`` / ``mass_chunk``) from every
+      file except the designated spotlight one — so we never ship K streams of
+      frames through the IPC queue (Stage A shows one live preview; Stage B
+      adds per-file tiles).
+    Everything else passes through verbatim.
+    """
+    def __init__(self, fan_q, stem, spotlight):
+        self._q = fan_q
+        self._stem = stem
+        self._spot = bool(spotlight)
+
+    def put(self, item):
+        try:
+            kind = item[0] if isinstance(item, tuple) else None
+        except Exception:
+            kind = None
+        if kind in ("preview_frame", "mass_chunk") and not self._spot:
+            return
+        try:
+            if kind == "log":
+                self._q.put(("log", f"[{self._stem}] {item[1]}"))
+            else:
+                self._q.put(item)
+        except Exception:
+            pass
+
+
+def _file_worker_init(fan_q, mgr_cancel, per_file_workers):
+    """ProcessPoolExecutor initializer — stash the shared handles + core budget
+    in module globals (they can't ride on every task's pickled args)."""
+    global _HF_FANQ, _HF_CANCEL, _HF_WORKERS
+    _HF_FANQ = fan_q
+    _HF_CANCEL = mgr_cancel
+    _HF_WORKERS = int(per_file_workers)
+    # Budget ALL of this file's nested CPU parallelism (torch-CPU detection
+    # workers + their threads, trackpy/MSD pools, BLAS thread-pools) to its
+    # core slice, so K files × budget ≈ cores instead of every file grabbing
+    # all of them (K × all cores = massive oversubscription).
+    os.environ["FIREFLY_CPU_CORE_BUDGET"] = str(int(per_file_workers))
+
+
+def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
+    """Run ONE file's pipeline inside a HYPERFLY worker process.
+
+    Returns a payload dict (never raises across the process boundary — errors
+    are captured into ``{"ok": False, "error": ...}``).  Routes the file's
+    stdout + logs + live-view messages through the per-worker `_HFQueue` into
+    the Manager fan-in queue.
+    """
+    fan_q = _HF_FANQ
+    mgr_cancel = _HF_CANCEL
+    stem = str(params.get("stem_override")
+               or os.path.splitext(os.path.basename(params["file"]))[0])
+    spotlight = (index == 1)            # Stage A: first file is the live preview
+    hfq = _HFQueue(fan_q, stem, spotlight)
+
+    # Test hook: exercise the engine plumbing (spawn → fan-in → forwarder →
+    # collector) without the heavy real pipeline.  Set FIREFLY_HYPERFLY_SELFTEST.
+    if os.environ.get("FIREFLY_HYPERFLY_SELFTEST"):
+        try:    fan_q.put(("log", f"[{stem}] selftest worker"))
+        except Exception: pass
+        return {"ok": True, "stem": stem, "out_dir": "",
+                "n_tracks": index, "n_locs": index * 10}
+
+    # Route print()/tqdm in this process to the tagged fan-in queue.
+    try:
+        sys.stdout = QueueLogStream(hfq)
+        sys.stderr = QueueLogStream(hfq)
+    except Exception:
+        pass
+
+    def _wlog(msg):
+        hfq.put(("log", str(msg)))
+
+    def _wprog(_pct, _msg):
+        # Per-file progress isn't streamed to the global bar in Stage A — the
+        # collector drives it on file completion. Drop to avoid K bars fighting.
+        return
+
+    params = dict(params)
+    params["workers"] = _HF_WORKERS
+    try:
+        payload = _run_one_analysis(params, hfq, mgr_cancel, _wlog, _wprog)
+        out = dict(payload)
+        out["ok"] = True
+        return out
+    except _NoTracks as nt:
+        out = dict(nt.args[0])
+        out["ok"] = True
+        return out
+    except BaseException as exc:
+        if type(exc).__name__ in ("_Cancelled", "_Stopped"):
+            return {"ok": False, "error": "cancelled", "stem": stem}
+        return {"ok": False, "error": str(exc),
+                "tb": traceback.format_exc(), "stem": stem}
+
+
+def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan):
+    """Parallel multi-file engine.  Returns the `results` list, or None on a
+    setup failure so the caller falls back to the serial loop.
+
+    Files are independent (each writes its own per-stem subfolder), so the only
+    difference from serial is scheduling — per-file results are identical.
+    """
+    import multiprocessing as _mp
+    import threading as _threading
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from firefly.analysis.fa_constants import safe_process_workers
+
+    n = len(params_list)
+    K = max(1, int(plan["n_concurrent"]))
+    per_file_workers = max(1, int(plan["per_file_workers"]))
+
+    mgr = None
+    forwarder = None
+    mirror = None
+    stop_threads = _threading.Event()
+    try:
+        mgr = _mp.Manager()
+        fan_q = mgr.Queue()
+        mgr_cancel = mgr.Event()
+
+        # Mirror the real cancel_event → the Manager event so workers see Stop.
+        def _mirror_cancel():
+            while not stop_threads.wait(0.2):
+                if cancel_event.is_set():
+                    try:    mgr_cancel.set()
+                    except Exception: pass
+                    return
+        mirror = _threading.Thread(target=_mirror_cancel, daemon=True)
+        mirror.start()
+
+        # Forwarder: drain the fan-in queue → the real GUI queue.
+        def _forward():
+            while True:
+                try:
+                    item = fan_q.get(timeout=0.2)
+                except Exception:
+                    if stop_threads.is_set():
+                        try:
+                            while True:
+                                msg_queue.put(fan_q.get_nowait())
+                        except Exception:
+                            pass
+                        return
+                    continue
+                try:    msg_queue.put(item)
+                except Exception: pass
+        forwarder = _threading.Thread(target=_forward, daemon=True)
+        forwarder.start()
+
+        results = [None] * n
+        done = 0
+        cancelled = False
+        ctx = _mp.get_context("spawn")
+        with ProcessPoolExecutor(
+                max_workers=safe_process_workers(K), mp_context=ctx,
+                initializer=_file_worker_init,
+                initargs=(fan_q, mgr_cancel, per_file_workers)) as ex:
+            fut_to_meta = {
+                ex.submit(_file_worker_run, i, n, p): (i, p)
+                for i, p in enumerate(params_list, 1)
+            }
+            for fut in as_completed(fut_to_meta):
+                i, params = fut_to_meta[fut]
+                try:
+                    payload = fut.result()
+                except Exception as exc:
+                    payload = {"ok": False, "error": str(exc),
+                               "tb": traceback.format_exc()}
+                if payload.get("ok"):
+                    results[i - 1] = {"index": i, "ok": True,
+                                      "file": params["file"], **payload}
+                    msg_queue.put(("file_done", {
+                        "index": i, "total": n,
+                        "stem":     payload.get("stem"),
+                        "out_dir":  payload.get("out_dir"),
+                        "n_tracks": payload.get("n_tracks", 0),
+                        "n_locs":   payload.get("n_locs", 0),
+                    }))
+                else:
+                    results[i - 1] = {"index": i, "ok": False,
+                                      "file": params["file"],
+                                      "error": payload.get("error", "")}
+                    msg_queue.put(("file_error", {
+                        "index": i, "total": n, "file": params["file"],
+                        "tb": payload.get("tb", payload.get("error", "")),
+                    }))
+                done += 1
+                _prog(int(100 * done / max(1, n)),
+                      f"HYPERFLY: {done}/{n} files done")
+                if cancel_event.is_set():
+                    cancelled = True
+                    for f in fut_to_meta:          # stop un-started files
+                        f.cancel()
+        return [r for r in results if r is not None]
+    except Exception:
+        _log("  ⚡ HYPERFLY engine error:\n" + traceback.format_exc())
+        return None
+    finally:
+        stop_threads.set()
+        try:
+            if forwarder is not None:
+                forwarder.join(timeout=3.0)
+        except Exception: pass
+        try:
+            if mgr is not None:
+                mgr.shutdown()
+        except Exception: pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT — BATCH (multiple files in one subprocess)
 # ══════════════════════════════════════════════════════════════════════════════
 def run_batch_analysis(params_list: list, msg_queue, cancel_event):
@@ -2540,7 +2765,47 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
         _log(f"── Batch worker subprocess started — {n} file(s) ──")
         results = []
 
-        for i, params in enumerate(params_list, 1):
+        # ── HYPERFLY: parallel multi-file engine on big machines ──
+        # Try it first; on any failure (or inactive / single file) drop back to
+        # the serial loop below, which stays the canonical, always-available path.
+        _hf_results = None
+        try:
+            from firefly.analysis.fa_hyperfly import plan_concurrency
+            _plan = plan_concurrency(params_list)
+        except Exception:
+            _plan = {"active": False}
+        if _plan.get("active"):
+            msg_queue.put(("hyperfly_status", {
+                "active": True,
+                "n_concurrent": _plan.get("n_concurrent"),
+                "per_file_workers": _plan.get("per_file_workers"),
+                "reason": _plan.get("reason", ""),
+            }))
+            _log(f"\n  ⚡ HYPERFLY engaged — {_plan.get('reason', '')}")
+            try:
+                _hf_results = _run_batch_hyperfly(
+                    params_list, msg_queue, cancel_event, _log, _prog, _plan)
+            except Exception:
+                _log("  ⚡ HYPERFLY error; falling back to serial:\n"
+                     + traceback.format_exc())
+                _hf_results = None
+            if _hf_results is None:
+                _log("  ⚡ HYPERFLY unavailable — running the standard serial "
+                     "batch instead.")
+
+        if _hf_results is not None:
+            # HYPERFLY ran the whole batch.  Honour a user-cancel the same way
+            # the serial path does (emit 'stopped' instead of 'batch_done').
+            if cancel_event.is_set():
+                _log("\n── Batch stopped by user ──")
+                msg_queue.put(("stopped", None))
+                return
+            results = _hf_results
+            _serial_iter = []
+        else:
+            _serial_iter = list(enumerate(params_list, 1))
+
+        for i, params in _serial_iter:
             if cancel_event.is_set():
                 # Same distinction as the inner handler: a watchdog
                 # abort raised at the file boundary should skip this

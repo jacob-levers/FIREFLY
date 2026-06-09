@@ -722,6 +722,19 @@ class HandlersMixin:
                 # in batch mode the per-file messages are "file_done".
                 self._handle_done(payload)
                 worker_done = True
+            elif kind == "hyperfly_status":
+                # Big-machine parallel batch engaged — announce it prominently.
+                try:
+                    if isinstance(payload, dict) and payload.get("active"):
+                        nf = payload.get("n_concurrent")
+                        wc = payload.get("per_file_workers")
+                        log_buf.append(
+                            f"⚡ HYPERFLY ENGAGED — {nf} files at once · "
+                            f"{wc} cores each")
+                        self.statusBar().showMessage(
+                            f"⚡ HYPERFLY — {nf} files at once")
+                except Exception:
+                    pass
             elif kind == "file_starting":
                 # New file in a batch — wipe the mass histogram so it
                 # doesn't accumulate values from the previous file's

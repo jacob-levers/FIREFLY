@@ -978,6 +978,27 @@ class BuildMixin:
                 "stack and free RAM are large.")
         gl.addRow(_label_with_info("Chunk size (frames)", "chunk size"), self.s_chunk_size)
 
+        # ── HYPERFLY — big-machine parallel batch ──
+        self.c_hyperfly = _QuietComboBox()
+        self.c_hyperfly.addItems(["Auto (recommended)", "Always on", "Off"])
+        self.c_hyperfly.setCurrentText("Auto (recommended)")
+        self.c_hyperfly.setToolTip(
+            "HYPERFLY: on a big machine (≥32 cores AND ≥192 GB RAM) process\n"
+            "several files at once, RAM-resident, so a batch uses the whole box\n"
+            "instead of one file at a time. Per-file results are identical.\n"
+            "• Auto       — engage automatically on capable machines.\n"
+            "• Always on  — force it (best-effort on smaller boxes).\n"
+            "• Off        — always process one file at a time.")
+        gl.addRow("HYPERFLY batch", self.c_hyperfly)
+        self.s_hyperfly_max_files = self._spin_int(0, 0, 999,
+            tip="Cap how many files HYPERFLY runs at once (0 = automatic).\n"
+                "Lower it if IT wants FIREFLY to use fewer resources.")
+        gl.addRow("Max concurrent files (0 = auto)", self.s_hyperfly_max_files)
+        self.s_hyperfly_max_cores = self._spin_int(0, 0, N_CPUS,
+            tip="Cap the total CPU cores HYPERFLY uses across all files\n"
+                "(0 = all cores).")
+        gl.addRow(f"Max cores (0 = auto, ≤{N_CPUS})", self.s_hyperfly_max_cores)
+
         # GPU-acceleration entry point — Windows only.  When CUDA is NOT
         # installed we show the Set-up button right here, where the user picks
         # the CUDA backend.  Once installed it's hidden (install / uninstall /

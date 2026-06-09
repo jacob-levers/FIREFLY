@@ -42,6 +42,22 @@ except Exception:
     pass
 
 
+def _cpu_core_budget() -> int:
+    """Per-process CPU core ceiling for the parallel detection / BLAS paths.
+
+    HYPERFLY runs several files concurrently, each in its own worker process; it
+    sets ``FIREFLY_CPU_CORE_BUDGET`` to that file's slice of the machine so the
+    nested detection pools and BLAS thread-pools don't each grab all the cores
+    (N files × all cores = massive oversubscription).  Unset → all cores, i.e.
+    the original single-file behaviour.
+    """
+    try:
+        b = int(os.environ.get("FIREFLY_CPU_CORE_BUDGET", "0"))
+    except (ValueError, TypeError):
+        b = 0
+    return b if b > 0 else int(N_CPUS)
+
+
 def _ram_strategy(stack, headroom: float = 0.75) -> tuple[bool, float, float]:
     """
     Decide whether the full preprocessed stack fits in free RAM.
@@ -383,7 +399,7 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
                  because the chunk is already smaller than chunk_size).
         """
         if _impl.name == "trackpy":
-            with _threadpool_limits(limits=N_CPUS):
+            with _threadpool_limits(limits=_cpu_core_budget()):
                 return tp.batch(chunk_pp, diameter=diameter, minmass=minmass,
                                 percentile=percentile, processes=1)
         # quiet=True: this backend is invoked once per sub-chunk in streaming
@@ -1039,7 +1055,7 @@ class TrackpyBackend(LocaliserBackend):
                 print(f"  Falling back to BLAS-pool parallelism (slower, single-process)")
 
         if not use_mp_ok:
-            with _threadpool_limits(limits=N_CPUS):
+            with _threadpool_limits(limits=_cpu_core_budget()):
                 chunk_results = []
                 for idx, (chunk, offset) in enumerate(_tqdm(
                         chunk_pairs, total=n_chunks,
@@ -1654,7 +1670,7 @@ class TorchBackend(LocaliserBackend):
         # via threadpoolctl.  GPU devices ignore these settings.  When this is
         # an MP worker (`_cpu_threads` set) use the smaller per-worker slice so
         # N_workers × threads ≈ N_CPUS instead of every worker grabbing them all.
-        _cpu_nthreads = int(_cpu_threads) if _cpu_threads else int(N_CPUS)
+        _cpu_nthreads = int(_cpu_threads) if _cpu_threads else _cpu_core_budget()
         if dev_str == "cpu":
             try:    torch.set_num_threads(_cpu_nthreads)
             except Exception: pass
@@ -2025,11 +2041,12 @@ class TorchBackend(LocaliserBackend):
             env_w = int(os.environ.get("FIREFLY_TORCH_CPU_WORKERS", "0"))
         except ValueError:
             env_w = 0
-        n_workers = env_w if env_w > 0 else min(n_chunks, N_CPUS, 32)
-        n_workers = max(1, min(n_workers, n_chunks))
+        budget = _cpu_core_budget()          # HYPERFLY: this file's core slice
+        n_workers = env_w if env_w > 0 else min(n_chunks, budget, 32)
+        n_workers = max(1, min(n_workers, n_chunks, budget))
         if n_workers < 2:
             return None                      # nothing to parallelise
-        threads_per_worker = max(1, N_CPUS // n_workers)
+        threads_per_worker = max(1, budget // n_workers)
 
         # ── Partition chunk starts into contiguous, chunk-aligned blocks ────
         chunk_starts = list(range(0, n_frames, chunk_size))      # len == n_chunks

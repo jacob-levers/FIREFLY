@@ -1790,6 +1790,9 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("analysis/backend",         self.c_backend,         "combo"),
             ("analysis/workers",         self.s_workers,         "spin",  int),
             ("analysis/chunk_size",      self.s_chunk_size,      "spin",  int),
+            ("performance/hyperfly",           self.c_hyperfly,           "combo"),
+            ("performance/hyperfly_max_files", self.s_hyperfly_max_files, "spin", int),
+            ("performance/hyperfly_max_cores", self.s_hyperfly_max_cores, "spin", int),
 
             # ── Figures tab ───────────────────────────────────────────────
             ("figures/theme",            self.c_fig_theme,       "combo"),
@@ -2824,6 +2827,23 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             pass
         self._is_batch_run   = True
         self._is_compare_run = False
+
+        # HYPERFLY: export the user's mode + IT caps so the Qt-free worker can
+        # read them from the environment (it must never import QSettings/Qt).
+        # Read the LIVE widgets (QSettings only persists on close), and inherit
+        # into the spawned child process.
+        try:
+            _hf = self.c_hyperfly.currentText().strip().lower()
+            _hf_val = ("off" if "off" in _hf
+                       else "on" if "always" in _hf
+                       else "auto")
+            os.environ["FIREFLY_HYPERFLY"] = _hf_val
+            os.environ["FIREFLY_HYPERFLY_MAX_FILES"] = str(
+                int(self.s_hyperfly_max_files.value()))
+            os.environ["FIREFLY_HYPERFLY_MAX_CORES"] = str(
+                int(self.s_hyperfly_max_cores.value()))
+        except Exception:
+            pass
 
         # Bounded queue (see note in _start_single_run) — caps the live-preview
         # pipe so a GUI stall can't push the system into swap.
