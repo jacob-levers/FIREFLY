@@ -235,7 +235,17 @@ if sys.platform == "win32":
         bootloader_ignore_signals=False,
         strip=False,
         upx=False,
-        runtime_tmpdir=None,
+        # Extract the onefile payload to a STABLE per-user app-data folder
+        # instead of %TEMP%.  On locked-down / managed Windows profiles %TEMP%
+        # is often redirected to a quota'd, aggressively-cleaned path (observed:
+        # ...\AppData\Local\Temp\14\_MEIxxxx) where the ~hundreds of MB of DLLs
+        # can fail to extract fully — surfacing as the bootloader error
+        # "Failed to load Python DLL python3xx.dll. LoadLibrary: The specified
+        # module could not be found."  %LOCALAPPDATA%\FIREFLY is where the app
+        # already stores crash reports / logs / updates (proven writable on the
+        # machines that hit this), so the extraction lands somewhere reliable.
+        # PyInstaller expands %VAR% here at runtime on Windows.
+        runtime_tmpdir="%LOCALAPPDATA%\\FIREFLY\\bundle",
         console=False,
         disable_windowed_traceback=False,
         argv_emulation=False,

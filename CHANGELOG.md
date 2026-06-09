@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.51.0
+
+### Fix: "Failed to load Python DLL" on managed Windows machines
+
+The Windows build unpacks its bundled Python + libraries to a temp folder on
+every launch. On locked-down / managed profiles, `%TEMP%` is often **redirected**
+to a quota'd, aggressively-cleaned location (e.g. `…\AppData\Local\Temp\14\`)
+where the ~hundreds of MB of DLLs can fail to extract fully — which surfaces as
+the bootloader error *"Failed to load Python DLL python313.dll. LoadLibrary: The
+specified module could not be found."* (often right after an in-app update).
+
+The build now extracts to a **stable per-user folder, `%LOCALAPPDATA%\FIREFLY\bundle`**
+— the same place FIREFLY already keeps its logs / crash reports / downloaded
+updates (so it's known-writable on these machines) — instead of the redirected
+temp. This should let the app launch reliably on managed Windows boxes.
+
 ## v2.50.1
 
 ### Fix: Windows update can no longer strand you with a broken install
