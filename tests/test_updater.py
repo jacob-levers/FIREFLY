@@ -103,6 +103,14 @@ def test_windows_helper_script():
     assert "copy /Y" in s
     assert 'start "" "%TARGET%"' in s
     assert 'del "%~f0"' in s
+    # Hardened swap: back up the old exe, verify the copy's size, roll back on
+    # failure (parity with the macOS path — a bad update must be recoverable).
+    assert 'set "BACKUP=%TARGET%.bak"' in s
+    assert 'copy /Y "%TARGET%" "%BACKUP%"' in s                       # backup first
+    assert 'for %%A in ("%NEWEXE%") do set "SRCSIZE=%%~zA"' in s      # source size
+    assert 'for %%A in ("%TARGET%") do set "DSTSIZE=%%~zA"' in s      # copied size
+    assert 'if not "!SRCSIZE!"=="!DSTSIZE!"' in s                     # verify match
+    assert 'copy /Y "%BACKUP%" "%TARGET%"' in s                       # restore on fail
 
 
 # ── download validation (pure for the windows PE check) ─────────────────

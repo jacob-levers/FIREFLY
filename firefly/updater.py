@@ -303,15 +303,29 @@ rm -f "$0"
 
 def windows_helper_script(pid: int, new_exe: str, target_exe: str,
                           log_path: str) -> str:
-    """Batch helper that waits for ``pid`` to exit, replaces
-    ``target_exe`` with ``new_exe`` (retrying past Defender's file lock),
-    relaunches, and self-deletes."""
+    """Batch helper that waits for ``pid`` to exit, then **safely** swaps
+    ``target_exe`` for ``new_exe`` and relaunches.
+
+    Hardened to mirror the macOS path so a failed update can never strand the
+    user with a broken install:
+      * back up the current exe to ``<target>.bak`` first;
+      * copy the new exe in (retrying past Defender's transient file lock);
+      * **verify** the copy landed intact — its byte size must match the
+        source (a truncated copy is the classic cause of the "failed to load
+        python3xx.dll" bootloader error);
+      * if the copy fails or is short, **restore the backup** so the working
+        version stays in place, and reveal the new exe so the user can finish
+        by hand;
+      * on success, relaunch and KEEP the ``.bak`` so the user can roll back
+        manually if the new build won't start on their machine.
+    """
     return f"""@echo off
 setlocal enabledelayedexpansion
 set "PID={pid}"
 set "NEWEXE={new_exe}"
 set "TARGET={target_exe}"
 set "LOG={log_path}"
+set "BACKUP=%TARGET%.bak"
 echo [firefly-update] waiting for pid %PID% to exit >>"%LOG%" 2>&1
 set /a WAITED=0
 :waitloop
@@ -327,6 +341,8 @@ if !WAITED! GEQ 8 (
 ping -n 2 127.0.0.1 >NUL
 goto waitloop
 :gone
+echo [firefly-update] backing up current exe -^> "%BACKUP%" >>"%LOG%" 2>&1
+copy /Y "%TARGET%" "%BACKUP%" >>"%LOG%" 2>&1
 set /a TRIES=0
 :replace
 copy /Y "%NEWEXE%" "%TARGET%" >>"%LOG%" 2>&1
@@ -336,11 +352,24 @@ if errorlevel 1 (
     ping -n 2 127.0.0.1 >NUL
     goto replace
   )
-  echo [firefly-update] replace failed after !TRIES! tries >>"%LOG%" 2>&1
+  echo [firefly-update] replace failed after !TRIES! tries; restoring backup >>"%LOG%" 2>&1
+  copy /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1
   start "" explorer.exe /select,"%NEWEXE%"
   goto end
 )
+set "SRCSIZE="
+set "DSTSIZE="
+for %%A in ("%NEWEXE%") do set "SRCSIZE=%%~zA"
+for %%A in ("%TARGET%") do set "DSTSIZE=%%~zA"
+if not "!SRCSIZE!"=="!DSTSIZE!" (
+  echo [firefly-update] size mismatch src=!SRCSIZE! dst=!DSTSIZE!; restoring backup >>"%LOG%" 2>&1
+  copy /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1
+  start "" explorer.exe /select,"%NEWEXE%"
+  goto end
+)
+echo [firefly-update] swap verified (size !DSTSIZE!); relaunching >>"%LOG%" 2>&1
 start "" "%TARGET%"
+echo [firefly-update] previous version kept at "%BACKUP%" (rename to roll back) >>"%LOG%" 2>&1
 :end
 del "%~f0"
 """

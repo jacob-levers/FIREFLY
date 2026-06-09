@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.50.1
+
+### Fix: Windows update can no longer strand you with a broken install
+
+The Windows updater swapped the exe with **no backup and no verification** — so
+a truncated copy or a build that won't start (e.g. "Failed to load Python DLL
+python313.dll") left you with a dead install and no way back. The swap helper
+now mirrors the macOS path:
+
+- **backs up** the current exe to `FIREFLY.exe.bak` before replacing it;
+- **verifies** the copied exe's byte size matches the source (a short copy is
+  the usual cause of the missing-DLL bootloader error);
+- **rolls back** to the backup automatically if the copy fails or is short, and
+  reveals the new exe so you can finish by hand;
+- on success, **keeps the `.bak`** so you can roll back manually (rename it) if
+  a new build won't launch on your machine.
+
+(A deeper fix — shipping Windows as a one-folder build with no per-launch temp
+extraction — is coming next; that removes the root cause of the missing-DLL
+error on managed/locked-down machines.)
+
 ## v2.50.0
 
 ### ⚡ HYPERFLY — high-throughput batch on big machines
