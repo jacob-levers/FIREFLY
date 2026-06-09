@@ -1196,18 +1196,55 @@ class _CollapsibleSection(QtWidgets.QWidget):
             self._content.setVisible(checked)
             self._content.setMaximumHeight(16777215)   # QWIDGETSIZE_MAX
 
+    def _content_target_height(self) -> int:
+        """The content frame's TRUE expanded height at its current width.
+
+        Measured via the layout's ``heightForWidth`` — NOT ``c.height()`` and
+        NOT ``sizeHint()``:
+
+          * ``sizeHint().height()`` is width-agnostic, so for word-wrapped
+            labels it badly under-counts (it assumes a default, much narrower
+            width) → the section would "teleport" to its real height when the
+            cap is lifted at the end.
+          * ``c.height()`` is wrong at expand time too: the content is freshly
+            shown but ``self`` (the section) still has its *collapsed*
+            geometry, because the parent (wizard) layout hasn't re-flowed yet —
+            so the outer layout clamps ``c.height()`` to the small collapsed
+            size and the animation slides to a too-short target, then springs.
+
+        ``heightForWidth`` asks the layout directly and is independent of the
+        not-yet-reflowed parent, so the target is correct on the first frame.
+        """
+        c = self._content
+        inner = c.layout()
+        w = c.width()
+        h = -1
+        if inner is not None and w > 0 and inner.hasHeightForWidth():
+            h = inner.heightForWidth(w)
+        if h <= 0:                                   # no word-wrap content
+            h = max(c.height(), c.sizeHint().height())
+        return max(0, h)
+
     def _animate_content(self, expand: bool):
         from firefly.ui import ui_anim
         c = self._content
         if expand:
-            c.setMaximumHeight(0)
+            # Make the content visible and give it its real WIDTH (a synchronous
+            # layout pass), measure the true height-for-width, then re-cap to 0
+            # BEFORE returning to the event loop so the full-height frame is
+            # never painted (no flash), and animate up to the measured height.
             c.setVisible(True)
-            target = max(0, c.sizeHint().height())
+            c.setMaximumHeight(16777215)
+            lay = self.layout()
+            if lay is not None:
+                lay.activate()
+            target = self._content_target_height()
+            c.setMaximumHeight(0)
             ui_anim.animate_height(
                 c, 0, target,
                 on_finish=lambda: c.setMaximumHeight(16777215))
         else:
-            start = c.height()
+            start = self._content_target_height()
 
             def _fin():
                 c.setVisible(False)

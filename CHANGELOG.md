@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.47.1
+
+### Fix: jank-free "What these terms mean" (and every collapsible)
+
+- The Compare tab's **glossary section no longer "teleports" or glitches** when
+  opening/closing. The expand animation was measuring the wrong target height:
+  for word-wrapped content it read the section's *collapsed* geometry (the
+  parent layout hadn't re-flowed yet), slid to a too-short height, then sprang
+  to full size at the end. It now measures the true height via the layout's
+  `heightForWidth`, so the slide lands exactly — smooth open and close.
+- Applies to every `_CollapsibleSection` (Details expanders, sidebar groups),
+  but is most visible on the long, word-wrapped glossary.
+
+### Fix: CI Tests workflow
+
+- `test_results_json_twoway_present` now skips when **pingouin** is absent
+  (the headless Tests runner installs only the analysis core), matching the
+  other two-way ANOVA tests. The release build is unaffected.
+
 ## v2.47.0
 
 ### Subtle, smooth UI animations (+ Reduce motion)

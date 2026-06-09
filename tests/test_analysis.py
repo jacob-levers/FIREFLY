@@ -2162,6 +2162,7 @@ def test_compare_groups_writes_results_json(tmp_path):
 
 
 def test_results_json_twoway_present(tmp_path):
+    pytest.importorskip("pingouin")  # two-way ANOVA rows require pingouin
     import matplotlib; matplotlib.use("Agg")
     import json as _json
     from firefly.analysis.fa_compare import compare_groups
