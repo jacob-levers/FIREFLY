@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.49.0
+
+### Torch backend on CPU now uses all your cores
+
+- The PyTorch detector, when running on CPU (no GPU), previously processed the
+  movie in a **single process** and leaned on intra-op threads — which don't
+  scale for the small per-frame ops on a many-core / multi-socket box (≈6% CPU
+  on a 128-core machine). It now **fans the work out across processes**, one
+  chunk-aligned block per worker, sized so `workers × threads ≈ cores`.
+- **Results are identical to the old serial path.** The detector's per-chunk
+  percentile threshold is batch-size-stable by design and the loop already
+  thresholds per-chunk, so processing whole-chunk blocks in parallel reproduces
+  the exact same detections (verified by a parallel-vs-serial equivalence test
+  on both the in-RAM and memory-mapped paths).
+- Robust by construction: uses `ProcessPoolExecutor` (a dead worker surfaces as
+  an error and falls back to the serial path rather than hanging), shares the
+  stack zero-copy via shared memory (in-RAM) or re-mmap (disk-backed), and can
+  be tuned/disabled with `FIREFLY_TORCH_CPU_WORKERS` / `FIREFLY_TORCH_CPU_MP=0`.
+- Note: for CPU-only work the **trackpy** backend (via "Auto") already scaled
+  across cores; this brings the Torch-CPU path to parity. GPU paths are
+  unchanged.
+
 ## v2.48.0
 
 ### Fix: crash on many-core Windows machines (≥62 logical CPUs)

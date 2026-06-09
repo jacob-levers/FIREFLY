@@ -159,6 +159,90 @@ def test_compute_msd_and_fit_clamps_process_workers(monkeypatch):
     assert len(diff) == n_tracks          # process path ran to completion
 
 
+def _torch_cpu_equivalence_stack():
+    """A small stack with >16 chunks of bright, well-separated spots — the
+    fixture for the Torch-CPU parallel-vs-serial equivalence tests."""
+    H = W = 48
+    chunk_size = 4
+    n_chunks = 18
+    n_frames = chunk_size * n_chunks                    # 72 → 18 chunks (>16)
+    truth = [(12.0, 12.0), (30.0, 18.0), (20.0, 34.0)]
+    base = _synthetic_spot_frame(truth, H=H, W=W, amp=400.0, sigma=1.3, bg=10.0)
+    stack = np.repeat(base[None, :, :], n_frames, axis=0).astype(np.float32)
+    # minmass=0.0 keeps every refined detection, so spot COUNT can't flip with
+    # worker thread count (mass is a non-negative sum); coords match within fp.
+    kw = dict(diameter=7, minmass=0.0, percentile=90, chunk_size=chunk_size)
+    return stack, n_chunks, n_frames, kw
+
+
+def _assert_locs_equivalent(serial, par):
+    assert par is not None, "parallel path should engage and return results"
+    assert len(par) == len(serial), (len(par), len(serial))
+    s = serial.sort_values(["frame", "x", "y"]).reset_index(drop=True)
+    p = par.sort_values(["frame", "x", "y"]).reset_index(drop=True)
+    assert (s["frame"].to_numpy() == p["frame"].to_numpy()).all()
+    for col in ("x", "y", "mass"):
+        assert np.allclose(s[col].to_numpy(), p[col].to_numpy(),
+                           rtol=1e-4, atol=1e-3), col
+
+
+def test_torch_cpu_parallel_matches_serial_shm(monkeypatch):
+    """The Torch-CPU multi-process path (in-RAM ndarray → shared_memory) must
+    reproduce the serial detections exactly (chunk-aligned blocks)."""
+    pytest.importorskip("torch")
+    from firefly.analysis.fa_localize import TorchBackend
+    if not TorchBackend.is_available():
+        pytest.skip("torch backend unavailable")
+    # 2 workers only — keep the spawned pool tiny (laptop memory safety).
+    monkeypatch.setenv("FIREFLY_TORCH_CPU_WORKERS", "2")
+    stack, n_chunks, n_frames, kw = _torch_cpu_equivalence_stack()
+    inst = TorchBackend(); inst._forced_device = "cpu"
+    serial = inst.localise(stack, quiet=True, **kw)          # quiet → no MP
+    par = inst._localise_cpu_parallel(stack, n_chunks=n_chunks,
+                                      n_frames=n_frames, preview_cb=None, **kw)
+    _assert_locs_equivalent(serial, par)
+
+
+def test_torch_cpu_parallel_matches_serial_memmap(monkeypatch, tmp_path):
+    """Same equivalence via the disk-backed memmap path (workers re-mmap their
+    block instead of attaching shared memory)."""
+    pytest.importorskip("torch")
+    from firefly.analysis.fa_localize import TorchBackend
+    if not TorchBackend.is_available():
+        pytest.skip("torch backend unavailable")
+    monkeypatch.setenv("FIREFLY_TORCH_CPU_WORKERS", "2")
+    stack, n_chunks, n_frames, kw = _torch_cpu_equivalence_stack()
+    inst = TorchBackend(); inst._forced_device = "cpu"
+    serial = inst.localise(stack, quiet=True, **kw)
+    mm_path = tmp_path / "stack.dat"
+    mm = np.memmap(mm_path, dtype=np.float32, mode="w+", shape=stack.shape)
+    mm[:] = stack; mm.flush()
+    mm_ro = np.memmap(mm_path, dtype=np.float32, mode="r", shape=stack.shape)
+    par = inst._localise_cpu_parallel(mm_ro, n_chunks=n_chunks,
+                                      n_frames=n_frames, preview_cb=None, **kw)
+    _assert_locs_equivalent(serial, par)
+
+
+def test_torch_cpu_mp_env_disable(monkeypatch):
+    """FIREFLY_TORCH_CPU_MP=0 must bypass the parallel path entirely (serial)."""
+    pytest.importorskip("torch")
+    from firefly.analysis.fa_localize import TorchBackend
+    if not TorchBackend.is_available():
+        pytest.skip("torch backend unavailable")
+    monkeypatch.setenv("FIREFLY_TORCH_CPU_MP", "0")
+    stack, _n_chunks, _n_frames, kw = _torch_cpu_equivalence_stack()
+    inst = TorchBackend(); inst._forced_device = "cpu"
+    called = {"mp": False}
+
+    def _spy(*a, **k):
+        called["mp"] = True
+        return None
+    monkeypatch.setattr(inst, "_localise_cpu_parallel", _spy)
+    df = inst.localise(stack, quiet=False, **kw)   # MP disabled → serial
+    assert called["mp"] is False, "parallel path must not run when disabled"
+    assert len(df) > 0
+
+
 def test_msd_fit_sparse_short_tracks_finite():
     """Short/sparse tracks must yield finite-or-NaN D/alpha without crashing or
     blowing up to inf."""

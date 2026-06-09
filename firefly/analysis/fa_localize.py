@@ -704,6 +704,77 @@ def _localise_chunk_mmap_mp(args):
     return idx, result
 
 
+def _torch_localise_block_mp(args):
+    """Picklable worker for the Torch-CPU multi-process path.
+
+    Localises ONE chunk-aligned frame block on CPU torch and returns
+    ``(block_idx, DataFrame[x,y,frame,mass])`` with **absolute** frame indices,
+    or ``(block_idx, None)`` on any failure so the parent can fall back to the
+    serial path.  Because each block is a whole run of ``chunk_size`` chunks and
+    the per-chunk percentile threshold is batch-size-stable, the union of all
+    blocks reproduces the serial detections exactly.
+
+    Args tuple:
+        (block_idx, source, diameter, minmass, percentile, chunk_size,
+         threads_per_worker, frame_start)
+    where ``source`` is either
+        ("memmap", path, dtype_str, shape, frame_start, frame_end) or
+        ("shm",    shm_name, dtype_str, shape, frame_start, frame_end).
+    """
+    (block_idx, source, diameter, minmass, percentile, chunk_size,
+     threads_per_worker, frame_start) = args
+    shm = None
+    try:
+        import numpy as _np
+        # Bound this worker's intra-op threads so N workers × T threads ≈ cores
+        # instead of every worker grabbing all of them (the oversubscription
+        # that made single-process torch-CPU crawl).
+        try:
+            import torch as _torch
+            _torch.set_num_threads(int(threads_per_worker))
+        except Exception:
+            pass
+
+        kind = source[0]
+        if kind == "memmap":
+            _, path, dtype_str, shape, fs, fe = source
+            arr = _np.memmap(path, dtype=_np.dtype(dtype_str), mode="r",
+                             shape=tuple(shape))
+            # np.array (NOT asarray) forces a writable COPY: asarray would
+            # return a view of the memmap, and closing it below would leave the
+            # tensor pointing at freed memory (segfault).  A copy also avoids
+            # torch's non-writable-array warning.
+            block = _np.array(arr[fs:fe], dtype=_np.float32)
+            try:    arr._mmap.close()
+            except Exception: pass
+        elif kind == "shm":
+            from multiprocessing import shared_memory
+            _, shm_name, dtype_str, shape, fs, fe = source
+            shm = shared_memory.SharedMemory(name=shm_name)
+            full = _np.ndarray(tuple(shape), dtype=_np.dtype(dtype_str),
+                               buffer=shm.buf)
+            block = _np.array(full[fs:fe], dtype=_np.float32)   # copy out
+        else:
+            return block_idx, None
+
+        inst = TorchBackend()
+        inst._forced_device = "cpu"
+        df = inst.localise(block, diameter=diameter, minmass=minmass,
+                           percentile=percentile, chunk_size=chunk_size,
+                           quiet=True, preview_cb=None,
+                           _cpu_threads=int(threads_per_worker))
+        if df is not None and len(df) and "frame" in df.columns:
+            df = df.copy()
+            df["frame"] = df["frame"].to_numpy() + int(frame_start)
+        return block_idx, df
+    except Exception:
+        return block_idx, None
+    finally:
+        if shm is not None:
+            try:    shm.close()
+            except Exception: pass
+
+
 class LocaliserBackend:
     """Abstract base for particle-localisation backends.
 
@@ -1524,7 +1595,12 @@ class TorchBackend(LocaliserBackend):
 
     def localise(self, stack, *, diameter=7, minmass=0.1, percentile=64,
                  workers=None, chunk_size=500, preview_cb=None,
-                 device=None, quiet=False, **_):
+                 device=None, quiet=False, _cpu_threads=None, **_):
+        # `_cpu_threads` overrides the CPU intra-op thread budget.  It's set by
+        # `_torch_localise_block_mp` so each multi-process worker uses a small
+        # slice of the cores (N_workers × threads ≈ N_CPUS) instead of every
+        # worker grabbing all of them; left None, the serial/streaming path
+        # claims all cores as before.
         import torch
         import torch.nn.functional as F
 
@@ -1575,11 +1651,14 @@ class TorchBackend(LocaliserBackend):
         # back to N_CPUS when running on CPU — without this, torch-cpu
         # crawls at ~11 fr/s on a 6-core box (380 s for 4 k frames)
         # instead of utilising all cores like the trackpy backend does
-        # via threadpoolctl.  GPU devices ignore these settings.
+        # via threadpoolctl.  GPU devices ignore these settings.  When this is
+        # an MP worker (`_cpu_threads` set) use the smaller per-worker slice so
+        # N_workers × threads ≈ N_CPUS instead of every worker grabbing them all.
+        _cpu_nthreads = int(_cpu_threads) if _cpu_threads else int(N_CPUS)
         if dev_str == "cpu":
-            try:    torch.set_num_threads(int(N_CPUS))
+            try:    torch.set_num_threads(_cpu_nthreads)
             except Exception: pass
-            try:    torch.set_num_interop_threads(int(N_CPUS))
+            try:    torch.set_num_interop_threads(_cpu_nthreads)
             except (RuntimeError, Exception):
                 # set_num_interop_threads errors if any parallel work has
                 # already been dispatched on this interpreter — harmless,
@@ -1591,17 +1670,39 @@ class TorchBackend(LocaliserBackend):
             print(f"  Diameter  : {diameter}px  |  minmass: {minmass:.4f}  "
                   f"|  percentile: {percentile}")
             print(f"  Chunks    : {n_chunks} × ~{chunk_size} frames")
-            if dev_str == "cpu":
-                try:    print(f"  Torch threads : {torch.get_num_threads()}")
-                except Exception: pass
-                # The Torch backend was selected but there's no usable GPU, so
-                # it's running on CPU.  Flag it once: on CPU-only machines the
-                # 'Auto' / 'Trackpy (CPU)' backends spread across all cores and
-                # are usually much faster than forced Torch.
-                print("  NOTE: Torch backend is on CPU (no GPU found). For "
-                      "CPU-only machines, the 'Auto' or 'Trackpy (CPU)' "
-                      "backends use all cores and are usually much faster.",
-                      flush=True)
+
+        # ── CPU multi-process fan-out ───────────────────────────────────────
+        # Single-process torch-CPU leans on intra-op threads, which don't scale
+        # for the small per-frame ops on many-core / NUMA boxes (~6% CPU on a
+        # 128-core EPYC).  At the top level (not a streaming sub-chunk, not
+        # already an MP worker) with enough chunks to amortise spawn cost, fan
+        # the chunk-aligned blocks across processes instead.  The per-chunk
+        # percentile threshold is batch-size-stable and the serial loop already
+        # thresholds per-chunk, so chunk-aligned blocks reproduce the serial
+        # detections exactly.  Disable with FIREFLY_TORCH_CPU_MP=0.
+        _use_cpu_mp = (
+            dev_str == "cpu" and not quiet and _cpu_threads is None
+            and n_chunks > 16
+            and os.environ.get("FIREFLY_TORCH_CPU_MP", "1").strip().lower()
+            not in ("0", "false", "no", "off"))
+
+        if not quiet and dev_str == "cpu" and not _use_cpu_mp:
+            try:    print(f"  Torch threads : {torch.get_num_threads()}")
+            except Exception: pass
+            # Serial torch-CPU (small job, or MP disabled) is single-process.
+            print("  NOTE: Torch backend on CPU, single-process. For CPU-only "
+                  "machines, 'Auto' or 'Trackpy (CPU)' use all cores and are "
+                  "usually faster.", flush=True)
+
+        if _use_cpu_mp:
+            mp_df = self._localise_cpu_parallel(
+                stack, diameter=diameter, minmass=minmass,
+                percentile=percentile, chunk_size=chunk_size,
+                n_chunks=n_chunks, n_frames=n_frames, preview_cb=preview_cb)
+            if mp_df is not None:
+                return mp_df
+            print("  Torch-CPU parallel path unavailable — running serial.",
+                  flush=True)
 
         t0 = time.perf_counter()
         all_locs: list[dict] = []
@@ -1623,7 +1724,7 @@ class TorchBackend(LocaliserBackend):
         # `_gaussian_lstsq_refine` is the dominant cost and reads from
         # the BLAS pool.
         _blas_ctx = (
-            _threadpool_limits(limits=int(N_CPUS)) if dev_str == "cpu" else None
+            _threadpool_limits(limits=_cpu_nthreads) if dev_str == "cpu" else None
         )
         if _blas_ctx is not None:
             try:    _blas_ctx.__enter__()
@@ -1896,6 +1997,142 @@ class TorchBackend(LocaliserBackend):
         elapsed = time.perf_counter() - t0
         _plog(f"  Found {len(df):,} localisations in {elapsed:.1f}s  "
               f"({n_frames / elapsed:.0f} frames/s)")
+        return df
+
+    def _localise_cpu_parallel(self, stack, *, diameter, minmass, percentile,
+                               chunk_size, n_chunks, n_frames, preview_cb=None):
+        """Localise on CPU torch across PROCESSES — one chunk-aligned block per
+        worker — and return the same ``DataFrame[x,y,frame,mass]`` the serial
+        path returns, or ``None`` to fall back to the serial loop.
+
+        Each block is a contiguous run of whole ``chunk_size`` chunks, so the
+        per-chunk percentile thresholds (and therefore the detections) are
+        identical to the serial path; concatenating blocks in order reproduces
+        the serial row order exactly.
+
+        Preview callbacks can't cross process boundaries, so per-frame detection
+        previews are skipped here (same tradeoff as the trackpy MP path); coarse
+        per-block progress is logged instead.
+        """
+        import threading
+        try:
+            from multiprocessing import shared_memory
+        except Exception:
+            shared_memory = None
+
+        # ── Worker / thread budget (env-tunable for big boxes) ──────────────
+        try:
+            env_w = int(os.environ.get("FIREFLY_TORCH_CPU_WORKERS", "0"))
+        except ValueError:
+            env_w = 0
+        n_workers = env_w if env_w > 0 else min(n_chunks, N_CPUS, 32)
+        n_workers = max(1, min(n_workers, n_chunks))
+        if n_workers < 2:
+            return None                      # nothing to parallelise
+        threads_per_worker = max(1, N_CPUS // n_workers)
+
+        # ── Partition chunk starts into contiguous, chunk-aligned blocks ────
+        chunk_starts = list(range(0, n_frames, chunk_size))      # len == n_chunks
+        groups = [g for g in np.array_split(np.arange(len(chunk_starts)),
+                                            n_workers) if len(g)]
+        blocks = []
+        for g in groups:
+            fs = chunk_starts[int(g[0])]
+            fe = min(chunk_starts[int(g[-1])] + chunk_size, n_frames)
+            blocks.append((int(fs), int(fe)))
+
+        # ── Stage the stack for zero-copy worker access ─────────────────────
+        shm = None
+        try:
+            if (isinstance(stack, np.memmap)
+                    and getattr(stack, "filename", None)
+                    and os.path.isfile(str(stack.filename))):
+                base = ("memmap", str(stack.filename), str(stack.dtype),
+                        tuple(stack.shape))
+                source_kind = "memmap"
+            elif isinstance(stack, np.ndarray):
+                if shared_memory is None:
+                    return None
+                arr = np.ascontiguousarray(stack, dtype=np.float32)
+                shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
+                buf = np.ndarray(arr.shape, dtype=np.float32, buffer=shm.buf)
+                buf[:] = arr
+                base = ("shm", shm.name, str(np.dtype(np.float32)),
+                        tuple(arr.shape))
+                source_kind = "shm"
+                del arr
+            else:
+                return None                  # lazy/unknown stack → serial
+        except Exception:
+            if shm is not None:
+                try:    shm.close(); shm.unlink()
+                except Exception: pass
+            return None
+
+        args = [
+            (idx, base + (fs, fe), diameter, minmass, percentile, chunk_size,
+             threads_per_worker, fs)
+            for idx, (fs, fe) in enumerate(blocks)
+        ]
+
+        print(f"  Parallelism : {n_workers} processes × {threads_per_worker} "
+              f"torch threads (CPU {source_kind}; chunk-aligned blocks — "
+              f"identical to serial)", flush=True)
+        print(f"  Spawning {n_workers} workers (one-time ~10–30s; blocks then "
+              f"localise truly in parallel)...", flush=True)
+
+        results: dict = {}
+        t0 = time.perf_counter()
+        _done = threading.Event()
+
+        def _heartbeat():
+            while not _done.wait(3.0):
+                print(f"    … working ({time.perf_counter() - t0:.0f}s, "
+                      f"{len(results)}/{len(blocks)} blocks done)", flush=True)
+
+        hb = threading.Thread(target=_heartbeat, daemon=True)
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            # ProcessPoolExecutor — NOT multiprocessing.Pool: it surfaces a
+            # dead/un-bootstrappable worker as a BrokenProcessPool exception so
+            # we fall back to serial, instead of Pool.imap's silent forever-hang.
+            # safe_process_workers keeps it under the Windows 61-worker cap
+            # (n_workers ≤ 32 here anyway).
+            hb.start()
+            with ProcessPoolExecutor(max_workers=safe_process_workers(n_workers),
+                                     mp_context=ctx) as ex:
+                # ex.map preserves input (block) order.
+                for idx, df in ex.map(_torch_localise_block_mp, args):
+                    results[idx] = df
+                    _n = 0 if df is None else len(df)
+                    print(f"  Block {idx + 1}/{len(blocks)}: {_n:,} spots "
+                          f"({len(results)}/{len(blocks)} done, "
+                          f"{time.perf_counter() - t0:.0f}s)", flush=True)
+        except Exception as _e:
+            print(f"  Torch-CPU parallel path failed ({_e!r}); "
+                  f"falling back to serial.", flush=True)
+            return None
+        finally:
+            _done.set()
+            if shm is not None:
+                try:    shm.close()
+                except Exception: pass
+                try:    shm.unlink()
+                except Exception: pass
+
+        # A failed/missing block → fall back rather than silently drop spots.
+        if len(results) != len(blocks) or any(
+                results.get(i) is None for i in range(len(blocks))):
+            return None
+
+        parts = [results[i] for i in range(len(blocks)) if len(results[i])]
+        if not parts:
+            return pd.DataFrame(columns=["x", "y", "frame", "mass"])
+        df = pd.concat(parts, ignore_index=True)
+        elapsed = time.perf_counter() - t0
+        print(f"  Found {len(df):,} localisations in {elapsed:.1f}s  "
+              f"({n_frames / max(1e-6, elapsed):.0f} frames/s, "
+              f"{n_workers}-way CPU)", flush=True)
         return df
 
 
