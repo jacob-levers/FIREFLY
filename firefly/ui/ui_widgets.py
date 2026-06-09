@@ -185,6 +185,68 @@ class _StatusBadge(QtWidgets.QLabel):
             "font-size: 11px; %s }" % (_THEME[bg], _THEME[fg], border))
 
 
+class _HyperflyPill(QtWidgets.QLabel):
+    """Blue, pill-shaped badge shown beside the run-readiness pill while a
+    HYPERFLY (parallel multi-file) batch is engaged.  Gently *breathes*
+    (opacity pulse) to read as 'actively working'; static under reduce-motion.
+    Hidden until `engage()`."""
+
+    _BLUE = "#2f81f7"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("hyperfly_pill")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._anim = None
+        self._eff = None
+        self.setStyleSheet(
+            "QLabel#hyperfly_pill { background-color: %s; color: #ffffff; "
+            "border-radius: 9px; padding: 2px 11px; font-weight: 700; "
+            "font-size: 11px; }" % self._BLUE)
+        self.hide()
+
+    def engage(self, text: str = "⚡ HYPERFLY engaged"):
+        self.setText(text)
+        self.show()
+        self._start_pulse()
+
+    def disengage(self):
+        self._stop_pulse()
+        self.hide()
+
+    def _start_pulse(self):
+        self._stop_pulse()
+        try:
+            from firefly.ui import ui_anim
+            if ui_anim.reduce_motion():
+                return
+        except Exception:
+            return
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+        eff = QtWidgets.QGraphicsOpacityEffect(self)
+        eff.setOpacity(1.0)
+        self.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(1200)
+        anim.setStartValue(1.0)
+        anim.setKeyValueAt(0.5, 0.55)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        anim.setLoopCount(-1)             # breathe until disengaged
+        anim.start()
+        self._eff, self._anim = eff, anim
+
+    def _stop_pulse(self):
+        if self._anim is not None:
+            try:    self._anim.stop()
+            except Exception: pass
+            self._anim = None
+        if self._eff is not None:
+            try:    self.setGraphicsEffect(None)   # drop effect → no re-buffering
+            except Exception: pass
+            self._eff = None
+
+
 def _step_badge(n, parent=None) -> QtWidgets.QLabel:
     """A small accent-filled number chip ('1'..'5') prefixing a wizard step.
     Inline-styled for the same reason as `_StatusBadge`."""

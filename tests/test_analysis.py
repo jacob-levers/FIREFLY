@@ -329,6 +329,46 @@ def test_hyperfly_engine_plumbing(monkeypatch):
     assert any(k == "log" for k in kinds)       # worker logs forwarded
 
 
+def test_hf_important_filter():
+    """The HYPERFLY console keeps warnings/errors but drops per-chunk chatter,
+    so a many-file run stays a readable ledger."""
+    import firefly.firefly_worker as w
+    assert w._hf_important("  WARN: minmass too low")
+    assert w._hf_important("ERROR: boom")
+    assert w._hf_important("Traceback (most recent call last):")
+    assert not w._hf_important("  Chunk 5/32 (frames 2000-2499): 1,204 spots")
+    assert not w._hf_important("  Localising... 40%")
+    assert not w._hf_important("  Backend   : trackpy")
+
+
+def test_hyperfly_pill_engage_disengage(monkeypatch):
+    """The blue HYPERFLY pill shows + pulses on engage, hides + drops its
+    opacity effect on disengage, and stays static under reduce-motion."""
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from firefly.ui.ui_widgets import _HyperflyPill
+    import firefly.ui.ui_anim as ua
+
+    monkeypatch.setattr(ua, "reduce_motion", lambda: False)
+    pill = _HyperflyPill()
+    assert pill.isHidden()
+    pill.engage("⚡ HYPERFLY · 8 at once")
+    assert not pill.isHidden()
+    assert pill.text().startswith("⚡ HYPERFLY")
+    assert pill._anim is not None                 # breathing
+    pill.disengage()
+    assert pill.isHidden()
+    assert pill._anim is None and pill._eff is None  # effect removed
+    # reduce-motion → visible but static (no animation object).
+    monkeypatch.setattr(ua, "reduce_motion", lambda: True)
+    pill.engage("x")
+    assert pill._anim is None
+    pill.disengage()
+
+
 def test_msd_fit_sparse_short_tracks_finite():
     """Short/sparse tracks must yield finite-or-NaN D/alpha without crashing or
     blowing up to inf."""

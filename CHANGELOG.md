@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.52.0
+
+### HYPERFLY: an "engaged" badge + a readable console
+
+- A blue, gently-pulsing **"⚡ HYPERFLY"** pill now appears next to the
+  run-readiness badge whenever a parallel multi-file batch is engaged, and
+  switches off when it ends. (Static under Preferences → Reduce motion.)
+- **The console is no longer a firehose** when many files run at once. Instead
+  of interleaving every per-chunk / progress line from dozens of files, it
+  shows a clean per-file **ledger** — `▶ [file] started` … `✓ [file] N locs ·
+  N tracks` (or `✗ … failed`) — while still surfacing any genuine warnings or
+  errors from each file. (Serial single-file runs keep their full detailed
+  log.)
+
 ## v2.51.0
 
 ### Fix: "Failed to load Python DLL" on managed Windows machines

@@ -723,7 +723,8 @@ class HandlersMixin:
                 self._handle_done(payload)
                 worker_done = True
             elif kind == "hyperfly_status":
-                # Big-machine parallel batch engaged — announce it prominently.
+                # Big-machine parallel batch engaged — announce it prominently
+                # and light up the animated pill next to the readiness badge.
                 try:
                     if isinstance(payload, dict) and payload.get("active"):
                         nf = payload.get("n_concurrent")
@@ -733,6 +734,9 @@ class HandlersMixin:
                             f"{wc} cores each")
                         self.statusBar().showMessage(
                             f"⚡ HYPERFLY — {nf} files at once")
+                        pill = getattr(self, "_hyperfly_pill", None)
+                        if pill is not None:
+                            pill.engage(f"⚡ HYPERFLY · {nf} at once")
                 except Exception:
                     pass
             elif kind == "file_starting":
@@ -844,6 +848,12 @@ class HandlersMixin:
             worker_done = True
 
         if worker_done:
+            # Any terminal state (done / batch_done / stopped / error / process
+            # died) ends a HYPERFLY batch — switch the pill off.
+            pill = getattr(self, "_hyperfly_pill", None)
+            if pill is not None:
+                try:    pill.disengage()
+                except Exception: pass
             self._cleanup_after_run()
 
     def _on_elapsed_tick(self):

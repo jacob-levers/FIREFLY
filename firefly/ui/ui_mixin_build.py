@@ -31,6 +31,7 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
                         _load_imagej_roi_polygons, _load_tif_mask_polygons,
                         _load_any_roi_file, _info_icon, _InfoIcon,
                         _label_with_info, _AlertBanner, _StatusBadge,
+                        _HyperflyPill,
                         _step_badge, _color_chip, _DecisionDiagram,
                         _PipelineDiagram, _NoHScrollArea)
 
@@ -1510,6 +1511,11 @@ class BuildMixin:
         _ht.setFont(_htf)
         _hdr.addWidget(_ht)
         _hdr.addStretch(1)
+        # Blue animated "HYPERFLY engaged" pill — hidden until a parallel
+        # multi-file batch starts (see _handle_hyperfly_status).  Sits just
+        # left of the run-readiness pill.
+        self._hyperfly_pill = _HyperflyPill()
+        _hdr.addWidget(self._hyperfly_pill)
         self._import_status_badge = _StatusBadge()
         self._import_status_badge.set_state("muted", "Incomplete")
         _hdr.addWidget(self._import_status_badge)

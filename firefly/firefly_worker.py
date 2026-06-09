@@ -2493,6 +2493,18 @@ _HF_FANQ = None        # Manager fan-in queue (worker → forwarder → GUI queu
 _HF_CANCEL = None      # Manager Event mirrored from the real cancel_event
 _HF_WORKERS = None     # per-file core budget (workers × files ≈ N_CPUS)
 
+# Lines worth surfacing on the HYPERFLY console amid the per-file ledger — the
+# chatty per-chunk / progress output is dropped (see _file_worker_run).
+_HF_IMPORTANT_MARKERS = ("WARN", "ERROR", "FAILED", "⚠", "Traceback",
+                         "Exception", "No trajectories", "could not",
+                         "Insufficient", "OOM", "CRITICAL")
+
+
+def _hf_important(line) -> bool:
+    """True for lines that should still reach the console while HYPERFLY shows
+    only the per-file started/done ledger (warnings, errors, tracebacks)."""
+    return any(m in str(line) for m in _HF_IMPORTANT_MARKERS)
+
 
 class _HFQueue:
     """Per-worker adapter over the Manager fan-in queue.
@@ -2563,20 +2575,48 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
         return {"ok": True, "stem": stem, "out_dir": "",
                 "n_tracks": index, "n_locs": index * 10}
 
-    # Route print()/tqdm in this process to the tagged fan-in queue.
+    # ── Readable console for HYPERFLY ───────────────────────────────────────
+    # With many files running at once, forwarding every per-chunk / tqdm line
+    # turns the log into an unreadable firehose of interleaved output.  Show a
+    # tidy per-file LEDGER instead: one "▶ started" line here, a "✓/✗" line
+    # from the collector on completion, and only genuinely important lines
+    # (warnings / errors) from the chatty pipeline in between.
+    def _emit(line):
+        try:    fan_q.put(("log", f"[{stem}] {line}"))
+        except Exception: pass
+
+    class _ConsoleQ:
+        """stdout/stderr sink: forward only important lines, tagged."""
+        def put(self, item):
+            try:
+                if isinstance(item, tuple) and item[0] == "log":
+                    if _hf_important(item[1]):
+                        _emit(item[1])
+                    return
+            except Exception:
+                return
+            try:    fan_q.put(item)
+            except Exception: pass
+
     try:
-        sys.stdout = QueueLogStream(hfq)
-        sys.stderr = QueueLogStream(hfq)
+        sys.stdout = QueueLogStream(_ConsoleQ())
+        sys.stderr = QueueLogStream(_ConsoleQ())
     except Exception:
         pass
 
     def _wlog(msg):
-        hfq.put(("log", str(msg)))
+        # _run_one_analysis's curated stage logs — keep only the important ones
+        # in HYPERFLY; routine stage headers would swamp the ledger at 64 files.
+        if _hf_important(msg):
+            _emit(str(msg))
 
     def _wprog(_pct, _msg):
-        # Per-file progress isn't streamed to the global bar in Stage A — the
+        # Per-file progress isn't streamed to the global bar in HYPERFLY — the
         # collector drives it on file completion. Drop to avoid K bars fighting.
         return
+
+    try:    fan_q.put(("log", f"▶ [{stem}] ({index}/{n_total}) started"))
+    except Exception: pass
 
     params = dict(params)
     params["workers"] = _HF_WORKERS
@@ -2669,6 +2709,9 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                 except Exception as exc:
                     payload = {"ok": False, "error": str(exc),
                                "tb": traceback.format_exc()}
+                _stem = (payload.get("stem")
+                         or os.path.splitext(os.path.basename(params["file"]))[0])
+                done += 1
                 if payload.get("ok"):
                     results[i - 1] = {"index": i, "ok": True,
                                       "file": params["file"], **payload}
@@ -2679,6 +2722,11 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                         "n_tracks": payload.get("n_tracks", 0),
                         "n_locs":   payload.get("n_locs", 0),
                     }))
+                    # Clean per-file ledger line (the readable HYPERFLY console).
+                    msg_queue.put(("log",
+                        f"  ✓ [{_stem}] {int(payload.get('n_locs', 0)):,} locs · "
+                        f"{int(payload.get('n_tracks', 0)):,} tracks   "
+                        f"({done}/{n})"))
                 else:
                     results[i - 1] = {"index": i, "ok": False,
                                       "file": params["file"],
@@ -2687,7 +2735,9 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                         "index": i, "total": n, "file": params["file"],
                         "tb": payload.get("tb", payload.get("error", "")),
                     }))
-                done += 1
+                    msg_queue.put(("log",
+                        f"  ✗ [{_stem}] failed: {payload.get('error', '')}   "
+                        f"({done}/{n})"))
                 _prog(int(100 * done / max(1, n)),
                       f"HYPERFLY: {done}/{n} files done")
                 if cancel_event.is_set():
