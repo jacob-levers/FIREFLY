@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from scipy.optimize import curve_fit
-from firefly.analysis.fa_constants import N_CPUS, _tqdm
+from firefly.analysis.fa_constants import N_CPUS, _tqdm, safe_process_workers
 
 
 def msd_linear(t, D, offset):
@@ -274,15 +274,23 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
 
     if use_processes:
         from concurrent.futures import ProcessPoolExecutor
-        print(f"  Pool              : ProcessPool × {workers} "
+        # ProcessPoolExecutor is capped at 61 workers on Windows (the
+        # WaitForMultipleObjects 64-handle limit) — without this clamp a
+        # 128-core Windows box raises "max_workers must be <= 61" before
+        # processing a single track.  Threads have no such cap.
+        pool_workers = safe_process_workers(workers)
+        _clamp_note = (f" (clamped from {workers} — Windows 61 cap)"
+                       if pool_workers != workers else "")
+        print(f"  Pool              : ProcessPool × {pool_workers}{_clamp_note} "
               f"(>{PROCESS_POOL_THRESHOLD} tracks → true multi-core)")
         ExecutorCls = ProcessPoolExecutor
     else:
-        print(f"  Pool              : ThreadPool × {workers} "
+        pool_workers = workers
+        print(f"  Pool              : ThreadPool × {pool_workers} "
               f"(<{PROCESS_POOL_THRESHOLD} tracks → low-overhead path)")
         ExecutorCls = ThreadPoolExecutor
 
-    with ExecutorCls(max_workers=workers) as _exe:
+    with ExecutorCls(max_workers=pool_workers) as _exe:
         _futs = [_exe.submit(
                     _msd_and_fit_one,
                     xy, fr, pid,

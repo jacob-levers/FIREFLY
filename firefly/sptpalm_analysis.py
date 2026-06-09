@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.47.1"
+__version__ = "2.48.0"
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":
@@ -128,7 +128,8 @@ import io as _io
 # Shared constants + leaf helpers now live in fa_constants and are
 # re-exported here so existing `sptpalm_analysis.N_CPUS` / `_Cancelled` /
 # `_tqdm` / `_dim_size` call sites keep working unchanged.
-from firefly.analysis.fa_constants import N_CPUS, _Cancelled, _tqdm, _dim_size
+from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm, _dim_size,
+                                           safe_process_workers)
 
 
 tp.quiet()

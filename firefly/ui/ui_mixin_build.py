@@ -947,22 +947,26 @@ class BuildMixin:
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.c_backend = _QuietComboBox()
         self.c_backend.addItems(self._available_backends())
-        # Default to the PyTorch engine with the device auto-selected.  The
-        # "torch" value routes through TorchBackend.select_device(), which
-        # sanity-checks the GPU and transparently falls back to CPU on cards
-        # the bundled CUDA build can't run (e.g. a Pascal GTX 1060).  A saved
-        # user preference, if present, overrides this on settings restore.
-        self.c_backend.setCurrentText("Torch (auto)")
+        # Default to "Auto": it picks a healthy GPU (CUDA / Apple MPS) when one
+        # is present, and the multi-core trackpy path when there isn't.  The old
+        # default ("Torch (auto)") FORCED the Torch backend — which on a no-GPU
+        # machine silently runs single-process on CPU and badly under-uses a
+        # many-core box.  A saved user preference overrides this on restore.
+        self.c_backend.setCurrentText("Auto")
         self.c_backend.setToolTip(
             "Which implementation to use for spot localisation.\n"
-            "• Auto                — pick the fastest healthy backend on this machine.\n"
-            "• Trackpy (CPU)       — reference CPU implementation (battle-tested).\n"
-            "• Torch (auto)        — PyTorch, device auto-selected.\n"
-            "• Torch — Apple MPS   — force Apple GPU.  Fast when stable; on some\n"
-            "                        macOS/M-chip combinations may hit memory-\n"
-            "                        allocator issues at very low minmass.\n"
-            "• Torch — NVIDIA CUDA — force NVIDIA GPU.\n"
-            "• Torch — CPU         — force PyTorch on CPU (for benchmarking).")
+            "• Auto                      — recommended: GPU when healthy, else the\n"
+            "                              multi-core trackpy CPU path.\n"
+            "• Trackpy (CPU)             — reference CPU implementation (battle-tested,\n"
+            "                              uses all cores).\n"
+            "• Torch — GPU (auto device) — force PyTorch; auto-selects CUDA/MPS, and\n"
+            "                              falls back to CPU if no GPU (single-process\n"
+            "                              — slow on CPU-only machines).\n"
+            "• Torch — Apple MPS         — force Apple GPU.  Fast when stable; on some\n"
+            "                              macOS/M-chip combinations may hit memory-\n"
+            "                              allocator issues at very low minmass.\n"
+            "• Torch — NVIDIA CUDA       — force NVIDIA GPU.\n"
+            "• Torch — CPU               — force PyTorch on CPU (for benchmarking).")
         gl.addRow(_label_with_info("Detection backend", "detection backend"), self.c_backend)
         self.s_workers = self._spin_int(N_CPUS, 1, N_CPUS,
             tip="Parallel CPU workers for the trackpy backend's multiprocessing\n"

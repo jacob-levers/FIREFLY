@@ -25,7 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 import numpy as np
 import pandas as pd
 import trackpy as tp
-from firefly.analysis.fa_constants import N_CPUS, _Cancelled, _tqdm
+from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm,
+                                           safe_process_workers)
 from firefly.analysis.fa_linking import _link_via_trackpy
 from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
@@ -1593,6 +1594,14 @@ class TorchBackend(LocaliserBackend):
             if dev_str == "cpu":
                 try:    print(f"  Torch threads : {torch.get_num_threads()}")
                 except Exception: pass
+                # The Torch backend was selected but there's no usable GPU, so
+                # it's running on CPU.  Flag it once: on CPU-only machines the
+                # 'Auto' / 'Trackpy (CPU)' backends spread across all cores and
+                # are usually much faster than forced Torch.
+                print("  NOTE: Torch backend is on CPU (no GPU found). For "
+                      "CPU-only machines, the 'Auto' or 'Trackpy (CPU)' "
+                      "backends use all cores and are usually much faster.",
+                      flush=True)
 
         t0 = time.perf_counter()
         all_locs: list[dict] = []
@@ -2212,7 +2221,8 @@ def _harvest_windows(stack, windows, diameter, percentile,
     if _parallel and len(prepped) >= 2 and N_CPUS > 1:
         try:
             with ProcessPoolExecutor(
-                    max_workers=min(len(prepped), N_CPUS)) as ex:
+                    max_workers=safe_process_workers(
+                        min(len(prepped), N_CPUS))) as ex:
                 # ex.map preserves input order → window order is unchanged.
                 frames = list(ex.map(_harvest_locate_one, args))
         except Exception:
@@ -2383,7 +2393,7 @@ def _sweep_thresholds(H, grid, search_range, memory, link_min_len):
             and n_cand >= _SWEEP_PARALLEL_MIN_CANDIDATES):
         try:
             with ProcessPoolExecutor(
-                    max_workers=min(N_CPUS, len(grid)),
+                    max_workers=safe_process_workers(min(N_CPUS, len(grid))),
                     initializer=_sweep_pool_init,
                     initargs=(window_arrays, search_range, memory,
                               link_min_len)) as ex:

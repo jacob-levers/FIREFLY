@@ -1900,7 +1900,14 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                     v_str = str(v)
                     items = [widget.itemText(i)
                              for i in range(widget.count())]
-                    if v_str in items:
+                    if widget is getattr(self, "c_backend", None) \
+                            and v_str in self._BACKEND_LABEL_MIGRATION:
+                        # A renamed/retired label (e.g. the old forced-Torch
+                        # "Torch (auto)" default) → its current replacement.
+                        lbl = self._BACKEND_LABEL_MIGRATION[v_str]
+                        if lbl in items:
+                            widget.setCurrentText(lbl)
+                    elif v_str in items:
                         widget.setCurrentText(v_str)
                     # Migration: old saved backend values were stored as
                     # internal strings ("torch-mps") but the combo now
@@ -2235,12 +2242,21 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
     # GUI shows them as proper grammar so users don't see lowercase
     # snake-case-y identifiers in their face.
     _BACKEND_LABEL_TO_VALUE = {
-        "Auto":               "auto",
-        "Trackpy (CPU)":      "trackpy",
-        "Torch (auto)":       "torch",
-        "Torch — Apple MPS":  "torch-mps",
+        "Auto":                "auto",
+        "Trackpy (CPU)":       "trackpy",
+        "Torch — GPU (auto device)": "torch",
+        "Torch — Apple MPS":   "torch-mps",
         "Torch — NVIDIA CUDA": "torch-cuda",
-        "Torch — CPU":        "torch-cpu",
+        "Torch — CPU":         "torch-cpu",
+    }
+    # Stale dropdown labels → current label, applied on settings restore.  The
+    # old "Torch (auto)" was the shipped default and FORCED the Torch backend —
+    # which on a no-GPU machine silently runs single-process on CPU (slow).
+    # Migrate it to "Auto", which picks a GPU when healthy and the multi-core
+    # trackpy path when there's no GPU.  Users who genuinely want forced-Torch
+    # can re-pick "Torch — GPU (auto device)".
+    _BACKEND_LABEL_MIGRATION = {
+        "Torch (auto)": "Auto",
     }
     _BACKEND_VALUE_TO_LABEL = {v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()}
 

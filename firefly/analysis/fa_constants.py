@@ -19,6 +19,26 @@ from tqdm import tqdm
 N_CPUS = multiprocessing.cpu_count()
 
 
+def safe_process_workers(n: int) -> int:
+    """Clamp a requested worker count to what ``concurrent.futures.
+    ProcessPoolExecutor`` actually allows.
+
+    On Windows, ProcessPoolExecutor is hard-capped at **61** workers: its
+    implementation waits on every worker's sentinel handle via
+    ``_winapi.WaitForMultipleObjects``, which can track at most 64 handles
+    (minus a few reserved), so ``max_workers > 61`` raises
+    ``ValueError: max_workers must be <= 61`` at pool construction — before any
+    work runs.  This bites many-core Windows boxes (e.g. a 128-core EPYC) where
+    the default worker count is ``os.cpu_count()``.
+
+    Only ProcessPoolExecutor has this limit — ``ThreadPoolExecutor`` and
+    ``multiprocessing.Pool`` are exempt, so callers using those should NOT
+    route through this helper.
+    """
+    n = max(1, int(n))
+    return min(n, 61) if sys.platform.startswith("win") else n
+
+
 class _Cancelled(Exception):
     """Raised inside loaders/pipeline when a stop_event fires mid-run."""
     pass

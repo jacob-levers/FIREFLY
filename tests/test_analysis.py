@@ -112,6 +112,53 @@ def test_msd_fit_serial_matches_parallel():
                                    rtol=1e-9, atol=1e-12)
 
 
+def test_safe_process_workers_clamps_on_windows(monkeypatch):
+    """ProcessPoolExecutor caps max_workers at 61 on Windows; the helper must
+    clamp there (and only there), and floor at 1 everywhere."""
+    import firefly.analysis.fa_constants as fac
+    from firefly.analysis.fa_constants import safe_process_workers
+    # POSIX: identity (no cap).
+    monkeypatch.setattr(fac.sys, "platform", "darwin")
+    assert safe_process_workers(128) == 128
+    assert safe_process_workers(8) == 8
+    monkeypatch.setattr(fac.sys, "platform", "linux")
+    assert safe_process_workers(200) == 200
+    # Windows: clamp to 61.
+    monkeypatch.setattr(fac.sys, "platform", "win32")
+    assert safe_process_workers(128) == 61
+    assert safe_process_workers(61) == 61
+    assert safe_process_workers(40) == 40
+    # Floor at 1 regardless of platform.
+    assert safe_process_workers(0) == 1
+    assert safe_process_workers(-5) == 1
+
+
+def test_compute_msd_and_fit_clamps_process_workers(monkeypatch):
+    """The diffusion ProcessPool branch (>5000 tracks) must route its worker
+    count through safe_process_workers — otherwise a 128-core Windows box
+    raises 'max_workers must be <= 61' before processing a single track.
+
+    We spy on the helper (and have it return 1) so the test both PROVES the
+    clamp is wired at the call site AND keeps the spawned pool to a single
+    process (laptop memory safety — no 61-process fan-out here)."""
+    import firefly.analysis.fa_diffusion as fad
+    seen = {}
+
+    def _spy(n):
+        seen["requested"] = n
+        return 1                      # tiny pool → memory-safe
+
+    monkeypatch.setattr(fad, "safe_process_workers", _spy)
+    # >5000 tracks forces the ProcessPool path; short tracks keep it light.
+    n_tracks = 5001
+    tracks = _synthetic_brownian_tracks(n_tracks=n_tracks, n_frames=6,
+                                        sigma_px=1.0, seed=3)
+    _i, _e, diff = fd.compute_msd_and_fit(tracks, 0.1, 0.05, max_lagtime=4,
+                                          n_fit=3, workers=128)
+    assert seen.get("requested") == 128   # call site passed the raw request
+    assert len(diff) == n_tracks          # process path ran to completion
+
+
 def test_msd_fit_sparse_short_tracks_finite():
     """Short/sparse tracks must yield finite-or-NaN D/alpha without crashing or
     blowing up to inf."""

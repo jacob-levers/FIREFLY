@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.48.0
+
+### Fix: crash on many-core Windows machines (≥62 logical CPUs)
+
+- The MSD & diffusion stage built a `ProcessPoolExecutor` sized to
+  `os.cpu_count()`. On **Windows that's hard-capped at 61** workers (the
+  `WaitForMultipleObjects` 64-handle limit), so any file with ≥5000 tracks on a
+  big box (e.g. a 128-core EPYC) raised `ValueError: max_workers must be <= 61`
+  before processing a single track. Worker counts for process pools are now
+  clamped to 61 on Windows via a shared `safe_process_workers` helper (applied
+  at all three `ProcessPoolExecutor` sites). Thread pools / `multiprocessing.Pool`
+  are unaffected and keep using every core.
+
+### Detection backend: de-trapped for CPU-only machines
+
+- Renamed the misleading **"Torch (auto)"** option to **"Torch — GPU (auto
+  device)"** and made **"Auto"** the default. "Auto" picks a healthy GPU when
+  present and the **multi-core trackpy** path when there isn't — whereas forced
+  Torch on a no-GPU machine runs **single-process on CPU** and badly under-uses
+  a many-core box. Existing installs that had the old default saved are migrated
+  to "Auto" on restore (deliberate Torch-GPU users can re-pick it).
+- When the Torch backend does land on CPU, the log now says so once and points
+  to "Auto"/"Trackpy (CPU)" as the faster CPU-only choice.
+
 ## v2.47.1
 
 ### Fix: jank-free "What these terms mean" (and every collapsible)
