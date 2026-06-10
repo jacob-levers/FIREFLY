@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.58.0
+
+### Updater: verify integrity, never install a corrupt build
+
+The in-app updater only ever checked the download's *size*, so a binary that a
+flaky network or AV **corrupted while keeping the size** was installed anyway —
+the real cause of the "failed to load python3xx.dll" and "decompression
+resulted in return code -3" crashes after an update on managed Windows
+machines. Now the whole transfer is integrity-checked end to end:
+
+- **Download** — the file's **SHA-256 is verified against GitHub's published
+  digest**. A mismatch is retried from scratch, and a persistent mismatch
+  fails the update cleanly (with a "finish manually" pointer) instead of
+  installing a broken exe.
+- **Copy** — the Windows swap helper verifies the **copied exe's SHA-256
+  matches the source** (via `certutil`); on mismatch it restores the backup and
+  reveals the new exe, rather than relaunching a corrupted file.
+
+Net effect: the updater now either installs a byte-perfect build or stops and
+tells you — it can't silently ship a damaged one. (Recovery for an already-
+corrupted install: rename the `FIREFLY.exe.bak` the updater left behind back to
+`FIREFLY.exe`, or download fresh from the Releases page.)
+
 ## v2.57.0
 
 ### HYPERFLY: faster file loading + a live console

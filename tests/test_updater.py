@@ -55,10 +55,14 @@ _REL = {
 def test_select_asset():
     a = u.select_asset(_REL, "FIREFLY-macOS.dmg")
     assert a == {"name": "FIREFLY-macOS.dmg",
-                 "url": "https://x/dmg", "size": 123456}
+                 "url": "https://x/dmg", "size": 123456, "digest": ""}
     assert u.select_asset(_REL, "nope.bin") is None
     assert u.select_asset(_REL, None) is None
     assert u.select_asset({}, "FIREFLY-macOS.dmg") is None
+    # GitHub's content digest is captured (used to verify the download).
+    rel = {"assets": [{"name": "x.exe", "browser_download_url": "https://x",
+                       "size": 9, "digest": "sha256:abc"}]}
+    assert u.select_asset(rel, "x.exe")["digest"] == "sha256:abc"
 
 
 def test_parse_release(monkeypatch):
@@ -111,6 +115,26 @@ def test_windows_helper_script():
     assert 'for %%A in ("%TARGET%") do set "DSTSIZE=%%~zA"' in s      # copied size
     assert 'if not "!SRCSIZE!"=="!DSTSIZE!"' in s                     # verify match
     assert 'copy /Y "%BACKUP%" "%TARGET%"' in s                       # restore on fail
+    # Content check: SHA-256 of the copy must match the source (catches a
+    # size-preserving corruption — the "decompression -3" cause).
+    assert 'certutil -hashfile "%NEWEXE%" SHA256' in s
+    assert 'certutil -hashfile "%TARGET%" SHA256' in s
+    assert 'if /i not "!SRCHASH!"=="!DSTHASH!"' in s
+
+
+def test_sha256_and_digest_verification(tmp_path):
+    """Download integrity: SHA-256 is computed and matched against GitHub's
+    'sha256:HEX' digest; a wrong digest is rejected, a missing one passes."""
+    import hashlib
+    data = b"firefly-bytes" * 4096
+    f = tmp_path / "blob.bin"
+    f.write_bytes(data)
+    want = hashlib.sha256(data).hexdigest()
+    assert u._sha256_file(str(f)) == want.lower()
+    assert u._digest_matches(str(f), "sha256:" + want) is True
+    assert u._digest_matches(str(f), "sha256:" + "0" * 64) is False   # wrong → reject
+    assert u._digest_matches(str(f), "") is True                       # no digest → pass
+    assert u._digest_matches(str(f), "sha256:short") is True           # malformed → pass
 
 
 # ── download validation (pure for the windows PE check) ─────────────────

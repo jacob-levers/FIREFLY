@@ -122,7 +122,9 @@ def fetch_latest_release(api_url: str, timeout: float = 6.0) -> dict:
 def select_asset(release_json: dict,
                  asset_name: Optional[str]) -> Optional[dict]:
     """Find the named asset in a release JSON; return
-    ``{"name", "url", "size"}`` or None if absent."""
+    ``{"name", "url", "size", "digest"}`` or None if absent.  ``digest`` is the
+    GitHub-provided content hash (e.g. ``"sha256:abcd…"``) used to verify the
+    download was not corrupted in transit; "" if GitHub didn't supply one."""
     if not asset_name or not isinstance(release_json, dict):
         return None
     for a in release_json.get("assets", []) or []:
@@ -134,7 +136,8 @@ def select_asset(release_json: dict,
                 return None
             return {"name": asset_name,
                     "url": url,
-                    "size": int(a.get("size") or 0)}
+                    "size": int(a.get("size") or 0),
+                    "digest": str(a.get("digest") or "")}
     return None
 
 
@@ -188,6 +191,33 @@ def _validate_download(path: str) -> bool:
     return os.path.getsize(path) > 0 if os.path.exists(path) else False
 
 
+def _sha256_file(path: str) -> Optional[str]:
+    """Lower-case hex SHA-256 of ``path``, or None on error."""
+    try:
+        import hashlib
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for blk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(blk)
+        return h.hexdigest().lower()
+    except Exception:
+        return None
+
+
+def _digest_matches(path: str, digest: str) -> bool:
+    """True if ``path``'s SHA-256 matches GitHub's asset ``digest``
+    (``"sha256:HEX"``).  Returns True when no usable digest is supplied — we
+    can't verify what we weren't given, and the size/format checks still apply."""
+    d = (digest or "").strip().lower()
+    if not d.startswith("sha256:"):
+        return True
+    want = d.split(":", 1)[1].strip()
+    if len(want) != 64:
+        return True
+    got = _sha256_file(path)
+    return got is not None and got == want
+
+
 def download_asset(asset: dict,
                    *,
                    progress_cb: Optional[Callable[[int, int], None]] = None,
@@ -204,13 +234,24 @@ def download_asset(asset: dict,
     if not asset or not asset.get("url"):
         raise UpdaterError("No installer is available for your platform.")
     dest = os.path.join(updates_dir(), asset["name"])
+    digest = str(asset.get("digest") or "")
+
+    def _validate(path: str) -> bool:
+        # Format sanity AND content integrity: verify SHA-256 against GitHub's
+        # digest so a corrupted-but-right-size download is rejected and retried
+        # rather than installed.  A persistent mismatch fails the download →
+        # the UI tells the user to install manually instead of shipping a broken
+        # exe (the cause of the "decompression -3" / "Python DLL not found"
+        # crashes on networks/AV that mangle the transfer).
+        return _validate_download(path) and _digest_matches(path, digest)
+
     try:
         net_download.download_file(
             asset["url"], dest,
             progress_cb=progress_cb,
             cancel_cb=cancel_cb,
             status_cb=status_cb,
-            validate_cb=_validate_download,
+            validate_cb=_validate,
             max_attempts=6)
     except net_download.DownloadError as exc:
         raise UpdaterError(str(exc), reveal_path=updates_dir()) from exc
@@ -310,12 +351,14 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
     user with a broken install:
       * back up the current exe to ``<target>.bak`` first;
       * copy the new exe in (retrying past Defender's transient file lock);
-      * **verify** the copy landed intact — its byte size must match the
-        source (a truncated copy is the classic cause of the "failed to load
-        python3xx.dll" bootloader error);
-      * if the copy fails or is short, **restore the backup** so the working
-        version stays in place, and reveal the new exe so the user can finish
-        by hand;
+      * **verify** the copy landed intact — both its byte size AND its SHA-256
+        (via ``certutil``) must match the source, so a copy that AV/the
+        filesystem corrupted while keeping the size is caught too (the cause of
+        the "decompression -3" / "failed to load python3xx.dll" bootloader
+        errors);
+      * if the copy fails, is short, or its hash differs, **restore the backup**
+        so the working version stays in place, and reveal the new exe so the
+        user can finish by hand;
       * on success, relaunch and KEEP the ``.bak`` so the user can roll back
         manually if the new build won't start on their machine.
     """
@@ -367,7 +410,23 @@ if not "!SRCSIZE!"=="!DSTSIZE!" (
   start "" explorer.exe /select,"%NEWEXE%"
   goto end
 )
-echo [firefly-update] swap verified (size !DSTSIZE!); relaunching >>"%LOG%" 2>&1
+rem ── Content check: the copied exe's SHA-256 must match the (already
+rem    GitHub-verified) source.  Catches a copy that AV/the filesystem mangled
+rem    while keeping the size — the cause of "decompression -3" at launch.
+rem    Best-effort: if certutil is unavailable, fall back to the size check.
+set "SRCHASH="
+set "DSTHASH="
+for /f "skip=1 delims=" %%H in ('certutil -hashfile "%NEWEXE%" SHA256 2^>NUL') do if not defined SRCHASH set "SRCHASH=%%H"
+for /f "skip=1 delims=" %%H in ('certutil -hashfile "%TARGET%" SHA256 2^>NUL') do if not defined DSTHASH set "DSTHASH=%%H"
+set "SRCHASH=!SRCHASH: =!"
+set "DSTHASH=!DSTHASH: =!"
+if defined SRCHASH if defined DSTHASH if /i not "!SRCHASH!"=="!DSTHASH!" (
+  echo [firefly-update] CONTENT hash mismatch - copy was corrupted; restoring backup >>"%LOG%" 2>&1
+  copy /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1
+  start "" explorer.exe /select,"%NEWEXE%"
+  goto end
+)
+echo [firefly-update] swap verified (size + SHA-256); relaunching >>"%LOG%" 2>&1
 start "" "%TARGET%"
 echo [firefly-update] previous version kept at "%BACKUP%" (rename to roll back) >>"%LOG%" 2>&1
 :end
