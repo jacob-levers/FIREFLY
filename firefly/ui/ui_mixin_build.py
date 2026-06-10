@@ -999,6 +999,16 @@ class BuildMixin:
             tip=f"Cap the total CPU cores HYPERFLY uses across all files\n"
                 f"(0 = all {N_CPUS} cores).")
         gl.addRow("Max cores (0 = auto)", self.s_hyperfly_max_cores)
+        try:
+            import psutil as _ps
+            _ram_max_gb = max(8, int(_ps.virtual_memory().total / 1e9))
+        except Exception:
+            _ram_max_gb = 100000
+        self.s_hyperfly_max_ram = self._spin_int(0, 0, _ram_max_gb, step=8,
+            tip="Cap HYPERFLY's peak RAM use across all files, in GB (0 = auto).\n"
+                "Lower it to leave headroom for other users on a shared machine —\n"
+                "fewer files run at once so the wave stays under the cap.")
+        gl.addRow("Max RAM GB (0 = auto)", self.s_hyperfly_max_ram)
 
         # GPU-acceleration entry point — Windows only.  When CUDA is NOT
         # installed we show the Set-up button right here, where the user picks

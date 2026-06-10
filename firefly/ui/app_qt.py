@@ -1793,6 +1793,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("performance/hyperfly",           self.c_hyperfly,           "combo"),
             ("performance/hyperfly_max_files", self.s_hyperfly_max_files, "spin", int),
             ("performance/hyperfly_max_cores", self.s_hyperfly_max_cores, "spin", int),
+            ("performance/hyperfly_max_ram",   self.s_hyperfly_max_ram,   "spin", int),
 
             # ── Figures tab ───────────────────────────────────────────────
             ("figures/theme",            self.c_fig_theme,       "combo"),
@@ -2842,6 +2843,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 int(self.s_hyperfly_max_files.value()))
             os.environ["FIREFLY_HYPERFLY_MAX_CORES"] = str(
                 int(self.s_hyperfly_max_cores.value()))
+            os.environ["FIREFLY_HYPERFLY_MAX_RAM_GB"] = str(
+                int(self.s_hyperfly_max_ram.value()))
         except Exception:
             pass
 

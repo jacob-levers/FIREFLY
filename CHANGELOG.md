@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.55.0
+
+### HYPERFLY: a RAM cap for shared machines
+
+Added **Preferences → Performance → "Max RAM GB (0 = auto)"** — a hard ceiling on
+HYPERFLY's peak memory across all concurrent files. Lower it to stay a good
+neighbour when other people are on the machine: HYPERFLY simply runs fewer files
+at once so the wave never exceeds the cap, and if even two files won't fit under
+it, HYPERFLY stands down to ordinary one-file-at-a-time processing. 0 = auto
+(bounded only by free RAM, as before). Joins the existing Max-files and
+Max-cores throttles. (Env equivalent: `FIREFLY_HYPERFLY_MAX_RAM_GB`.)
+
 ## v2.54.0
 
 ### Parallel-processing review: robustness + polish

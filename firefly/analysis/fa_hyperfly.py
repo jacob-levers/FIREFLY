@@ -16,6 +16,7 @@ worker), NOT from QSettings directly:
     FIREFLY_HYPERFLY            auto | on | off   (default: auto)
     FIREFLY_HYPERFLY_MAX_FILES  int, 0 = automatic (cap concurrent files)
     FIREFLY_HYPERFLY_MAX_CORES  int, 0 = automatic (cap total cores used)
+    FIREFLY_HYPERFLY_MAX_RAM_GB int, 0 = automatic (cap peak RAM, GB)
 """
 from __future__ import annotations
 
@@ -112,10 +113,15 @@ def plan_concurrency(params_list: list) -> dict:
 
     free_gb = _free_ram_gb()
     usable_gb = max(0.0, free_gb - _user_ram_reserve_gb())
+    # Optional hard RAM cap (FIREFLY_HYPERFLY_MAX_RAM_GB) — bound HYPERFLY's peak
+    # footprint so it stays a good neighbour on a shared machine even when lots
+    # of RAM is free.  0 = auto (just free-RAM bounded).
+    max_ram = _env_int("FIREFLY_HYPERFLY_MAX_RAM_GB")    # 0 = auto
+    ram_budget_gb = min(usable_gb, max_ram) if max_ram > 0 else usable_gb
     # Size the wave to the LARGEST file so even the biggest fits in RAM.
     per_file_gb = max((_per_file_peak_gb(p) for p in params_list), default=0.5)
 
-    k_ram = int(usable_gb // per_file_gb) if per_file_gb > 0 else n_files
+    k_ram = int(ram_budget_gb // per_file_gb) if per_file_gb > 0 else n_files
     k_cores = max(1, N_CPUS // MIN_CORES_PER_FILE)
     max_files = _env_int("FIREFLY_HYPERFLY_MAX_FILES")    # 0 = auto
     max_cores = _env_int("FIREFLY_HYPERFLY_MAX_CORES")    # 0 = auto
@@ -128,15 +134,17 @@ def plan_concurrency(params_list: list) -> dict:
 
     per_file_workers = max(1, budget_cores // k)
     active = k >= 2
+    _ram_note = (f"≤{max_ram} GB cap" if max_ram > 0 else f"free {free_gb:.0f} GB")
     return {
         "active": active,
         "n_concurrent": k if active else 1,
         "per_file_workers": per_file_workers if active else N_CPUS,
         "free_gb": round(free_gb, 1),
         "per_file_gb": round(per_file_gb, 1),
+        "ram_budget_gb": round(ram_budget_gb, 1),
         "reason": (f"{k} files × {per_file_workers} cores "
-                   f"(free {free_gb:.0f} GB, ~{per_file_gb:.0f} GB/file)"
+                   f"({_ram_note}, ~{per_file_gb:.0f} GB/file)"
                    if active else
-                   f"only one file fits in RAM (free {free_gb:.0f} GB, "
+                   f"only one file fits in RAM ({_ram_note}, "
                    f"~{per_file_gb:.0f} GB/file)"),
     }

@@ -302,6 +302,7 @@ def test_plan_concurrency_budget(monkeypatch):
     monkeypatch.setenv("FIREFLY_HYPERFLY", "on")
     monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_FILES", raising=False)
     monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_CORES", raising=False)
+    monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_RAM_GB", raising=False)
     monkeypatch.setattr(hf, "N_CPUS", 128)
     monkeypatch.setattr(hf, "_free_ram_gb", lambda: 700.0)
     monkeypatch.setattr("firefly.analysis.fa_memory._user_ram_reserve_gb",
@@ -328,6 +329,16 @@ def test_plan_concurrency_budget(monkeypatch):
     monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_FILES", raising=False)
     monkeypatch.setenv("FIREFLY_HYPERFLY_MAX_CORES", "32")
     assert hf.plan_concurrency(params)["per_file_workers"] == 2
+
+    # IT cap: max RAM 100 GB → with 20 GB/file only 5 files fit the wave.
+    monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_CORES", raising=False)
+    monkeypatch.setenv("FIREFLY_HYPERFLY_MAX_RAM_GB", "100")
+    plan = hf.plan_concurrency(params)
+    assert plan["n_concurrent"] == 5 and plan["ram_budget_gb"] == 100.0
+    # A tight RAM cap that fits <2 files → HYPERFLY stands down to serial.
+    monkeypatch.setenv("FIREFLY_HYPERFLY_MAX_RAM_GB", "25")
+    assert hf.plan_concurrency(params)["active"] is False
+    monkeypatch.delenv("FIREFLY_HYPERFLY_MAX_RAM_GB", raising=False)
 
     # Single file / off → inactive (serial path).
     assert hf.plan_concurrency(params[:1])["active"] is False
