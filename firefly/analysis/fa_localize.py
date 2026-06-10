@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 import trackpy as tp
 from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm,
-                                           safe_process_workers)
+                                           safe_process_workers, _cpu_core_budget)
 from firefly.analysis.fa_linking import _link_via_trackpy
 from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
@@ -40,22 +40,6 @@ try:
     tp.quiet()
 except Exception:
     pass
-
-
-def _cpu_core_budget() -> int:
-    """Per-process CPU core ceiling for the parallel detection / BLAS paths.
-
-    HYPERFLY runs several files concurrently, each in its own worker process; it
-    sets ``FIREFLY_CPU_CORE_BUDGET`` to that file's slice of the machine so the
-    nested detection pools and BLAS thread-pools don't each grab all the cores
-    (N files × all cores = massive oversubscription).  Unset → all cores, i.e.
-    the original single-file behaviour.
-    """
-    try:
-        b = int(os.environ.get("FIREFLY_CPU_CORE_BUDGET", "0"))
-    except (ValueError, TypeError):
-        b = 0
-    return b if b > 0 else int(N_CPUS)
 
 
 def _ram_strategy(stack, headroom: float = 0.75) -> tuple[bool, float, float]:

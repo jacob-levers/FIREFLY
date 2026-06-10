@@ -2506,6 +2506,14 @@ def _hf_important(line) -> bool:
     return any(m in str(line) for m in _HF_IMPORTANT_MARKERS)
 
 
+def _hf_norm_stage(s) -> str:
+    """Strip trailing counts / percentages from a stage label so a per-file
+    stage line is logged once per phase, not on every progress tick
+    (e.g. 'Linking… 40 %' and 'Linking… 80 %' both → 'Linking')."""
+    import re
+    return re.sub(r"[\d.,%/]+", "", str(s)).strip().rstrip("…").strip()
+
+
 def _hf_downscale_preview(payload: dict, max_dim: int = 160) -> dict:
     """Shrink a preview_frame payload (cheap stride subsample) so K live tiles
     don't ship full-resolution frames through the IPC queue.  Scales the spot
@@ -2650,11 +2658,20 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
         if _hf_important(msg):
             _emit(str(msg))
 
-    _prog_state = {"t": 0.0}
+    _prog_state = {"t": 0.0, "stage": None}
 
     def _wprog(pct, stage):
-        # Don't drive the GLOBAL bar (the collector does that on completion);
-        # instead feed this file's dashboard tile a throttled stage/percent.
+        # Don't drive the GLOBAL bar (the collector does that on completion).
+        s = str(stage)
+        # Console: one concise line per STAGE change so the log shows each file
+        # advancing through the pipeline (Loading → Preprocessing → Localising →
+        # Linking …) without the per-chunk firehose.
+        norm = _hf_norm_stage(s)
+        if norm and norm != _prog_state["stage"]:
+            _prog_state["stage"] = norm
+            try:    fan_q.put(("log", f"  [{stem}] {norm}"))
+            except Exception: pass
+        # Dashboard tile: throttled stage/percent.
         try:
             import time as _t
             now = _t.monotonic()
@@ -2662,7 +2679,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
                 return
             _prog_state["t"] = now
             fan_q.put(("hf_tile", {"file": index, "stem": stem,
-                                   "pct": int(pct), "stage": str(stage)}))
+                                   "pct": int(pct), "stage": s}))
         except Exception:
             pass
 
@@ -2744,6 +2761,27 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         forwarder = _threading.Thread(target=_forward, daemon=True)
         forwarder.start()
 
+        # Heartbeat: a periodic "still working" line so a long early stage
+        # (e.g. 11 files each loading 25 GB into RAM) doesn't look frozen on the
+        # console between per-file stage lines.
+        import time as _time
+        _hb_t0 = _time.monotonic()
+        _hb_state = {"done": 0}
+
+        def _heartbeat():
+            while not stop_threads.wait(25.0):
+                d = _hb_state["done"]
+                if d >= n:
+                    return
+                el = _time.monotonic() - _hb_t0
+                try:
+                    msg_queue.put(("log",
+                        f"  ⚡ HYPERFLY working… {d}/{n} done · "
+                        f"{min(K, n - d)} running  ({el:.0f}s)"))
+                except Exception:
+                    pass
+        _threading.Thread(target=_heartbeat, daemon=True).start()
+
         results = [None] * n
         done = 0
         cancelled = False
@@ -2766,6 +2804,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                 _stem = (payload.get("stem")
                          or os.path.splitext(os.path.basename(params["file"]))[0])
                 done += 1
+                _hb_state["done"] = done       # feed the heartbeat
                 if payload.get("ok"):
                     results[i - 1] = {"index": i, "ok": True,
                                       "file": params["file"], **payload}

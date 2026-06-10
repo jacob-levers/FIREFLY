@@ -11,12 +11,30 @@ from __future__ import annotations
 
 import io as _io
 import multiprocessing
+import os
 import sys
 
 from tqdm import tqdm
 
 # Worker-count default for the parallel localisation / MSD passes.
 N_CPUS = multiprocessing.cpu_count()
+
+
+def _cpu_core_budget() -> int:
+    """Per-process CPU core ceiling for the parallel paths (loaders, detection,
+    BLAS thread-pools).
+
+    HYPERFLY runs several files concurrently, each in its own worker process; it
+    sets ``FIREFLY_CPU_CORE_BUDGET`` to that file's slice of the machine so the
+    nested pools don't each grab all the cores (N files × all cores = massive
+    oversubscription — e.g. 11 files × 128 ≈ 1400 TIF-decode threads).  Unset →
+    all cores, i.e. the original single-file behaviour.
+    """
+    try:
+        b = int(os.environ.get("FIREFLY_CPU_CORE_BUDGET", "0"))
+    except (ValueError, TypeError):
+        b = 0
+    return b if b > 0 else int(N_CPUS)
 
 
 def safe_process_workers(n: int) -> int:

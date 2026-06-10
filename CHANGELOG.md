@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.57.0
+
+### HYPERFLY: faster file loading + a live console
+
+- **Faster load-to-RAM.** Each concurrent file was loading its TIF with a decode
+  pool sized to *all* cores — so 11 files at once spun up ~11×128 ≈ 1,400 decode
+  threads that thrashed instead of working (CPU sat low while loading crawled).
+  The TIF loader now respects HYPERFLY's per-file core budget (the same one the
+  detection pools use), so the threads match the cores and loading is much
+  snappier. Single-file (non-HYPERFLY) runs are unchanged.
+- **The console no longer goes silent.** During HYPERFLY it now logs a concise
+  line as each file changes stage (Loading → Preprocessing → Localising →
+  Linking …) plus a periodic "⚡ HYPERFLY working… N/M done · K running"
+  heartbeat — so a long load/preprocess phase shows progress instead of looking
+  frozen. (Still no per-chunk firehose; warnings/errors and the per-file
+  done/failed ledger remain.)
+
 ## v2.56.0
 
 ### Faster downloads (in-app update + GPU installer)

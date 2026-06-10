@@ -18,7 +18,8 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 
-from firefly.analysis.fa_constants import N_CPUS, _Cancelled, _dim_size, _tqdm
+from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _dim_size, _tqdm,
+                                           _cpu_core_budget)
 from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
 
@@ -885,7 +886,7 @@ def _load_single_tif(path, stop_event=None):
                 # tifffile asarray(key=range(...)) uses multithreaded decode
                 try:
                     chunk = tif.asarray(key=range(start, end),
-                                         maxworkers=N_CPUS)
+                                         maxworkers=_cpu_core_budget())
                 except TypeError:
                     chunk = tif.asarray(key=range(start, end))
                 # asarray may return (1, H, W) for a single page, normalise
@@ -902,7 +903,7 @@ def _load_single_tif(path, stop_event=None):
         else:
             # Small files — fastest path is a single asarray()
             try:
-                stack = tif.asarray(maxworkers=N_CPUS).astype(
+                stack = tif.asarray(maxworkers=_cpu_core_budget()).astype(
                     np.float32, copy=False)
             except TypeError:
                 stack = tif.asarray().astype(np.float32, copy=False)
@@ -943,7 +944,7 @@ def _stream_tif_into(path, dest, offset, stop_event=None, chunk=1000):
                 raise _Cancelled()
             end = min(start + chunk, n_pages)
             try:
-                block = tif.asarray(key=range(start, end), maxworkers=N_CPUS)
+                block = tif.asarray(key=range(start, end), maxworkers=_cpu_core_budget())
             except TypeError:
                 block = tif.asarray(key=range(start, end))
             if block.ndim == 2:
@@ -1056,7 +1057,7 @@ class LazyTiffStack:
     def _read_file_pages(self, fi, lo, hi):
         """Local pages [lo, hi) of source file `fi` → (hi-lo, H, W) float32."""
         tif = self._tif(fi)
-        mw = N_CPUS if (hi - lo) > 1 else 1
+        mw = _cpu_core_budget() if (hi - lo) > 1 else 1
         try:
             block = tif.asarray(key=range(lo, hi), maxworkers=mw)
         except TypeError:

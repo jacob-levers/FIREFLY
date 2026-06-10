@@ -374,6 +374,16 @@ def test_hyperfly_engine_plumbing(monkeypatch):
     assert any(k == "log" for k in kinds)       # worker logs forwarded
 
 
+def test_hf_norm_stage_dedups_progress():
+    """Stage labels are normalised so a per-file console line is logged once per
+    phase, not on every percent tick."""
+    import firefly.firefly_worker as w
+    assert w._hf_norm_stage("Linking… 40 %") == "Linking"
+    assert w._hf_norm_stage("Linking… 80 %") == "Linking"   # same phase → dedup
+    assert w._hf_norm_stage("Loading stack…") == "Loading stack"
+    assert w._hf_norm_stage("Localising…") == "Localising"
+
+
 def test_hf_important_filter():
     """The HYPERFLY console keeps warnings/errors but drops per-chunk chatter,
     so a many-file run stays a readable ledger."""
