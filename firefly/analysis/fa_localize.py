@@ -993,11 +993,20 @@ class TrackpyBackend(LocaliserBackend):
                             start, end,
                             diameter, minmass, percentile, start)
                            for i, (start, end) in enumerate(slice_ranges)]
-                with ctx.Pool(processes=n_workers) as pool:
+                with ProcessPoolExecutor(
+                        max_workers=safe_process_workers(n_workers),
+                        mp_context=ctx) as pool:
+                    # ProcessPoolExecutor (not mp.Pool): a worker that dies
+                    # during bootstrap surfaces as BrokenProcessPool on
+                    # fut.result() → the except below falls back to the serial
+                    # BLAS path, instead of Pool.imap's silent forever-hang.
                     _spawn_announced = False
-                    for idx, result in _tqdm(
-                            pool.imap_unordered(_localise_chunk_mmap_mp, mp_args),
+                    _futs = [pool.submit(_localise_chunk_mmap_mp, _a)
+                             for _a in mp_args]
+                    for _fut in _tqdm(
+                            as_completed(_futs),
                             total=n_chunks, desc="  Localising", unit="chunk", ncols=70):
+                        idx, result = _fut.result()
                         if not _spawn_announced:
                             _spawn_done.set()  # stop the heartbeat thread
                             print(f"  ✓ workers ready after "
@@ -1021,11 +1030,16 @@ class TrackpyBackend(LocaliserBackend):
             else:
                 mp_args = [(i, c, diameter, minmass, percentile, o)
                            for i, (c, o) in enumerate(chunk_pairs)]
-                with ctx.Pool(processes=n_workers) as pool:
+                with ProcessPoolExecutor(
+                        max_workers=safe_process_workers(n_workers),
+                        mp_context=ctx) as pool:
                     _spawn_announced = False
-                    for idx, result in _tqdm(
-                            pool.imap_unordered(_localise_chunk_mp, mp_args),
+                    _futs = [pool.submit(_localise_chunk_mp, _a)
+                             for _a in mp_args]
+                    for _fut in _tqdm(
+                            as_completed(_futs),
                             total=n_chunks, desc="  Localising", unit="chunk", ncols=70):
+                        idx, result = _fut.result()
                         if not _spawn_announced:
                             _spawn_done.set()  # stop the heartbeat thread
                             print(f"  ✓ workers ready after "
@@ -1674,11 +1688,14 @@ class TorchBackend(LocaliserBackend):
         if dev_str == "cpu":
             try:    torch.set_num_threads(_cpu_nthreads)
             except Exception: pass
-            try:    torch.set_num_interop_threads(_cpu_nthreads)
+            # Inter-op (parallel *independent* ops) is NOT exploited by this
+            # sequential per-chunk pipeline — a big interop pool just sits idle.
+            # Intra-op (set_num_threads above) is the one that matters; keep
+            # interop at 1.
+            try:    torch.set_num_interop_threads(1)
             except (RuntimeError, Exception):
-                # set_num_interop_threads errors if any parallel work has
-                # already been dispatched on this interpreter — harmless,
-                # the first-call thread count is what counts.
+                # Errors if any parallel work has already been dispatched on
+                # this interpreter — harmless, the first-call count is what wins.
                 pass
 
         if not quiet:
@@ -1745,6 +1762,17 @@ class TorchBackend(LocaliserBackend):
         if _blas_ctx is not None:
             try:    _blas_ctx.__enter__()
             except Exception: _blas_ctx = None
+
+        # Detection is pure inference — no autograd graph is ever needed — so
+        # wrap the whole chunk loop in inference_mode (skips view/version
+        # tracking + trims memory; numerically identical).  Device-agnostic;
+        # entered via __enter__/__exit__ to avoid re-indenting the big loop.
+        _infer_ctx = None
+        try:
+            _infer_ctx = torch.inference_mode()
+            _infer_ctx.__enter__()
+        except Exception:
+            _infer_ctx = None
 
         # Per-chunk timing so the live log shows progress.  Historically
         # the Torch chunk loop emitted nothing between the up-front
@@ -1976,6 +2004,9 @@ class TorchBackend(LocaliserBackend):
         # downstream linker / preview pump don't get oversubscribed.
         if _blas_ctx is not None:
             try:    _blas_ctx.__exit__(None, None, None)
+            except Exception: pass
+        if _infer_ctx is not None:
+            try:    _infer_ctx.__exit__(None, None, None)
             except Exception: pass
 
         # Force a full GPU drain before returning.  Otherwise the next

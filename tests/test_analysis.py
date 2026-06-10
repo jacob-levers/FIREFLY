@@ -223,6 +223,40 @@ def test_torch_cpu_parallel_matches_serial_memmap(monkeypatch, tmp_path):
     _assert_locs_equivalent(serial, par)
 
 
+def test_trackpy_mp_matches_serial(monkeypatch):
+    """The trackpy MP path (now ProcessPoolExecutor) must reproduce the serial
+    trackpy detections — chunks are processed independently either way."""
+    pytest.importorskip("trackpy")
+    from firefly.analysis.fa_localize import TrackpyBackend
+    if not TrackpyBackend.is_available():
+        pytest.skip("trackpy unavailable")
+    import numpy as np
+    H = W = 64; nf = 40; cs = 4
+    yy, xx = np.mgrid[0:H, 0:W]
+    truth = [(16.0, 16.0), (40.0, 24.0), (28.0, 46.0)]
+    frames = []
+    for _f in range(nf):
+        fr = np.full((H, W), 100.0, np.float32)
+        for cx, cy in truth:
+            fr += 800.0 * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * 1.5 ** 2))
+        frames.append(fr)
+    stack = np.asarray(frames, np.float32)
+    kw = dict(diameter=7, minmass=10.0, percentile=64, chunk_size=cs)
+    inst = TrackpyBackend()
+    # Serial BLAS path (small job, MP not forced).
+    monkeypatch.delenv("FIREFLY_FORCE_MP", raising=False)
+    serial = inst.localise(stack, workers=1, **kw)
+    # MP path — now on ProcessPoolExecutor; keep the pool tiny (2) for memory.
+    monkeypatch.setenv("FIREFLY_FORCE_MP", "1")
+    par = inst.localise(stack, workers=2, **kw)
+    assert len(par) == len(serial), (len(par), len(serial))
+    s = serial.sort_values(["frame", "x", "y"]).reset_index(drop=True)
+    p = par.sort_values(["frame", "x", "y"]).reset_index(drop=True)
+    for col in ("x", "y", "frame"):
+        assert np.allclose(s[col].to_numpy(), p[col].to_numpy(),
+                           rtol=1e-5, atol=1e-4), col
+
+
 def test_torch_cpu_mp_env_disable(monkeypatch):
     """FIREFLY_TORCH_CPU_MP=0 must bypass the parallel path entirely (serial)."""
     pytest.importorskip("torch")

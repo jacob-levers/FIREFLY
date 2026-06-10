@@ -10,7 +10,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
 from scipy.optimize import curve_fit
 from firefly.analysis.fa_constants import N_CPUS, _tqdm, safe_process_workers
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.54.0
+
+### Parallel-processing review: robustness + polish
+
+A pass over every multicore path (the methods are otherwise well-chosen):
+
+- **trackpy detection can no longer hang on a dead worker.** Its
+  multiprocessing pool was switched to `ProcessPoolExecutor` — a worker that
+  fails to start now surfaces as an error and falls back to the serial path,
+  instead of the silent forever-hang `Pool.imap` could produce (the same fix
+  applied to the Torch-CPU path earlier). Detections are unchanged.
+- **Torch detection now runs under `torch.inference_mode()`** — correct for a
+  pure-inference pipeline; trims a little memory/overhead, numerically
+  identical results.
+- Torch CPU **inter-op threads set to 1** (the sequential pipeline never used a
+  larger inter-op pool; intra-op threading is unchanged).
+- Removed an unused import.
+
+No behavioural change to results — purely robustness and hygiene.
+
 ## v2.53.1
 
 ### Fix: Performance sidebar scrolling sideways
