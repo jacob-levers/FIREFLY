@@ -387,6 +387,27 @@ def test_hf_downscale_preview():
     assert w._hf_downscale_preview(small, max_dim=160)["shape"] == [64, 64]
 
 
+def test_quiet_combo_does_not_size_to_widest_item():
+    """The sidebar combos must NOT demand their widest item's width, or a long
+    entry (e.g. 'Torch — GPU (auto device)') pushes the form past the viewport
+    and the sidebar scrolls sideways."""
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from firefly.ui.ui_widgets import _QuietComboBox
+    items = ["Auto", "Trackpy (CPU)", "Torch — GPU (auto device)",
+             "Torch — Apple MPS", "Torch — NVIDIA CUDA", "Torch — CPU"]
+    quiet = _QuietComboBox(); quiet.addItems(items)
+    plain = QtWidgets.QComboBox(); plain.addItems(items)
+    assert quiet.sizeHint().width() < plain.sizeHint().width()
+    assert quiet.sizeHint().width() < 140
+    # Expands to fill its column rather than dictating width.
+    assert (quiet.sizePolicy().horizontalPolicy()
+            == QtWidgets.QSizePolicy.Policy.Expanding)
+
+
 def test_hyperfly_dashboard_routing():
     """The dashboard routes per-file messages to lane tiles, frees a lane on
     completion, and reuses it for the next file."""

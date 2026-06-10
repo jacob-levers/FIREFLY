@@ -1183,6 +1183,18 @@ class _QuietComboBox(QtWidgets.QComboBox):
         # Without StrongFocus the combo can also change via arrow keys
         # only after a mouse click anyway — fine for our usage.
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Don't let a long item dictate the combo's width.  The default
+        # AdjustToContentsOnFirstShow sizes the box to its WIDEST item, so a
+        # long entry (e.g. "Torch — GPU (auto device)") pushes the whole
+        # sidebar form past the viewport and the user can scroll it sideways.
+        # Size to a small minimum instead and let the layout stretch the box to
+        # fill its column; the dropdown popup still shows every item in full.
+        self.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy
+            .AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(6)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                           QtWidgets.QSizePolicy.Policy.Fixed)
     def wheelEvent(self, e):
         e.ignore()
 

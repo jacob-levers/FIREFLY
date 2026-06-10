@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.53.1
+
+### Fix: Performance sidebar scrolling sideways
+
+Expanding the Performance section let the sidebar scroll left/right. Cause: the
+dropdowns sized themselves to their **widest** item (e.g. "Torch — GPU (auto
+device)"), pushing the form past the sidebar width. Combo boxes now request a
+compact width and stretch to fill their column instead (the dropdown still
+lists every option in full), and the two HYPERFLY cap labels were shortened —
+so the section fits without any horizontal scroll.
+
 ## v2.53.0
 
 ### HYPERFLY live dashboard — a tile per file

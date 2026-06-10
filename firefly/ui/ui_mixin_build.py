@@ -994,11 +994,11 @@ class BuildMixin:
         self.s_hyperfly_max_files = self._spin_int(0, 0, 999,
             tip="Cap how many files HYPERFLY runs at once (0 = automatic).\n"
                 "Lower it if IT wants FIREFLY to use fewer resources.")
-        gl.addRow("Max concurrent files (0 = auto)", self.s_hyperfly_max_files)
+        gl.addRow("Max files (0 = auto)", self.s_hyperfly_max_files)
         self.s_hyperfly_max_cores = self._spin_int(0, 0, N_CPUS,
-            tip="Cap the total CPU cores HYPERFLY uses across all files\n"
-                "(0 = all cores).")
-        gl.addRow(f"Max cores (0 = auto, ≤{N_CPUS})", self.s_hyperfly_max_cores)
+            tip=f"Cap the total CPU cores HYPERFLY uses across all files\n"
+                f"(0 = all {N_CPUS} cores).")
+        gl.addRow("Max cores (0 = auto)", self.s_hyperfly_max_cores)
 
         # GPU-acceleration entry point — Windows only.  When CUDA is NOT
         # installed we show the Set-up button right here, where the user picks
