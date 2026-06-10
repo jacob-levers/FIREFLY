@@ -482,6 +482,74 @@ def test_hyperfly_dashboard_routing():
     d.stop()
 
 
+def _serve_bytes(data, *, support_range):
+    """Spin up a localhost HTTP server returning `data`, optionally honouring
+    Range requests.  Returns (port, shutdown_fn)."""
+    import http.server, socketserver, threading
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            total = len(data)
+            rng = self.headers.get("Range")
+            if support_range and rng and rng.startswith("bytes="):
+                start_s, _, end_s = rng.split("=", 1)[1].partition("-")
+                start = int(start_s)
+                end = int(end_s) if end_s else total - 1
+                end = min(end, total - 1)
+                body = data[start:end + 1]
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", str(total))
+                self.end_headers()
+                self.wfile.write(data)
+
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _H)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv.server_address[1], srv.shutdown
+
+
+def test_parallel_download_reconstructs_file(tmp_path):
+    """The segmented parallel downloader must stitch byte-ranges back into the
+    exact original file."""
+    import os as _os
+    from firefly import net_download
+    data = _os.urandom(12 * 1024 * 1024)        # >8 MB → parallel engages
+    port, shutdown = _serve_bytes(data, support_range=True)
+    try:
+        dest = tmp_path / "out.bin"
+        net_download.download_file(f"http://127.0.0.1:{port}/x.bin", str(dest),
+                                   parallel_segments=4, max_attempts=1)
+        assert dest.read_bytes() == data
+    finally:
+        shutdown()
+
+
+def test_parallel_download_falls_back_without_range(tmp_path):
+    """A server that ignores Range → the parallel probe declines and the
+    single-stream path still delivers the whole file."""
+    import os as _os
+    from firefly import net_download
+    data = _os.urandom(10 * 1024 * 1024)
+    port, shutdown = _serve_bytes(data, support_range=False)
+    try:
+        dest = tmp_path / "out.bin"
+        net_download.download_file(f"http://127.0.0.1:{port}/x.bin", str(dest),
+                                   parallel_segments=4, max_attempts=2)
+        assert dest.read_bytes() == data
+    finally:
+        shutdown()
+
+
 def test_msd_fit_sparse_short_tracks_finite():
     """Short/sparse tracks must yield finite-or-NaN D/alpha without crashing or
     blowing up to inf."""

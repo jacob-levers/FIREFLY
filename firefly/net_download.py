@@ -101,7 +101,8 @@ def download_file(url: str,
                   headers: Optional[dict] = None,
                   max_attempts: int = 3,
                   timeout: float = 20.0,
-                  read_stall_s: float = 10.0) -> None:
+                  read_stall_s: float = 10.0,
+                  parallel_segments: int = 4) -> None:
     """Download ``url`` → ``dest_path`` with progress, cancel, resume,
     validation and retry/backoff.
 
@@ -122,6 +123,30 @@ def download_file(url: str,
     complete file is at ``dest_path``).
     """
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+
+    # ── Fast path: parallel byte-range segments ──────────────────────────────
+    # A CDN like GitHub's release edge throttles per-connection, so several
+    # connections aggregate to markedly higher throughput than one stream.
+    # Tried once up front; falls through to the single-stream retry loop below
+    # on anything unexpected (no Range support, small file, a transient error).
+    # Disable with FIREFLY_NO_PARALLEL_DOWNLOAD=1.
+    if (parallel_segments and parallel_segments > 1
+            and str(os.environ.get("FIREFLY_NO_PARALLEL_DOWNLOAD", "")).strip()
+            not in ("1", "true", "yes", "on")):
+        try:
+            if _download_parallel(
+                    url, dest_path, segments=int(parallel_segments),
+                    progress_cb=progress_cb, cancel_cb=cancel_cb,
+                    validate_cb=validate_cb, headers=headers, timeout=timeout):
+                return
+        except DownloadError as exc:
+            _m = str(exc).lower()
+            if "cancel" in _m or "http 4" in _m:
+                raise                          # user cancel / permanent 4xx
+            _log(f"  parallel download failed ({exc}); single-stream fallback")
+        except Exception as exc:
+            _log(f"  parallel download error "
+                 f"({type(exc).__name__}: {exc}); single-stream fallback")
 
     # Retry loop.  Backoff (seconds): 2, 5, 10 — rides out a transient
     # firewall hiccup without boring the user.  The .part file is kept
@@ -389,3 +414,175 @@ def _download_once(url: str,
             f"Unexpected error while downloading: {exc}") from exc
     finally:
         progress_state["should_abort"] = True
+
+
+def _download_parallel(url: str,
+                       dest_path: str,
+                       *,
+                       segments: int,
+                       progress_cb: Optional[Callable[[int, int], None]] = None,
+                       cancel_cb: Optional[Callable[[], bool]] = None,
+                       validate_cb: Optional[Callable[[str], bool]] = None,
+                       headers: Optional[dict] = None,
+                       timeout: float = 20.0) -> bool:
+    """Download ``url`` in ``segments`` parallel byte-range requests, for higher
+    throughput from a CDN that throttles per connection (GitHub releases).
+
+    Returns True on success (complete file at ``dest_path``).  Returns False to
+    tell the caller to fall back to the single-stream path — no Range support,
+    file too small to bother, or any non-cancel error.  Raises ``DownloadError``
+    only on user cancel.  Each segment streams to its own ``.part.segN`` file
+    (bounded RAM), then they're concatenated, size-checked, validated and
+    atomically renamed — mirroring the single-stream path's integrity gauntlet.
+    """
+    import concurrent.futures
+    import shutil
+
+    MIN_PARALLEL_BYTES = 8 * 1024 * 1024     # below this, one stream is fine
+    CHUNK = 256 * 1024
+
+    base_headers = {"User-Agent": "FIREFLY-app"}
+    if headers:
+        base_headers.update(headers)
+
+    part_path = dest_path + ".part"
+
+    def _seg_path(i):
+        return f"{part_path}.seg{i}"
+
+    def _cleanup():
+        for i in range(64):                  # generous upper bound
+            p = _seg_path(i)
+            if not os.path.exists(p):
+                if i >= int(segments):
+                    break
+                continue
+            try:    os.remove(p)
+            except Exception: pass
+
+    # ── Probe: total size + Range support, via a 1-byte range GET ──
+    try:
+        ph = dict(base_headers); ph["Range"] = "bytes=0-0"
+        with urllib.request.urlopen(
+                urllib.request.Request(url, headers=ph), timeout=timeout) as resp:
+            status = int(getattr(resp, "status", 0) or 0)
+            crange = resp.headers.get("Content-Range") or ""
+        if status != 206 or "/" not in crange:
+            return False                     # server ignored Range → fall back
+        total = int(crange.rsplit("/", 1)[-1])
+    except urllib.error.HTTPError as exc:
+        code = getattr(exc, "code", 0)
+        if 400 <= code < 500:
+            # Permanent (404 etc.) — don't burn the single-stream retries on it.
+            raise DownloadError(f"HTTP {code} when downloading {url}") from exc
+        return False                         # 5xx → fall back (it retries)
+    except Exception:
+        return False
+    if total < MIN_PARALLEL_BYTES:
+        return False
+
+    n = max(2, min(int(segments), 8))
+    seg = total // n
+    ranges = [(i, i * seg, (total - 1 if i == n - 1 else (i + 1) * seg - 1))
+              for i in range(n)]
+    _log(f"  parallel download: {n} segments, {total/1e6:.0f} MB total")
+
+    lock = threading.Lock()
+    state = {"done": 0, "last_t": 0.0, "cancel": False}
+
+    def _fetch(idx, start, end):
+        h = dict(base_headers); h["Range"] = f"bytes={start}-{end}"
+        with urllib.request.urlopen(
+                urllib.request.Request(url, headers=h), timeout=timeout) as resp, \
+                open(_seg_path(idx), "wb") as out:
+            while True:
+                if state["cancel"]:
+                    raise DownloadError("Download cancelled by user.")
+                chunk = resp.read(CHUNK)
+                if not chunk:
+                    break
+                out.write(chunk)
+                snap = None
+                with lock:
+                    state["done"] += len(chunk)
+                    now = time.monotonic()
+                    if progress_cb is not None and now - state["last_t"] >= 0.1:
+                        state["last_t"] = now
+                        snap = state["done"]
+                if snap is not None:
+                    try:    progress_cb(snap, total)
+                    except Exception: pass
+
+    # Poll the cancel callback off the worker threads.
+    stop_poll = threading.Event()
+
+    def _poll():
+        while not stop_poll.wait(0.3):
+            if cancel_cb is not None:
+                try:
+                    if cancel_cb():
+                        state["cancel"] = True
+                        return
+                except Exception:
+                    pass
+    poller = threading.Thread(target=_poll, daemon=True)
+    poller.start()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
+            futs = [ex.submit(_fetch, i, s, e) for i, s, e in ranges]
+            for f in concurrent.futures.as_completed(futs):
+                f.result()                   # raises on segment failure
+    except DownloadError:
+        stop_poll.set(); _cleanup()
+        if state["cancel"]:
+            raise                            # user cancel → propagate
+        return False
+    except Exception:
+        stop_poll.set(); _cleanup()
+        return False
+    finally:
+        stop_poll.set()
+
+    # ── Concatenate → .part, size-check, validate, atomic rename ──
+    try:
+        with open(part_path, "wb") as out:
+            for i in range(n):
+                with open(_seg_path(i), "rb") as sp:
+                    shutil.copyfileobj(sp, out, length=4 * 1024 * 1024)
+    except Exception:
+        _cleanup()
+        try: os.remove(part_path)
+        except Exception: pass
+        return False
+    _cleanup()
+
+    try:
+        actual = os.path.getsize(part_path)
+    except Exception:
+        actual = -1
+    if actual != total:
+        try: os.remove(part_path)
+        except Exception: pass
+        return False
+
+    if validate_cb is not None:
+        try:    valid = bool(validate_cb(part_path))
+        except Exception: valid = False
+        if not valid:
+            try: os.remove(part_path)
+            except Exception: pass
+            raise DownloadError(
+                "Downloaded file failed validation (unexpected format — an "
+                "intercepting proxy may have returned an error page).")
+
+    if progress_cb is not None:
+        try:    progress_cb(total, total)
+        except Exception: pass
+    try:
+        os.replace(part_path, dest_path)
+    except OSError:
+        time.sleep(1.0)
+        os.replace(part_path, dest_path)
+    _log(f"  ✓ parallel download complete: {total/1e6:.0f} MB")
+    return True

@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.56.0
+
+### Faster downloads (in-app update + GPU installer)
+
+Big downloads — the ~600 MB update, the CUDA wheel — now pull in **parallel
+byte-range segments** instead of a single stream. GitHub's release CDN throttles
+per connection, so several connections aggregate to much higher throughput; on a
+throttled connection this can be several times faster. It probes for range
+support first and **falls back to the single-stream path** automatically if the
+server doesn't support it (or for small files). Same integrity checks
+(size + format validation, atomic rename) and resume-on-retry as before. Disable
+with `FIREFLY_NO_PARALLEL_DOWNLOAD=1` if ever needed.
+
 ## v2.55.0
 
 ### HYPERFLY: a RAM cap for shared machines
