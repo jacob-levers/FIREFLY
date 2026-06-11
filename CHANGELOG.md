@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.61.0
+
+### "Auto" detection backend now prefers Torch-CPU over Trackpy
+
+The **Auto** backend used to fall back to **Trackpy** whenever no GPU was
+present — a rule from back when Torch-on-CPU ran single-process. Now that
+Torch-CPU runs a parallel, multi-process localiser, that rule is obsolete.
+Auto now resolves to **GPU when healthy → otherwise parallel Torch-CPU**, and
+**never auto-selects Trackpy** (it only falls back to Trackpy if PyTorch isn't
+installed at all). Trackpy stays available as a deliberate manual choice in the
+dropdown — so on a many-core, GPU-less box (e.g. Falcon) Auto now uses the whole
+machine instead of the trackpy path. A saved backend preference still wins.
+
+### HYPER-FLY badge: a proper pill, not a banner
+
+The green "HYPER-FLY · N at once" badge in the header now matches the
+**"Update available" pill's shape and size** and the Compare tab's **"Ready to
+run" pill's green** (dark text on green). It no longer stretches to the full
+header height (it was reading as a chunky banner), and the pulse **animation is
+removed** — it's a clean, static pill.
+
+### Smoother collapsible sections (no more scroll-lurch / blank-box)
+
+Expanding a collapsible section (e.g. Compare's "What these terms mean") no
+longer makes the surrounding scroll area lurch or flash an empty box. The
+expand used to briefly uncap the panel to its full height to measure it, which
+made a `QScrollArea` jump the viewport and flash blank before the text painted.
+The height is now measured without that full-height pass, so the panel grows
+smoothly from the first frame. Fixes every collapsible section app-wide.
+
+### Search range: cytosolic vs transmembrane guidance
+
+The **Search range (px)** control — palmTRACER's "maximum distance" (how far a
+particle may move between frames to still be linked) — now spells out the
+practical guidance in its tooltip and glossary: **~5 px for cytosolic proteins
+(e.g. Munc18), ~3 px for transmembrane proteins (e.g. Syntaxin)**.
+
 ## v2.60.1
 
 ### HYPER-FLY: visible engaged badge + the name

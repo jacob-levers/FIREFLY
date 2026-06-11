@@ -662,9 +662,13 @@ class BuildMixin:
         sec, gl = self._make_form_section("Linking")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.s_search_range = self._spin_int(5, 1, 30,
-            tip="Maximum pixel distance a particle can move between consecutive\n"
-                "frames. Calibrate from your data: bigger search_range tolerates\n"
-                "fast motion but increases linker subnetwork-explosion risk.")
+            tip="Maximum distance (px) a particle can move between consecutive\n"
+                "frames and still be linked as the same molecule — this is\n"
+                "palmTRACER's \"maximum distance\".\n"
+                "Guide:  ~5 px for cytosolic proteins (e.g. Munc18),\n"
+                "        ~3 px for transmembrane proteins (e.g. Syntaxin).\n"
+                "Bigger tolerates faster motion but increases the linker's\n"
+                "subnetwork-explosion risk.")
         gl.addRow(_label_with_info("Search range (px)", "search range"), self.s_search_range)
         self.s_memory = self._spin_int(3, 0, 10,
             tip="Number of frames a track can disappear and still be re-linked.\n"
@@ -955,17 +959,21 @@ class BuildMixin:
         self.c_backend = _QuietComboBox()
         self.c_backend.addItems(self._available_backends())
         # Default to "Auto": it picks a healthy GPU (CUDA / Apple MPS) when one
-        # is present, and the multi-core trackpy path when there isn't.  The old
-        # default ("Torch (auto)") FORCED the Torch backend — which on a no-GPU
-        # machine silently runs single-process on CPU and badly under-uses a
-        # many-core box.  A saved user preference overrides this on restore.
+        # is present, and the parallel multi-core Torch-CPU path when there
+        # isn't.  Auto never selects Trackpy — that is a deliberate manual
+        # choice.  (Torch-CPU now runs a multi-process localiser, so it uses the
+        # whole box; the old assumption that CPU-Torch was single-process and
+        # therefore trackpy-should-win no longer holds.)  A saved user
+        # preference overrides this on restore.
         self.c_backend.setCurrentText("Auto")
         self.c_backend.setToolTip(
             "Which implementation to use for spot localisation.\n"
             "• Auto                      — recommended: GPU when healthy, else the\n"
-            "                              multi-core trackpy CPU path.\n"
+            "                              parallel multi-core Torch-CPU path.\n"
+            "                              (Never auto-selects Trackpy.)\n"
             "• Trackpy (CPU)             — reference CPU implementation (battle-tested,\n"
-            "                              uses all cores).\n"
+            "                              uses all cores).  Manual selection only —\n"
+            "                              Auto will not choose this for you.\n"
             "• Torch — GPU (auto device) — force PyTorch; auto-selects CUDA/MPS, and\n"
             "                              falls back to CPU if no GPU (single-process\n"
             "                              — slow on CPU-only machines).\n"

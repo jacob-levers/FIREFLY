@@ -2254,11 +2254,11 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         "Torch — CPU":         "torch-cpu",
     }
     # Stale dropdown labels → current label, applied on settings restore.  The
-    # old "Torch (auto)" was the shipped default and FORCED the Torch backend —
-    # which on a no-GPU machine silently runs single-process on CPU (slow).
-    # Migrate it to "Auto", which picks a GPU when healthy and the multi-core
-    # trackpy path when there's no GPU.  Users who genuinely want forced-Torch
-    # can re-pick "Torch — GPU (auto device)".
+    # old "Torch (auto)" was the shipped default and FORCED the Torch backend.
+    # Migrate it to "Auto", which picks a GPU when healthy and the parallel
+    # multi-core Torch-CPU path when there's no GPU (Auto never falls back to
+    # Trackpy — that's a manual choice).  Users who want a pinned device can
+    # re-pick "Torch — GPU (auto device)" or "Torch — CPU".
     _BACKEND_LABEL_MIGRATION = {
         "Torch (auto)": "Auto",
     }

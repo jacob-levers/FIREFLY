@@ -186,64 +186,41 @@ class _StatusBadge(QtWidgets.QLabel):
 
 
 class _HyperflyPill(QtWidgets.QLabel):
-    """Green, pill-shaped badge shown in the header while a HYPER-FLY (parallel
-    multi-file) batch is engaged.  Gently *breathes* (opacity pulse) to read as
-    'actively working'; static under reduce-motion.  Hidden until `engage()`."""
+    """Green status pill shown in the header while a HYPER-FLY (parallel
+    multi-file) batch is engaged.
 
-    _GREEN = _THEME.get("SUCCESS", "#3fb950")
+    Matches the **'Update available' pill's shape and size** (radius 10,
+    4×10 padding, 11px bold) and the Compare tab's **'Ready to run' pill's
+    green** (SUCCESS fill, ACC_FG text).  Static — no animation.  Hidden until
+    `engage()`."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("hyperfly_pill")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Fixed vertical size policy so the pill sits at its NATURAL height
+        # instead of stretching to the full header-bar height (which made it
+        # read as a chunky banner rather than a slim pill like the button
+        # beside it).
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                           QtWidgets.QSizePolicy.Policy.Fixed)
+        # Retained as no-op attributes for API/back-compat (there is no longer
+        # any pulse animation or opacity effect to track).
         self._anim = None
         self._eff = None
         self.setStyleSheet(
-            "QLabel#hyperfly_pill { background-color: %s; color: #ffffff; "
-            "border-radius: 9px; padding: 2px 11px; font-weight: 700; "
-            "font-size: 11px; }" % self._GREEN)
+            "QLabel#hyperfly_pill { background-color: %s; color: %s; "
+            "border: none; border-radius: 10px; padding: 4px 10px; "
+            "font-weight: 700; font-size: 11px; }"
+            % (_THEME.get("SUCCESS", "#3fb950"), _THEME.get("ACC_FG", "#ffffff")))
         self.hide()
 
     def engage(self, text: str = "HYPER-FLY engaged"):
         self.setText(text)
         self.show()
-        self._start_pulse()
 
     def disengage(self):
-        self._stop_pulse()
         self.hide()
-
-    def _start_pulse(self):
-        self._stop_pulse()
-        try:
-            from firefly.ui import ui_anim
-            if ui_anim.reduce_motion():
-                return
-        except Exception:
-            return
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
-        eff = QtWidgets.QGraphicsOpacityEffect(self)
-        eff.setOpacity(1.0)
-        self.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(1200)
-        anim.setStartValue(1.0)
-        anim.setKeyValueAt(0.5, 0.55)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-        anim.setLoopCount(-1)             # breathe until disengaged
-        anim.start()
-        self._eff, self._anim = eff, anim
-
-    def _stop_pulse(self):
-        if self._anim is not None:
-            try:    self._anim.stop()
-            except Exception: pass
-            self._anim = None
-        if self._eff is not None:
-            try:    self.setGraphicsEffect(None)   # drop effect → no re-buffering
-            except Exception: pass
-            self._eff = None
 
 
 def _step_badge(n, parent=None) -> QtWidgets.QLabel:
@@ -1302,22 +1279,43 @@ class _CollapsibleSection(QtWidgets.QWidget):
         from firefly.ui import ui_anim
         c = self._content
         if expand:
-            # Make the content visible and give it its real WIDTH (a synchronous
-            # layout pass), measure the true height-for-width, then re-cap to 0
-            # BEFORE returning to the event loop so the full-height frame is
-            # never painted (no flash), and animate up to the measured height.
+            # Cap the content to ZERO *before* showing it, so the enclosing
+            # layout — frequently a QScrollArea with widgetResizable=True (the
+            # Compare/Results panels) — never sees a full-height body, not even
+            # for one synchronous frame.
+            #
+            # The previous implementation briefly uncapped to QWIDGETSIZE_MAX to
+            # "give the content its real width" before measuring, then re-capped
+            # to 0.  That single full-height layout pass made the scroll area
+            # lurch: the viewport jumped (content above leapt off-screen and
+            # back) and a blank box flashed before the text painted — exactly
+            # the jank reported on the "What these terms mean" section.
+            #
+            # Width is set by the *horizontal* layout and is independent of
+            # maximumHeight, so a capped-height layout pass yields the correct
+            # width — and therefore the correct height-for-width target.  This
+            # was verified to produce an identical target with or without the
+            # flash, on a tall word-wrapped panel inside a scroll area.
+            c.setMaximumHeight(0)
             c.setVisible(True)
-            c.setMaximumHeight(16777215)
             lay = self.layout()
             if lay is not None:
                 lay.activate()
+            # Activate the content's OWN layout too, so every (word-wrapped)
+            # child already has its final geometry on the very first animated
+            # frame.  The content then reveals top-down fully painted instead of
+            # as an empty box that fills in late.
+            inner = c.layout()
+            if inner is not None:
+                inner.activate()
             target = self._content_target_height()
-            c.setMaximumHeight(0)
             ui_anim.animate_height(
                 c, 0, target,
                 on_finish=lambda: c.setMaximumHeight(16777215))
         else:
-            start = self._content_target_height()
+            # Collapse from the content's current live height (its true expanded
+            # size); fall back to a fresh measure if it somehow reports zero.
+            start = c.height() if c.height() > 0 else self._content_target_height()
 
             def _fin():
                 c.setVisible(False)

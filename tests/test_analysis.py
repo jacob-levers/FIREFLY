@@ -257,6 +257,42 @@ def test_trackpy_mp_matches_serial(monkeypatch):
                            rtol=1e-5, atol=1e-4), col
 
 
+def test_auto_prefers_torch_cpu_over_trackpy(monkeypatch):
+    """Auto-resolution must prefer Torch (GPU when healthy, else the parallel
+    Torch-CPU path) and NEVER fall back to Trackpy while PyTorch is installed.
+    Trackpy is a manual-only choice in the dropdown."""
+    pytest.importorskip("torch")
+    from firefly.analysis import fa_localize as L
+    from firefly.analysis.fa_localize import TorchBackend, TrackpyBackend
+    if not TorchBackend.is_available():
+        pytest.skip("torch backend unavailable")
+    import torch as _torch
+    # Force the no-GPU branch: pretend neither CUDA nor MPS is healthy, so the
+    # only thing standing between auto and Torch-CPU is the (now removed)
+    # trackpy-wins-ties rule.
+    monkeypatch.setattr(_torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(TorchBackend, "_device_sanity_check",
+                        classmethod(lambda cls, dev: False))
+    inst = L._resolve_backend("auto")
+    assert isinstance(inst, TorchBackend), type(inst)
+    assert not isinstance(inst, TrackpyBackend)
+    assert getattr(inst, "_forced_device", None) == "cpu"
+
+
+def test_auto_falls_back_to_trackpy_only_without_torch(monkeypatch):
+    """Trackpy is the LAST resort: auto selects it only when PyTorch is absent
+    entirely (so trackpy-only installs still work)."""
+    pytest.importorskip("trackpy")
+    from firefly.analysis import fa_localize as L
+    from firefly.analysis.fa_localize import TorchBackend, TrackpyBackend
+    if not TrackpyBackend.is_available():
+        pytest.skip("trackpy unavailable")
+    monkeypatch.setattr(TorchBackend, "is_available",
+                        classmethod(lambda cls: False))
+    inst = L._resolve_backend("auto")
+    assert isinstance(inst, TrackpyBackend), type(inst)
+
+
 def test_torch_cpu_mp_env_disable(monkeypatch):
     """FIREFLY_TORCH_CPU_MP=0 must bypass the parallel path entirely (serial)."""
     pytest.importorskip("torch")
@@ -396,32 +432,29 @@ def test_hf_important_filter():
     assert not w._hf_important("  Backend   : trackpy")
 
 
-def test_hyperfly_pill_engage_disengage(monkeypatch):
-    """The blue HYPERFLY pill shows + pulses on engage, hides + drops its
-    opacity effect on disengage, and stays static under reduce-motion."""
+def test_hyperfly_pill_engage_disengage():
+    """The green HYPER-FLY pill shows on engage and hides on disengage.  It is
+    STATIC (no pulse animation) and does not stretch vertically — it sits at a
+    fixed pill height like the 'Update available' button beside it."""
     pytest.importorskip("PySide6")
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6 import QtWidgets
     QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     from firefly.ui.ui_widgets import _HyperflyPill
-    import firefly.ui.ui_anim as ua
 
-    monkeypatch.setattr(ua, "reduce_motion", lambda: False)
     pill = _HyperflyPill()
     assert pill.isHidden()
     pill.engage("HYPER-FLY · 8 at once")
     assert not pill.isHidden()
     assert pill.text().startswith("HYPER-FLY")
-    assert pill._anim is not None                 # breathing
+    # No animation, ever (the pulse was removed).
+    assert pill._anim is None and pill._eff is None
+    # Fixed vertical size policy → never stretches to the header height.
+    assert (pill.sizePolicy().verticalPolicy()
+            == QtWidgets.QSizePolicy.Policy.Fixed)
     pill.disengage()
     assert pill.isHidden()
-    assert pill._anim is None and pill._eff is None  # effect removed
-    # reduce-motion → visible but static (no animation object).
-    monkeypatch.setattr(ua, "reduce_motion", lambda: True)
-    pill.engage("x")
-    assert pill._anim is None
-    pill.disengage()
 
 
 def test_hf_downscale_preview():
@@ -461,6 +494,71 @@ def test_quiet_combo_does_not_size_to_widest_item():
     # Expands to fill its column rather than dictating width.
     assert (quiet.sizePolicy().horizontalPolicy()
             == QtWidgets.QSizePolicy.Policy.Expanding)
+
+
+def test_collapsible_expand_never_flashes_full_height(monkeypatch):
+    """The collapsible-section expand must NEVER cap the content at its full
+    height — not even for a single synchronous frame — or the enclosing scroll
+    area lurches (the 'What these terms mean' jank: viewport jump + blank box).
+
+    We sample the content's maximumHeight cap across the whole expand animation
+    and assert it stays within [0, target]: it rises smoothly from 0 to the
+    measured target and is only released to QWIDGETSIZE_MAX once finished.
+    """
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets, QtCore
+    from PySide6.QtCore import Qt
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    import firefly.ui.ui_anim as ua
+    monkeypatch.setattr(ua, "reduce_motion", lambda: False)
+    from firefly.ui.ui_widgets import _CollapsibleSection
+
+    # A tall, word-wrapped panel inside a widgetResizable scroll area — the
+    # exact shape that exposed the jank.
+    scroll = QtWidgets.QScrollArea(); scroll.setWidgetResizable(True)
+    body = QtWidgets.QWidget(); v = QtWidgets.QVBoxLayout(body)
+    v.addWidget(QtWidgets.QLabel("filler"))
+    sec = _CollapsibleSection("What these terms mean")
+    for i in range(30):
+        lbl = QtWidgets.QLabel("<b>Term %d</b> — a long word-wrapped definition "
+                               "spanning several lines at the panel width." % i)
+        lbl.setWordWrap(True); lbl.setTextFormat(Qt.TextFormat.RichText)
+        sec.content_layout.addWidget(lbl)
+    v.addWidget(sec); v.addStretch(1)
+    scroll.setWidget(body); scroll.resize(900, 600); scroll.show()
+    QtWidgets.QApplication.processEvents()
+
+    content = sec._content
+    target = sec._content_target_height()
+    assert target > 0
+
+    def pump(ms):
+        loop = QtCore.QEventLoop()
+        QtCore.QTimer.singleShot(ms, loop.quit); loop.exec()
+
+    # Collapse first (animated), then expand and watch the cap every few ms.
+    sec._header.setChecked(False); pump(300)
+    assert not content.isVisible()
+
+    caps = []
+    timer = QtCore.QTimer(); timer.setInterval(8)
+    timer.timeout.connect(lambda: caps.append(content.maximumHeight()))
+    timer.start()
+    sec._header.setChecked(True)         # expand → no-flash path
+    pump(300); timer.stop()
+
+    QWIDGETSIZE_MAX = 16777215
+    # During the animation the cap must never exceed the target (no full-height
+    # flash).  Frames after on_finish legitimately read QWIDGETSIZE_MAX.
+    mid = [c for c in caps if c != QWIDGETSIZE_MAX]
+    assert mid, "expected to sample at least one mid-animation frame"
+    assert max(mid) <= target + 2, (max(mid), target)
+    # Ends fully expanded and released.
+    assert content.isVisible()
+    assert content.maximumHeight() == QWIDGETSIZE_MAX
+    assert content.height() >= target - 2
 
 
 def test_hyperfly_dashboard_routing():

@@ -432,7 +432,9 @@ ANALYSIS_GLOSSARY = {
         "threshold is allowed to leave behind.",
     "search range":
         "The maximum distance (px) a particle may move between frames for the "
-        "linker to connect it into a track — too large invites mis-links.",
+        "linker to connect it into a track (palmTRACER's \"maximum distance\") "
+        "— too large invites mis-links. Guide: ~5 px for cytosolic proteins "
+        "(e.g. Munc18), ~3 px for transmembrane proteins (e.g. Syntaxin).",
     "memory":
         "How many frames a particle may disappear (blink) and still be re-linked "
         "to the same track.",

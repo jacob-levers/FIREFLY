@@ -2195,24 +2195,30 @@ def _resolve_backend(name: str | None):
     """Look up a backend by name; resolve 'auto' to the FASTEST available
     backend that's actually healthy on this machine.
 
-    Auto-selection logic:
-      1. Prefer TorchBackend if a GPU device (MPS / CUDA) passes the sanity
-         check — that's the only configuration where torch beats trackpy.
-      2. Otherwise pick TrackpyBackend.  Torch-on-CPU is comparable to
-         trackpy in speed but less battle-tested, so trackpy wins ties.
+    Auto-selection logic (Torch-first; trackpy is NEVER auto-selected):
+      1. Prefer TorchBackend on a GPU device (CUDA → MPS) when it passes the
+         hot-path sanity check — the fastest configuration by far.
+      2. Otherwise pick TorchBackend on CPU.  Torch-CPU now runs a parallel,
+         multi-process localiser, so on a CPU-only box — including big
+         many-core servers — it matches or beats trackpy while keeping the
+         SAME Torch code path on every machine.
+      3. Only if PyTorch isn't installed at all fall back to TrackpyBackend.
 
-    This keeps users on M-series Macs out of the MPS-OOM trap when their
-    Metal context is degraded (e.g. after an aborted prior process): the
-    sanity check fails, select_device() returns "cpu", and auto picks
-    trackpy.  After a reboot when MPS works again, auto picks torch
-    automatically — the user never has to touch the dropdown.
+    Trackpy stays available as a deliberate MANUAL selection in the dropdown;
+    auto never chooses it when Torch is present.  This keeps users on M-series
+    Macs out of the MPS-OOM trap when their Metal context is degraded (e.g.
+    after an aborted prior process): the sanity check fails, select_device()
+    returns "cpu", and auto picks Torch-CPU.  After a reboot when MPS works
+    again, auto picks the GPU automatically — the user never has to touch the
+    dropdown.
 
     Accepts torch-device pins (`torch-mps`, `torch-cuda`, `torch-cpu`) that
     pre-set the device on the returned instance — used for benchmarking
     and to let users force a specific device path.
     """
     if name in (None, "", "auto"):
-        # Smart-auto: GPU-first.  Order is CUDA → MPS → trackpy → torch-CPU.
+        # Smart-auto: Torch-first.  Order is CUDA → MPS → torch-CPU, with
+        # trackpy reached only when PyTorch is absent entirely.
         #
         # Earlier versions skipped MPS in auto-resolution because of
         # reliability issues observed on macOS 26 + M4 + PyTorch 2.12 (the
@@ -2251,17 +2257,22 @@ def _resolve_backend(name: str | None):
                     return inst
             except Exception:
                 pass
-        # No GPU available → reference CPU implementation (trackpy).
+        # No healthy GPU → Torch on CPU.  Torch-CPU runs a parallel,
+        # multi-process localiser (one worker per core-budget slice), so on a
+        # CPU-only box — including big many-core servers like Falcon — it
+        # matches or beats the trackpy path while keeping the SAME Torch code
+        # on every machine.  Trackpy is never auto-selected: it stays a
+        # deliberate manual choice in the Detection-backend dropdown.
+        if TorchBackend.is_available():
+            inst = TorchBackend()
+            inst._forced_device = "cpu"
+            return inst
+        # Last resort: PyTorch isn't installed at all → reference CPU trackpy.
         for cls in _BACKEND_REGISTRY:
             if cls is TorchBackend:
                 continue
             if cls.is_available():
                 return cls()
-        # Last resort: torch on CPU, if even trackpy is missing.
-        if TorchBackend.is_available():
-            inst = TorchBackend()
-            inst._forced_device = "cpu"
-            return inst
         raise RuntimeError(
             "No localiser backend available — install trackpy or torch.")
 
