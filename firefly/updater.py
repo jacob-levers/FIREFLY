@@ -374,12 +374,14 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
       * if the copy fails, is short, or its hash differs, **restore the backup**
         so the working version stays in place, and reveal the new exe so the
         user can finish by hand;
-      * on success, relaunch with a **ready-marker handshake** — the FIRST
-        launch of a brand-new exe frequently fails its onefile extraction while
-        AV is still scanning the freshly-written file ("python3xx.dll … module
-        could not be found"), but a later launch succeeds, so the helper pauses
-        for AV, waits for the app to signal it's up, and relaunches once if it
-        doesn't;
+      * on success, relaunch with a **ready-marker handshake** — the onefile
+        bundle re-extracts ~1.4 GB on every launch and AV scans the fresh exe,
+        so the first extraction can take minutes; the helper clears stale _MEI
+        dirs, then waits for the app to signal its window is up for as long as
+        the process stays alive (it never kills a still-extracting bootloader —
+        the half-extracted _MEI dir is exactly what caused "python3xx.dll …
+        module could not be found"), retrying only if the process exits without
+        signalling, or wedges past a ~10-minute cap;
       * once the relaunch signals ready (and the copy was already SHA-256
         verified), the new exe is provably good — so the ``.bak`` is **deleted**
         rather than left cluttering the folder.  It is only kept if a check
@@ -452,31 +454,49 @@ if defined SRCHASH if defined DSTHASH if /i not "!SRCHASH!"=="!DSTHASH!" (
 )
 echo [firefly-update] swap verified (size + SHA-256) >>"%LOG%" 2>&1
 rem ── Relaunch with a ready-marker handshake ──────────────────────────────
-rem The FIRST launch of a brand-new exe often fails its onefile extraction
-rem because antivirus is still scanning the freshly-written file (python3xx.dll
-rem gets blocked mid-extract -> "module could not be found"); a later launch
-rem succeeds.  So: pause to let AV settle, launch with SPTPALM_READY_MARKER set
-rem (the app writes that file once its window is up), and if no ready signal
-rem appears, kill the stuck process and relaunch once - the retry succeeds.
+rem The new exe is a PyInstaller ONEFILE bundle: every launch re-extracts
+rem ~1.4 GB / 10k files to %LOCALAPPDATA%\\FIREFLY\\bundle\\_MEIxxxxx before the
+rem window can appear, and Windows Defender scans the freshly-written 500+ MB
+rem exe hard on first run -- so that extraction can take SEVERAL MINUTES.  The
+rem old helper killed the bootloader after a fixed ~100s, leaving a
+rem half-extracted _MEI dir -> "Failed to load Python DLL python3xx.dll ...
+rem module could not be found".  Now we (1) clear stale/partial _MEI dirs
+rem first, and (2) wait AS LONG AS the launched process stays alive (i.e. is
+rem still extracting), only giving up if it exits without signalling ready or
+rem wedges past a generous cap -- never killing a healthy-but-slow extraction.
+set "BUNDLE=%LOCALAPPDATA%\\FIREFLY\\bundle"
 for %%F in ("%TARGET%") do set "TIMG=%%~nxF"
-ping -n 26 127.0.0.1 >NUL
 set "MARKER=%~dp0firefly_relaunch_ok.marker"
 del "%MARKER%" >NUL 2>&1
 set "SPTPALM_READY_MARKER=%MARKER%"
+ping -n 26 127.0.0.1 >NUL
 set /a LAUNCHN=0
 :relaunch
 set /a LAUNCHN+=1
-echo [firefly-update] launch attempt !LAUNCHN! >>"%LOG%" 2>&1
+rem Best-effort: drop stale / partially-extracted _MEI dirs from earlier runs.
+rem A dir locked by a concurrent instance simply won't delete and is skipped.
+for /d %%D in ("%BUNDLE%\\_MEI*") do rmdir /s /q "%%D" >NUL 2>&1
+echo [firefly-update] launch attempt !LAUNCHN! (onefile extraction can take a few minutes) >>"%LOG%" 2>&1
 start "" "%TARGET%"
 set /a WAITM=0
 :waitmarker
 if exist "%MARKER%" goto ready
+rem Still extracting / starting?  While a FIREFLY process is alive, keep waiting
+rem -- do NOT kill it (killing mid-extraction is what corrupted the bundle).
+tasklist /FI "IMAGENAME eq %TIMG%" 2>NUL | find /I "%TIMG%" >NUL
+if errorlevel 1 (
+  echo [firefly-update] process exited before signalling ready (attempt !LAUNCHN!) >>"%LOG%" 2>&1
+  goto crashed
+)
 ping -n 3 127.0.0.1 >NUL
 set /a WAITM+=1
-if !WAITM! LSS 50 goto waitmarker
+if !WAITM! LSS 300 goto waitmarker
+echo [firefly-update] no window after ~10 min but process alive; treating as wedged >>"%LOG%" 2>&1
+taskkill /F /IM "%TIMG%" >>"%LOG%" 2>&1
+ping -n 4 127.0.0.1 >NUL
+:crashed
 if !LAUNCHN! LSS 2 (
-  echo [firefly-update] no ready signal (~100s); killing + relaunching once >>"%LOG%" 2>&1
-  taskkill /F /IM "!TIMG!" >>"%LOG%" 2>&1
+  echo [firefly-update] retrying launch once >>"%LOG%" 2>&1
   ping -n 6 127.0.0.1 >NUL
   goto relaunch
 )

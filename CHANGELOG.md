@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.64.1
+
+### Fix: in-place update could fail to relaunch ("Failed to load Python DLL python313.dll")
+
+After an update, the freshly-swapped exe could fail to start with the PyInstaller
+bootloader error `Failed to load Python DLL '…\_MEIxxxxx\python313.dll'. LoadLibrary: The
+specified module could not be found.` Root cause: the onefile bundle re-extracts ~1.4 GB
+on every launch, and Windows Defender scans the brand-new ~586 MB exe so hard that the
+first extraction can take minutes — but the relaunch helper waited only ~100 s and then
+`taskkill`ed the bootloader **mid-extraction**, leaving a half-extracted `_MEI` dir whose
+`python313.dll` dependency DLLs were missing.
+
+The relaunch helper now (1) clears stale/partial `_MEI` dirs first, and (2) waits for the
+app's ready signal **for as long as the launched process stays alive** (i.e. is still
+extracting) — reacting immediately if it actually exits/crashes, and only force-killing if
+it wedges past a ~10-minute cap. It never kills a healthy-but-slow first extraction. The
+download → SHA-256 verify → size/hash-checked swap path is unchanged.
+
+Note: because the running build performs its own update, this fix applies to updates *from*
+v2.64.1 onward — the immediate update *to* v2.64.1 still uses the prior helper, so if it
+doesn't reappear on its own, launch FIREFLY manually once and give the first extraction a
+minute or two.
+
 ## v2.64.0
 
 ### HYPER-FLY: VRAM-aware GPU detect slots, hard-kill cleanup, faster bulk figures
