@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.59.1
+
+### Updater: no leftover `FIREFLY.exe.bak` after a clean update
+
+The updater kept a `FIREFLY.exe.bak` next to the exe as a rollback safety net —
+but it left it there even after a fully successful update, cluttering the folder
+(a visible `FIREFLY.exe.bak` on the Desktop). Now that the copy is SHA-256
+verified *and* the relaunch confirms the app actually starts, a successful
+update is provably good, so the backup is **removed automatically**. It's kept
+only when something fails (a restored backup, or the new build never signals it
+started) — i.e. exactly when a manual rollback might be needed.
+
+(Any `.bak` left by an older updater is safe to delete by hand.)
+
 ## v2.59.0
 
 ### Updater: the post-update relaunch no longer shows a scary (harmless) error

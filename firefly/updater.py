@@ -379,7 +379,12 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
         AV is still scanning the freshly-written file ("python3xx.dll … module
         could not be found"), but a later launch succeeds, so the helper pauses
         for AV, waits for the app to signal it's up, and relaunches once if it
-        doesn't — and KEEPS the ``.bak`` for manual rollback.
+        doesn't;
+      * once the relaunch signals ready (and the copy was already SHA-256
+        verified), the new exe is provably good — so the ``.bak`` is **deleted**
+        rather than left cluttering the folder.  It is only kept if a check
+        fails (restored backup) or the relaunch never signals ready, so a
+        manual rollback is still possible exactly when it might be needed.
     """
     return f"""@echo off
 setlocal enabledelayedexpansion
@@ -475,10 +480,18 @@ if !LAUNCHN! LSS 2 (
   ping -n 6 127.0.0.1 >NUL
   goto relaunch
 )
-echo [firefly-update] still no ready signal; leaving the app to the user >>"%LOG%" 2>&1
-:ready
+rem Gave up: the new build never signalled it came up, so KEEP the backup next
+rem to the exe so the user can roll back (rename it) if it won't launch.
+echo [firefly-update] no ready signal; kept "%BACKUP%" for manual rollback >>"%LOG%" 2>&1
 del "%MARKER%" >NUL 2>&1
-echo [firefly-update] done; previous version kept at "%BACKUP%" (rename to roll back) >>"%LOG%" 2>&1
+goto end
+:ready
+rem Launched cleanly AND the copy was already SHA-256-verified, so the new exe
+rem is provably good — delete the backup instead of leaving it cluttering the
+rem folder (e.g. a visible FIREFLY.exe.bak on the user's Desktop).
+del "%MARKER%" >NUL 2>&1
+del "%BACKUP%" >NUL 2>&1
+echo [firefly-update] update complete + verified; removed backup >>"%LOG%" 2>&1
 :end
 del "%~f0"
 """

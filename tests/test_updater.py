@@ -126,6 +126,10 @@ def test_windows_helper_script():
     assert 'if exist "%MARKER%" goto ready' in s
     assert 'taskkill /F /IM "!TIMG!"' in s
     assert 'if !LAUNCHN! LSS 2' in s
+    # On a clean, verified relaunch the backup is removed (no clutter); it's the
+    # ``:ready`` branch, distinct from the give-up branch which keeps it.
+    assert 'del "%BACKUP%"' in s
+    assert ":ready" in s
 
 
 def test_download_asset_integrity_failure_message(monkeypatch, tmp_path):
