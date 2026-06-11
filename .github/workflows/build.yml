@@ -268,15 +268,37 @@ jobs:
             exit 1
           }
           Write-Host "OK: ready marker written — onefile bundle is healthy"
-          $proc.Kill()
-          $proc.WaitForExit(5000) | Out-Null
+          # Kill the WHOLE process tree.  PyInstaller onefile spawns a CHILD
+          # process that also holds FIREFLY.exe open, so killing only $proc
+          # leaves the exe locked and the later rename fails with "the process
+          # cannot access the file because it is being used by another process".
+          # /T terminates the child too; the name-based kill mops up any
+          # reparented straggler.
+          taskkill /F /T /PID $proc.Id 2>$null | Out-Null
+          Stop-Process -Name FIREFLY -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
 
       - name: Rename exe for release
         # Releases page shows whatever filename we upload — match the
         # name the README tells users to download.
         shell: pwsh
         run: |
-          Move-Item dist\FIREFLY.exe dist\FIREFLY-Windows.exe -Force
+          # Even after the tree is killed, the freshly-built 200 MB exe can be
+          # briefly locked by a teardown straggler or Windows Defender scanning
+          # a brand-new binary.  Retry the rename rather than failing the whole
+          # release build on a transient lock.
+          $ok = $false
+          for ($i = 1; $i -le 12; $i++) {
+            try {
+              Move-Item dist\FIREFLY.exe dist\FIREFLY-Windows.exe -Force -ErrorAction Stop
+              $ok = $true; break
+            } catch {
+              Write-Host "Rename attempt $i failed (file locked); killing stragglers + retrying in 3s..."
+              Stop-Process -Name FIREFLY -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+            }
+          }
+          if (-not $ok) { Write-Error "FIREFLY.exe still locked after 12 attempts"; exit 1 }
           Write-Host "Renamed: $(Get-Item dist\FIREFLY-Windows.exe)"
 
       - name: Upload exe artifact

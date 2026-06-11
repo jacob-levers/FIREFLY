@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.63.1
+
+### Build fix: Windows release exe (supersedes v2.63.0)
+
+The v2.63.0 Windows build failed at the final rename step — PyInstaller's
+onefile launcher spawns a child process that *also* holds `FIREFLY.exe` open,
+so the build's post-build smoke test (which boots the exe to verify it starts)
+left the file locked and `Move-Item FIREFLY.exe → FIREFLY-Windows.exe` errored
+with "the process cannot access the file because it is being used by another
+process." The build now kills the whole process tree after the smoke test and
+retries the rename past any transient lock (Windows Defender scanning a fresh
+200 MB binary). **v2.63.1 is the shippable build of the v2.63.0 changes below
+— functionally identical.**
+
 ## v2.63.0
 
 ### HYPER-FLY: staggered loading — no more all-files-into-RAM-at-once surge
