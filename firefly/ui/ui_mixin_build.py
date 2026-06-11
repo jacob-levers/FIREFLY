@@ -1726,9 +1726,16 @@ class BuildMixin:
         btn_refresh = QtWidgets.QPushButton("↻ Rescan")
         btn_refresh.setToolTip("Re-scan the folder for input files.")
         btn_refresh.clicked.connect(self._on_batch_rescan)
+        self.c_batch_recursive = QtWidgets.QCheckBox("Include subfolders")
+        self.c_batch_recursive.setToolTip(
+            "Recursively scan the picked folder AND all of its subfolders for "
+            "input files — queue a whole parent directory of experiments in one "
+            "go.  (Off = the folder plus one level of subfolders.)")
+        self.c_batch_recursive.toggled.connect(self._on_batch_rescan)
         row.addWidget(self.e_batch_folder, 1)
         row.addWidget(btn_pick)
         row.addWidget(btn_refresh)
+        row.addWidget(self.c_batch_recursive)
         bg.addLayout(row)
 
         bg.addWidget(QtWidgets.QLabel(

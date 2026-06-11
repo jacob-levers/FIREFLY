@@ -61,38 +61,42 @@ class BatchMixin:
         # them.
         candidates: list[tuple[str, str, str | None]] = []
         self._batch_corrupt_paths: set[str] = set()
-        for name in names:
-            if name.startswith("."):
-                continue
-            full = os.path.join(folder, name)
-            if os.path.isfile(full):
-                if self._looks_like_input_file(name):
-                    if self._file_looks_corrupt(full):
-                        self._batch_corrupt_paths.add(full)
-                    candidates.append((name, full, None))
-            elif os.path.isdir(full):
-                # Skip the batch_results / drift_correction output sub-
-                # dirs we ourselves write, plus hidden folders.
-                if name.lower() in ("batch_results", "compare_results"):
+        # Walk the picked folder with os.walk.  By DEFAULT we include the folder
+        # itself plus ONE level of subfolders (the common lab layout, e.g.
+        # 1-AMA/Cell1/Loc.txt).  When the "Include subfolders" box is ticked we
+        # recurse the WHOLE tree, so a parent folder holding many experiment
+        # directories can be queued in one pass instead of one folder at a time.
+        # For files below the top level we keep the RELATIVE subfolder in the
+        # display label and prefix the series key with it, so identically-named
+        # files in different folders don't collapse into one ambiguous series.
+        recursive = bool(getattr(self, "c_batch_recursive", None)
+                         and self.c_batch_recursive.isChecked())
+        for dirpath, dirnames, filenames in os.walk(folder):
+            # Prune IN-PLACE (so os.walk won't descend) our own output dirs and
+            # hidden / AppleDouble folders — at EVERY level, not just the top.
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if not d.startswith(".")
+                and d.lower() not in ("batch_results", "compare_results"))
+            rel = os.path.relpath(dirpath, folder)
+            if not recursive and rel != os.curdir:
+                # one-level mode: collect this immediate subfolder's files but
+                # don't descend any deeper.
+                dirnames[:] = []
+            sub = None if rel == os.curdir else rel.replace(os.sep, "/")
+            for cname in sorted(filenames):
+                # Skip hidden / macOS AppleDouble (`._*`) and `.DS_Store` stubs —
+                # without it, Mac-exported folders surface 4 KB `._<name>.czi`
+                # ghosts that get flagged corrupt and clutter the list.
+                if cname.startswith("."):
                     continue
-                try:
-                    child_names = sorted(os.listdir(full))
-                except OSError:
-                    continue
-                for cname in child_names:
-                    # Skip hidden / macOS AppleDouble (`._*`) and `.DS_Store`
-                    # stubs — same guard the top-level loop applies.  Without
-                    # it, Mac-exported folders surface 4 KB `._<name>.czi`
-                    # ghosts that then get flagged corrupt and clutter the list.
-                    if cname.startswith("."):
-                        continue
-                    cfull = os.path.join(full, cname)
-                    if (os.path.isfile(cfull)
+                cfull = os.path.join(dirpath, cname)
+                if (os.path.isfile(cfull)
                         and self._looks_like_input_file(cname)):
-                        if self._file_looks_corrupt(cfull):
-                            self._batch_corrupt_paths.add(cfull)
-                        display = f"{name}/{cname}"
-                        candidates.append((display, cfull, name))
+                    if self._file_looks_corrupt(cfull):
+                        self._batch_corrupt_paths.add(cfull)
+                    display = cname if sub is None else f"{sub}/{cname}"
+                    candidates.append((display, cfull, sub))
 
         # Phase 1c — prefer the raw acquisition.  If a folder contains a `.czi`,
         # drop sibling `.tif`/`.csv` files from that SAME folder: they're almost

@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.64.2
+
+### Fix: batch saves failed on deep folders ("FileNotFoundError" past 260 chars)
+
+Writing results into a deep output folder — a nested RDM path plus the sample stem
+repeated in both the per-stem subfolder and the filename — could push the output path past
+Windows' 260-char MAX_PATH and fail every CSV/figure/`.npy` save with `FileNotFoundError`.
+Detection still ran, but the outputs were silently lost. FIREFLY now prefixes the per-file
+output directory with the Windows `\\?\` extended-length form, so all writes below it
+bypass the 260-char limit regardless of folder depth (paths handed back to the GUI are
+stripped to normal form). Verified: a 304-char output path that previously failed now
+writes successfully.
+
+### New: "Include subfolders" checkbox for batch input
+
+The batch **Input folder** row now has an **Include subfolders** checkbox: tick it to
+recursively scan the chosen folder *and every subfolder* for raw images, so a parent
+directory holding many experiment folders can be queued in one pass instead of adding each
+directory separately. Our own output dirs (`batch_results` / `compare_results`) and hidden
+folders are skipped at every level, and multi-file TIF series are grouped as before.
+Unticked keeps the previous behaviour (the folder plus one level of subfolders).
+
 ## v2.64.1
 
 ### Fix: in-place update could fail to relaunch ("Failed to load Python DLL python313.dll")

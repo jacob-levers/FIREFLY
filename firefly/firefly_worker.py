@@ -412,6 +412,44 @@ def _make_loc_histogram_proj(locs_df, p: dict):
         return _np.zeros((1, 256, 256), dtype=_np.float32)
 
 
+def _win_long_path(p):
+    """Windows: return a ``\\\\?\\``-prefixed, fully-normalised absolute path so
+    file operations on it bypass the 260-char MAX_PATH limit.  Deep RDM output
+    folders plus the sample stem repeated in both the subfolder and the filename
+    routinely push the output path past 260 chars, which fails the CSV/figure
+    writes with ``FileNotFoundError``.  ``\\\\?\\`` paths are taken LITERALLY by
+    the OS, so the path must be absolute, backslash-separated and free of
+    ``.``/``..`` — ``os.path.abspath`` gives exactly that.  No-op off Windows, on
+    an empty path, or on an already-prefixed path."""
+    if os.name != "nt" or not p:
+        return p
+    try:
+        s = str(p)
+        if s.startswith("\\\\?\\"):
+            return s
+        ap = os.path.abspath(s)                 # normalises / -> \, resolves . / ..
+        if ap.startswith("\\\\"):               # UNC \\server\share
+            return "\\\\?\\UNC\\" + ap[2:]
+        return "\\\\?\\" + ap
+    except Exception:
+        return p
+
+
+def _win_disp_path(p):
+    """Strip a ``\\\\?\\`` (or ``\\\\?\\UNC\\``) prefix so paths handed back to the
+    GUI stay normal — Explorer and Qt's image loader don't understand ``\\\\?\\``
+    paths.  The underlying file is identical either way."""
+    try:
+        s = str(p)
+        if s.startswith("\\\\?\\UNC\\"):
+            return "\\\\" + s[8:]
+        if s.startswith("\\\\?\\"):
+            return s[4:]
+        return p
+    except Exception:
+        return p
+
+
 def _run_one_analysis(params: dict, msg_queue, cancel_event,
                       _log, _prog) -> dict:
     """Run the FIREFLY pipeline on one input file.
@@ -468,6 +506,12 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         out_dir = os.path.join(raw_out_dir, stem)
     else:
         out_dir = raw_out_dir
+    # Windows deep-folder safety: prefix the output dir with \\?\ so EVERY write
+    # below it (CSVs, figures, npy, manifest) bypasses the 260-char MAX_PATH limit.
+    # Deep RDM paths + the stem repeated in subfolder+filename routinely exceed it
+    # and used to fail the saves with FileNotFoundError.  Stripped back to a normal
+    # path in the payload handed to the GUI (below).  No-op off Windows.
+    out_dir = _win_long_path(out_dir)
     fig_dir    = os.path.join(out_dir, "figures")
     data_dir   = os.path.join(out_dir, "data")
     extras_dir = os.path.join(out_dir, "firefly_extras")
@@ -1409,7 +1453,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _log("── Stopping analysis (nothing more to do) ──")
         # Raise a sentinel — caller will turn this into a sensible payload.
         raise _NoTracks({
-            "stem": stem, "out_dir": out_dir,
+            "stem": stem, "out_dir": _win_disp_path(out_dir),
             "figure_path": "", "n_tracks": 0, "n_locs": int(len(locs)),
         })
 
@@ -2141,8 +2185,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
 
     return {
         "stem":        stem,
-        "out_dir":     out_dir,
-        "figure_path": figure_path,
+        "out_dir":     _win_disp_path(out_dir),
+        "figure_path": _win_disp_path(figure_path),
         "summary":     summary,
         # Legacy top-level keys preserved for compatibility with callers
         # that haven't been updated yet.
