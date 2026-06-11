@@ -1,0 +1,49 @@
+"""Unit tests for the recursive-batch folder-scan predicates.
+
+These gate which folders a recursive batch descends into and which files it
+auto-queues.  They live in firefly.ui.ui_batch_filters precisely so they import
+WITHOUT PySide6 — the CI test runner installs only the analysis stack (no Qt),
+so importing ui_mixin_batch here would fail; the pure predicates do not.
+"""
+from firefly.ui.ui_batch_filters import (is_analysis_output_dir,
+                                          is_raw_image_name)
+
+
+# ── analysis-output folders the recursive sweep must prune ──────────────
+def test_is_analysis_output_dir_palmtracer_dirs():
+    # palmTRACER `.PT` analysis folders (real names from the lab tree)
+    assert is_analysis_output_dir("20260122_PC12-P09_Syntaxin1a_Propofol_D3_Post.PT")
+    assert is_analysis_output_dir("foo.pt")            # case-insensitive
+    assert is_analysis_output_dir("FOO.PT")
+    # numbered analysis-stage folders
+    assert is_analysis_output_dir("02_Analysis_correct pixel setting")
+    assert is_analysis_output_dir("02_analysis")
+    assert is_analysis_output_dir("03_Analysis")
+
+
+def test_is_analysis_output_dir_keeps_raw_and_ordinary():
+    # raw acquisition folder must NOT be pruned
+    assert not is_analysis_output_dir("01_Raw")
+    assert not is_analysis_output_dir("01_raw")
+    # ordinary experiment / condition / cell folders survive
+    assert not is_analysis_output_dir("Syntaxin1a")
+    assert not is_analysis_output_dir("Ciprofol")
+    assert not is_analysis_output_dir("Cell1")
+    assert not is_analysis_output_dir("1-AMA")
+    assert not is_analysis_output_dir("Propofol reversal")
+    # a `.pt` substring that isn't the suffix stays put
+    assert not is_analysis_output_dir("ptychography")
+
+
+# ── recursive auto-queue is raw-images-only ─────────────────────────────
+def test_is_raw_image_name_accepts_images():
+    for n in ("a.tif", "a.tiff", "a.czi", "A.TIF", "stack.TIFF", "x.CZI"):
+        assert is_raw_image_name(n), n
+
+
+def test_is_raw_image_name_rejects_loc_tables():
+    # the abundant palmTRACER/FIREFLY exports a recursive sweep must skip
+    for n in ("locPALMTracer.txt", "locPALMTracer.csv",
+              "trcPALMTracer-1-D.txt", "results.csv", "notes.txt",
+              "data.tsv", "blob.bin"):
+        assert not is_raw_image_name(n), n

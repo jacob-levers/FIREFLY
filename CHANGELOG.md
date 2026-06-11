@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.64.3
+
+### Fix: recursive batch scooped up palmTRACER analysis files, not just raw images
+
+Ticking **Include subfolders** and pointing it at a whole experiment tree (e.g. an RDM
+`…/Syntaxin1a` folder) queued far more than the raw acquisitions: the scan only skipped
+FIREFLY's own `batch_results`/`compare_results`, so it descended into palmTRACER's `*.PT`
+and `NN_Analysis…` folders and queued their derived files — `locPALMTracer.txt`/`.csv`
+localisation & track tables and non-`-Tracks-` map TIFFs — as if they were raw input. On
+one real tree that turned an intended ~1,485-file raw run into ~2,000 items, ~500 of them
+derived data (some analysed as raw → meaningless results). Recursive mode now (a) prunes
+`*.PT` and `NN_Analysis…` analysis-output folders at every level and (b) restricts the
+auto-queue to raw images (`.tif`/`.tiff`/`.czi`), so a whole-tree sweep collects exactly the
+raw acquisitions. One-level batch mode is unchanged — it still skips nothing extra and still
+accepts external-loc `.csv`/`.txt` tables.
+
 ## v2.64.2
 
 ### Fix: batch saves failed on deep folders ("FileNotFoundError" past 260 chars)

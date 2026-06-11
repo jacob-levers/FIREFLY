@@ -12,6 +12,8 @@ from firefly import crash_reporter
 from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_VISUALISE, TAB_REPROCESS)
+from firefly.ui.ui_batch_filters import (is_analysis_output_dir,
+                                         is_raw_image_name)
 
 
 class BatchMixin:
@@ -69,15 +71,25 @@ class BatchMixin:
         # For files below the top level we keep the RELATIVE subfolder in the
         # display label and prefix the series key with it, so identically-named
         # files in different folders don't collapse into one ambiguous series.
+        #
+        # In RECURSIVE mode the user is sweeping a whole experiment tree for raw
+        # acquisitions, so we additionally (a) prune palmTRACER analysis-output
+        # folders (`*.PT`, `NN_Analysis…`) at every level so their derived files
+        # are never descended into, and (b) restrict the auto-queue to raw image
+        # files (.tif/.tiff/.czi) — external-loc CSV/TXT tables are abundant in
+        # analysis trees and aren't raw data.  One-level mode is unchanged (it
+        # keeps the full CSV/TXT-capable filter and never skips analysis dirs).
         recursive = bool(getattr(self, "c_batch_recursive", None)
                          and self.c_batch_recursive.isChecked())
         for dirpath, dirnames, filenames in os.walk(folder):
             # Prune IN-PLACE (so os.walk won't descend) our own output dirs and
             # hidden / AppleDouble folders — at EVERY level, not just the top.
+            # In recursive mode also prune palmTRACER analysis-output folders.
             dirnames[:] = sorted(
                 d for d in dirnames
                 if not d.startswith(".")
-                and d.lower() not in ("batch_results", "compare_results"))
+                and d.lower() not in ("batch_results", "compare_results")
+                and not (recursive and is_analysis_output_dir(d)))
             rel = os.path.relpath(dirpath, folder)
             if not recursive and rel != os.curdir:
                 # one-level mode: collect this immediate subfolder's files but
@@ -89,6 +101,10 @@ class BatchMixin:
                 # without it, Mac-exported folders surface 4 KB `._<name>.czi`
                 # ghosts that get flagged corrupt and clutter the list.
                 if cname.startswith("."):
+                    continue
+                # Recursive sweep is raw-images-only: skip external-loc CSV/TXT
+                # tables (palmTRACER/FIREFLY exports), keeping just TIFF/CZI.
+                if recursive and not is_raw_image_name(cname):
                     continue
                 cfull = os.path.join(dirpath, cname)
                 if (os.path.isfile(cfull)
