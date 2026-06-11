@@ -120,11 +120,18 @@ def test_windows_helper_script():
     assert 'certutil -hashfile "%NEWEXE%" SHA256' in s
     assert 'certutil -hashfile "%TARGET%" SHA256' in s
     assert 'if /i not "!SRCHASH!"=="!DSTHASH!"' in s
-    # Relaunch handshake: pause for AV, wait for the app's ready marker, and
-    # kill + relaunch once if the first launch's extraction lost the race.
+    # Relaunch handshake: a fresh onefile exe re-extracts ~1.4 GB and AV scans it,
+    # so the first launch can take minutes.  The helper clears stale/partial _MEI
+    # dirs, then waits for the ready marker for as long as the launched process
+    # stays alive (still extracting) — it must NOT kill a healthy-but-slow
+    # extraction (that left half-extracted _MEI dirs → the python3xx.dll load
+    # error); it only force-kills if the process wedges past a generous cap.
     assert 'set "SPTPALM_READY_MARKER=%MARKER%"' in s
     assert 'if exist "%MARKER%" goto ready' in s
-    assert 'taskkill /F /IM "!TIMG!"' in s
+    assert 'set "BUNDLE=' in s                         # bundle dir for _MEI cleanup
+    assert 'rmdir /s /q' in s                          # clear stale/partial _MEI dirs
+    assert 'tasklist /FI "IMAGENAME eq %TIMG%"' in s   # wait while the process is alive
+    assert 'taskkill /F /IM "%TIMG%"' in s             # force-kill only if wedged past the cap
     assert 'if !LAUNCHN! LSS 2' in s
     # On a clean, verified relaunch the backup is removed (no clutter); it's the
     # ``:ready`` branch, distinct from the give-up branch which keeps it.
