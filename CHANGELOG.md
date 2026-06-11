@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.58.1
+
+### Clearer message when a download is corrupted
+
+When the integrity check (v2.58.0) keeps failing because the download is being
+corrupted in transit, the updater now says so plainly — *"its SHA-256 didn't
+match GitHub's … nothing was installed … download manually"* — instead of the
+misleading "unexpected format" message. (Also serves as a test build to
+exercise the in-app updater's new verification.)
+
 ## v2.58.0
 
 ### Updater: verify integrity, never install a corrupt build

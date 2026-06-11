@@ -235,6 +235,7 @@ def download_asset(asset: dict,
         raise UpdaterError("No installer is available for your platform.")
     dest = os.path.join(updates_dir(), asset["name"])
     digest = str(asset.get("digest") or "")
+    _last = {"hash_failed": False}
 
     def _validate(path: str) -> bool:
         # Format sanity AND content integrity: verify SHA-256 against GitHub's
@@ -243,7 +244,13 @@ def download_asset(asset: dict,
         # the UI tells the user to install manually instead of shipping a broken
         # exe (the cause of the "decompression -3" / "Python DLL not found"
         # crashes on networks/AV that mangle the transfer).
-        return _validate_download(path) and _digest_matches(path, digest)
+        if not _validate_download(path):
+            return False
+        if not _digest_matches(path, digest):
+            _last["hash_failed"] = True
+            return False
+        _last["hash_failed"] = False
+        return True
 
     try:
         net_download.download_file(
@@ -254,6 +261,14 @@ def download_asset(asset: dict,
             validate_cb=_validate,
             max_attempts=6)
     except net_download.DownloadError as exc:
+        if _last["hash_failed"]:
+            raise UpdaterError(
+                "The download kept failing its integrity check — its SHA-256 "
+                "didn't match GitHub's, so the file is being corrupted in "
+                "transit (most likely this network or an antivirus product). "
+                "Nothing was installed. Download the installer manually from "
+                "the Releases page instead.",
+                reveal_path=updates_dir()) from exc
         raise UpdaterError(str(exc), reveal_path=updates_dir()) from exc
     return dest
 

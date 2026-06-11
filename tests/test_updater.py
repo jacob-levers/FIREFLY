@@ -122,6 +122,31 @@ def test_windows_helper_script():
     assert 'if /i not "!SRCHASH!"=="!DSTHASH!"' in s
 
 
+def test_download_asset_integrity_failure_message(monkeypatch, tmp_path):
+    """A persistent SHA-256 mismatch surfaces a clear 'integrity / install
+    manually' error — not the misleading generic validation message."""
+    import firefly.net_download as nd
+    cr = tmp_path / "FIREFLY" / "crash_reports"
+    cr.mkdir(parents=True)
+    monkeypatch.setattr(u.crash_reporter, "crash_report_dir", lambda: str(cr))
+    monkeypatch.setattr(u, "_validate_download", lambda p: True)   # skip format
+    asset = {"name": "X.exe", "url": "https://x", "size": 10,
+             "digest": "sha256:" + "a" * 64}                       # won't match
+
+    def _fake_dl(url, dest, *, validate_cb=None, **kw):
+        with open(dest, "wb") as fh:
+            fh.write(b"some real bytes")
+        if validate_cb:
+            validate_cb(dest)            # hash mismatch → flags hash_failed
+        raise nd.DownloadError("validation failed")
+    monkeypatch.setattr(nd, "download_file", _fake_dl)
+
+    with pytest.raises(u.UpdaterError) as ei:
+        u.download_asset(asset)
+    msg = str(ei.value).lower()
+    assert "integrity" in msg and "manually" in msg
+
+
 def test_sha256_and_digest_verification(tmp_path):
     """Download integrity: SHA-256 is computed and matched against GitHub's
     'sha256:HEX' digest; a wrong digest is rejected, a missing one passes."""
