@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.63.0
+
+### HYPER-FLY: staggered loading — no more all-files-into-RAM-at-once surge
+
+On a big box HYPER-FLY runs many files at once (e.g. 64 files × 2 cores). The
+catch: every file in a wave *starts* by loading, so they all preallocated their
+full stacks simultaneously — RAM ballooned to **hundreds of GB before any
+processing started** (a reported 64 files → ~500 GB), and each file decoded on
+only its small per-file core slice (2 cores), so loading dragged on while the
+machine sat on a huge RAM footprint. Processing itself was quick; **loading was
+the whole wait.**
+
+HYPER-FLY now **staggers the loads**:
+
+- Only a few files **load** at a time (auto ≈ one load per 16 cores); the rest
+  wait their turn. A slot frees the moment a file's stack is in RAM, so the next
+  file loads while this one moves on to detection. Because detection is quick,
+  files free their RAM fast — so **resident RAM ramps up gradually and stays
+  low** instead of all K files piling in at once.
+- While a file holds a load slot it **decodes on a much bigger core slice**
+  (total cores ÷ concurrent-loads, e.g. ~16 instead of 2) — since only a few
+  load at once, the box isn't oversubscribed and each load finishes faster.
+- New **"Concurrent loads (0 = auto)"** control in the Performance section.
+  Lower it to be even gentler on RAM or on shared storage.
+
+Per-file results are unchanged — this is purely scheduling. (Raw load time is
+still ultimately bounded by your storage/network bandwidth, but the RAM surge is
+gone and processing now overlaps loading instead of waiting for all of it.)
+
 ## v2.62.0
 
 ### HYPER-FLY can now use an NVIDIA GPU safely

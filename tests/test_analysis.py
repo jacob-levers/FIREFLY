@@ -317,15 +317,20 @@ def test_backend_uses_gpu_classification(monkeypatch):
 
 
 def test_hyperfly_gpu_gate_plumbing():
-    """`_file_worker_init` stashes the GPU semaphore (or None) into the worker
-    global that `_run_one_analysis` consults — so single-file / CPU runs (no
-    sem) gate nothing, and the old 3-arg init signature still works."""
+    """`_file_worker_init` stashes the GPU + load semaphores (or None) into the
+    worker globals that `_run_one_analysis` consults — so single-file / CPU
+    runs (no sems) gate nothing, and the old short init signatures still work."""
     import firefly.firefly_worker as w
-    sentinel = object()
-    w._file_worker_init(None, None, 8, sentinel)
-    assert w._HF_GPU_SEM is sentinel
-    w._file_worker_init(None, None, 8)        # back-compat: gpu_sem defaults None
-    assert w._HF_GPU_SEM is None
+    gpu, load = object(), object()
+    w._file_worker_init(None, None, 8, gpu, load, 32)
+    assert w._HF_GPU_SEM is gpu
+    assert w._HF_LOAD_SEM is load
+    assert w._HF_LOAD_BUDGET == 32
+    w._file_worker_init(None, None, 8, gpu)   # back-compat: load args default
+    assert w._HF_GPU_SEM is gpu
+    assert w._HF_LOAD_SEM is None and w._HF_LOAD_BUDGET is None
+    w._file_worker_init(None, None, 8)        # back-compat: 3-arg
+    assert w._HF_GPU_SEM is None and w._HF_LOAD_SEM is None
 
 
 def test_torch_cpu_mp_env_disable(monkeypatch):

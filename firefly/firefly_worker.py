@@ -527,10 +527,33 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # ── Load ──────────────────────────────────────────────────────────
         _log(f"\n── Load ──────────────────────────")
         _prog(5, "Loading stack…")
-        stack, meta_px, meta_fi = load_file(
-            fpath, channel=int(p.get("channel", 0)),
-            stop_event=cancel_event,
-            files=p.get("series_files"))
+        # HYPER-FLY load stagger: only a few files load at once (so RAM ramps
+        # up gradually instead of all K preallocating their stacks at once),
+        # and while a file holds a load slot it may decode on a BIGGER core
+        # slice than its per-file compute budget — since few files load
+        # concurrently, the box isn't oversubscribed.  Single-file / non-batch
+        # runs have no semaphore and fall straight through.
+        _load_gate = _HF_LOAD_SEM
+        _prev_budget = None
+        if _load_gate is not None:
+            _load_gate.acquire()
+            if _HF_LOAD_BUDGET:
+                _prev_budget = os.environ.get("FIREFLY_CPU_CORE_BUDGET")
+                os.environ["FIREFLY_CPU_CORE_BUDGET"] = str(int(_HF_LOAD_BUDGET))
+        try:
+            stack, meta_px, meta_fi = load_file(
+                fpath, channel=int(p.get("channel", 0)),
+                stop_event=cancel_event,
+                files=p.get("series_files"))
+        finally:
+            # Restore the compute-phase core budget and free the load slot the
+            # instant the stack is in RAM, so the next queued file can start
+            # loading while this one moves on to detection.
+            if _load_gate is not None:
+                if _prev_budget is not None:
+                    os.environ["FIREFLY_CPU_CORE_BUDGET"] = _prev_budget
+                try:    _load_gate.release()
+                except Exception: pass
         # Override file-embedded metadata only when the user explicitly
         # ticked the "Override" checkbox.
         px = p.get("pixel_size") or meta_px or 0.106
@@ -2518,6 +2541,12 @@ _HF_CANCEL = None      # Manager Event mirrored from the real cancel_event
 _HF_WORKERS = None     # per-file core budget (workers × files ≈ N_CPUS)
 _HF_GPU_SEM = None     # Manager Semaphore gating concurrent GPU detection
                        # (None on single-file / CPU runs → no gating)
+_HF_LOAD_SEM = None    # Manager Semaphore staggering concurrent file LOADS so
+                       # K workers don't all preallocate their stacks at once
+                       # (the RAM surge); None → no stagger
+_HF_LOAD_BUDGET = None # core budget a file may use DURING its (staggered) load
+                       # — bigger than the per-file compute slice, since only a
+                       # few files load at once
 
 # Lines worth surfacing on the HYPERFLY console amid the per-file ledger — the
 # chatty per-chunk / progress output is dropped (see _file_worker_run).
@@ -2613,14 +2642,18 @@ class _HFQueue:
             pass
 
 
-def _file_worker_init(fan_q, mgr_cancel, per_file_workers, gpu_sem=None):
+def _file_worker_init(fan_q, mgr_cancel, per_file_workers, gpu_sem=None,
+                      load_sem=None, load_budget=None):
     """ProcessPoolExecutor initializer — stash the shared handles + core budget
     in module globals (they can't ride on every task's pickled args)."""
-    global _HF_FANQ, _HF_CANCEL, _HF_WORKERS, _HF_GPU_SEM
+    global _HF_FANQ, _HF_CANCEL, _HF_WORKERS, _HF_GPU_SEM, _HF_LOAD_SEM
+    global _HF_LOAD_BUDGET
     _HF_FANQ = fan_q
     _HF_CANCEL = mgr_cancel
     _HF_WORKERS = int(per_file_workers)
     _HF_GPU_SEM = gpu_sem      # Manager Semaphore (or None) gating GPU detection
+    _HF_LOAD_SEM = load_sem    # Manager Semaphore (or None) staggering loads
+    _HF_LOAD_BUDGET = int(load_budget) if load_budget else None
     # Budget ALL of this file's nested CPU parallelism (torch-CPU detection
     # workers + their threads, trackpy/MSD pools, BLAS thread-pools) to its
     # core slice, so K files × budget ≈ cores instead of every file grabbing
@@ -2785,6 +2818,46 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         except Exception:
             pass
 
+        # Load stagger + load-phase core boost.  Every worker in a wave starts
+        # by loading, so without a gate all K preallocate their full stacks at
+        # once — that's the RAM "surge" (e.g. 64 files → 500 GB before any
+        # processing).  Two coupled fixes:
+        #
+        #   1. A Semaphore lets only `load_slots` files be in the LOAD phase at
+        #      a time.  The slot frees the instant a file's stack is in RAM, so
+        #      the next file loads while this one moves to detection.  Because
+        #      detection is comparatively quick, files free their RAM fast — so
+        #      resident RAM stays ~`load_slots`×per-file instead of K×per-file.
+        #   2. Since only `load_slots` files decode at once, each may use a much
+        #      bigger core slice for the load than its (small) per-file compute
+        #      slice — `total_cores // load_slots` instead of `per_file_workers`.
+        #      So a file that would decode on 2 cores (K=64) decodes on ~16,
+        #      while the wave as a whole still doesn't oversubscribe.
+        #
+        # 0 = auto (≈ one load per 16 cores, min 2); override with
+        # FIREFLY_HYPERFLY_LOAD_SLOTS.  The steady-state PEAK is still bounded
+        # by how many files are resident — lower the RAM budget / Max files to
+        # cap that further.
+        total_cores = max(1, per_file_workers * K)
+        try:
+            _load_slots = int(os.environ.get("FIREFLY_HYPERFLY_LOAD_SLOTS", "0") or 0)
+        except Exception:
+            _load_slots = 0
+        if _load_slots <= 0:
+            _load_slots = max(2, total_cores // 16)   # auto: ~one load / 16 cores
+        _load_slots = max(1, min(int(_load_slots), K))
+        load_sem = mgr.Semaphore(_load_slots)
+        # Core budget a loading file may use while it holds a load slot.
+        load_core_budget = max(per_file_workers, total_cores // _load_slots)
+        if K >= 2 and _load_slots < K:
+            try:
+                msg_queue.put(("log",
+                    f"  HYPER-FLY: staggering loads to {_load_slots} file(s) at "
+                    f"a time (of {K}), {load_core_budget} cores each — RAM ramps "
+                    f"up gradually instead of all {K} at once."))
+            except Exception:
+                pass
+
         # Mirror the real cancel_event → the Manager event so workers see Stop.
         def _mirror_cancel():
             while not stop_threads.wait(0.2):
@@ -2842,7 +2915,8 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         with ProcessPoolExecutor(
                 max_workers=safe_process_workers(K), mp_context=ctx,
                 initializer=_file_worker_init,
-                initargs=(fan_q, mgr_cancel, per_file_workers, gpu_sem)) as ex:
+                initargs=(fan_q, mgr_cancel, per_file_workers, gpu_sem,
+                          load_sem, load_core_budget)) as ex:
             fut_to_meta = {
                 ex.submit(_file_worker_run, i, n, p): (i, p)
                 for i, p in enumerate(params_list, 1)

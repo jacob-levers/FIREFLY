@@ -1023,6 +1023,16 @@ class BuildMixin:
                 "Lower it to leave headroom for other users on a shared machine —\n"
                 "fewer files run at once so the wave stays under the cap.")
         gl.addRow("Max RAM GB (0 = auto)", self.s_hyperfly_max_ram)
+        self.s_hyperfly_load_slots = self._spin_int(0, 0, 999,
+            tip="How many files may LOAD into RAM at the same time.  Every file\n"
+                "in a wave starts by loading, so without this they'd all\n"
+                "preallocate their stacks at once — a huge RAM spike (e.g. 64\n"
+                "files → 500 GB before any processing).  Staggering loads makes\n"
+                "RAM ramp up gradually (files load, get processed, free their\n"
+                "RAM, next loads), and lets each loading file decode on MORE\n"
+                "cores since few load at once.  0 = auto (≈ one load per 16\n"
+                "cores).  Lower it to be gentler on RAM / shared storage.")
+        gl.addRow("Concurrent loads (0 = auto)", self.s_hyperfly_load_slots)
         self.s_hyperfly_gpu_slots = self._spin_int(0, 0, 8,
             tip="HYPER-FLY + a GPU backend only: how many files may run GPU\n"
                 "detection at once.  A single GPU shared by every file would\n"
