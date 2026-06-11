@@ -260,6 +260,12 @@ class BuildMixin:
         self.btn_update_pill.clicked.connect(self._on_update_pill_clicked)
         h.addWidget(self.btn_update_pill)
 
+        # HYPER-FLY engaged pill — hidden until a parallel multi-file batch
+        # starts (see the hyperfly_status handler).  Lives in the ALWAYS-VISIBLE
+        # header strip (not a tab) so it shows during a run on any tab.
+        self._hyperfly_pill = _HyperflyPill()
+        h.addWidget(self._hyperfly_pill)
+
         # Right: tagline + author on ONE line, joined with a pipe.  Using
         # rich-text formatting on a single QLabel sidesteps the nested-
         # container-border issue and looks tidier than two stacked labels.
@@ -984,19 +990,19 @@ class BuildMixin:
         self.c_hyperfly.addItems(["Auto (recommended)", "Always on", "Off"])
         self.c_hyperfly.setCurrentText("Auto (recommended)")
         self.c_hyperfly.setToolTip(
-            "HYPERFLY: on a big machine (≥32 cores AND ≥192 GB RAM) process\n"
+            "HYPER-FLY: on a big machine (≥32 cores AND ≥192 GB RAM) process\n"
             "several files at once, RAM-resident, so a batch uses the whole box\n"
             "instead of one file at a time. Per-file results are identical.\n"
             "• Auto       — engage automatically on capable machines.\n"
             "• Always on  — force it (best-effort on smaller boxes).\n"
             "• Off        — always process one file at a time.")
-        gl.addRow("HYPERFLY batch", self.c_hyperfly)
+        gl.addRow("HYPER-FLY batch", self.c_hyperfly)
         self.s_hyperfly_max_files = self._spin_int(0, 0, 999,
-            tip="Cap how many files HYPERFLY runs at once (0 = automatic).\n"
+            tip="Cap how many files HYPER-FLY runs at once (0 = automatic).\n"
                 "Lower it if IT wants FIREFLY to use fewer resources.")
         gl.addRow("Max files (0 = auto)", self.s_hyperfly_max_files)
         self.s_hyperfly_max_cores = self._spin_int(0, 0, N_CPUS,
-            tip=f"Cap the total CPU cores HYPERFLY uses across all files\n"
+            tip=f"Cap the total CPU cores HYPER-FLY uses across all files\n"
                 f"(0 = all {N_CPUS} cores).")
         gl.addRow("Max cores (0 = auto)", self.s_hyperfly_max_cores)
         try:
@@ -1005,7 +1011,7 @@ class BuildMixin:
         except Exception:
             _ram_max_gb = 100000
         self.s_hyperfly_max_ram = self._spin_int(0, 0, _ram_max_gb, step=8,
-            tip="Cap HYPERFLY's peak RAM use across all files, in GB (0 = auto).\n"
+            tip="Cap HYPER-FLY's peak RAM use across all files, in GB (0 = auto).\n"
                 "Lower it to leave headroom for other users on a shared machine —\n"
                 "fewer files run at once so the wave stays under the cap.")
         gl.addRow("Max RAM GB (0 = auto)", self.s_hyperfly_max_ram)
@@ -1521,11 +1527,8 @@ class BuildMixin:
         _ht.setFont(_htf)
         _hdr.addWidget(_ht)
         _hdr.addStretch(1)
-        # Blue animated "HYPERFLY engaged" pill — hidden until a parallel
-        # multi-file batch starts (see _handle_hyperfly_status).  Sits just
-        # left of the run-readiness pill.
-        self._hyperfly_pill = _HyperflyPill()
-        _hdr.addWidget(self._hyperfly_pill)
+        # (The HYPER-FLY engaged pill lives in the global header strip so it's
+        # visible on every tab during a run — see _build of the header bar.)
         self._import_status_badge = _StatusBadge()
         self._import_status_badge.set_state("muted", "Incomplete")
         _hdr.addWidget(self._import_status_badge)

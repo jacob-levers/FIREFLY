@@ -109,7 +109,7 @@ def plan_concurrency(params_list: list) -> dict:
     if not hyperfly_active() or n_files < 2:
         return {"active": False, "n_concurrent": 1, "per_file_workers": N_CPUS,
                 "free_gb": _free_ram_gb(), "per_file_gb": 0.0,
-                "reason": "HYPERFLY inactive or single file"}
+                "reason": "HYPER-FLY inactive or single file"}
 
     free_gb = _free_ram_gb()
     usable_gb = max(0.0, free_gb - _user_ram_reserve_gb())

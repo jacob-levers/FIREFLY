@@ -736,13 +736,13 @@ class HandlersMixin:
                         nf = int(payload.get("n_concurrent") or 1)
                         wc = payload.get("per_file_workers")
                         log_buf.append(
-                            f"⚡ HYPERFLY ENGAGED — {nf} files at once · "
+                            f"⚡ HYPER-FLY ENGAGED — {nf} files at once · "
                             f"{wc} cores each")
                         self.statusBar().showMessage(
-                            f"⚡ HYPERFLY — {nf} files at once")
+                            f"⚡ HYPER-FLY — {nf} files at once")
                         pill = getattr(self, "_hyperfly_pill", None)
                         if pill is not None:
-                            pill.engage(f"⚡ HYPERFLY · {nf} at once")
+                            pill.engage(f"⚡ HYPER-FLY · {nf} at once")
                         dash = getattr(self, "hyperfly_dashboard", None)
                         if dash is not None:
                             dash.build(nf)

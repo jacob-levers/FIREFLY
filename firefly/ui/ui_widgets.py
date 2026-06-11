@@ -186,12 +186,11 @@ class _StatusBadge(QtWidgets.QLabel):
 
 
 class _HyperflyPill(QtWidgets.QLabel):
-    """Blue, pill-shaped badge shown beside the run-readiness pill while a
-    HYPERFLY (parallel multi-file) batch is engaged.  Gently *breathes*
-    (opacity pulse) to read as 'actively working'; static under reduce-motion.
-    Hidden until `engage()`."""
+    """Green, pill-shaped badge shown in the header while a HYPER-FLY (parallel
+    multi-file) batch is engaged.  Gently *breathes* (opacity pulse) to read as
+    'actively working'; static under reduce-motion.  Hidden until `engage()`."""
 
-    _BLUE = "#2f81f7"
+    _GREEN = _THEME.get("SUCCESS", "#3fb950")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -202,10 +201,10 @@ class _HyperflyPill(QtWidgets.QLabel):
         self.setStyleSheet(
             "QLabel#hyperfly_pill { background-color: %s; color: #ffffff; "
             "border-radius: 9px; padding: 2px 11px; font-weight: 700; "
-            "font-size: 11px; }" % self._BLUE)
+            "font-size: 11px; }" % self._GREEN)
         self.hide()
 
-    def engage(self, text: str = "⚡ HYPERFLY engaged"):
+    def engage(self, text: str = "⚡ HYPER-FLY engaged"):
         self.setText(text)
         self.show()
         self._start_pulse()
