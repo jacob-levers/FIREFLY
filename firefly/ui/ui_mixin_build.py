@@ -1023,6 +1023,31 @@ class BuildMixin:
                 "Lower it to leave headroom for other users on a shared machine —\n"
                 "fewer files run at once so the wave stays under the cap.")
         gl.addRow("Max RAM GB (0 = auto)", self.s_hyperfly_max_ram)
+        self.s_hyperfly_gpu_slots = self._spin_int(0, 0, 8,
+            tip="HYPER-FLY + a GPU backend only: how many files may run GPU\n"
+                "detection at once.  A single GPU shared by every file would\n"
+                "exhaust its VRAM, so detection is gated to this many files\n"
+                "while their CPU stages (load/decode, linking, MSD) stay fully\n"
+                "concurrent.  0 = auto (1 file on the GPU at a time — safe for\n"
+                "a single card).  Raise it only if the GPU has VRAM to spare.\n"
+                "Ignored entirely for CPU backends.")
+        gl.addRow("GPU detect slots (0 = auto)", self.s_hyperfly_gpu_slots)
+
+        # Experimental parallel CZI decode — opt-in until validated on real
+        # Zeiss Elyra data.  Decodes compressed (JPEG-XR) subblocks across the
+        # file's core budget instead of one core, so loading uses the whole box.
+        self.c_czi_parallel = QtWidgets.QCheckBox("Parallel CZI decode (experimental)")
+        self.c_czi_parallel.setChecked(False)
+        self.c_czi_parallel.setToolTip(
+            "Decode compressed Zeiss CZI stacks (JPEG-XR / Elyra) across many\n"
+            "cores instead of one — so loading uses the cores HYPER-FLY already\n"
+            "reserves per file, instead of leaving them idle. Much faster load\n"
+            "on heavily-compressed data.\n"
+            "Safe: each file's decode is spot-checked against the reference\n"
+            "decoder and silently falls back to it on any disagreement, so it\n"
+            "cannot corrupt frames. Off by default until you've validated the\n"
+            "speed-up on your own data.")
+        gl.addRow("CZI loading", self.c_czi_parallel)
 
         # GPU-acceleration entry point — Windows only.  When CUDA is NOT
         # installed we show the Set-up button right here, where the user picks

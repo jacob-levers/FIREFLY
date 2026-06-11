@@ -1794,6 +1794,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("performance/hyperfly_max_files", self.s_hyperfly_max_files, "spin", int),
             ("performance/hyperfly_max_cores", self.s_hyperfly_max_cores, "spin", int),
             ("performance/hyperfly_max_ram",   self.s_hyperfly_max_ram,   "spin", int),
+            ("performance/hyperfly_gpu_slots", self.s_hyperfly_gpu_slots, "spin", int),
+            ("performance/czi_parallel_decode", self.c_czi_parallel,      "check", _bool_cast),
 
             # ── Figures tab ───────────────────────────────────────────────
             ("figures/theme",            self.c_fig_theme,       "combo"),
@@ -2845,6 +2847,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 int(self.s_hyperfly_max_cores.value()))
             os.environ["FIREFLY_HYPERFLY_MAX_RAM_GB"] = str(
                 int(self.s_hyperfly_max_ram.value()))
+            os.environ["FIREFLY_HYPERFLY_GPU_SLOTS"] = str(
+                int(self.s_hyperfly_gpu_slots.value()))
+            os.environ["FIREFLY_CZI_PARALLEL_DECODE"] = (
+                "1" if self.c_czi_parallel.isChecked() else "0")
         except Exception:
             pass
 

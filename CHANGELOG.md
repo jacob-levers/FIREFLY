@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.62.0
+
+### HYPER-FLY can now use an NVIDIA GPU safely
+
+When a GPU backend is selected, HYPER-FLY used to point **every** concurrent
+file at the one GPU at once — which would exhaust its VRAM (OOM) and serialise
+anyway. HYPER-FLY is now **GPU-aware**: a semaphore gates the **GPU detection**
+stage to a few files at a time while **all the CPU stages (load/decode, linking,
+MSD, diffusion) stay fully concurrent**. The result is a clean pipeline — one
+file detects on the GPU while the others load and link on CPU, then hand the GPU
+off.
+
+- **GPU detect slots (0 = auto)** in the Performance section: how many files may
+  run GPU detection at once. `0` = auto = **1** (safe for a single card). Raise
+  it only if the GPU has VRAM to spare. Ignored entirely for CPU backends.
+- CPU backends are unaffected — the gate is a no-op for them.
+
+### Experimental: parallel CZI decode (much faster loading)
+
+Compressed Zeiss CZI stacks (JPEG-XR / Elyra) were decoded on **one core per
+file**, so on a many-core box HYPER-FLY's load phase used a fraction of the
+machine while the reserved per-file cores sat idle. The new **Parallel CZI
+decode** option decodes a file's subblocks across its whole core budget
+(imagecodecs' JPEG-XR decoder releases the GIL), turning 1 core/file into many —
+a multi-fold faster load on heavily-compressed data, with live per-file
+progress in the console.
+
+- **Off by default** (a "Parallel CZI decode (experimental)" checkbox in the
+  Performance section) until you've validated it on your own data.
+- **Cannot corrupt frames**: each file's parallel decode is spot-checked for
+  exact equality against the reference (aicspylibczi) decoder and **silently
+  falls back** to the trusted bulk read on any disagreement, odd structure, or
+  decode error.
+
 ## v2.61.0
 
 ### "Auto" detection backend now prefers Torch-CPU over Trackpy

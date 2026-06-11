@@ -293,6 +293,41 @@ def test_auto_falls_back_to_trackpy_only_without_torch(monkeypatch):
     assert isinstance(inst, TrackpyBackend), type(inst)
 
 
+def test_backend_uses_gpu_classification(monkeypatch):
+    """HYPER-FLY's GPU gate only engages for backends that actually run on a
+    GPU.  CPU paths (trackpy, torch-cpu) and unresolvable names → False so they
+    run fully concurrent; a resolved CUDA/MPS torch backend → True."""
+    pytest.importorskip("torch")
+    from firefly.analysis import fa_localize as L
+    from firefly.analysis.fa_localize import TorchBackend, TrackpyBackend
+    if not TorchBackend.is_available():
+        pytest.skip("torch unavailable")
+    if TrackpyBackend.is_available():
+        assert L.backend_uses_gpu("trackpy") is False
+    assert L.backend_uses_gpu("torch-cpu") is False
+    assert L.backend_uses_gpu("definitely-not-a-backend") is False
+    # Mock the resolver so the GPU verdict is deterministic on GPU-less CI.
+    for dev in ("cuda", "mps"):
+        inst = TorchBackend(); inst._forced_device = dev
+        monkeypatch.setattr(L, "_resolve_backend", lambda name, _i=inst: _i)
+        assert L.backend_uses_gpu("auto") is True
+    inst_cpu = TorchBackend(); inst_cpu._forced_device = "cpu"
+    monkeypatch.setattr(L, "_resolve_backend", lambda name: inst_cpu)
+    assert L.backend_uses_gpu("auto") is False
+
+
+def test_hyperfly_gpu_gate_plumbing():
+    """`_file_worker_init` stashes the GPU semaphore (or None) into the worker
+    global that `_run_one_analysis` consults — so single-file / CPU runs (no
+    sem) gate nothing, and the old 3-arg init signature still works."""
+    import firefly.firefly_worker as w
+    sentinel = object()
+    w._file_worker_init(None, None, 8, sentinel)
+    assert w._HF_GPU_SEM is sentinel
+    w._file_worker_init(None, None, 8)        # back-compat: gpu_sem defaults None
+    assert w._HF_GPU_SEM is None
+
+
 def test_torch_cpu_mp_env_disable(monkeypatch):
     """FIREFLY_TORCH_CPU_MP=0 must bypass the parallel path entirely (serial)."""
     pytest.importorskip("torch")
@@ -1743,6 +1778,35 @@ def _czi_xml(frametime=None, timespan_ms=None, px_x_m=None):
     ts = ("<TimeSpan><Value>%s</Value><DefaultUnitFormat>ms</DefaultUnitFormat>"
           "</TimeSpan>" % timespan_ms) if timespan_ms is not None else ""
     return f"<ImageDocument><Metadata>{scaling}{ft}{ts}</Metadata></ImageDocument>"
+
+
+def test_czi_parallel_decode_flag_default_off(monkeypatch):
+    """The parallel JPEG-XR decode path is OPT-IN: off unless the env flag is
+    set, so a build behaves exactly like the trusted bulk read by default."""
+    from firefly.analysis import fa_loaders as L
+    monkeypatch.delenv("FIREFLY_CZI_PARALLEL_DECODE", raising=False)
+    assert L._czi_parallel_decode_enabled() is False
+    for v in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("FIREFLY_CZI_PARALLEL_DECODE", v)
+        assert L._czi_parallel_decode_enabled() is True
+    monkeypatch.setenv("FIREFLY_CZI_PARALLEL_DECODE", "0")
+    assert L._czi_parallel_decode_enabled() is False
+
+
+def test_czi_parallel_decode_safe_noop_guards(monkeypatch):
+    """The parallel decoder must return None (→ caller uses the bulk read)
+    rather than raise when there's nothing to gain or a dep is missing — it's
+    a fast PATH, never a hard dependency."""
+    from firefly.analysis import fa_loaders as L
+    # 1-core slice → no parallelism to gain → None (no file access at all).
+    monkeypatch.setenv("FIREFLY_CPU_CORE_BUDGET", "1")
+    assert L._decode_czi_parallel("missing.czi", 0, 1000, 64, 64) is None
+    # Trivial frame count → None.
+    monkeypatch.setenv("FIREFLY_CPU_CORE_BUDGET", "8")
+    assert L._decode_czi_parallel("missing.czi", 0, 1, 64, 64) is None
+    # czifile unavailable → None even with a healthy budget.
+    monkeypatch.setattr(L, "HAS_CZIFILE", False)
+    assert L._decode_czi_parallel("missing.czi", 0, 1000, 64, 64) is None
 
 
 def test_czi_metadata_frametime_and_pixel_size():

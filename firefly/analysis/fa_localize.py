@@ -2346,6 +2346,31 @@ def _resolve_backend(name: str | None):
         f"available here: {list_available_backends()}.")
 
 
+def backend_uses_gpu(name) -> bool:
+    """True if resolving ``name`` yields a Torch backend that will run
+    detection on a **GPU device** (CUDA / MPS).
+
+    HYPER-FLY uses this to gate concurrent GPU detection: a single GPU shared
+    by K file-workers would otherwise have them all pile onto its VRAM at once
+    (likely OOM) and serialise anyway.  Returns False for Trackpy, Torch-CPU,
+    and anything that can't be resolved — those run fully concurrently.
+
+    Mirrors the device-resolution idiom used elsewhere (``_forced_device``
+    pin → ``select_device()`` fallback)."""
+    try:
+        impl = _resolve_backend(name)
+    except Exception:
+        return False
+    if not isinstance(impl, TorchBackend):
+        return False
+    dev = getattr(impl, "_forced_device", None)
+    if dev is None and hasattr(impl, "select_device"):
+        try:    dev = impl.select_device()
+        except Exception: dev = None
+    dev = str(dev or "").lower()
+    return ("cuda" in dev) or ("mps" in dev)
+
+
 def _gmm_crossover(means, sds, weights):
     """Return the log-mass value where the two 1-D Gaussian components have
     equal posterior weight, restricted to the interval between their means

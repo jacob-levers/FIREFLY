@@ -310,6 +310,130 @@ def _find_czi_series(path):
     return series if series else [path]
 
 
+def _czi_parallel_decode_enabled() -> bool:
+    """Opt-in flag (default OFF) for the parallel JPEG-XR CZI decode path.
+
+    Default off so a build behaves EXACTLY like the trusted single-threaded
+    bulk read unless a user explicitly enables it (to validate the speedup on
+    real Zeiss Elyra data before it becomes the default)."""
+    return os.environ.get("FIREFLY_CZI_PARALLEL_DECODE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _decode_czi_parallel(path, channel, n_t, H, W, stop_event=None):
+    """Parallel JPEG-XR decode of a SINGLE-channel CZI via czifile subblocks.
+
+    aicspylibczi's bulk ``read_image`` decodes on ONE core; on a heavily
+    compressed Elyra CZI (JPEG-XR) that single-threaded decode dominates the
+    HYPER-FLY load phase — one core per file, the other reserved cores idle.
+    Each subblock is an independent compressed frame and imagecodecs' JPEG-XR
+    decode RELEASES the GIL, so we decode subblocks across this file's core
+    budget (``_cpu_core_budget()``) — turning 1 core/file into up to N.
+
+    SAFETY — this is a fast PATH, never a source of silent corruption:
+      * returns ``None`` (→ caller uses the trusted aicspylibczi bulk read) on
+        any structural surprise — subblock count ≠ frame count (multi-channel,
+        mosaic/tiled, pyramid), unexpected frame shape, or a decode error; and
+      * before returning, SPOT-CHECKS a few decoded frames for EXACT equality
+        against aicspylibczi's own ``read_image(T=t)`` — so an unexpected frame
+        ordering (directory order ≠ time order) ALSO falls back rather than
+        silently shuffling a track.
+    Each worker uses its OWN czifile handle, so there are no shared file-handle
+    races; the writes target disjoint slices of a pre-allocated stack.
+    """
+    if not (HAS_CZIFILE and HAS_AICS):
+        return None
+    budget = max(1, int(_cpu_core_budget()))
+    if budget < 2 or n_t < 2:
+        return None                       # nothing to gain on a 1-core slice
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _chk():
+        if stop_event is not None and stop_event.is_set():
+            raise _Cancelled()
+
+    # Enumerate subblocks once.  Only the unambiguous one-subblock-per-frame
+    # case is attempted; multi-channel / mosaic / pyramid CZIs have a subblock
+    # count that won't equal n_t, so they fall back to the trusted bulk read.
+    try:
+        with czifile.CziFile(path) as probe:
+            n_sub = len(list(probe.subblock_directory))
+    except Exception as exc:
+        print(f"  Parallel decode unavailable ({exc}); using bulk read.",
+              flush=True)
+        return None
+    if n_sub != n_t:
+        print(f"  Parallel decode skipped: {n_sub} subblocks ≠ {n_t} frames "
+              f"(multi-channel / tiled?); using bulk read.", flush=True)
+        return None
+
+    stack = _alloc_or_memmap_stack((n_t, H, W))
+    n_workers = min(budget, n_t)
+    bounds = [(i * n_t // n_workers, (i + 1) * n_t // n_workers)
+              for i in range(n_workers)]
+    done = {"n": 0}
+    lock = threading.Lock()
+
+    def _decode_range(lo, hi):
+        # Own handle per worker → concurrent decode without file-handle races.
+        with czifile.CziFile(path) as czi:
+            ents = list(czi.subblock_directory)
+            for i in range(lo, hi):
+                arr = np.asarray(ents[i].data_segment().data(raw=False)).squeeze()
+                while arr.ndim > 2:
+                    arr = arr[0]
+                if arr.shape != (H, W):
+                    raise ValueError(
+                        f"subblock {i} shape {arr.shape} != {(H, W)}")
+                stack[i] = arr.astype(np.float32)
+                with lock:
+                    done["n"] += 1
+                    if done["n"] % 2000 == 0:
+                        print(f"  Parallel decode: {done['n']:,}/{n_t:,} "
+                              f"frames…", flush=True)
+                        _chk()
+
+    t0 = time.perf_counter()
+    try:
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            futs = [ex.submit(_decode_range, lo, hi)
+                    for lo, hi in bounds if hi > lo]
+            for f in futs:
+                f.result()                # re-raises any worker exception
+    except _Cancelled:
+        raise
+    except Exception as exc:
+        print(f"  Parallel decode failed ({exc}); using bulk read.", flush=True)
+        return None
+
+    # Spot-check EXACT equality vs aicspylibczi's correctly-T-indexed read.
+    # A mismatch means our directory→frame assumption is wrong for this file;
+    # discard the parallel result and let the caller use the bulk read.
+    try:
+        czi2 = aicspylibczi.CziFile(path)
+        for t in sorted(set([0, n_t // 2, n_t - 1])):
+            ref, _ = czi2.read_image(T=int(t), C=int(channel))
+            ref = np.asarray(ref).squeeze()
+            while ref.ndim > 2:
+                ref = ref[0]
+            if ref.shape != (H, W) or not np.array_equal(
+                    ref.astype(np.float32), np.asarray(stack[t])):
+                print(f"  Parallel decode spot-check FAILED at T={t}; "
+                      f"using bulk read.", flush=True)
+                return None
+    except Exception as exc:
+        print(f"  Parallel decode spot-check error ({exc}); using bulk read.",
+              flush=True)
+        return None
+
+    dt = time.perf_counter() - t0
+    gb = n_t * H * W * 4 / 1e9
+    print(f"  Loaded {n_t:,} frames (parallel decode: {n_workers} threads, "
+          f"{dt:.1f}s, {gb / max(dt, 1e-6):.1f} GB/s float32).", flush=True)
+    return stack
+
+
 def _load_single_czi(path, channel=0, stop_event=None):
     """Load a single CZI file and return (stack, pixel_size_um, frame_interval_s).
 
@@ -336,6 +460,22 @@ def _load_single_czi(path, channel=0, stop_event=None):
         if f0.ndim > 2:
             f0 = f0[0]
         H, W  = f0.shape
+
+        # Opt-in parallel JPEG-XR decode: use this file's idle core budget to
+        # decode subblocks concurrently (1 core/file → up to N).  Spot-checked
+        # against this same aicspylibczi reader and falls back to the bulk read
+        # on anything unexpected, so it can never silently corrupt frames.
+        if _czi_parallel_decode_enabled():
+            try:
+                par = _decode_czi_parallel(path, ch, n_t, H, W, stop_event)
+            except _Cancelled:
+                raise
+            except Exception as exc:
+                print(f"  Parallel decode error ({exc}); using bulk read.",
+                      flush=True)
+                par = None
+            if par is not None:
+                return (par, meta["pixel_size_um"], meta["frame_interval_s"])
 
         # Fast path: a single read_image() pulls the entire T stack in one
         # libCZI call.  Per-frame read_image(T=t) carries a large fixed

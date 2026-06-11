@@ -786,6 +786,24 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     max_proj   = None
     blink_proj = None
     if not external_csv:
+        # HYPER-FLY GPU gate: when several files run at once and all target the
+        # one GPU, serialise just the GPU *detection* stage so they don't pile
+        # onto VRAM together.  Only this stage queues — every file's CPU work
+        # (load/decode, linking, MSD, diffusion) stays fully concurrent.
+        # Single-file runs and CPU backends pass straight through (the
+        # semaphore is None, or the backend isn't a GPU one).
+        _gpu_gate = None
+        if _HF_GPU_SEM is not None:
+            try:
+                from firefly.analysis.fa_localize import backend_uses_gpu
+                if backend_uses_gpu(p.get("backend")):
+                    _gpu_gate = _HF_GPU_SEM
+            except Exception:
+                _gpu_gate = None
+        if _gpu_gate is not None:
+            _log("  ⏳ Waiting for a GPU detection slot…")
+            _gpu_gate.acquire()
+            _log("  ▶ GPU slot acquired — detecting.")
         try:
             locs, mean_proj, max_proj, blink_proj, _mm = preprocess_and_localise_adaptive(
                 stack,
@@ -804,6 +822,12 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             _preview_stop.set()
             try:    _preview_thread.join(timeout=1.0)
             except Exception: pass
+            # Release the GPU slot the instant detection is done, so the next
+            # queued file can start on the GPU while THIS file moves on to its
+            # CPU-only stages (linking / MSD / diffusion).
+            if _gpu_gate is not None:
+                try:    _gpu_gate.release()
+                except Exception: pass
         # Fast-path users get a single bulk emit (no per-chunk hook there).
         try:
             if locs is not None and len(locs) > 0 and "mass" in locs.columns:
@@ -2492,6 +2516,8 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
 _HF_FANQ = None        # Manager fan-in queue (worker → forwarder → GUI queue)
 _HF_CANCEL = None      # Manager Event mirrored from the real cancel_event
 _HF_WORKERS = None     # per-file core budget (workers × files ≈ N_CPUS)
+_HF_GPU_SEM = None     # Manager Semaphore gating concurrent GPU detection
+                       # (None on single-file / CPU runs → no gating)
 
 # Lines worth surfacing on the HYPERFLY console amid the per-file ledger — the
 # chatty per-chunk / progress output is dropped (see _file_worker_run).
@@ -2587,13 +2613,14 @@ class _HFQueue:
             pass
 
 
-def _file_worker_init(fan_q, mgr_cancel, per_file_workers):
+def _file_worker_init(fan_q, mgr_cancel, per_file_workers, gpu_sem=None):
     """ProcessPoolExecutor initializer — stash the shared handles + core budget
     in module globals (they can't ride on every task's pickled args)."""
-    global _HF_FANQ, _HF_CANCEL, _HF_WORKERS
+    global _HF_FANQ, _HF_CANCEL, _HF_WORKERS, _HF_GPU_SEM
     _HF_FANQ = fan_q
     _HF_CANCEL = mgr_cancel
     _HF_WORKERS = int(per_file_workers)
+    _HF_GPU_SEM = gpu_sem      # Manager Semaphore (or None) gating GPU detection
     # Budget ALL of this file's nested CPU parallelism (torch-CPU detection
     # workers + their threads, trackpy/MSD pools, BLAS thread-pools) to its
     # core slice, so K files × budget ≈ cores instead of every file grabbing
@@ -2732,6 +2759,32 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         fan_q = mgr.Queue()
         mgr_cancel = mgr.Event()
 
+        # GPU detection gate.  When the files target a single GPU, K workers
+        # all detecting at once would pile onto one card's VRAM (OOM) and
+        # serialise anyway.  A Manager Semaphore lets only N file-workers run
+        # the GPU detection stage at a time; everyone else stays busy on the
+        # CPU stages (load/decode, linking, MSD) and queues briefly for the
+        # GPU.  Default 1 (one file on the GPU at a time); override with
+        # FIREFLY_HYPERFLY_GPU_SLOTS.  CPU backends ignore the gate entirely
+        # (see backend_uses_gpu in _run_one_analysis), so the semaphore is a
+        # no-op cost there.
+        try:
+            _gpu_slots = int(os.environ.get("FIREFLY_HYPERFLY_GPU_SLOTS", "0") or 0)
+        except Exception:
+            _gpu_slots = 0
+        if _gpu_slots <= 0:
+            _gpu_slots = 1
+        gpu_sem = mgr.Semaphore(int(_gpu_slots))
+        try:
+            from firefly.analysis.fa_localize import backend_uses_gpu as _buse
+            if params_list and _buse(params_list[0].get("backend")):
+                msg_queue.put(("log",
+                    f"  HYPER-FLY: GPU detected — gating GPU detection to "
+                    f"{_gpu_slots} file(s) at a time (CPU stages stay "
+                    f"concurrent)."))
+        except Exception:
+            pass
+
         # Mirror the real cancel_event → the Manager event so workers see Stop.
         def _mirror_cancel():
             while not stop_threads.wait(0.2):
@@ -2789,7 +2842,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         with ProcessPoolExecutor(
                 max_workers=safe_process_workers(K), mp_context=ctx,
                 initializer=_file_worker_init,
-                initargs=(fan_q, mgr_cancel, per_file_workers)) as ex:
+                initargs=(fan_q, mgr_cancel, per_file_workers, gpu_sem)) as ex:
             fut_to_meta = {
                 ex.submit(_file_worker_run, i, n, p): (i, p)
                 for i, p in enumerate(params_list, 1)
