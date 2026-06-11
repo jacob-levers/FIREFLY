@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.64.0
+
+### HYPER-FLY: VRAM-aware GPU detect slots, hard-kill cleanup, faster bulk figures
+
+On a big GPU (e.g. an L40S with ~45 GB) HYPER-FLY now **auto-sizes how many files run
+GPU detection at once** from the *current* free VRAM, instead of the hardcoded
+one-at-a-time. On a 6-file batch this cut wall-clock ~1.5× (179 s → 121 s) by filling an
+otherwise-idle card. It stays a good neighbour: capped by `FIREFLY_HYPERFLY_GPU_SLOT_CAP`
+(default 4), never more slots than files, and sized from *free* VRAM so it shares the card
+with other users. The planner's RAM budget is coupled to the resolved slot count so higher
+GPU concurrency can't over-commit system RAM. `FIREFLY_HYPERFLY_GPU_SLOTS` still overrides.
+
+### Robustness: no more orphaned GPU workers on a hard kill
+
+A forced Stop — or a crash of the batch-worker process — used to orphan its
+`ProcessPoolExecutor` children, which kept holding GPU VRAM and RAM until they were killed
+by hand. On Windows the worker is now placed in a Job Object flagged
+`KILL_ON_JOB_CLOSE`, so the OS tears the whole process tree down with the parent (verified:
+a `taskkill /F` of a worker with 15 live children left zero survivors).
+
+### Faster bulk figures
+
+Multi-file batches keep **one figure PNG per file** but drop the vector PDF and per-panel
+PNGs and cap DPI to 110 — cheaper rasterisation for mass runs. Single-file runs are
+unchanged (full quality). Override with `FIREFLY_BULK_FIGURES`.
+
+### More accurate memory accounting
+
+The per-file peak-RAM estimate that drives HYPER-FLY concurrency is now **float32- and
+format-aware** (uncompressed TIF ≈ disk × 4, compressed CZI ≈ disk × 8) instead of a flat
+× 3 that under-predicted real peak by ~25% — so the `Max RAM GB` cap is honoured rather
+than optimistic. The per-file in-RAM footprint is now surfaced in the HYPER-FLY log. Minor
+fixes: a benign double-release of the load semaphore is handled quietly instead of being
+swallowed; a mixed-format series uses the conservative (larger) RAM multiplier.
+
 ## v2.63.1
 
 ### Build fix: Windows release exe (supersedes v2.63.0)

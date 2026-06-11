@@ -74,19 +74,33 @@ def hyperfly_active() -> bool:
 
 
 def _per_file_peak_gb(params: dict) -> float:
-    """Conservative peak-RAM estimate (GB) for one file, from its input size on
-    disk.  Peak ≈ raw + preprocessed + slop ≈ 3× the raw bytes (mirrors the
-    multiplier in fa_localize._ram_strategy).  Floored so an unknown/tiny file
-    still reserves something sane."""
+    """Conservative peak-RAM estimate (GB) for one file during the detect phase.
+
+    Peak ≈ resident raw stack + a preprocessed copy + locate/slop ≈ 2× the file's
+    *in-RAM float32* size — the same charge fa_localize._ram_strategy applies.
+    The catch: on-disk bytes are NOT the in-RAM bytes, so scale the disk size by
+    a format-aware factor:
+      * uncompressed uint16 TIF — disk ≈ raw uint16; float32 doubles it and the
+        ×2 raw+preprocessed lands at ≈ disk × 4 (matches the measured ~3.7× on
+        real 2 GB Elyra TIFs; the old flat ×3 under-predicted peak by ~25%).
+      * compressed CZI (JPEG-XR) — on-disk is a fraction of the raw frames, which
+        expand to float32 on decode; ≈ disk × 8 is a conservative floor.
+    Floored so an unknown/tiny file still reserves something sane.
+    """
     files = params.get("series_files") or [params.get("file")]
     total = 0
+    mult = 4.0
     for f in files:
         try:
             if f and os.path.isfile(f):
                 total += os.path.getsize(f)
+                # Conservative: ANY compressed CZI in a (possibly mixed) series pulls
+                # the whole estimate to the larger ×8 expansion factor.
+                if os.path.splitext(f)[1].lower() == ".czi":
+                    mult = 8.0
         except Exception:
             pass
-    return max(0.5, (total / 1e9) * 3.0)
+    return max(0.5, (total / 1e9) * mult)
 
 
 def plan_concurrency(params_list: list) -> dict:
@@ -121,7 +135,19 @@ def plan_concurrency(params_list: list) -> dict:
     # Size the wave to the LARGEST file so even the biggest fits in RAM.
     per_file_gb = max((_per_file_peak_gb(p) for p in params_list), default=0.5)
 
-    k_ram = int(ram_budget_gb // per_file_gb) if per_file_gb > 0 else n_files
+    # GPU-detect concurrency inflates peak RAM: every file detecting on the GPU
+    # at once holds an extra preprocessed float32 copy + locate buffers on top of
+    # its resident raw stack (measured ~0.5–0.75× a per-file footprint per extra
+    # slot on Falcon).  When the user raises FIREFLY_HYPERFLY_GPU_SLOTS above 1,
+    # reserve for those extra concurrent copies so the wave doesn't over-commit
+    # RAM.  0 = auto = 1 slot → no extra reservation (keeps the default path and
+    # the unit tests unchanged).
+    gpu_slots = _env_int("FIREFLY_HYPERFLY_GPU_SLOTS")
+    gpu_slots = gpu_slots if gpu_slots > 0 else 1
+    gpu_detect_overhead_gb = max(0, gpu_slots - 1) * per_file_gb * 0.5
+    ram_for_files = max(0.0, ram_budget_gb - gpu_detect_overhead_gb)
+
+    k_ram = int(ram_for_files // per_file_gb) if per_file_gb > 0 else n_files
     k_cores = max(1, N_CPUS // MIN_CORES_PER_FILE)
     max_files = _env_int("FIREFLY_HYPERFLY_MAX_FILES")    # 0 = auto
     max_cores = _env_int("FIREFLY_HYPERFLY_MAX_CORES")    # 0 = auto

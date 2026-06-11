@@ -552,14 +552,30 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             if _load_gate is not None:
                 if _prev_budget is not None:
                     os.environ["FIREFLY_CPU_CORE_BUDGET"] = _prev_budget
-                try:    _load_gate.release()
-                except Exception: pass
+                try:
+                    _load_gate.release()
+                except ValueError:
+                    # "released too many times" — already released; benign (B3).
+                    pass
+                except Exception as _rel_exc:
+                    _log(f"  WARN: load-slot release failed ({_rel_exc})")
         # Override file-embedded metadata only when the user explicitly
         # ticked the "Override" checkbox.
         px = p.get("pixel_size") or meta_px or 0.106
         fi = p.get("frame_interval") or meta_fi or 0.02
         n_frames = len(stack)
         _log(f"  Shape: {stack.shape}  (T x Y x X)")
+        # Surface the REAL in-RAM footprint per file — the planner's pre-load
+        # estimate (fa_hyperfly._per_file_peak_gb) is necessarily approximate, so
+        # log what the stack actually costs once decoded to float32 (the detect
+        # phase adds ~1× more for the preprocessed copy).  Helps diagnose RAM.
+        try:
+            _stk_gb = getattr(stack, "nbytes", 0) / 1e9
+            if _stk_gb:
+                _log(f"  In-RAM: {_stk_gb:.1f} GB float32 "
+                     f"(detect peak ≈ {_stk_gb * 2:.1f} GB/file)")
+        except Exception:
+            pass
         _log(f"  Frames: {n_frames:,}  |  px={px} µm  fi={fi} s")
         # Surface missing acquisition metadata once per file — explains why
         # px/fi fell back to a sidebar override or the built-in default.
@@ -1470,12 +1486,17 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     fig_theme    = p.get("fig_theme", "Dark")
     fig_proj_cmap = p.get("fig_proj_cmap", "Inferno")
     fig_traj_bg  = bool(p.get("fig_traj_bg", True))
-    want_pdf     = bool(p.get("fig_save_pdf", False))
+    # Bulk/fast figures (2a): for mass batches keep ONE per-file PNG but drop the
+    # expensive extras (vector PDF + per-panel PNGs) and cap DPI below.  Auto-on for
+    # HYPER-FLY batches (set in run_batch_analysis); FIREFLY_BULK_FIGURES=0 forces it off.
+    _bulk_figs = os.environ.get("FIREFLY_BULK_FIGURES", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+    want_pdf     = bool(p.get("fig_save_pdf", False)) and not _bulk_figs
     # Per-panel PNG rendering is the dominant figure-save cost (one full
     # figure rasterisation per panel).  Only render the panels that will
-    # actually be written below: none unless fig_per_panel is on, and just
-    # the selected subset when fig_single_panels narrows it.
-    if bool(p.get("fig_per_panel", False)):
+    # actually be written below: none unless fig_per_panel is on (and never in
+    # bulk), and just the selected subset when fig_single_panels narrows it.
+    if bool(p.get("fig_per_panel", False)) and not _bulk_figs:
         _allowed_panels = p.get("fig_single_panels")
         want_panels = None if _allowed_panels is None else set(_allowed_panels)
     else:
@@ -1890,6 +1911,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
 
     figure_path = ""
     fig_dpi = int(p.get("fig_dpi", 150)) or 150
+    if _bulk_figs:
+        fig_dpi = min(fig_dpi, 110)                  # cheaper rasterisation in bulk (2a)
     try:
         figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
         fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
@@ -1910,7 +1933,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # Optional: per-panel PNGs (one image per labelled panel of the grid).
     # The user can filter which panels get written via the Figures tab's
     # "Single-sample panels to export individually" checkbox grid.
-    if bool(p.get("fig_per_panel", False)) and fig_data.get("panels"):
+    if bool(p.get("fig_per_panel", False)) and fig_data.get("panels") and not _bulk_figs:
         try:
             allowed = p.get("fig_single_panels")
             if allowed is None:
@@ -2552,7 +2575,10 @@ _HF_LOAD_BUDGET = None # core budget a file may use DURING its (staggered) load
 # chatty per-chunk / progress output is dropped (see _file_worker_run).
 _HF_IMPORTANT_MARKERS = ("WARN", "ERROR", "FAILED", "⚠", "Traceback",
                          "Exception", "No trajectories", "could not",
-                         "Insufficient", "OOM", "CRITICAL")
+                         "Insufficient", "OOM", "CRITICAL",
+                         # Per-file RAM footprint — surfaced in HYPER-FLY so the
+                         # batch ledger shows each file's actual in-RAM cost.
+                         "In-RAM")
 
 
 def _hf_important(line) -> bool:
@@ -2807,6 +2833,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
             _gpu_slots = 0
         if _gpu_slots <= 0:
             _gpu_slots = 1
+        _gpu_slots = max(1, min(int(_gpu_slots), K))   # never more GPU slots than files
         gpu_sem = mgr.Semaphore(int(_gpu_slots))
         try:
             from firefly.analysis.fa_localize import backend_uses_gpu as _buse
@@ -2849,6 +2876,14 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         load_sem = mgr.Semaphore(_load_slots)
         # Core budget a loading file may use while it holds a load slot.
         load_core_budget = max(per_file_workers, total_cores // _load_slots)
+        # NB: staggering bounds concurrent LOADS, not concurrent RESIDENT stacks
+        # (each stack is held through detect/link).  Its RAM payoff is largest
+        # when loading is the bottleneck — slow/networked storage, where only a
+        # few stacks are resident at a time; on fast local disk all K load within
+        # seconds and steady-state RAM still approaches K × per-file (bounded by
+        # the planner's RAM cap, not by this gate).  The gate's job is to flatten
+        # the allocation RAMP and avoid the all-K-at-once preallocation surge that
+        # ballooned RAM in the pre-stagger builds.
         if K >= 2 and _load_slots < K:
             try:
                 msg_queue.put(("log",
@@ -2988,6 +3023,119 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         except Exception: pass
 
 
+# Kept alive for the whole batch-subprocess lifetime: the Windows Job Object whose
+# closure (when this process dies, even via a hard kill) tears down every child we
+# spawned.  Module-global so the handle is never garbage-released early.
+_HF_KILL_JOB = None
+
+
+def _install_kill_on_close_job():
+    """Windows: place THIS process in a Job Object flagged KILL_ON_JOB_CLOSE so that if
+    the batch-worker process dies for ANY reason — clean exit, crash, or a hard
+    Task-Manager/taskkill — the OS also kills every child it spawned (the HYPER-FLY
+    ProcessPoolExecutor workers + their CUDA contexts).  Without this, a hard kill of
+    the parent orphans the pool children, which keep holding GPU VRAM + RAM until they
+    are killed by hand.  Pool workers are spawned AFTER this assignment, so they inherit
+    the job.  No-op off Windows, or if the process is already in a non-nestable job
+    (returns None — best-effort, never raises)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class _BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
+                        ("PerJobUserTimeLimit", ctypes.c_longlong),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _IOC(ctypes.Structure):
+            _fields_ = [("ReadOperationCount", ctypes.c_ulonglong),
+                        ("WriteOperationCount", ctypes.c_ulonglong),
+                        ("OtherOperationCount", ctypes.c_ulonglong),
+                        ("ReadTransferCount", ctypes.c_ulonglong),
+                        ("WriteTransferCount", ctypes.c_ulonglong),
+                        ("OtherTransferCount", ctypes.c_ulonglong)]
+
+        class _EXT(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _BASIC),
+                        ("IoInfo", _IOC),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        # argtypes are REQUIRED: without them ctypes passes the HANDLE pseudo-handle
+        # (-1 from GetCurrentProcess) as a default c_int and overflows.
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = _EXT()
+        info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(
+                job, 9,                       # JobObjectExtendedLimitInformation
+                ctypes.byref(info), ctypes.sizeof(info)):
+            return None
+        if not k32.AssignProcessToJobObject(job, k32.GetCurrentProcess()):
+            return None                       # already in a non-nestable job
+        return job
+    except Exception:
+        return None
+
+
+def _maybe_autoset_gpu_slots(params_list):
+    """If FIREFLY_HYPERFLY_GPU_SLOTS is auto (0/unset) and the batch uses a GPU backend,
+    pick a VRAM-aware default so a big idle card runs several detections at once instead
+    of the hardcoded 1 — capped (FIREFLY_HYPERFLY_GPU_SLOT_CAP, default 4) and sized from
+    the CURRENT free VRAM so it shares the card with other users.  Writes the concrete
+    value back to the env so BOTH plan_concurrency's RAM coupling and _run_batch_hyperfly
+    read the same number.  Explicit overrides (>0) are left untouched.  No-op without CUDA
+    or for CPU backends; never raises."""
+    try:
+        if int(os.environ.get("FIREFLY_HYPERFLY_GPU_SLOTS", "0") or 0) > 0:
+            return                                   # explicit override wins
+    except Exception:
+        return
+    try:
+        from firefly.analysis.fa_localize import backend_uses_gpu
+        if not (params_list and backend_uses_gpu(params_list[0].get("backend"))):
+            return
+        import torch
+        if not torch.cuda.is_available():
+            return
+        free, total = torch.cuda.mem_get_info()
+        try:
+            cap = int(os.environ.get("FIREFLY_HYPERFLY_GPU_SLOT_CAP", "0") or 0)
+        except Exception:
+            cap = 0
+        if cap <= 0:
+            cap = 4
+        # Each concurrent detect is a separate worker process → its own CUDA context
+        # (~1.7 GB) + detection working set (~5 GB) ≈ 7 GB.  Use 85% of FREE VRAM.
+        per_detect_gb = 7.0
+        slots = int((free * 0.85 / 1e9) // per_detect_gb)
+        slots = max(1, min(slots, cap))
+        os.environ["FIREFLY_HYPERFLY_GPU_SLOTS"] = str(slots)
+        print(f"  HYPER-FLY: auto GPU detect slots = {slots} "
+              f"({free/1e9:.0f} GB free VRAM, ~{per_detect_gb:.0f} GB/detect, cap {cap}).",
+              flush=True)
+    except Exception:
+        return
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT — BATCH (multiple files in one subprocess)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3011,6 +3159,18 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     """
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
+
+    # Hard-kill safety (B1): tie spawned pool workers' lifetime to this process so a
+    # forced Stop / crash can't orphan them holding GPU VRAM (Windows; no-op elsewhere).
+    global _HF_KILL_JOB
+    if _HF_KILL_JOB is None:
+        _HF_KILL_JOB = _install_kill_on_close_job()
+    # Resolve auto GPU slots BEFORE plan_concurrency so its RAM coupling agrees (1b).
+    _maybe_autoset_gpu_slots(params_list)
+    # Bulk figures default-on for multi-file batches (faster, still one PNG/file);
+    # explicit FIREFLY_BULK_FIGURES wins; single-file runs keep full-quality figures (2a).
+    if "FIREFLY_BULK_FIGURES" not in os.environ and len(params_list) >= 2:
+        os.environ["FIREFLY_BULK_FIGURES"] = "1"
 
     def _log(msg: str):  msg_queue.put(("log", msg))
     def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
