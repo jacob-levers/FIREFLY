@@ -204,7 +204,7 @@ class _HyperflyPill(QtWidgets.QLabel):
             "font-size: 11px; }" % self._GREEN)
         self.hide()
 
-    def engage(self, text: str = "⚡ HYPER-FLY engaged"):
+    def engage(self, text: str = "HYPER-FLY engaged"):
         self.setText(text)
         self.show()
         self._start_pulse()

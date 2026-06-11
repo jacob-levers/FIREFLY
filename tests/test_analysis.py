@@ -410,9 +410,9 @@ def test_hyperfly_pill_engage_disengage(monkeypatch):
     monkeypatch.setattr(ua, "reduce_motion", lambda: False)
     pill = _HyperflyPill()
     assert pill.isHidden()
-    pill.engage("⚡ HYPER-FLY · 8 at once")
+    pill.engage("HYPER-FLY · 8 at once")
     assert not pill.isHidden()
-    assert pill.text().startswith("⚡ HYPER-FLY")
+    assert pill.text().startswith("HYPER-FLY")
     assert pill._anim is not None                 # breathing
     pill.disengage()
     assert pill.isHidden()

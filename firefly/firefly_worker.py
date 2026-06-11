@@ -2776,7 +2776,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                 el = _time.monotonic() - _hb_t0
                 try:
                     msg_queue.put(("log",
-                        f"  ⚡ HYPER-FLY working… {d}/{n} done · "
+                        f"  HYPER-FLY working… {d}/{n} done · "
                         f"{min(K, n - d)} running  ({el:.0f}s)"))
                 except Exception:
                     pass
@@ -2847,7 +2847,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                         f.cancel()
         return [r for r in results if r is not None]
     except Exception:
-        _log("  ⚡ HYPER-FLY engine error:\n" + traceback.format_exc())
+        _log("  HYPER-FLY engine error:\n" + traceback.format_exc())
         return None
     finally:
         stop_threads.set()
@@ -2932,16 +2932,16 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                 "per_file_workers": _plan.get("per_file_workers"),
                 "reason": _plan.get("reason", ""),
             }))
-            _log(f"\n  ⚡ HYPER-FLY engaged — {_plan.get('reason', '')}")
+            _log(f"\n  HYPER-FLY engaged — {_plan.get('reason', '')}")
             try:
                 _hf_results = _run_batch_hyperfly(
                     params_list, msg_queue, cancel_event, _log, _prog, _plan)
             except Exception:
-                _log("  ⚡ HYPER-FLY error; falling back to serial:\n"
+                _log("  HYPER-FLY error; falling back to serial:\n"
                      + traceback.format_exc())
                 _hf_results = None
             if _hf_results is None:
-                _log("  ⚡ HYPER-FLY unavailable — running the standard serial "
+                _log("  HYPER-FLY unavailable — running the standard serial "
                      "batch instead.")
 
         if _hf_results is not None:

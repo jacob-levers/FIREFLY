@@ -6,12 +6,12 @@
 
 - Renamed **HYPERFLY → HYPER-FLY** everywhere it's shown (the badge, the
   console/log lines, the Preferences controls and tips).
-- The **"⚡ HYPER-FLY" badge now actually shows** while a parallel batch runs.
+- The **"HYPER-FLY" badge now actually shows** while a parallel batch runs.
   It was previously tucked into the Import tab's header, so you couldn't see it
   once you switched to the Analysis tab to watch the run. It now lives in the
   **always-visible top header strip**, so it's there on every tab for the whole
-  run — a **green, gently-pulsing pill** ("⚡ HYPER-FLY · N at once") that
-  switches off when the batch finishes.
+  run — a **green, gently-pulsing pill** ("HYPER-FLY · N at once") that switches
+  off when the batch finishes. (No lightning emoji.)
 
 ## v2.59.1
 
