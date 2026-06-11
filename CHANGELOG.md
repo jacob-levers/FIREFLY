@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.64.4
+
+### Fix: Compare showed empty panels for deeply-nested output folders (long paths)
+
+The Compare tab read each cell's metric files (`firefly_extras/<stem>_*.csv` / `.json`)
+with normal Windows paths. For outputs whose folder name is long — a recursive-batch key
+repeated in both the per-stem subfolder **and** every filename (common on RDM trees) — those
+paths exceed Windows' 260-char `MAX_PATH`, so `os.path.isfile` returned `False` and every
+metric (MSD, diffusion/LogD, tracks, JDD, dwell, turning angles) was treated as missing. The
+comparison still "completed" but every panel came up empty / "100% unclassified". FIREFLY now
+reads those files through the `\\?\` extended-length form (in `load_summary_from_folder` and
+the PALM-Tracer loader), so deep output folders load correctly. Companion to v2.64.2, which
+fixed the equivalent limit on output *writes*. Verified: cells whose `firefly_extras` paths
+reach ~360 chars now load full MSD/diffusion/track/JDD/dwell data.
+
 ## v2.64.3
 
 ### Fix: recursive batch scooped up palmTRACER analysis files, not just raw images

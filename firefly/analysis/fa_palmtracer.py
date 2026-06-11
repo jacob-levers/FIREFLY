@@ -15,6 +15,41 @@ import numpy as np
 import pandas as pd
 
 
+def _win_long_path(p):
+    """Extended-length (``\\\\?\\``) form of an ABSOLUTE Windows path so that
+    ``os.path.isfile`` / ``open`` / ``pd.read_csv`` on a path longer than 260
+    chars don't fail with a spurious ``FileNotFoundError``.
+
+    Deeply-nested analysis output folders (a long recursive-batch key repeated
+    in both the per-stem subfolder AND every ``<stem>_*.csv`` filename) routinely
+    push the ``firefly_extras/`` file paths past Windows' MAX_PATH.  Without this
+    the Compare loader silently treats every metric file as missing -> all panels
+    come up empty.  No-op on non-Windows, empty, or already-prefixed paths.
+    """
+    if os.name != "nt" or not p:
+        return p
+    s = str(p)
+    if s.startswith("\\\\?\\"):
+        return s
+    ap = os.path.abspath(s)
+    if ap.startswith("\\\\"):                       # UNC \\server\share
+        return "\\\\?\\UNC\\" + ap[2:]
+    return "\\\\?\\" + ap
+
+
+def _win_disp_path(p):
+    """Inverse of :func:`_win_long_path` — strip the ``\\\\?\\`` prefix for
+    display / output so user-facing paths stay in their normal form."""
+    if not p:
+        return p
+    s = str(p)
+    if s.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + s[len("\\\\?\\UNC\\"):]
+    if s.startswith("\\\\?\\"):
+        return s[len("\\\\?\\"):]
+    return s
+
+
 def _listdir_visible(path):
     """os.listdir minus dotfiles.  Crucially this drops the AppleDouble
     sidecars (`._<name>`) that macOS sprays next to every real file on
@@ -33,18 +68,19 @@ def _listdir_visible(path):
 def _find_stem(data_dir):
     """Find the experiment stem from filenames like {stem}_params.json or
     {stem}_diffusion_summary.csv inside an analysis output folder's data/ dir."""
-    for f in sorted(_listdir_visible(data_dir)):
+    ldir = _win_long_path(data_dir)
+    for f in sorted(_listdir_visible(ldir)):
         if f.endswith("_params.json"):
             return f[:-len("_params.json")]
-    for f in sorted(_listdir_visible(data_dir)):
+    for f in sorted(_listdir_visible(ldir)):
         if f.endswith("_diffusion_summary.csv"):
             return f[:-len("_diffusion_summary.csv")]
-    raise FileNotFoundError(f"No analysis CSVs found in {data_dir}")
+    raise FileNotFoundError(f"No analysis CSVs found in {_win_disp_path(data_dir)}")
 
 
 def _is_palmtracer_folder(folder):
     """Return True if `folder` contains raw PALM-Tracer output."""
-    names = _listdir_visible(folder)
+    names = _listdir_visible(_win_long_path(folder))
     if not names:
         return False
     # PALM-Tracer files have no stem prefix (e.g. 'locPALMTracer.txt')
@@ -79,6 +115,8 @@ def load_summary_from_palmtracer(folder):
     re-derived on the fly from the imported trajectories using the same
     pipeline functions FIREFLY normally runs.
     """
+    disp = folder
+    folder = _win_long_path(folder)    # extended-length form for all FS reads/writes
     # ── Locate the six PALM-Tracer files (tab or csv) ────────────────────
     def _pick(*candidates):
         for c in candidates:
@@ -95,7 +133,7 @@ def load_summary_from_palmtracer(folder):
                      "trcPALMTracer-1-MSD.txt",     "trcPALMTracer-1-MSD.csv")
 
     if not (loc_path and trc_path):
-        raise FileNotFoundError(f"PALM-Tracer files not found in {folder}")
+        raise FileNotFoundError(f"PALM-Tracer files not found in {disp}")
 
     # ── Parse loc / trc metadata header (line 2 contains values) ─────────
     pixel_size_um    = 0.106
@@ -169,7 +207,7 @@ def load_summary_from_palmtracer(folder):
     except Exception:
         mobile_frac_df = None
 
-    stem = os.path.basename(folder.rstrip(os.sep)) or "palmtracer_run"
+    stem = os.path.basename(disp.rstrip(os.sep)) or "palmtracer_run"
     if stem.lower().endswith(".pt"):
         stem = stem[:-3]
 
@@ -219,9 +257,9 @@ def load_summary_from_palmtracer(folder):
         pass
 
     return {
-        "folder":     folder,
+        "folder":     disp,
         "stem":       stem,
-        "data_dir":   folder,
+        "data_dir":   disp,
         "source":     "palmtracer",
         "params": {
             "stem":             stem,
@@ -254,26 +292,31 @@ def load_summary_from_folder(folder):
     """
     import json
 
+    disp = folder
+    lf = _win_long_path(folder)        # extended-length form for all FS reads
+
     # ── Resolve which directory holds the FIREFLY-native CSVs ────────────
     # 1) <folder>/firefly_extras  (folder is the run dir)
-    if os.path.isdir(os.path.join(folder, "firefly_extras")):
-        data_dir = os.path.join(folder, "firefly_extras")
+    if os.path.isdir(os.path.join(lf, "firefly_extras")):
+        data_dir = os.path.join(lf, "firefly_extras")
     # 2) folder is itself the firefly_extras dir
-    elif os.path.basename(folder.rstrip(os.sep)) == "firefly_extras":
-        data_dir = folder
+    elif os.path.basename(disp.rstrip(os.sep)) == "firefly_extras":
+        data_dir = lf
     # 3) folder is a PALM-Tracer folder (raw or FIREFLY-emitted CSV mirrors)
-    elif _is_palmtracer_folder(folder):
-        return load_summary_from_palmtracer(folder)
+    elif _is_palmtracer_folder(lf):
+        return load_summary_from_palmtracer(disp)
     # 4) folder is a run dir whose `data/` holds PALM-Tracer CSVs
-    elif (os.path.isdir(os.path.join(folder, "data"))
-          and _is_palmtracer_folder(os.path.join(folder, "data"))):
-        return load_summary_from_palmtracer(os.path.join(folder, "data"))
+    elif (os.path.isdir(os.path.join(lf, "data"))
+          and _is_palmtracer_folder(os.path.join(lf, "data"))):
+        return load_summary_from_palmtracer(os.path.join(disp, "data"))
     else:
         raise FileNotFoundError(
-            f"No firefly_extras/ directory and no PALM-Tracer files in {folder}")
+            f"No firefly_extras/ directory and no PALM-Tracer files in {disp}")
 
+    # `data_dir` is the \\?\-prefixed form: every os.path.join below inherits the
+    # prefix so isfile/open/read_csv work on >260-char firefly_extras paths.
     stem = _find_stem(data_dir)
-    s = {"folder": folder, "stem": stem, "data_dir": data_dir}
+    s = {"folder": disp, "stem": stem, "data_dir": data_dir}
 
     # Params (frame interval, pixel size, ...)
     params_path = os.path.join(data_dir, f"{stem}_params.json")
