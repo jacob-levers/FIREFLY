@@ -120,6 +120,12 @@ def test_windows_helper_script():
     assert 'certutil -hashfile "%NEWEXE%" SHA256' in s
     assert 'certutil -hashfile "%TARGET%" SHA256' in s
     assert 'if /i not "!SRCHASH!"=="!DSTHASH!"' in s
+    # Relaunch handshake: pause for AV, wait for the app's ready marker, and
+    # kill + relaunch once if the first launch's extraction lost the race.
+    assert 'set "SPTPALM_READY_MARKER=%MARKER%"' in s
+    assert 'if exist "%MARKER%" goto ready' in s
+    assert 'taskkill /F /IM "!TIMG!"' in s
+    assert 'if !LAUNCHN! LSS 2' in s
 
 
 def test_download_asset_integrity_failure_message(monkeypatch, tmp_path):

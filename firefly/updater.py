@@ -374,8 +374,12 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
       * if the copy fails, is short, or its hash differs, **restore the backup**
         so the working version stays in place, and reveal the new exe so the
         user can finish by hand;
-      * on success, relaunch and KEEP the ``.bak`` so the user can roll back
-        manually if the new build won't start on their machine.
+      * on success, relaunch with a **ready-marker handshake** — the FIRST
+        launch of a brand-new exe frequently fails its onefile extraction while
+        AV is still scanning the freshly-written file ("python3xx.dll … module
+        could not be found"), but a later launch succeeds, so the helper pauses
+        for AV, waits for the app to signal it's up, and relaunches once if it
+        doesn't — and KEEPS the ``.bak`` for manual rollback.
     """
     return f"""@echo off
 setlocal enabledelayedexpansion
@@ -441,9 +445,40 @@ if defined SRCHASH if defined DSTHASH if /i not "!SRCHASH!"=="!DSTHASH!" (
   start "" explorer.exe /select,"%NEWEXE%"
   goto end
 )
-echo [firefly-update] swap verified (size + SHA-256); relaunching >>"%LOG%" 2>&1
+echo [firefly-update] swap verified (size + SHA-256) >>"%LOG%" 2>&1
+rem ── Relaunch with a ready-marker handshake ──────────────────────────────
+rem The FIRST launch of a brand-new exe often fails its onefile extraction
+rem because antivirus is still scanning the freshly-written file (python3xx.dll
+rem gets blocked mid-extract -> "module could not be found"); a later launch
+rem succeeds.  So: pause to let AV settle, launch with SPTPALM_READY_MARKER set
+rem (the app writes that file once its window is up), and if no ready signal
+rem appears, kill the stuck process and relaunch once - the retry succeeds.
+for %%F in ("%TARGET%") do set "TIMG=%%~nxF"
+ping -n 26 127.0.0.1 >NUL
+set "MARKER=%~dp0firefly_relaunch_ok.marker"
+del "%MARKER%" >NUL 2>&1
+set "SPTPALM_READY_MARKER=%MARKER%"
+set /a LAUNCHN=0
+:relaunch
+set /a LAUNCHN+=1
+echo [firefly-update] launch attempt !LAUNCHN! >>"%LOG%" 2>&1
 start "" "%TARGET%"
-echo [firefly-update] previous version kept at "%BACKUP%" (rename to roll back) >>"%LOG%" 2>&1
+set /a WAITM=0
+:waitmarker
+if exist "%MARKER%" goto ready
+ping -n 3 127.0.0.1 >NUL
+set /a WAITM+=1
+if !WAITM! LSS 50 goto waitmarker
+if !LAUNCHN! LSS 2 (
+  echo [firefly-update] no ready signal (~100s); killing + relaunching once >>"%LOG%" 2>&1
+  taskkill /F /IM "!TIMG!" >>"%LOG%" 2>&1
+  ping -n 6 127.0.0.1 >NUL
+  goto relaunch
+)
+echo [firefly-update] still no ready signal; leaving the app to the user >>"%LOG%" 2>&1
+:ready
+del "%MARKER%" >NUL 2>&1
+echo [firefly-update] done; previous version kept at "%BACKUP%" (rename to roll back) >>"%LOG%" 2>&1
 :end
 del "%~f0"
 """

@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.59.0
+
+### Updater: the post-update relaunch no longer shows a scary (harmless) error
+
+After an update, the very first relaunch of the brand-new exe would sometimes
+fail with "Failed to load Python DLL … python313.dll" — because antivirus was
+still scanning the freshly-written file and blocked a DLL mid-extraction. The
+update itself was fine (opening the app again worked), but the error looked
+alarming. The swap helper now relaunches with a **ready-marker handshake**: it
+pauses to let AV settle, launches with `SPTPALM_READY_MARKER` set (the app
+writes that file once its window is up), and if no "ready" signal appears it
+**kills the stuck process and relaunches once** — which succeeds. So the app
+just opens, instead of throwing an error you had to click through.
+
+(As with all updater changes, this takes effect for updates *from* a build that
+already has it — i.e. once you're on v2.59.0+.)
+
 ## v2.58.1
 
 ### Clearer message when a download is corrupted
