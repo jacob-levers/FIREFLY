@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.60.0
+## v2.60.1
 
 ### HYPER-FLY: visible engaged badge + the name
 
