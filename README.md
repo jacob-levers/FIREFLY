@@ -12,8 +12,8 @@ multi-page PDF report.
 FIREFLY specialises in **two detection engines — trackpy and PyTorch** —
 both Crocker-Grier-family centroid localisers, calibrated to agree to
 within the experiment's noise floor. Linking offers a choice of engines —
-trackpy's recursive subnet linker (the default), a Kalman linear-motion
-tracker, or a global LAP gap-closing linker. You can also **import and analyse
+a Kalman linear-motion tracker (the default) and trackpy's recursive subnet
+linker. You can also **import and analyse
 localisation tables exported by other tools** (TrackMate, palmTRACER,
 Picasso, ThunderSTORM) — see [Analyse external localisations](#analyse-external-localisations).
 
@@ -151,14 +151,13 @@ every tab switch.
   ~5 nm; the auto-resolver prefers the GPU but drops back cleanly when
   it's unavailable.
 - **Selectable linker** — a **Linker** dropdown (Linking panel) chooses the
-  trajectory linker: **trackpy** (the default — Crocker-Grier recursive subnet,
-  best for Brownian / diffusive motion), **Kalman** (a constant-velocity,
-  TrackMate-style linear-motion tracker that predicts each particle's next
-  position from its velocity, so it holds track identities through crossings
-  and directed / fast transport where nearest-neighbour linking swaps tracks),
-  and **LAP** (a global two-step assignment with gap-closing). trackpy stays the
-  validated default; your choice persists between sessions and is recorded in
-  each run's manifest.
+  trajectory linker: **Kalman** (the default — a constant-velocity, TrackMate-
+  style linear-motion tracker that predicts each particle's next position from
+  its velocity, so it holds track identities through crossings and directed /
+  fast transport where nearest-neighbour linking swaps tracks; it matches
+  trackpy on pure diffusion), or **trackpy** (Crocker-Grier recursive subnet —
+  the long-standing, fast linker for Brownian motion). Your choice persists
+  between sessions and is recorded in each run's manifest.
 - **Import external localisations** — analyse localisation tables produced
   by other software (TrackMate, palmTRACER, Picasso, ThunderSTORM) without
   re-detecting. Column conventions are auto-detected. The whole downstream

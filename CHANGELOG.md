@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.66.1
+
+### The Kalman linker is now the default; LAP dropped from the menu
+
+Following v2.66.0's new selectable linker, the **Kalman** linear-motion tracker
+is now the **default**. It preserves track identities through crossings and
+directed / fast transport (where nearest-neighbour linking swaps tracks) and
+matches trackpy on pure diffusion (validated on real data — identical
+diffusion-coefficient distribution). **Trackpy** remains in the **Linker**
+dropdown for the fastest, longest-tested path on Brownian-only data.
+
+The **LAP** option has been removed from the dropdown: it was never the best
+choice in any regime (trackpy wins pure diffusion, Kalman wins directed motion),
+so it only added a confusing third option. It remains available programmatically
+(`link_trajectories(..., linker="lap")`) for benchmarking.
+
 ## v2.66.0
 
 ### New: selectable trajectory linker — a Kalman (linear-motion) tracker for directed / crossing motion
