@@ -104,12 +104,16 @@ class BuildMixin:
         self._sidebar_title = QtWidgets.QLabel("Analysis Parameters")
         self._sidebar_title.setStyleSheet(
             f"color: {_THEME['TXT']}; font-weight: 800; font-size: 15px; "
-            f"padding: 12px 12px 10px 12px; "
+            f"padding: 0px 14px; "
             f"border-bottom: 1px solid {_THEME['BORDER']};")
-        # Pin to the same height as the tab bar (set below) so the sidebar
-        # header and the Import/Analysis tab row share one flush bottom edge —
-        # otherwise the taller header leaves a dark "shelf" above the tabs.
-        self._sidebar_title.setFixedHeight(44)
+        # Vertically centre the title so it lines up with the (centred) tab
+        # labels to its right — top-padding made it sit higher than the tabs,
+        # which read as "broken".  The exact height is matched to the tab bar
+        # in _sync_header_row_height() (called once the tabs exist) so the two
+        # bottom borders form one flush line with no dark "shelf".
+        self._sidebar_title.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._sidebar_title.setMinimumHeight(40)
         sb_outer.addWidget(self._sidebar_title)
 
         self._sidebar_stack = QtWidgets.QStackedWidget()
@@ -170,10 +174,10 @@ class BuildMixin:
         # Tab order: Import → Analysis → Compare → Visualise → Re-process.
         # Figures has moved into Preferences (cogwheel in the header).
         self.tabs = QtWidgets.QTabWidget()
-        # Match the sidebar header height (44px) so the tab row's bottom edge
-        # lines up with the sidebar header's bottom border — kills the dark
-        # "shelf" the taller header otherwise left above the tabs.
-        self.tabs.tabBar().setFixedHeight(44)
+        # Do NOT force the tab-bar height here — forcing it taller than the
+        # tabs' natural size stretched them into a tall, empty box.  Its height
+        # is set to a comfortable font-derived value (shared with the sidebar
+        # header) in _sync_header_row_height(), called once the tabs are built.
         self._build_import_tab()
         self._build_analysis_tab()
         # Figures widget is built once, parked unattached, and re-parented
@@ -203,6 +207,13 @@ class BuildMixin:
         # step with the group cards whenever the user switches to it.
         self.tabs.currentChanged.connect(lambda *_: self._refresh_stats_preview())
 
+        # Give the sidebar header and the tab row one shared, comfortable
+        # height so their bottom borders line up (no "shelf") and the tabs
+        # aren't stretched.  Run now and again after the event loop polishes
+        # the stylesheet, so the font metrics are final.
+        self._sync_header_row_height()
+        QTimer.singleShot(0, self._sync_header_row_height)
+
         # Start on the landing page; main UI activates only after the user
         # picks an action card.
         self._main_stack.setCurrentIndex(0)
@@ -225,6 +236,25 @@ class BuildMixin:
         self.btn_show_console.clicked.connect(self._toggle_console)
         self.statusBar().addPermanentWidget(self.btn_show_console)
         self.statusBar().showMessage("Ready")
+
+    def _sync_header_row_height(self):
+        """Match the sidebar title bar and the tab bar to ONE comfortable
+        height derived from the tab font, so their bottom borders form a single
+        flush line (no dark "shelf" above the tabs) and neither is stretched.
+
+        Computed from font metrics rather than a hard-coded pixel count so it
+        stays correct across fonts / DPI; both widgets are pinned to the same
+        value, guaranteeing the two headers align exactly.
+        """
+        try:
+            fm = self.tabs.tabBar().fontMetrics()
+            # tab QSS is `padding: 8px 16px` + 1px borders → ~font + 18px.
+            h = max(40, fm.height() + 18)
+            self.tabs.tabBar().setFixedHeight(h)
+            self._sidebar_title.setFixedHeight(h)
+        except Exception:
+            # Never let a styling tweak break the window build.
+            self._sidebar_title.setFixedHeight(40)
 
     def _build_header_banner(self) -> QtWidgets.QWidget:
         """Thin header strip:  FIREFLY                Fluorescence Inference & Reconstruction Engine | By Jacob Levers"""

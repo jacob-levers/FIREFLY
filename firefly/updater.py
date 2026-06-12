@@ -398,14 +398,19 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
       * if the copy fails, is short, or its hash differs, **restore the backup**
         so the working version stays in place, and reveal the new exe so the
         user can finish by hand;
-      * on success, relaunch with a **ready-marker handshake** — the onefile
-        bundle re-extracts ~1.4 GB on every launch and AV scans the fresh exe,
-        so the first extraction can take minutes; the helper clears stale _MEI
-        dirs, then waits for the app to signal its window is up for as long as
-        the process stays alive (it never kills a still-extracting bootloader —
-        the half-extracted _MEI dir is exactly what caused "python3xx.dll …
-        module could not be found"), retrying only if the process exits without
-        signalling, or wedges past a ~10-minute cap;
+      * on success, relaunch with a **ready-marker handshake**.  FIRST, clear
+        the inherited PyInstaller one-file markers (`_MEIPASS2` / `_PYI_*`):
+        this helper is spawned by the running frozen app, so it inherits the
+        bootloader's "I'm the re-exec'd child, skip extraction, use THIS _MEI
+        dir" handshake — and if the new exe inherits it, it skips extraction
+        and loads python3xx.dll from the OLD (deleted) _MEI dir → "module could
+        not be found".  This is THE cause of the recurring DLL error (manual
+        double-clicks always worked because Explorer never sets these vars).
+        The onefile bundle then re-extracts ~1.4 GB on launch and AV scans the
+        fresh exe, so the first extraction can take minutes; the helper clears
+        stale _MEI dirs, then waits for the app to signal its window is up for
+        as long as the process stays alive (it never kills a still-extracting
+        bootloader), and keeps the .bak if no signal arrives within the cap;
       * once the relaunch signals ready (and the copy was already SHA-256
         verified), the new exe is provably good — so the ``.bak`` is **deleted**
         rather than left cluttering the folder.  It is only kept if a check
@@ -477,6 +482,23 @@ if defined SRCHASH if defined DSTHASH if /i not "!SRCHASH!"=="!DSTHASH!" (
   goto end
 )
 echo [firefly-update] swap verified (size + SHA-256) >>"%LOG%" 2>&1
+rem ── Clear inherited PyInstaller one-file bootloader markers ───────────────
+rem THE root cause of the recurring "Failed to load Python DLL python3xx.dll —
+rem The specified module could not be found" on relaunch:  this .bat was
+rem spawned BY the running frozen FIREFLY, so it inherited _MEIPASS2 / _PYI_*
+rem — the onefile bootloader's "I'm the re-exec'd child, skip extraction, use
+rem THIS _MEI dir" handshake.  If the new exe inherits them it does NOT extract
+rem and tries to load python3xx.dll from the OLD _MEI dir we delete below.
+rem Clearing them here (belt-and-suspenders with the cleaned env passed to the
+rem helper) forces a clean fresh extraction.  Manual double-clicks always
+rem worked precisely because Explorer never sets these.
+set "_MEIPASS2="
+set "_MEIPASS="
+set "_PYI_PARENT_PROCESS_LEVEL="
+set "_PYI_ARCHIVE_FILE="
+set "_PYI_APPLICATION_HOME_DIR="
+set "_PYI_ONEDIR_MODE="
+set "_PYI_SPLASH_IPC="
 rem ── Relaunch (clear _MEI ONCE before launch, launch ONCE, NEVER kill) ───
 rem The new exe is a PyInstaller ONEFILE bundle: every launch re-extracts
 rem ~1.4 GB / 10k files to %LOCALAPPDATA%\\FIREFLY\\bundle\\_MEIxxxxx, which
@@ -557,6 +579,19 @@ def apply_update(downloaded_path: str) -> None:
     pid = os.getpid()
     devnull = subprocess.DEVNULL
 
+    # CRITICAL — strip the inherited PyInstaller one-file bootloader markers.
+    # This helper is spawned BY the running frozen app, so it inherits
+    # `_MEIPASS2` (and the `_PYI_*` family) — the onefile bootloader's
+    # "I'm the re-exec'd child, DON'T extract, use THIS _MEI dir" handshake.
+    # If the relaunched exe inherits them, its bootloader skips extraction and
+    # tries to load python3xx.dll from the OLD _MEI dir (which the helper then
+    # deletes) → "Failed to load Python DLL … The specified module could not be
+    # found".  Passing a cleaned env (and re-clearing inside the .bat) forces a
+    # clean, fresh extraction — this is the real cause of the recurring error.
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k not in ("_MEIPASS2", "_MEIPASS")
+                 and not k.startswith("_PYI")}
+
     if is_macos():
         target_app = current_app_bundle_path()
         if not target_app or not os.path.isdir(target_app):
@@ -578,7 +613,7 @@ def apply_update(downloaded_path: str) -> None:
             subprocess.Popen(
                 ["/bin/bash", helper, str(pid), downloaded_path,
                  target_app, log_path],
-                start_new_session=True, close_fds=True,
+                start_new_session=True, close_fds=True, env=clean_env,
                 stdin=devnull, stdout=devnull, stderr=devnull)
         except Exception as exc:
             raise UpdaterError(f"Couldn't start the updater: {exc}",
@@ -609,7 +644,7 @@ def apply_update(downloaded_path: str) -> None:
                 ["cmd", "/c", helper, str(pid), downloaded_path,
                  target_exe, log_path],
                 creationflags=(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP),
-                close_fds=True,
+                close_fds=True, env=clean_env,
                 stdin=devnull, stdout=devnull, stderr=devnull)
         except Exception as exc:
             raise UpdaterError(f"Couldn't start the updater: {exc}",

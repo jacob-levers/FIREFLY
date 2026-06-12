@@ -304,7 +304,7 @@ QTabBar::tab {{
     background-color: transparent;
     color:            {TXT_MUTED};
     border:           1px solid transparent;
-    padding:          6px 14px;
+    padding:          8px 16px;
     margin-right:     2px;
     border-top-left-radius:  6px;
     border-top-right-radius: 6px;

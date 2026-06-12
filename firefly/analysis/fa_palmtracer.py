@@ -93,7 +93,15 @@ def _is_palmtracer_folder(folder):
 
 def _read_palmtracer_table(path, header_lines):
     """Read a PALM-Tracer file (tab- or comma-separated), skipping comment /
-    metadata rows.  `header_lines` is the number of non-data leading rows."""
+    metadata rows.  `header_lines` is the number of non-data leading rows.
+
+    The reference loc/trc tables are large and rectangular (the localisation
+    file is ~45 MB), so we parse them with pandas' compiled **C** engine, which
+    is ~10-20x faster than the pure-Python engine on a file that size.  The C
+    tokenizer is stricter (it rejects ragged rows), so if it trips we fall back
+    to the tolerant Python engine — behaviour is then never worse than before,
+    and clean rectangular tables get the fast path.  (The ragged ``-D``/``-MSD``
+    reference files are parsed by ``_parse_pt_native_*`` instead, not here.)"""
     # PALM-Tracer's reference files are TSV; FIREFLY-emitted ones are CSV.
     # Sniff the separator from the first data line.
     with open(path, "r") as fh:
@@ -101,8 +109,17 @@ def _read_palmtracer_table(path, header_lines):
             fh.readline()
         first = fh.readline()
     sep = "\t" if "\t" in first and first.count("\t") >= first.count(",") else ","
-    return pd.read_csv(path, sep=sep, header=None, comment="#",
-                       skiprows=header_lines, engine="python")
+    read_kw = dict(sep=sep, header=None, comment="#", skiprows=header_lines)
+    try:
+        # float_precision="round_trip" makes the C tokenizer convert floats with
+        # Python's exact parser (not the faster-but-lossy xstrtod default), so the
+        # parsed values are bit-for-bit identical to the Python engine — only the
+        # tokenization is sped up.  Matters for scientific data.
+        return pd.read_csv(path, engine="c", float_precision="round_trip",
+                           **read_kw)
+    except (pd.errors.ParserError, ValueError):
+        # Irregular/ragged content the C tokenizer rejects — tolerant fallback.
+        return pd.read_csv(path, engine="python", **read_kw)
 
 
 def _parse_pt_native_d(path):

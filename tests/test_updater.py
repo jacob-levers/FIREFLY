@@ -176,6 +176,15 @@ def test_windows_helper_script():
     # ``:ready`` branch, distinct from the give-up branch which keeps it.
     assert 'del "%BACKUP%"' in s
     assert ":ready" in s
+    # ROOT-CAUSE FIX — the helper is spawned by the frozen app, so it inherits
+    # the onefile bootloader's _MEIPASS2 / _PYI_* "skip extraction, use THIS
+    # _MEI dir" handshake.  It MUST clear those before launching the new exe,
+    # or the new bootloader skips extraction and loads python3xx.dll from the
+    # old (deleted) _MEI dir → "module could not be found".  Must happen BEFORE
+    # the launch.
+    assert 'set "_MEIPASS2="' in s
+    assert 'set "_MEIPASS="' in s
+    assert s.index('set "_MEIPASS2="') < s.index('start "" "%TARGET%"')
 
 
 def test_download_asset_integrity_failure_message(monkeypatch, tmp_path):
@@ -265,6 +274,41 @@ def test_apply_update_not_frozen_raises(monkeypatch, tmp_path):
     f.write_bytes(b"0" * 16)
     with pytest.raises(u.UpdaterError):
         u.apply_update(str(f))
+
+
+def test_apply_update_strips_meipass2_env(monkeypatch, tmp_path):
+    """The relaunch helper must be spawned WITHOUT the inherited PyInstaller
+    one-file markers (_MEIPASS2 / _PYI_*).  If it inherits them the new exe's
+    bootloader skips extraction and tries to load python3xx.dll from the old
+    (deleted) _MEI dir → "The specified module could not be found" — the
+    recurring relaunch crash."""
+    _redirect_appdata(monkeypatch, tmp_path)
+    monkeypatch.setattr(u, "is_frozen", lambda: True)
+    monkeypatch.setattr(u.sys, "platform", "win32")
+    exe = tmp_path / "FIREFLY.exe"
+    exe.write_bytes(b"old")
+    monkeypatch.setattr(u.sys, "executable", str(exe))
+    dl = tmp_path / "FIREFLY-Windows.exe"
+    dl.write_bytes(b"new")
+    # Poison the environment exactly as the running frozen app would.
+    monkeypatch.setenv("_MEIPASS2", r"C:\stale\_MEI999")
+    monkeypatch.setenv("_MEIPASS", r"C:\stale\_MEI999")
+    monkeypatch.setenv("_PYI_ARCHIVE_FILE", r"C:\stale\app.pkg")
+    captured = {}
+
+    def _fake_popen(cmd, **kw):
+        captured["env"] = kw.get("env")
+        return object()
+
+    monkeypatch.setattr(u.subprocess, "Popen", _fake_popen)
+    u.apply_update(str(dl))
+    env = captured["env"]
+    assert env is not None, "apply_update must pass an explicit cleaned env"
+    assert "_MEIPASS2" not in env
+    assert "_MEIPASS" not in env
+    assert "_PYI_ARCHIVE_FILE" not in env
+    # Non-PyInstaller vars must survive so the relaunched app behaves normally.
+    assert env.get("PATH", "") == os.environ.get("PATH", "")
 
 
 def test_download_asset_without_asset_raises():

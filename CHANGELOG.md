@@ -1,5 +1,49 @@
 # Changelog
 
+## v2.65.6
+
+### Fixed: "Failed to load Python DLL python313.dll" after an in-app update
+
+The recurring crash on the post-update restart — *"Failed to load Python DLL
+…\\_MEIxxxxxx\\python313.dll. The specified module could not be found."* — is
+fixed. **Root cause:** the updater's relaunch helper is spawned *by* the running
+(frozen) app, so it inherited the PyInstaller one-file bootloader's `_MEIPASS2`
+marker — the "I'm the re-exec'd child, skip unpacking, reuse this folder"
+handshake. The relaunched copy inherited it too, so it skipped unpacking itself
+and tried to load `python313.dll` from the *previous* version's temp folder,
+which the helper had just deleted → "module could not be found". The helper now
+strips `_MEIPASS2` / `_PYI_*` before relaunching, forcing a clean unpack. (This
+is why launching FIREFLY by hand always worked — Explorer never sets that
+marker.)
+
+> **One-time note:** because the *currently installed* build is the one doing the
+> install, updating **to** this version may still show the error once on the
+> auto-restart. The new version is already swapped into place, though — just
+> click **OK** and reopen FIREFLY. Every update **from** this version onward
+> restarts cleanly with no error.
+
+### Tidier header / tab row
+
+The sidebar title ("Analysis Parameters", etc.) and the Import / Analysis / …
+tab row are now one shared height, with their text vertically centred and their
+bottom borders aligned — instead of the tab bar being force-stretched into a
+tall, half-empty box with the title text sitting too high (which read as
+"broken"). The tabs also get a little more breathing room.
+
+### Faster palmTRACER loading (C-engine table reader, bit-for-bit identical)
+
+The palmTRACER localisation/trajectory tables (the localisation file is ~45 MB)
+are now parsed with pandas' compiled **C** engine instead of the pure-Python
+parser, with `float_precision="round_trip"` so the parsed values stay **bit-for-bit
+identical** to before. Verified on real data: `DataFrame.equals` is `True`, dtypes
+match, and the max absolute difference is `0.0`. On Falcon this cut the read time
+**4.9×** for the localisation table (4.11 s → 0.84 s) and **5.7×** for the
+trajectory table (0.70 s → 0.12 s), so every palmTRACER open / Compare / batch run
+starts faster. If the C tokenizer ever trips on an irregular file it transparently
+falls back to the tolerant Python parser, so behaviour is never worse than before.
+(The ragged `-D` / `-MSD` reference files use their own dedicated parsers and are
+unchanged.)
+
 ## v2.65.5
 
 ### Fix: update check now distinguishes a GitHub rate-limit from "no internet"
