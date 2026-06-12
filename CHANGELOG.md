@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.65.1
+
+### New: draw FIREFLY comparison graphs from palmTRACER's own MSD/D
+
+When a Compare group is a palmTRACER `.PT` folder, the new **"Use palmTRACER's own
+MSD/D (for .PT inputs)"** checkbox on the Compare tab draws the MSD / LogD / D / AUC
+panels straight from palmTRACER's native `trcPALMTracer-*-D` / `-MSD` files instead
+of re-deriving them in FIREFLY — so those panels reproduce palmTRACER's numbers
+exactly (verified byte-for-byte against a real `.PT` dataset). α and motion-class
+aren't in palmTRACER's output, so those panels stay unclassified; JDD / dwell /
+turning are still re-derived from the palmTRACER trajectories. Ignored for native
+FIREFLY analysis folders. (The native parsers live in `fa_palmtracer` behind
+`load_summary_from_folder(..., use_native=True)` and are unit-tested.)
+
 ## v2.65.0
 
 ### Import/Batch UX overhaul

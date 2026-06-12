@@ -2468,7 +2468,8 @@ def test_compare_groups_stats_transparency_end_to_end(tmp_path, monkeypatch):
                                              d_mean=0.02, alpha_mean=0.7, seed=i)
         table[f"/B/cell{i}"] = _fake_summary(f"B_cell{i}", f"/B/cell{i}",
                                              d_mean=0.20, alpha_mean=1.2, seed=10 + i)
-    monkeypatch.setattr(fcmp, "load_summary_from_folder", lambda f: table[f])
+    monkeypatch.setattr(fcmp, "load_summary_from_folder",
+                        lambda f, use_native=False: table[f])
 
     groups = [{"label": "DMSO", "color": "#3b6ed8",
                "folders": [f"/A/cell{i}" for i in range(4)]},
@@ -2515,7 +2516,8 @@ def test_single_shared_timepoint_is_not_two_factor(tmp_path, monkeypatch):
     for i in range(4):
         table[f"/A/c{i}"] = _fake_summary(f"A_c{i}", f"/A/c{i}", 0.02, 0.7, seed=i)
         table[f"/B/c{i}"] = _fake_summary(f"B_c{i}", f"/B/c{i}", 0.20, 1.2, seed=10 + i)
-    monkeypatch.setattr(fcmp, "load_summary_from_folder", lambda f: table[f])
+    monkeypatch.setattr(fcmp, "load_summary_from_folder",
+                        lambda f, use_native=False: table[f])
     groups = [{"label": "DMSO", "color": "#3b6ed8", "timepoint": "Pre",
                "folders": [f"/A/c{i}" for i in range(4)]},
               {"label": "Drug", "color": "#f78166", "timepoint": "Pre",

@@ -838,7 +838,7 @@ def compare_groups(groups,
                    pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                    logd_plot_style="overlaid",
-                   progress_cb=None, stats_config=None):
+                   progress_cb=None, stats_config=None, use_native=False):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
 
@@ -916,7 +916,8 @@ def compare_groups(groups,
             if progress_cb:
                 progress_cb(done, total, f"Loading: {os.path.basename(f)}")
             try:
-                all_summaries[gi].append(load_summary_from_folder(f))
+                all_summaries[gi].append(
+                    load_summary_from_folder(f, use_native=use_native))
             except Exception as e:
                 # Classify so the user gets an actionable reason, not a stack
                 # trace.  The #1 cause is an unmounted external drive.

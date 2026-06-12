@@ -3010,6 +3010,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             "logd_plot_style": str(self._settings.value(
                 "figures/logd_style", "overlaid") or "overlaid"),
             "stats_config": self._collect_stats_config(),
+            # palmTRACER inputs: draw MSD/LogD/D from palmTRACER's own native
+            # values instead of FIREFLY re-derivation (ignored for FIREFLY runs).
+            "use_native": bool(getattr(self, "c_cmp_use_native", None)
+                               and self.c_cmp_use_native.isChecked()),
         }
 
         try:

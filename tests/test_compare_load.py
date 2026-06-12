@@ -71,3 +71,40 @@ def test_load_summary_accepts_extras_dir_directly(tmp_path):
     run = _make_run(tmp_path)
     s = load_summary_from_folder(os.path.join(run, "firefly_extras"))
     assert s["diffusion"] is not None and len(s["diffusion"]) == 2
+
+
+# ── palmTRACER native MSD/D parsers (use_native mode) ────────────────────
+def test_parse_pt_native_d(tmp_path):
+    import numpy as np
+    from firefly.analysis.fa_palmtracer import _parse_pt_native_d
+    f = tmp_path / "trcPALMTracer-AllROI-D.txt"
+    f.write_text(
+        "#Diffusion Coef in um2/s; linear fit on first 4 pts\n"
+        "#Pixel size= .106um ; Frame rate= .02sec\n"
+        "ROI\tTrace\tD(um2/s)\tMSD(0)\tMSE\n"
+        " 1\t 1\t .0157480045960291\t .00211001927606203\t .952396638411142\n"
+        " 1\t 2\t 1E-05\t .00737197362608267\t .15236416156315\n")
+    df = _parse_pt_native_d(str(f))
+    assert df is not None and len(df) == 2
+    r1 = df[df.particle == 1].iloc[0]
+    assert abs(float(r1["D"]) - 0.0157480045960291) < 1e-12   # palmTRACER's own D
+    assert abs(float(r1["logD"]) - float(np.log10(0.0157480045960291))) < 1e-6
+    assert df["alpha"].isna().all()           # palmTRACER does not fit alpha
+    assert (df["motion"] == "Unclassified").all()
+
+
+def test_parse_pt_native_msd(tmp_path):
+    import numpy as np
+    from firefly.analysis.fa_palmtracer import _parse_pt_native_msd
+    f = tmp_path / "trcPALMTracer-AllROI-MSD.txt"
+    f.write_text(
+        "#MSD(DeltaT) in um2\n"
+        "#Pixel size= .106um ; Frame rate= .02sec\n"
+        " 1\t 1\t .0037148\t .0041678\t .0057784\n"
+        " 1\t 2\t .0081836\t .0036295\n")
+    imsd, emsd = _parse_pt_native_msd(str(f), max_lagtime=20)
+    assert imsd is not None and imsd.shape == (20, 2)
+    assert list(imsd.index[:3]) == [1, 2, 3]
+    assert abs(float(imsd[1].iloc[0]) - 0.0037148) < 1e-9    # palmTRACER's own MSD
+    assert np.isnan(float(imsd[2].iloc[5]))                   # short track → NaN padded
+    assert abs(float(emsd.iloc[0]) - (0.0037148 + 0.0081836) / 2) < 1e-9

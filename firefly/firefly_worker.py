@@ -2557,7 +2557,8 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
             mobile_d_threshold=mob_d,
             logd_plot_style=str(p.get("logd_plot_style", "overlaid") or "overlaid"),
             progress_cb=_progress_cb,
-            stats_config=stats_config)
+            stats_config=stats_config,
+            use_native=bool(p.get("use_native", False)))
 
         # Compose result paths.  compare_groups saves these by convention:
         figure_path  = os.path.join(out_dir, f"{out_stem}.png")

@@ -105,7 +105,86 @@ def _read_palmtracer_table(path, header_lines):
                        skiprows=header_lines, engine="python")
 
 
-def load_summary_from_palmtracer(folder):
+def _parse_pt_native_d(path):
+    """Parse a palmTRACER ``trcPALMTracer-*-D`` file into a FIREFLY
+    diffusion-summary DataFrame using palmTRACER's OWN per-track values.
+
+    Columns are ``ROI  Trace  D(um2/s)  MSD(0)  MSE`` (the ``-1-D`` variant adds
+    ``LogD  Mobile/Immobile  Tracks``).  Values are whitespace-padded and may use
+    ``1E-05`` notation.  palmTRACER fits D by a linear MSD fit and does NOT fit
+    the anomalous exponent α or classify motion, so those stay NaN/unclassified.
+    Returns a DataFrame with the same columns ``compute_msd_and_fit`` emits, or
+    None if nothing parses.
+    """
+    rows = []
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            s = line.strip()
+            if not s or s.startswith("#") or s[:3].upper() == "ROI":
+                continue
+            parts = s.split()
+            if len(parts) < 5:
+                continue
+            try:
+                trace = int(round(float(parts[1])))
+                D = float(parts[2]); msd0 = float(parts[3]); mse = float(parts[4])
+            except ValueError:
+                continue
+            logd = np.nan
+            if len(parts) > 5:
+                try: logd = float(parts[5])
+                except ValueError: logd = np.nan
+            if np.isnan(logd):
+                logd = float(np.log10(D)) if D > 0 else np.nan
+            rows.append((trace, D, msd0, mse, logd))
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["particle", "D", "MSD0", "MSE", "logD"])
+    df["alpha"]  = np.nan
+    df["motion"] = "Unclassified"
+    for c in ("loc_sigma_nm", "mean_radial_displacement_um",
+              "radius_of_gyration_um"):
+        df[c] = np.nan
+    return df
+
+
+def _parse_pt_native_msd(path, max_lagtime=20):
+    """Parse a palmTRACER ``trcPALMTracer-*-MSD`` file (jagged per-track MSD
+    curves in µm², ``ROI Trace msd[Δt=1] msd[Δt=2] …``) into ``(imsd_df,
+    emsd_series)`` matching ``compute_msd_and_fit``: ``imsd_df`` is indexed by
+    integer lag-frame 1..max_lagtime with one column per track; ``emsd_series``
+    is the per-lag ensemble mean.  Returns (None, None) if nothing parses."""
+    per_track = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            parts = s.split()
+            if len(parts) < 3:
+                continue
+            try:
+                trace = int(round(float(parts[1])))
+                vals = [float(x) for x in parts[2:]]
+            except ValueError:
+                continue
+            if vals:
+                per_track[trace] = vals
+    if not per_track:
+        return None, None
+    lags = np.arange(1, max_lagtime + 1)
+    cols = {}
+    for tid, vals in per_track.items():
+        arr = np.full(max_lagtime, np.nan, dtype=float)
+        n = min(len(vals), max_lagtime)
+        arr[:n] = vals[:n]
+        cols[tid] = arr
+    imsd_df = pd.DataFrame(cols, index=lags)
+    emsd_series = imsd_df.mean(axis=1, skipna=True)
+    return imsd_df, emsd_series
+
+
+def load_summary_from_palmtracer(folder, use_native=False):
     """
     Read a raw PALM-Tracer output folder and return the same dict shape as
     `load_summary_from_folder` so the Compare tab can treat it identically.
@@ -114,6 +193,14 @@ def load_summary_from_palmtracer(folder):
     class, dwell times, turning angles, JDD, mobile fraction, Rg) — these are
     re-derived on the fly from the imported trajectories using the same
     pipeline functions FIREFLY normally runs.
+
+    `use_native=True` draws the MSD / LogD / D / AUC family from palmTRACER's
+    OWN per-track D + MSD curves (`trcPALMTracer-*-D` / `-MSD`) instead of
+    re-deriving them via `compute_msd_and_fit`, so those graphs reproduce
+    palmTRACER's numbers exactly.  α / motion-class are unavailable from
+    palmTRACER (stay NaN/unclassified); JDD / dwell / turning are still
+    re-derived from the native trajectories.  Falls back to re-derivation if the
+    native -D/-MSD files can't be parsed.
     """
     disp = folder
     folder = _win_long_path(folder)    # extended-length form for all FS reads/writes
@@ -182,8 +269,21 @@ def load_summary_from_palmtracer(folder):
     # ── Re-derive D, alpha, motion via FIREFLY's own pipeline ────────────
     # This guarantees the Compare tab sees the same column names and
     # identical statistics it would for a native FIREFLY run.
-    imsd_df, emsd_series, diff_df = compute_msd_and_fit(
-        tracks, pixel_size_um, frame_interval_s, max_lagtime=20, n_fit=5)
+    imsd_df = emsd_series = diff_df = None
+    if use_native and d_path and msd_path:
+        try:
+            _nd = _parse_pt_native_d(d_path)
+            _ni, _ne = _parse_pt_native_msd(msd_path, max_lagtime=20)
+            if _nd is not None and _ni is not None and len(_nd):
+                diff_df, imsd_df, emsd_series = _nd, _ni, _ne
+                print(f"  Using palmTRACER's native MSD/D "
+                      f"({len(_nd)} tracks); alpha / motion-class unavailable.")
+        except Exception as _exc:
+            print(f"  WARN: native MSD/D parse failed ({_exc}); re-deriving.")
+            diff_df = imsd_df = emsd_series = None
+    if diff_df is None:
+        imsd_df, emsd_series, diff_df = compute_msd_and_fit(
+            tracks, pixel_size_um, frame_interval_s, max_lagtime=20, n_fit=5)
 
     emsd_df = (emsd_series.to_frame("msd_um2")
                           .reset_index(names="lag_frame"))
@@ -272,16 +372,22 @@ def load_summary_from_palmtracer(folder):
             "height":           height,
         },
         "ensemble_msd":          emsd_df,
+        "imsd":                  imsd_df,
         "diffusion":             diff_df,
         "tracks":                tracks,
+        "locs":                  locs,
         "jdd":                   jdd,
         "dwell_times":           dwell_df,
         "turning_angles":        ta_deg if ta_deg is not None else None,
         "turning_angles_signed": True,
+        "mobile_fraction":       mobile_frac_df,
+        "width":                 width,
+        "height":                height,
+        "n_frames":              n_frames,
     }
 
 
-def load_summary_from_folder(folder):
+def load_summary_from_folder(folder, use_native=False):
     """Load all per-experiment summary data from one analysis output folder.
 
     Accepts any of:
@@ -289,6 +395,10 @@ def load_summary_from_folder(folder):
       <run_dir>/firefly_extras/        (the FIREFLY-extras directory itself)
       <palm_tracer_folder>/            (auto-detected, re-derived on load)
       <run_dir>/data/                  (PALM-Tracer CSVs from a FIREFLY run)
+
+    `use_native=True` only affects PALM-Tracer inputs: the MSD / LogD / D family
+    is taken from palmTRACER's own `trcPALMTracer-*-D/-MSD` files rather than
+    re-derived (see `load_summary_from_palmtracer`).
     """
     import json
 
@@ -304,11 +414,12 @@ def load_summary_from_folder(folder):
         data_dir = lf
     # 3) folder is a PALM-Tracer folder (raw or FIREFLY-emitted CSV mirrors)
     elif _is_palmtracer_folder(lf):
-        return load_summary_from_palmtracer(disp)
+        return load_summary_from_palmtracer(disp, use_native=use_native)
     # 4) folder is a run dir whose `data/` holds PALM-Tracer CSVs
     elif (os.path.isdir(os.path.join(lf, "data"))
           and _is_palmtracer_folder(os.path.join(lf, "data"))):
-        return load_summary_from_palmtracer(os.path.join(disp, "data"))
+        return load_summary_from_palmtracer(os.path.join(disp, "data"),
+                                            use_native=use_native)
     else:
         raise FileNotFoundError(
             f"No firefly_extras/ directory and no PALM-Tracer files in {disp}")

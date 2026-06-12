@@ -2116,6 +2116,18 @@ class BuildMixin:
             "two-way mixed-ANOVA results) in GraphPad-style tabular form.")
         self.c_cmp_pdf.setChecked(True)
         gl.addRow("", self.c_cmp_pdf)
+
+        self.c_cmp_use_native = QtWidgets.QCheckBox(
+            "Use palmTRACER's own MSD/D (for .PT inputs)")
+        self.c_cmp_use_native.setToolTip(
+            "When a group folder is a palmTRACER .PT folder, draw the MSD / LogD\n"
+            "/ D / AUC graphs from palmTRACER's OWN trcPALMTracer-*-D / -MSD\n"
+            "values instead of re-deriving them in FIREFLY — so those panels\n"
+            "reproduce palmTRACER's numbers exactly.  (alpha / motion-class\n"
+            "aren't in palmTRACER's output, so those panels stay unclassified;\n"
+            "JDD / dwell / turning are re-derived from the palmTRACER tracks.)\n"
+            "Ignored for native FIREFLY analysis folders.")
+        gl.addRow("", self.c_cmp_use_native)
         v.addWidget(sec)
 
         # Comparison panels (which sub-panels to include in the figure).
