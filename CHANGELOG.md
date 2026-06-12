@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.66.2
+
+### Separate figure settings for batch / HYPER-FLY runs
+
+A multi-file batch (HYPER-FLY included) renders figures in a "fast" mode — 110
+DPI, no vector PDF, no per-panel PNGs — to stay quick at scale. That behaviour is
+now **configurable**: a new **Batch / HYPER-FLY figure** section in the figure
+settings gives batch runs their own **PNG DPI**, **save-PDF** and **per-panel**
+controls, independent of the single-sample figure.
+
+Defaults are unchanged (110 DPI, no PDF, no panels), so existing batches behave
+exactly as before — but if you want full-quality figures for every file in a
+HYPER-FLY run, just raise the DPI and tick the PDF / per-panel boxes. Theme,
+colormap and the cell-background toggle are shared with the single-sample figure.
+
 ## v2.66.1
 
 ### The Kalman linker is now the default; LAP dropped from the menu

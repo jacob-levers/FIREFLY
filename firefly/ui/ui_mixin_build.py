@@ -2152,6 +2152,33 @@ class BuildMixin:
         gl.addRow("", self.c_fig_per_panel)
         v.addWidget(sec)
 
+        # ── Batch / HYPER-FLY figure ──────────────────────────────────────
+        # A multi-file batch (HYPER-FLY included) renders figures with these
+        # settings instead of the single-sample ones above.  Defaults match the
+        # historical fast-figure behaviour (110 DPI, no PDF, no per-panel PNGs)
+        # so large batches stay quick — but you can bump them for full-quality
+        # batch output.  Theme / colormap / cell-background are shared with the
+        # single-sample figure above.
+        sec, gl = self._make_form_section("Batch / HYPER-FLY figure")
+        self.s_batch_fig_dpi = self._spin_int(110, 72, 600, step=10,
+            tip="PNG density for figures in a multi-file batch / HYPER-FLY run.\n"
+                "Defaults to 110 (fast); raise it for full-quality batch figures\n"
+                "(e.g. 150–300).  The single-sample figure above is unaffected.")
+        gl.addRow("PNG DPI", self.s_batch_fig_dpi)
+        self.c_batch_fig_save_pdf = QtWidgets.QCheckBox(
+            "Also save vector PDF for every file")
+        self.c_batch_fig_save_pdf.setToolTip(
+            "Batch / HYPER-FLY runs skip the vector PDF by default for speed.\n"
+            "Enable to write a PDF copy for every file in the batch too.")
+        gl.addRow("", self.c_batch_fig_save_pdf)
+        self.c_batch_fig_per_panel = QtWidgets.QCheckBox(
+            "Also save per-panel PNGs for every file")
+        self.c_batch_fig_per_panel.setToolTip(
+            "Batch / HYPER-FLY runs skip the per-panel PNG exports by default\n"
+            "for speed.  Enable to write them for every file in the batch too.")
+        gl.addRow("", self.c_batch_fig_per_panel)
+        v.addWidget(sec)
+
         # Single-sample panel selector — only affects per-panel PNG exports
         # (combined figure always contains every panel that has data).
         single_panels_grp = QtWidgets.QGroupBox(
@@ -3665,6 +3692,13 @@ class BuildMixin:
             "fig_single_panels": [k for k, cb in
                                   self._single_panel_checkboxes.items()
                                   if cb.isChecked()],
+            # ── Batch / HYPER-FLY figure output ───────────────────────────
+            # Used by the worker for multi-file batches (incl. HYPER-FLY) in
+            # place of the single-sample knobs above.  Defaults reproduce the
+            # historical fast-figure behaviour (110 DPI, no PDF, no panels).
+            "batch_fig_dpi":       int(self.s_batch_fig_dpi.value()),
+            "batch_fig_save_pdf":  bool(self.c_batch_fig_save_pdf.isChecked()),
+            "batch_fig_per_panel": bool(self.c_batch_fig_per_panel.isChecked()),
             # Full widget-state snapshot — written into the run manifest
             # so the run can be exactly replayed later via "Load manifest…"
             "widget_state":      self._widget_state_dict(),

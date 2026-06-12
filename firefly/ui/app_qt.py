@@ -1849,6 +1849,9 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("figures/dpi",              self.s_fig_dpi,         "spin",  int),
             ("figures/save_pdf",         self.c_fig_save_pdf,    "check", _bool_cast),
             ("figures/per_panel",        self.c_fig_per_panel,   "check", _bool_cast),
+            ("figures/batch_dpi",        self.s_batch_fig_dpi,   "spin",  int),
+            ("figures/batch_save_pdf",   self.c_batch_fig_save_pdf, "check", _bool_cast),
+            ("figures/batch_per_panel",  self.c_batch_fig_per_panel,"check", _bool_cast),
 
             # ── Compare tab ───────────────────────────────────────────────
             ("compare/outdir",           self.e_cmp_outdir,      "text"),

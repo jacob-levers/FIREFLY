@@ -1625,17 +1625,28 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     fig_theme    = p.get("fig_theme", "Dark")
     fig_proj_cmap = p.get("fig_proj_cmap", "Inferno")
     fig_traj_bg  = bool(p.get("fig_traj_bg", True))
-    # Bulk/fast figures (2a): for mass batches keep ONE per-file PNG but drop the
-    # expensive extras (vector PDF + per-panel PNGs) and cap DPI below.  Auto-on for
-    # HYPER-FLY batches (set in run_batch_analysis); FIREFLY_BULK_FIGURES=0 forces it off.
+    # Multi-file batches (HYPER-FLY included) auto-enable FIREFLY_BULK_FIGURES in
+    # run_batch_analysis; FIREFLY_BULK_FIGURES=0 forces it off.  When set, figure
+    # output follows the separate "Batch / HYPER-FLY figure" settings instead of
+    # the single-sample ones — defaulting to the historical fast behaviour
+    # (110 DPI, no PDF, no per-panel PNGs) but configurable for full-quality
+    # batch output.
     _bulk_figs = os.environ.get("FIREFLY_BULK_FIGURES", "0").strip().lower() in (
         "1", "true", "yes", "on")
-    want_pdf     = bool(p.get("fig_save_pdf", False)) and not _bulk_figs
-    # Per-panel PNG rendering is the dominant figure-save cost (one full
-    # figure rasterisation per panel).  Only render the panels that will
-    # actually be written below: none unless fig_per_panel is on (and never in
-    # bulk), and just the selected subset when fig_single_panels narrows it.
-    if bool(p.get("fig_per_panel", False)) and not _bulk_figs:
+    if _bulk_figs:
+        _eff_fig_dpi   = int(p.get("batch_fig_dpi", 110)) or 110
+        _eff_save_pdf  = bool(p.get("batch_fig_save_pdf", False))
+        _eff_per_panel = bool(p.get("batch_fig_per_panel", False))
+    else:
+        _eff_fig_dpi   = int(p.get("fig_dpi", 150)) or 150
+        _eff_save_pdf  = bool(p.get("fig_save_pdf", False))
+        _eff_per_panel = bool(p.get("fig_per_panel", False))
+    want_pdf = _eff_save_pdf
+    # Per-panel PNG rendering is the dominant figure-save cost (one full figure
+    # rasterisation per panel).  Only render the panels that will be written:
+    # none unless per-panel output is on, and just the selected subset when
+    # fig_single_panels narrows it.
+    if _eff_per_panel:
         _allowed_panels = p.get("fig_single_panels")
         want_panels = None if _allowed_panels is None else set(_allowed_panels)
     else:
@@ -2049,9 +2060,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     _log(f"  Saved (firefly_extras/): {', '.join(extras_saved)}")
 
     figure_path = ""
-    fig_dpi = int(p.get("fig_dpi", 150)) or 150
-    if _bulk_figs:
-        fig_dpi = min(fig_dpi, 110)                  # cheaper rasterisation in bulk (2a)
+    fig_dpi = _eff_fig_dpi
     try:
         figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
         fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
@@ -2072,7 +2081,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # Optional: per-panel PNGs (one image per labelled panel of the grid).
     # The user can filter which panels get written via the Figures tab's
     # "Single-sample panels to export individually" checkbox grid.
-    if bool(p.get("fig_per_panel", False)) and fig_data.get("panels") and not _bulk_figs:
+    if _eff_per_panel and fig_data.get("panels"):
         try:
             allowed = p.get("fig_single_panels")
             if allowed is None:
