@@ -1581,6 +1581,30 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     float `y` (pixels), float `mass` (raw intensity / photon count).
     """
     import pandas as _pd
+    # ── Corruption guard (fail fast, don't hang) ─────────────────────────────
+    # A valid localisations table is line-delimited text.  An interrupted copy
+    # / aborted acquisition can leave a full-size but all-NUL (zero-filled)
+    # file, or one with no line breaks.  pandas' sep=None python-engine sniffer
+    # (the fallback parser below) spins indefinitely on such input — which used
+    # to hang the worker, and a HYPER-FLY slot, FOREVER at "Reading
+    # localisations".  Probe the first 64 KB cheaply and reject it with a clear
+    # message instead of hanging.
+    try:
+        with open(csv_path, "rb") as _probe:
+            _head = _probe.read(65536)
+    except Exception:
+        _head = b""
+    if _head:
+        if _head.count(b"\x00") > len(_head) // 4:
+            raise ValueError(
+                f"{os.path.basename(csv_path)} is mostly null bytes — the file "
+                f"looks corrupt (interrupted copy / aborted acquisition), not a "
+                f"localisations table.")
+        if b"\n" not in _head and b"\r" not in _head:
+            raise ValueError(
+                f"{os.path.basename(csv_path)} has no line breaks in its first "
+                f"64 KB — the file looks corrupt or truncated, not a "
+                f"localisations table.")
     # PALM-Tracer's `locPALMTracer.txt` has a 2-row metadata block at
     # the top before the actual data header:
     #     Width  Height  nb_Planes  ...  (8 cols)

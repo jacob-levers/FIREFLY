@@ -10,6 +10,7 @@ needs the analysis stack).
 import os
 import json
 import pandas as pd
+import pytest
 
 from firefly.analysis.fa_palmtracer import (
     load_summary_from_folder, _win_long_path, _win_disp_path)
@@ -108,3 +109,27 @@ def test_parse_pt_native_msd(tmp_path):
     assert abs(float(imsd[1].iloc[0]) - 0.0037148) < 1e-9    # palmTRACER's own MSD
     assert np.isnan(float(imsd[2].iloc[5]))                   # short track → NaN padded
     assert abs(float(emsd.iloc[0]) - (0.0037148 + 0.0081836) / 2) < 1e-9
+
+
+def test_load_external_locs_rejects_corrupt_null_file(tmp_path):
+    """A zero-filled loc file (interrupted copy / aborted acquisition) must fail
+    FAST with a clear error — not hang pandas' sep=None python sniffer forever,
+    which used to wedge the worker (and a HYPER-FLY slot) at "Reading
+    localisations"."""
+    from firefly.analysis.fa_loaders import load_external_locs
+    p = tmp_path / "locPALMTracer.txt"
+    p.write_bytes(b"\x00" * 200_000)          # full-size but all-NUL
+    with pytest.raises(ValueError) as ei:
+        load_external_locs(str(p), preset="auto")
+    msg = str(ei.value).lower()
+    assert "null" in msg or "corrupt" in msg
+
+
+def test_load_external_locs_rejects_newlineless_file(tmp_path):
+    """A large file with no line breaks at all (garbled / truncated) is rejected
+    too, rather than spinning the sniffer."""
+    from firefly.analysis.fa_loaders import load_external_locs
+    p = tmp_path / "locPALMTracer.txt"
+    p.write_bytes(b"x" * 200_000)             # no newline anywhere
+    with pytest.raises(ValueError):
+        load_external_locs(str(p), preset="auto")

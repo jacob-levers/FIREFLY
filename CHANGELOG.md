@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.65.10
+
+### Fixed: a batch could hang forever on a corrupt (zero-filled) loc file
+
+A `locPALMTracer.txt` (or any external-localisations table) left **zero-filled**
+by an interrupted copy / aborted acquisition — full size on disk but all-NUL —
+made the loader fall through to pandas' `sep=None` Python sniffer, which **spins
+indefinitely** on such input. The file would sit at *"Reading localisations"*
+forever, and in a HYPER-FLY batch it tied up a whole worker slot permanently
+(the dashboard tile never went green or red). The loader now probes the first
+64 KB and **fails fast with a clear "looks corrupt" message**, so a bad file is
+reported as failed and the batch keeps going instead of stalling.
+
 ## v2.65.9
 
 ### Header polish
