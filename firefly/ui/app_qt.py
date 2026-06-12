@@ -479,6 +479,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(8)
         form.setVerticalSpacing(6)
+        # When a [label + control] row is wider than the (narrow, fixed-width)
+        # sidebar, wrap the control onto its own line under the label instead of
+        # letting it overflow under the vertical scrollbar.
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         sec.content_layout.addLayout(form)
         return sec, form
 

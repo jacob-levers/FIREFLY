@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.65.2
+
+### Fix: HYPER-FLY tiles showed only "localising" — no live preview
+
+In a HYPER-FLY parallel batch, each file's tile never showed the live frame +
+detection dots (single-file runs did). Cause: the per-worker queue adapter
+`_HFQueue` implemented `put()` but not `put_nowait()`, and the preview pump emits
+frames via `put_nowait()` — so every preview frame raised a silently-swallowed
+`AttributeError` and was dropped before tagging/forwarding. Added `_HFQueue.put_nowait`
+(delegates to the existing non-blocking `put`), so tiles now render the live
+localisation preview on every backend (incl. Torch-CUDA).
+
+### Fix: tab row "shelf"; sidebar scrollbar overflow; preview-window padding
+
+- The Import/Analysis tab row sat ~14px lower than the sidebar "Analysis
+  Parameters" header (different heights, both top-anchored), leaving a dark
+  "shelf". Both are now pinned to 44px so their bottom edges form one flush line.
+- The left sidebar's Performance section no longer clips under the vertical
+  scrollbar: the import page now uses the viewport-clamping `_NoHScrollArea`
+  (already used elsewhere), form rows wrap when too wide for the narrow sidebar,
+  and section headers can shrink instead of forcing the content wider.
+- The (now floating) Preview viewer's top control row got padding so it isn't
+  flush against the window edges.
+
 ## v2.65.1
 
 ### New: draw FIREFLY comparison graphs from palmTRACER's own MSD/D

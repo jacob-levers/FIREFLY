@@ -2712,6 +2712,14 @@ class _HFQueue:
         except Exception:
             pass
 
+    def put_nowait(self, item):
+        # The per-file preview pump + brake logs emit via put_nowait() (real
+        # mp.Queue API).  Without this method those calls raised AttributeError
+        # — silently swallowed — so HYPER-FLY tiles never received preview_frame
+        # and showed only the stage text ("localising").  `put` is already fully
+        # non-blocking (it throttles/downscales/forwards), so just delegate.
+        self.put(item)
+
 
 def _file_worker_init(fan_q, mgr_cancel, per_file_workers, gpu_sem=None,
                       load_sem=None, load_budget=None):

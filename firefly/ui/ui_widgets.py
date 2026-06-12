@@ -1208,6 +1208,9 @@ class _CollapsibleSection(QtWidgets.QWidget):
         self._header.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed)
+        # Allow the header to shrink below its text width (the title clips
+        # rather than forcing the whole section wider than a narrow sidebar).
+        self._header.setMinimumWidth(0)
         self._header.toggled.connect(self._on_toggled)
         # Optional status chip on the right of the header (see set_badge), so a
         # section's active state reads even when collapsed.  Hidden by default →
@@ -3036,6 +3039,11 @@ class _RoiViewer(QtWidgets.QWidget):
         v.setSpacing(6)
 
         header = QtWidgets.QHBoxLayout()
+        # Pad the top control row so it isn't flush against the window edges
+        # (the viewer now lives in its own floating window).  The napari canvas
+        # below stays full-bleed.
+        header.setContentsMargins(12, 8, 12, 0)
+        header.setSpacing(8)
         self._title = QtWidgets.QLabel("Preview viewer")
         self._title.setStyleSheet(
             f"color: {_THEME['TXT']}; font-weight: 600; font-size: 13px;")

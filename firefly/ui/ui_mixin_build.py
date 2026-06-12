@@ -104,8 +104,12 @@ class BuildMixin:
         self._sidebar_title = QtWidgets.QLabel("Analysis Parameters")
         self._sidebar_title.setStyleSheet(
             f"color: {_THEME['TXT']}; font-weight: 800; font-size: 15px; "
-            f"padding: 14px 12px 10px 12px; "
+            f"padding: 12px 12px 10px 12px; "
             f"border-bottom: 1px solid {_THEME['BORDER']};")
+        # Pin to the same height as the tab bar (set below) so the sidebar
+        # header and the Import/Analysis tab row share one flush bottom edge —
+        # otherwise the taller header leaves a dark "shelf" above the tabs.
+        self._sidebar_title.setFixedHeight(44)
         sb_outer.addWidget(self._sidebar_title)
 
         self._sidebar_stack = QtWidgets.QStackedWidget()
@@ -117,16 +121,15 @@ class BuildMixin:
         import_page = QtWidgets.QWidget()
         ip_v = QtWidgets.QVBoxLayout(import_page)
         ip_v.setContentsMargins(0, 0, 0, 0); ip_v.setSpacing(0)
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # _NoHScrollArea clamps the inner widget's width to the viewport (which
+        # excludes the vertical scrollbar), so the Performance section's form
+        # rows compress to fit instead of clipping under the scrollbar — a plain
+        # QScrollArea only hid the H-bar and let the wide content overflow right.
+        scroll = _NoHScrollArea()
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll_inner = QtWidgets.QWidget()
         sb_layout = QtWidgets.QVBoxLayout(scroll_inner)
-        # Right margin reserves the 10px vertical scrollbar gutter so form
-        # controls (Performance section) don't sit under the scrollbar handle.
-        sb_layout.setContentsMargins(12, 0, 22, 12)
+        sb_layout.setContentsMargins(12, 0, 12, 12)
         sb_layout.setSpacing(8)
         scroll.setWidget(scroll_inner)
         ip_v.addWidget(scroll)
@@ -167,6 +170,10 @@ class BuildMixin:
         # Tab order: Import → Analysis → Compare → Visualise → Re-process.
         # Figures has moved into Preferences (cogwheel in the header).
         self.tabs = QtWidgets.QTabWidget()
+        # Match the sidebar header height (44px) so the tab row's bottom edge
+        # lines up with the sidebar header's bottom border — kills the dark
+        # "shelf" the taller header otherwise left above the tabs.
+        self.tabs.tabBar().setFixedHeight(44)
         self._build_import_tab()
         self._build_analysis_tab()
         # Figures widget is built once, parked unattached, and re-parented
