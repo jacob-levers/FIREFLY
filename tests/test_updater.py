@@ -79,6 +79,33 @@ def test_parse_release_empty():
         "tag": "", "html_url": "", "body": "", "asset": None}
 
 
+# ── rate-limit handling (GitHub 60-req/hr per IP, shared on a NAT) ───────
+def test_fetch_latest_release_rate_limited(monkeypatch):
+    import io
+    hdrs = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1781231765"}
+
+    def _raise(*a, **k):
+        raise u.urllib.error.HTTPError(
+            "https://api.github.com/x", 403, "rate limited", hdrs, io.BytesIO(b""))
+    monkeypatch.setattr(u.urllib.request, "urlopen", _raise)
+    rel = u.fetch_latest_release("https://api.github.com/x")
+    assert rel.get("_rate_limited") is True
+    assert rel.get("_reset") == 1781231765
+    parsed = u.parse_release(rel)
+    assert parsed["rate_limited"] is True
+    assert parsed["tag"] == "" and parsed["asset"] is None
+    assert parsed["rate_limit_reset"] == 1781231765
+
+
+def test_fetch_latest_release_network_error_is_not_rate_limit(monkeypatch):
+    def _raise(*a, **k):
+        raise OSError("offline")
+    monkeypatch.setattr(u.urllib.request, "urlopen", _raise)
+    rel = u.fetch_latest_release("https://api.github.com/x")
+    assert rel == {}                                   # plain "couldn't reach"
+    assert "rate_limited" not in u.parse_release(rel)
+
+
 # ── bundle-path resolution ──────────────────────────────────────────────
 @pytest.mark.skipif(
     os.name == "nt",

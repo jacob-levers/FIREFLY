@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.65.5
+
+### Fix: update check now distinguishes a GitHub rate-limit from "no internet"
+
+GitHub's unauthenticated API allows only **60 update checks per hour per IP**,
+which is shared by every device behind a NAT (e.g. a university network) — so the
+check is hit routinely and FIREFLY used to report it as "couldn't reach GitHub.
+Check your internet connection." The check now detects the rate-limit response
+(HTTP 403/429 with `X-RateLimit-Remaining: 0`) and shows an accurate message —
+"Update check rate-limited by GitHub … try again in about N min" — with the actual
+reset time, instead of blaming the network. Normal offline/network failures still
+show the connection message. ("View release page" continues to work in both cases.)
+
 ## v2.65.4
 
 ### HYPER-FLY controls hidden on machines that can't run it

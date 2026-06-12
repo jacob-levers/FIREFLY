@@ -103,9 +103,14 @@ def is_newer(latest: str, current: str) -> bool:
 
 # ── GitHub release discovery ──────────────────────────────────────────────────
 def fetch_latest_release(api_url: str, timeout: float = 6.0) -> dict:
-    """GET the GitHub 'latest release' JSON.  Returns the parsed dict, or
-    an empty dict on ANY failure (offline, rate-limited, bad JSON) so
-    callers can treat "no update" and "couldn't check" uniformly."""
+    """GET the GitHub 'latest release' JSON.  Returns the parsed dict, or an
+    empty dict on ANY failure (offline, bad JSON).
+
+    On a GitHub API RATE LIMIT (HTTP 403/429 with X-RateLimit-Remaining: 0)
+    returns a marker ``{"_rate_limited": True, "_reset": <epoch>}`` instead — the
+    unauthenticated limit is only 60 requests/hour PER IP, which is shared by
+    every device behind a NAT (e.g. a university network), so it's hit routinely
+    and must NOT be reported as 'check your internet connection'."""
     try:
         req = urllib.request.Request(
             api_url,
@@ -115,6 +120,21 @@ def fetch_latest_release(api_url: str, timeout: float = 6.0) -> dict:
             blob = resp.read()
         data = json.loads(blob)
         return data if isinstance(data, dict) else {}
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 429):
+            try:
+                hdrs = exc.headers or {}
+                rem = hdrs.get("X-RateLimit-Remaining")
+                reset = hdrs.get("X-RateLimit-Reset")
+                if rem == "0" or hdrs.get("Retry-After"):
+                    try:
+                        reset_epoch = int(reset) if reset else 0
+                    except (TypeError, ValueError):
+                        reset_epoch = 0
+                    return {"_rate_limited": True, "_reset": reset_epoch}
+            except Exception:
+                pass
+        return {}
     except Exception:
         return {}
 
@@ -147,6 +167,10 @@ def parse_release(release_json: dict) -> dict:
     for the current OS (or None if this platform has no matching asset)."""
     if not isinstance(release_json, dict):
         release_json = {}
+    if release_json.get("_rate_limited"):
+        return {"tag": "", "html_url": "", "body": "", "asset": None,
+                "rate_limited": True,
+                "rate_limit_reset": int(release_json.get("_reset") or 0)}
     return {
         "tag": release_json.get("tag_name") or "",
         "html_url": release_json.get("html_url") or "",

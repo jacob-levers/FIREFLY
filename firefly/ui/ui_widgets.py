@@ -759,10 +759,25 @@ class _UpdateDialog(QtWidgets.QDialog):
         v.setContentsMargins(22, 22, 22, 18)
         v.setSpacing(12)
 
-        if not self._release:
-            head, sub = ("Couldn't check for updates",
-                         "FIREFLY couldn't reach GitHub. Check your internet "
-                         "connection and try again.")
+        if not (self._release and self._release.get("tag")):
+            if self._release and self._release.get("rate_limited"):
+                import time as _t
+                reset = int(self._release.get("rate_limit_reset") or 0)
+                now = int(_t.time())
+                mins = max(1, (reset - now + 59) // 60) if reset > now else 0
+                when = (f"  Try again in about {mins} min." if mins
+                        else "  Try again shortly.")
+                head, sub = (
+                    "Update check rate-limited by GitHub",
+                    "GitHub allows only 60 update checks per hour per network "
+                    "address, and that was reached — common on shared / "
+                    "university networks where many devices share one public "
+                    "address." + when + "  Your internet connection is fine; "
+                    "you can also use 'View release page' below.")
+            else:
+                head, sub = ("Couldn't check for updates",
+                             "FIREFLY couldn't reach GitHub. Check your internet "
+                             "connection and try again.")
         elif newer:
             head, sub = (f"FIREFLY {self._tag} is available",
                          f"You're currently on {self._current}.")
