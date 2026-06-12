@@ -113,8 +113,8 @@ class BuildMixin:
         # bottom borders form one flush line with no dark "shelf".
         self._sidebar_title.setAlignment(
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        self._sidebar_title.setMinimumHeight(40)
-        sb_outer.addWidget(self._sidebar_title)
+        self._sidebar_title.setMinimumHeight(30)  # pre-sync floor; final height
+        sb_outer.addWidget(self._sidebar_title)    # set in _sync_header_row_height
 
         self._sidebar_stack = QtWidgets.QStackedWidget()
         sb_outer.addWidget(self._sidebar_stack, stretch=1)
@@ -174,10 +174,11 @@ class BuildMixin:
         # Tab order: Import → Analysis → Compare → Visualise → Re-process.
         # Figures has moved into Preferences (cogwheel in the header).
         self.tabs = QtWidgets.QTabWidget()
-        # Do NOT force the tab-bar height here — forcing it taller than the
-        # tabs' natural size stretched them into a tall, empty box.  Its height
-        # is set to a comfortable font-derived value (shared with the sidebar
-        # header) in _sync_header_row_height(), called once the tabs are built.
+        # Do NOT force the tab-bar height — a QTabBar won't stretch its tabs to
+        # fill an over-tall bar, so forcing it leaves the selected tab floating
+        # with a gap above the pane.  The bar keeps its natural height (set by
+        # the tab QSS padding); the sidebar header is matched to it in
+        # _sync_header_row_height(), called once the tabs are built.
         self._build_import_tab()
         self._build_analysis_tab()
         # Figures widget is built once, parked unattached, and re-parented
@@ -238,23 +239,23 @@ class BuildMixin:
         self.statusBar().showMessage("Ready")
 
     def _sync_header_row_height(self):
-        """Match the sidebar title bar and the tab bar to ONE comfortable
-        height derived from the tab font, so their bottom borders form a single
-        flush line (no dark "shelf" above the tabs) and neither is stretched.
+        """Match the sidebar title bar to the tab bar's **natural** height so
+        their bottom borders form one flush line (no dark "shelf").
 
-        Computed from font metrics rather than a hard-coded pixel count so it
-        stays correct across fonts / DPI; both widgets are pinned to the same
-        value, guaranteeing the two headers align exactly.
+        Crucially we do NOT force the tab bar taller: a QTabBar does not stretch
+        its tabs to fill an over-tall bar — each tab keeps its natural height
+        and anchors to the top, leaving the *selected* tab floating with an
+        empty gap above the content pane (this was the "broken / disconnected
+        tab" look).  So we read the bar's own ``sizeHint().height()`` and size
+        only the sidebar title to it; the bar stays natural, so every tab fills
+        it and the selected tab's bottom sits flush against the pane.
         """
         try:
-            fm = self.tabs.tabBar().fontMetrics()
-            # tab QSS is `padding: 8px 16px` + 1px borders → ~font + 18px.
-            h = max(40, fm.height() + 18)
-            self.tabs.tabBar().setFixedHeight(h)
+            h = self.tabs.tabBar().sizeHint().height()
             self._sidebar_title.setFixedHeight(h)
         except Exception:
             # Never let a styling tweak break the window build.
-            self._sidebar_title.setFixedHeight(40)
+            self._sidebar_title.setFixedHeight(34)
 
     def _build_header_banner(self) -> QtWidgets.QWidget:
         """Thin header strip:  FIREFLY                Fluorescence Inference & Reconstruction Engine | By Jacob Levers"""

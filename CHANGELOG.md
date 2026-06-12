@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.65.7
+
+### Tab row fix (properly this time) — the selected tab no longer floats
+
+v2.65.6's header tweak reduced but didn't remove the problem. The tab bar was
+still being forced *taller* than the tabs themselves — and a `QTabBar` doesn't
+stretch its tabs to fill the extra space, so the selected tab sat with an empty
+gap beneath it, **detached from the content panel** (the "broken" look). The tab
+bar now keeps its natural height, so every tab fills it and the selected tab
+sits flush against the content; the sidebar title is matched to that same height
+so their bottom borders form one continuous line, and the tabs get slightly more
+padding. Verified by rendering the real themed widgets offscreen.
+
 ## v2.65.6
 
 ### Fixed: "Failed to load Python DLL python313.dll" after an in-app update
