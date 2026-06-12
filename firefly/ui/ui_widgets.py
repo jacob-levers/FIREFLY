@@ -3646,6 +3646,7 @@ class _RoiViewer(QtWidgets.QWidget):
         contrast on a grey background at both ends of the scale."""
         import numpy as _np
         try:
+            import matplotlib as _mpl
             import matplotlib.cm as _cm
             import matplotlib.colors as _mc
             m = _np.asarray(mass, dtype=float)
@@ -3659,7 +3660,7 @@ class _RoiViewer(QtWidgets.QWidget):
                 vmax = vmin + 1.0
             norm = _mc.Normalize(vmin=vmin, vmax=vmax)
             try:
-                cmap = _cm.get_cmap("turbo")
+                cmap = _mpl.colormaps["turbo"]   # cm.get_cmap removed in mpl 3.9
             except Exception:
                 cmap = _cm.viridis
             rgba = cmap(norm(logm))

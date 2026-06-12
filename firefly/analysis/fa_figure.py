@@ -578,7 +578,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         clustered = ~noise
         if clustered.any():
             n_c = max(cluster_labels.max() + 1, 1)
-            cmap_c = plt.cm.get_cmap("tab20", n_c)
+            # matplotlib.cm.get_cmap was removed in mpl 3.9 — use the colormap
+            # registry (mpl >= 3.6) so this works on the bundled build too.
+            cmap_c = matplotlib.colormaps["tab20"].resampled(n_c)
             ax.scatter(xy_um[clustered, 0], xy_um[clustered, 1],
                        s=1.5, c=cluster_labels[clustered], cmap=cmap_c,
                        alpha=0.7, linewidths=0, rasterized=True,

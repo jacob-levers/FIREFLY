@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.65.8
+
+### Fixed: figures failing with "module 'matplotlib.cm' has no attribute 'get_cmap'"
+
+Figure rendering crashed on the bundled matplotlib (≥ 3.9, which **removed**
+`matplotlib.cm.get_cmap`), so every affected run failed right at *"Rendering
+figure"* — conspicuously in palmTRACER batches. The cluster-map panel
+([fa_figure.py](firefly/analysis/fa_figure.py)) and the preview viewer's mass
+colouring ([ui_widgets.py](firefly/ui/ui_widgets.py)) now use the modern
+colormap registry (`matplotlib.colormaps[...]`), which works across matplotlib
+versions. **This was a rendering bug, not corrupt data** — the localisations
+loaded fine; only the figure step failed, so re-running the affected files on
+this build produces their figures normally.
+
 ## v2.65.7
 
 ### Tab row fix (properly this time) — the selected tab no longer floats
