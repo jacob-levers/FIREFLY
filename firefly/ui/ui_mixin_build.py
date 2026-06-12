@@ -133,7 +133,9 @@ class BuildMixin:
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll_inner = QtWidgets.QWidget()
         sb_layout = QtWidgets.QVBoxLayout(scroll_inner)
-        sb_layout.setContentsMargins(12, 0, 12, 12)
+        # Top margin gives the "Search parameters…" field breathing room below
+        # the sidebar header's divider line instead of butting against it.
+        sb_layout.setContentsMargins(12, 10, 12, 12)
         sb_layout.setSpacing(8)
         scroll.setWidget(scroll_inner)
         ip_v.addWidget(scroll)
@@ -251,8 +253,20 @@ class BuildMixin:
         it and the selected tab's bottom sits flush against the pane.
         """
         try:
-            h = self.tabs.tabBar().sizeHint().height()
+            tb = self.tabs.tabBar()
+            h = tb.sizeHint().height()
             self._sidebar_title.setFixedHeight(h)
+            # Fine-align: the sidebar's frame can inset the title by ~1px,
+            # leaving its bottom border a hair below the tab bar's.  Once both
+            # are realised on screen, measure the real offset and nudge the
+            # title so the two bottom borders meet exactly (no residual shelf).
+            if tb.isVisible() and self._sidebar_title.isVisible():
+                win = self.window()
+                d = (self._sidebar_title.mapTo(
+                        win, self._sidebar_title.rect().bottomLeft()).y()
+                     - tb.mapTo(win, tb.rect().bottomLeft()).y())
+                if d:
+                    self._sidebar_title.setFixedHeight(max(20, h - d))
         except Exception:
             # Never let a styling tweak break the window build.
             self._sidebar_title.setFixedHeight(34)

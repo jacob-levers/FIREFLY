@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.65.9
+
+### Header polish
+
+- The **"Search parameters…"** field now has a little breathing room below the
+  sidebar header's divider line instead of butting right up against it.
+- The sidebar header and the tab row are now **pixel-aligned**: the last ~1 px
+  offset between their bottom borders (the faint remaining "shelf") is measured
+  at runtime and nudged out, so the divider is one continuous line.
+
 ## v2.65.8
 
 ### Fixed: figures failing with "module 'matplotlib.cm' has no attribute 'get_cmap'"
