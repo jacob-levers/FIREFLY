@@ -62,7 +62,8 @@ release on the [Releases page](https://github.com/jacob-levers/FIREFLY/releases)
 
 1. Download `FIREFLY-Windows.exe` from the latest release.
 2. Double-click to launch. First launch unpacks bundled libraries to
-   `%TEMP%` (~30 s); subsequent launches are instant.
+   `%LOCALAPPDATA%\FIREFLY\bundle` — this can take a few minutes the first
+   time while antivirus scans the fresh binaries; later launches are quick.
 
 > **GPU acceleration on Windows:** the bundled `FIREFLY-Windows.exe`
 > ships **CPU-only** PyTorch. The CUDA-enabled torch wheel is ~2.5 GB
@@ -127,13 +128,14 @@ The app opens on a welcome page with four action cards:
 | Card | Workflow |
 |---|---|
 | **Analyse a sample** | Run the full pipeline on one `.czi` / `.tif` file |
-| **Batch a folder** | Process every file in a folder, sequentially |
+| **Batch a folder** | Process every file in a folder — in parallel on capable machines (HYPER-FLY) |
 | **Compare groups** | Overlay 2–6 analysis-output folders into one figure |
 | **Visualise tracks** | Open a previous run in an embedded napari viewer |
 
 Once you pick a card the welcome page is replaced by the workflow tabs
-(**Import / Analysis / Figures / Compare / Visualise**) plus a sidebar of
-analysis parameters. The landing page is shown only at launch, not on
+(**Import / Analysis / Compare / Results / Visualise / Re-process**) plus a
+sidebar of analysis parameters. (Figure styling now lives in **Preferences** —
+the cogwheel in the header.) The landing page is shown only at launch, not on
 every tab switch.
 
 ---
@@ -152,6 +154,10 @@ every tab switch.
   by other software (TrackMate, palmTRACER, Picasso, ThunderSTORM) without
   re-detecting. Column conventions are auto-detected. The whole downstream
   pipeline (linking, MSD, diffusion, figures) runs on the imported spots.
+  For palmTRACER `.PT` folders you can either **re-analyse** the localisations
+  through FIREFLY's pipeline, or **reuse palmTRACER's own per-track D / MSD** to
+  draw the matching FIREFLY figures without recomputation (offered for single
+  files and batches).
 - **Streaming chunked localisation** so large stacks (10⁴+ frames) don't
   need to live in RAM all at once. Each chunk's mass values stream into a
   live histogram on the Analysis tab so a bad threshold is obvious within
@@ -159,8 +165,9 @@ every tab switch.
 - **Live detection preview** during analysis — every preprocessed frame
   flows through a 60 FPS canvas with detected spots overlaid, so you can
   *watch* the pipeline at work.
-- **Live preview viewer on the Import tab** — embedded napari viewer that
-  auto-loads on file selection. Scrub frames, see detection circles
+- **Preview viewer** — a **Preview viewer** button on the Import tab opens a
+  floating napari window for the selected file (single file or batch series),
+  keeping the tab itself uncluttered. Scrub frames, see detection circles
   colour-coded by integrated mass (turbo on log scale), toggle a
   bandpass-filtered view that shows what the detector actually sees, and
   overlay the auto/manual-threshold ROI mask in real time as you tweak it.
@@ -255,6 +262,11 @@ Four modes:
 - **Interactive track inspector** on the Visualise tab — click a track
   in the napari Tracks layer to see its particle ID, length, frame span,
   D, α, motion class, displacement, path length, straightness, mean mass.
+- **HYPER-FLY parallel batch** — on a large workstation (**≥ 32 cores and
+  ≥ 192 GB RAM**) a folder batch fans out across several files at once in
+  parallel worker processes, each with its own live preview tile in a
+  dashboard. RAM-staggered loading keeps the box from over-committing memory.
+  The controls stay hidden on machines that can't meet the bar.
 - **Auto-update check** at launch — non-blocking GitHub Releases ping;
   shows a pill in the header when a newer version is available.
 - **Crash reporter** — every uncaught exception writes a detailed report
@@ -308,9 +320,16 @@ another tool produced — no re-detection.
 3. Click **Start**. Detection is skipped; linking (trackpy), MSD,
    diffusion, motion classification and all figures run as normal.
 
-> palmTRACER `.PT` folders contain several files — FIREFLY uses the
-> `locPALMTracer` localisation table; the `trcPALMTracer-*` track / D /
-> MSD files are palmTRACER's own outputs and are ignored on import.
+> **palmTRACER `.PT` folders** can be analysed two ways. *Re-analyse with
+> FIREFLY* feeds the `locPALMTracer` localisation table through FIREFLY's own
+> tracking + diffusion pipeline (FIREFLY's numbers). *Use palmTRACER's own
+> MSD/D* instead reads palmTRACER's per-track diffusion (`trcPALMTracer-*-D`)
+> and MSD curves (`trcPALMTracer-*-MSD`) and renders the matching FIREFLY
+> figures (MSD, ensemble MSD, log₁₀D, D distribution, AUC) from those exact
+> values — skipping the expensive re-fit. Metrics palmTRACER doesn't export
+> (motion class, JDD, dwell times, turning angles, α) are re-derived from the
+> trajectories or marked N/A. FIREFLY never writes into your `.PT` source
+> folders.
 
 ### Batch a folder
 
@@ -331,11 +350,20 @@ another tool produced — no re-detection.
      run at scan time catches the "full-size on disk but all-null"
      failure mode (aborted acquisition / interrupted copy) so it can't
      silently break the batch.
+   - An **input type** selector switches the scan between **raw images**
+     (`.tif` / `.czi`) and **palmTRACER data**; in palmTRACER mode you pick
+     **Re-analyse with FIREFLY** or **Use palmTRACER's own MSD/D** (above) for
+     the whole batch.
+   - An **Output folder** picker sets where results land (defaults to
+     `<input>/batch_results/`).
 3. Click **Open in viewer** to preview any series before starting
    (the heavy file load only fires here, never on checkbox toggles —
    selecting / deselecting is always instant).
 4. Click **Start**. The Analysis cockpit resets between series; each
-   gets its own subfolder under `<input>/batch_results/<stem>/`.
+   gets its own subfolder under the output folder. On a large workstation
+   (**≥ 32 cores and ≥ 192 GB RAM**) FIREFLY's **HYPER-FLY** engine runs
+   several files in parallel processes with a live per-file tile dashboard;
+   smaller machines process one file at a time.
 
 ### Compare groups
 
@@ -491,6 +519,13 @@ the full set.
 → Almost always memory pressure or an MPS driver hang. Close other
 apps, lower chunk size, and check
 `~/Library/Logs/DiagnosticReports/` for a panic log.
+
+**Windows: "Failed to load Python DLL python313.dll" after an update**
+→ Fixed in v2.65.6. If you still see it while updating *to* v2.65.6 (the
+currently-installed build is what performs the install), the new version is
+already in place — just click **OK** and reopen `FIREFLY-Windows.exe`. Every
+update from v2.65.6 onward restarts cleanly. The updater log is at
+`%LOCALAPPDATA%\FIREFLY\updates\relaunch.log`.
 
 If you hit a crash, FIREFLY writes a full report to
 `~/Library/Logs/FIREFLY/crash_reports/` (macOS) or
