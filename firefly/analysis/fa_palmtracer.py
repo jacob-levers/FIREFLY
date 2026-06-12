@@ -184,7 +184,7 @@ def _parse_pt_native_msd(path, max_lagtime=20):
     return imsd_df, emsd_series
 
 
-def load_summary_from_palmtracer(folder, use_native=False):
+def load_summary_from_palmtracer(folder, use_native=False, cache=True):
     """
     Read a raw PALM-Tracer output folder and return the same dict shape as
     `load_summary_from_folder` so the Compare tab can treat it identically.
@@ -314,8 +314,10 @@ def load_summary_from_palmtracer(folder, use_native=False):
     # ── Cache the recomputed FIREFLY-only metrics next to the PALM-Tracer
     # files so re-opening this folder in the Compare tab is instant.  The
     # cache lives in <folder>/firefly_extras/ and uses FIREFLY's native
-    # CSV/JSON schema.
-    try:
+    # CSV/JSON schema.  Skipped when cache=False (e.g. batch rendering into a
+    # separate output dir — don't write into the user's source .PT folder).
+    if cache:
+      try:
         import json as _json
         extras_dir = os.path.join(folder, "firefly_extras")
         os.makedirs(extras_dir, exist_ok=True)
@@ -352,7 +354,7 @@ def load_summary_from_palmtracer(folder, use_native=False):
         if mobile_frac_df is not None and len(mobile_frac_df):
             mobile_frac_df.to_csv(
                 os.path.join(extras_dir, f"{stem}_mobile_fraction.csv"), index=False)
-    except Exception:
+      except Exception:
         # Caching is best-effort — never fail the load over a write error
         pass
 

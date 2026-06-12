@@ -2841,6 +2841,18 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                     p["frame_interval"] = float(self.s_frame_interval.value())
                 p["source"]     = "external_csv"
                 p["csv_preset"] = _csv_preset
+                # palmTRACER "Use palmTRACER's own MSD/D": render the FIREFLY
+                # figure + CSVs straight from palmTRACER's native D/MSD instead
+                # of re-tracking the localisations.
+                if (getattr(self, "c_batch_input_mode", None)
+                        and self.c_batch_input_mode.currentText()
+                            .startswith("palmTRACER")
+                        and getattr(self, "c_batch_pt_mode", None)
+                        and self.c_batch_pt_mode.currentText().startswith("Use")):
+                    p["palmtracer_use_native"] = True
+                    p["palmtracer_folder"]     = os.path.dirname(fpath)
+                    p["theme"]         = self.c_fig_theme.currentText()
+                    p["fig_proj_cmap"] = self.c_fig_proj_cmap.currentText()
             else:
                 p["series_files"] = list(g.get("files") or [])
             params_list.append(p)

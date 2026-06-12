@@ -1761,19 +1761,16 @@ class BuildMixin:
             self._on_batch_input_mode_changed)
         trow.addWidget(self.c_batch_input_mode)
         # palmTRACER sub-mode (shown only in palmTRACER input mode).
-        # NOTE: "Re-analyse" runs the full FIREFLY pipeline on the palmTRACER
-        # localisations (live).  "Use palmTRACER's own MSD/D" (drawing FIREFLY
-        # graphs from palmTRACER's native MSD/LogD values) is a follow-up that
-        # needs the native trcPALMTracer-*-MSD/-D format verified first.
         self.c_batch_pt_mode = QtWidgets.QComboBox()
         self.c_batch_pt_mode.addItems(
             ["Re-analyse with FIREFLY",
-             "Use palmTRACER's own MSD/D (coming soon)"])
+             "Use palmTRACER's own MSD/D"])
         self.c_batch_pt_mode.setToolTip(
             "Re-analyse: run FIREFLY's full tracking + diffusion on the\n"
             "palmTRACER localisations (produces all FIREFLY metrics).\n"
-            "Use palmTRACER's own MSD/D: draw FIREFLY graphs straight from\n"
-            "palmTRACER's native MSD/LogD values — coming in a follow-up.")
+            "Use palmTRACER's own MSD/D: render the FIREFLY figure + CSVs\n"
+            "straight from palmTRACER's native trcPALMTracer-*-D/-MSD values\n"
+            "(exact palmTRACER numbers; alpha / motion-class stay unclassified).")
         self.c_batch_pt_mode.setVisible(False)
         trow.addWidget(self.c_batch_pt_mode)
         trow.addStretch(1)

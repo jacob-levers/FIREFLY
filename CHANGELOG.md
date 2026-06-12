@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.65.3
+
+### New: batch palmTRACER "Use palmTRACER's own MSD/D" now renders full outputs
+
+The Batch tab's palmTRACER sub-mode **"Use palmTRACER's own MSD/D"** is now live
+(was a placeholder). For each palmTRACER `.PT` folder it renders the standard
+FIREFLY figure + PALM-Tracer CSVs + extras using palmTRACER's native
+`trcPALMTracer-*-D` / `-MSD` values (no re-tracking) — verified on a real dataset
+(6,989 tracks / 372,941 locs → a full 2.5 MB figure). Since palmTRACER data has no
+raw image, a single-frame localisation-density projection is synthesised for the
+projection panel; α / motion-class stay unclassified (palmTRACER doesn't compute
+them); JDD / dwell / turning are re-derived from the palmTRACER tracks. This gives
+the same "use palmTRACER's own MSD/D" option for per-folder (single) analysis that
+the Compare tab already offers for groups. Outputs go to the batch output folder;
+nothing is written into the source `.PT` folder.
+
 ## v2.65.2
 
 ### Fix: HYPER-FLY tiles showed only "localising" — no live preview

@@ -450,6 +450,86 @@ def _win_disp_path(p):
         return p
 
 
+def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, log):
+    """Render the standard FIREFLY figure + CSVs for a palmTRACER folder using
+    palmTRACER's OWN native MSD / D values (no re-localisation).  palmTRACER data
+    has no raw image, so a single-frame loc-density projection is synthesised for
+    the projection panel.  Returns the same done-payload shape as
+    ``_run_one_analysis``."""
+    import numpy as _np
+    from firefly.analysis.fa_palmtracer import (load_summary_from_palmtracer,
+                                                save_palmtracer_csvs)
+    from firefly.analysis.fa_figure import make_figure
+
+    fpath = p["file"]
+    folder = p.get("palmtracer_folder") or os.path.dirname(os.path.abspath(fpath))
+    log("  Loading palmTRACER native MSD/D …")
+    # Call the palmTRACER loader directly (forces native parse + gets imsd) and
+    # cache=False so we never write firefly_extras into the user's source folder.
+    s = load_summary_from_palmtracer(folder, use_native=True, cache=False)
+    params = s.get("params") or {}
+    px = float(params.get("pixel_size_um", 0.106) or 0.106)
+    fi = float(params.get("frame_interval_s", 0.02) or 0.02)
+    locs    = s.get("locs")
+    tracks  = s.get("tracks")
+    diff_df = s.get("diffusion")
+    imsd_df = s.get("imsd")
+    emsd_df = s.get("ensemble_msd")
+
+    have_locs = locs is not None and len(locs)
+    W = int(s.get("width") or 0) or (int(locs["x"].max()) + 1 if have_locs else 1)
+    H = int(s.get("height") or 0) or (int(locs["y"].max()) + 1 if have_locs else 1)
+    # Synthesise a single-frame loc-density projection (no raw image exists).
+    proj = _np.zeros((H, W), dtype=_np.float32)
+    if have_locs:
+        xi = _np.clip(locs["x"].to_numpy().astype(int), 0, W - 1)
+        yi = _np.clip(locs["y"].to_numpy().astype(int), 0, H - 1)
+        _np.add.at(proj, (yi, xi), 1.0)
+    stack = proj[None, :, :]
+
+    fig_dpi = int(p.get("fig_dpi", 150)) or 150
+    fig_data = make_figure(
+        stack, tracks, imsd_df, emsd_df, diff_df, px, fi,
+        fig_theme=p.get("theme", "Dark"),
+        proj_cmap=p.get("fig_proj_cmap", "Inferno"),
+        jdd=s.get("jdd"), turning_angles=s.get("turning_angles"),
+        mobile_frac_df=s.get("mobile_fraction"), dwell_df=s.get("dwell_times"),
+        want_panels=set())
+    figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
+    fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
+
+    try:
+        save_palmtracer_csvs(data_dir, stem, locs, tracks, diff_df, imsd_df,
+                             pixel_size_um=px, frame_interval_s=fi,
+                             width=W, height=H, n_frames=int(s.get("n_frames") or 0))
+    except Exception as _e:
+        log(f"  WARN: PALM-Tracer CSV save skipped ({_e})")
+    try:
+        if diff_df is not None:
+            diff_df.to_csv(os.path.join(extras_dir, f"{stem}_diffusion_summary.csv"), index=False)
+        if emsd_df is not None:
+            emsd_df.to_csv(os.path.join(extras_dir, f"{stem}_ensemble_msd.csv"), index=False)
+        if tracks is not None:
+            tracks.to_csv(os.path.join(extras_dir, f"{stem}_trajectories.csv"), index=False)
+    except Exception:
+        pass
+
+    n_tracks = int(diff_df.shape[0]) if diff_df is not None else 0
+    n_locs   = int(len(locs)) if have_locs else 0
+    log(f"  palmTRACER native render done: {n_tracks} tracks, {n_locs} locs "
+        f"(MSD/D from palmTRACER; alpha/motion-class unclassified).")
+    summary = {"stem": stem, "n_tracks": n_tracks, "n_locs": n_locs,
+               "source": "palmtracer_native"}
+    return {
+        "stem":        stem,
+        "out_dir":     _win_disp_path(out_dir),
+        "figure_path": _win_disp_path(figure_path),
+        "summary":     summary,
+        "n_tracks":    n_tracks,
+        "n_locs":      n_locs,
+    }
+
+
 def _run_one_analysis(params: dict, msg_queue, cancel_event,
                       _log, _prog) -> dict:
     """Run the FIREFLY pipeline on one input file.
@@ -517,6 +597,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     extras_dir = os.path.join(out_dir, "firefly_extras")
     for d in (fig_dir, data_dir, extras_dir):
         os.makedirs(d, exist_ok=True)
+
+    # ── palmTRACER native-MSD/D render path ────────────────────────────────
+    # "Use palmTRACER's own MSD/D": skip re-localise/track — load palmTRACER's
+    # native per-track D + MSD curves, synthesise a loc-density projection
+    # (palmTRACER data has no raw image), and render the standard FIREFLY figure
+    # + CSVs from those exact values.  Falls through to normal re-analysis on
+    # any failure.
+    if p.get("palmtracer_use_native"):
+        try:
+            return _render_palmtracer_native(
+                p, out_dir, stem, fig_dir, data_dir, extras_dir,
+                lambda m: msg_queue.put(("log", m)))
+        except Exception as _pt_exc:
+            msg_queue.put(("log", f"  WARN: native palmTRACER render failed "
+                                  f"({_pt_exc}); re-analysing instead."))
 
     # ── Pre-flight disk-space check ────────────────────────────────────────
     # A 200k-localisation run produces ~50 MB of CSVs, plus PDFs / PNGs /
