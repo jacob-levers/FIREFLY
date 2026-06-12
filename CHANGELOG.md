@@ -1,5 +1,57 @@
 # Changelog
 
+## v2.65.0
+
+### Import/Batch UX overhaul
+
+- **Preview viewer is now a separate window.** The napari preview no longer eats
+  ~⅔ of the Import tab — click **Preview viewer** (single mode) or batch
+  **Open in viewer** to open it in a reusable, non-modal window. napari spins up
+  lazily on first open, so the Import tab is lighter and uncluttered.
+- **Batch output folder.** A new **Output folder** field (with Browse) on the
+  Batch panel lets you send outputs anywhere; leave it empty for the previous
+  `<input folder>/batch_results` behaviour. Each run is still wrapped in its own
+  per-stem subfolder.
+- **Batch input type: Raw images vs palmTRACER data.** A new **Input type**
+  dropdown. "Raw images" scans for `.tif`/`.czi` (and external-loc CSV/TXT) as
+  before; **palmTRACER data** descends into `.PT` / analysis folders and queues
+  the `locPALMTracer` localisation tables, re-analysing them through FIREFLY's
+  full tracking + diffusion pipeline. (Drawing FIREFLY graphs from palmTRACER's
+  *native* MSD/D values is a follow-up.)
+- **Batch series tree no longer overflows.** The series list is height-capped and
+  scrolls internally instead of overlapping the Select-all / Open-in-viewer
+  buttons.
+- **Sidebar scrollbar gutter.** Reserved the vertical-scrollbar width so the
+  Performance section's controls no longer sit under the scrollbar.
+
+### Fix: stray grey "grid" appeared over other tabs after a comparison
+
+Configuring/generating a comparison figure could leave an empty grey matplotlib
+axes grid floating over unrelated tabs (e.g. the Analysis page). Cause: the in-GUI
+figure-preview renderer called `matplotlib.use("Agg", force=False)`, which is a
+no-op once the interactive QtAgg backend is active, so `plt.subplots()` built real
+on-screen Qt canvas widgets. The preview now renders fully off-screen via the
+object-oriented Agg API (`Figure` + `FigureCanvasAgg`, no pyplot, no global backend
+change) and always releases the figure, so no canvas can leak into the UI.
+
+### Fix: in-app updater could still fail to relaunch ("python313.dll")
+
+The Windows relaunch helper wiped **all** `_MEI*` extraction dirs on every relaunch
+attempt *and* force-killed the launched process after a timeout — both of which could
+strip/interrupt the new onefile build's own extraction, reproducing the
+`Failed to load Python DLL python313.dll` error. The helper now clears stale `_MEI`
+dirs **exactly once, before launching** (when the old app has already exited, so
+nothing live is touched), launches **once**, and **never kills** the relaunched
+process; a slow Defender-scanned first extraction is left to finish. If no ready
+signal arrives it simply keeps the `.bak` for manual rollback.
+
+### macOS: new batching verified safe
+
+The recursive sub-folder batching and the `\\?\` long-path handling are confirmed
+correct on macOS — the long-path code no-ops off Windows at every call site, the
+recursive scan is platform-agnostic, and the flattened folder keys stay well under
+macOS's 255-byte-per-component limit.
+
 ## v2.64.4
 
 ### Fix: Compare showed empty panels for deeply-nested output folders (long paths)

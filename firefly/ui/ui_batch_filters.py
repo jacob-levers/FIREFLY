@@ -42,3 +42,14 @@ def is_raw_image_name(name: str) -> bool:
     One-level batch mode keeps the full CSV/TXT-capable filter.
     """
     return name.lower().endswith(_RAW_IMAGE_EXTS)
+
+
+def is_palmtracer_loc_table(name: str) -> bool:
+    """True if ``name`` is a palmTRACER localisation table — ``locPALMTracer.txt``
+    / ``.csv`` (palmTRACER native) or FIREFLY's ``<stem>_locPALMTracer.csv``
+    export.  Used by the batch 'palmTRACER data' input mode to surface one unit
+    per analysed acquisition (the loc table inside each ``.PT`` folder), while
+    ignoring the sibling track / D / MSD tables.
+    """
+    n = name.lower()
+    return n.endswith("locpalmtracer.txt") or n.endswith("locpalmtracer.csv")

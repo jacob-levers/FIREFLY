@@ -124,7 +124,9 @@ class BuildMixin:
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll_inner = QtWidgets.QWidget()
         sb_layout = QtWidgets.QVBoxLayout(scroll_inner)
-        sb_layout.setContentsMargins(12, 0, 12, 12)
+        # Right margin reserves the 10px vertical scrollbar gutter so form
+        # controls (Performance section) don't sit under the scrollbar handle.
+        sb_layout.setContentsMargins(12, 0, 22, 12)
         sb_layout.setSpacing(8)
         scroll.setWidget(scroll_inner)
         ip_v.addWidget(scroll)
@@ -1415,7 +1417,7 @@ class BuildMixin:
         cp_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         cp_inner = QtWidgets.QWidget()
         cp_v = QtWidgets.QVBoxLayout(cp_inner)
-        cp_v.setContentsMargins(12, 0, 12, 12); cp_v.setSpacing(8)
+        cp_v.setContentsMargins(12, 0, 22, 12); cp_v.setSpacing(8)
         sec_cmp = _CollapsibleSection("Comparison settings")
         sec_cmp.content_layout.addWidget(self._cmp_settings_widget)
         cp_v.addWidget(sec_cmp)
@@ -1455,7 +1457,7 @@ class BuildMixin:
         vp_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         vp_inner = QtWidgets.QWidget()
         vp_v = QtWidgets.QVBoxLayout(vp_inner)
-        vp_v.setContentsMargins(12, 0, 12, 12); vp_v.setSpacing(8)
+        vp_v.setContentsMargins(12, 0, 22, 12); vp_v.setSpacing(8)
         sec_load = _CollapsibleSection("Load")
         sec_load.content_layout.addWidget(self._vis_load_widget)
         vp_v.addWidget(sec_load)
@@ -1481,7 +1483,7 @@ class BuildMixin:
         pp_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         pp_inner = QtWidgets.QWidget()
         pp_v = QtWidgets.QVBoxLayout(pp_inner)
-        pp_v.setContentsMargins(12, 0, 12, 12); pp_v.setSpacing(8)
+        pp_v.setContentsMargins(12, 0, 22, 12); pp_v.setSpacing(8)
         sec_src = _CollapsibleSection("Source run")
         sec_src.content_layout.addWidget(self._pp_source_widget)
         pp_v.addWidget(sec_src)
@@ -1738,6 +1740,54 @@ class BuildMixin:
         row.addWidget(self.c_batch_recursive)
         bg.addLayout(row)
 
+        # ── Input type + optional output folder ───────────────────────────
+        trow = QtWidgets.QHBoxLayout()
+        trow.addWidget(QtWidgets.QLabel("Input type"))
+        self.c_batch_input_mode = QtWidgets.QComboBox()
+        self.c_batch_input_mode.addItems(
+            ["Raw images (.tif/.czi)", "palmTRACER data"])
+        self.c_batch_input_mode.setToolTip(
+            "Raw images: scan for .tif/.czi acquisitions (and external-loc\n"
+            "CSV/TXT).  palmTRACER data: scan for already-analysed palmTRACER\n"
+            "output (locPALMTracer tables / .PT folders) to re-graph in FIREFLY.")
+        self.c_batch_input_mode.currentIndexChanged.connect(
+            self._on_batch_input_mode_changed)
+        trow.addWidget(self.c_batch_input_mode)
+        # palmTRACER sub-mode (shown only in palmTRACER input mode).
+        # NOTE: "Re-analyse" runs the full FIREFLY pipeline on the palmTRACER
+        # localisations (live).  "Use palmTRACER's own MSD/D" (drawing FIREFLY
+        # graphs from palmTRACER's native MSD/LogD values) is a follow-up that
+        # needs the native trcPALMTracer-*-MSD/-D format verified first.
+        self.c_batch_pt_mode = QtWidgets.QComboBox()
+        self.c_batch_pt_mode.addItems(
+            ["Re-analyse with FIREFLY",
+             "Use palmTRACER's own MSD/D (coming soon)"])
+        self.c_batch_pt_mode.setToolTip(
+            "Re-analyse: run FIREFLY's full tracking + diffusion on the\n"
+            "palmTRACER localisations (produces all FIREFLY metrics).\n"
+            "Use palmTRACER's own MSD/D: draw FIREFLY graphs straight from\n"
+            "palmTRACER's native MSD/LogD values — coming in a follow-up.")
+        self.c_batch_pt_mode.setVisible(False)
+        trow.addWidget(self.c_batch_pt_mode)
+        trow.addStretch(1)
+        bg.addLayout(trow)
+
+        orow = QtWidgets.QHBoxLayout()
+        orow.addWidget(QtWidgets.QLabel("Output folder"))
+        self.e_batch_output_folder = QtWidgets.QLineEdit()
+        self.e_batch_output_folder.setPlaceholderText(
+            "(optional) leave empty → <input folder>/batch_results")
+        self.e_batch_output_folder.setToolTip(
+            "Where batch outputs are written (each run wrapped in its own\n"
+            "per-stem subfolder).  Empty = <input folder>/batch_results.")
+        self.e_batch_output_folder.textChanged.connect(
+            lambda _=None: self._batch_update_summary())
+        btn_out = QtWidgets.QPushButton("Browse")
+        btn_out.clicked.connect(self._on_batch_pick_output_folder)
+        orow.addWidget(self.e_batch_output_folder, 1)
+        orow.addWidget(btn_out)
+        bg.addLayout(orow)
+
         bg.addWidget(QtWidgets.QLabel(
             "Series to process  (expand a series to deselect individual files):"))
         self.tree_batch_files = QtWidgets.QTreeWidget()
@@ -1746,6 +1796,11 @@ class BuildMixin:
         self.tree_batch_files.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.tree_batch_files.setMinimumHeight(200)
+        # Cap the height so a long series list scrolls INSIDE the tree instead
+        # of growing unbounded and overlapping the Select-all button row below.
+        self.tree_batch_files.setMaximumHeight(360)
+        self.tree_batch_files.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tree_batch_files.setRootIsDecorated(True)
         self.tree_batch_files.setUniformRowHeights(True)
         self.tree_batch_files.setIndentation(18)
@@ -1834,23 +1889,26 @@ class BuildMixin:
         self._batch_panel.hide()
         self._import_mode = "single"
 
-        # ── Embedded ROI viewer (always visible) ──────────────────────────
-        self._roi_viewer_container = QtWidgets.QFrame()
-        # Reserve a min height so the panel doesn't grow from nothing the
-        # first time a file is loaded — that resize is what macOS animates
-        # as a "slide".  Kept modest so the Import tab stays comfortably
-        # vertical-compressible on small (1366×768 / 1440×900) laptops.
-        self._roi_viewer_container.setMinimumHeight(180)
-        rvl = QtWidgets.QVBoxLayout(self._roi_viewer_container)
-        rvl.setContentsMargins(0, 8, 0, 0)
+        # ── Preview viewer (opens in its own floating window) ─────────────
+        # The napari viewer is heavy and was cramped inline; it now lives in a
+        # reusable, non-modal top-level window opened on demand — by this button
+        # (single mode) and by the batch "Open in viewer" button.  Created here
+        # so all wiring stays valid, but NOT inlined and NOT pre-initialised
+        # (napari spins up lazily the first time the window is shown).
         self._roi_viewer = _RoiViewer()
         self._roi_viewer.polygons_changed.connect(self._on_roi_polygons_changed)
-        rvl.addWidget(self._roi_viewer)
-        v.addWidget(self._roi_viewer_container, stretch=2)
-        # Pre-init the napari viewer right after construction so the very
-        # first file load doesn't have to embed napari + load data + grow
-        # the layout in one step (that triple causes the macOS slide).
-        QtCore.QTimer.singleShot(0, lambda: self._roi_viewer._ensure_viewer())
+        self._preview_window = None      # lazily created QMainWindow host
+
+        prow = QtWidgets.QHBoxLayout()
+        self.btn_open_preview = QtWidgets.QPushButton("Preview viewer")
+        self.btn_open_preview.setToolTip(
+            "Open the preview viewer in a separate window for the current file\n"
+            "(detection preview + ROI drawing).")
+        self.btn_open_preview.clicked.connect(self._on_open_preview_viewer)
+        prow.addWidget(self.btn_open_preview)
+        prow.addStretch(1)
+        v.addLayout(prow)
+        v.addStretch(1)
 
         self.tabs.addTab(tab, TAB_IMPORT)
 

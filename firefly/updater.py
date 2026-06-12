@@ -453,61 +453,44 @@ if defined SRCHASH if defined DSTHASH if /i not "!SRCHASH!"=="!DSTHASH!" (
   goto end
 )
 echo [firefly-update] swap verified (size + SHA-256) >>"%LOG%" 2>&1
-rem ── Relaunch with a ready-marker handshake ──────────────────────────────
+rem ── Relaunch (clear _MEI ONCE before launch, launch ONCE, NEVER kill) ───
 rem The new exe is a PyInstaller ONEFILE bundle: every launch re-extracts
-rem ~1.4 GB / 10k files to %LOCALAPPDATA%\\FIREFLY\\bundle\\_MEIxxxxx before the
-rem window can appear, and Windows Defender scans the freshly-written 500+ MB
-rem exe hard on first run -- so that extraction can take SEVERAL MINUTES.  The
-rem old helper killed the bootloader after a fixed ~100s, leaving a
-rem half-extracted _MEI dir -> "Failed to load Python DLL python3xx.dll ...
-rem module could not be found".  Now we (1) clear stale/partial _MEI dirs
-rem first, and (2) wait AS LONG AS the launched process stays alive (i.e. is
-rem still extracting), only giving up if it exits without signalling ready or
-rem wedges past a generous cap -- never killing a healthy-but-slow extraction.
+rem ~1.4 GB / 10k files to %LOCALAPPDATA%\\FIREFLY\\bundle\\_MEIxxxxx, which
+rem Windows Defender scans hard on first run -- it can take SEVERAL MINUTES.
+rem TWO past mistakes corrupted that extraction (-> "Failed to load Python DLL
+rem python3xx.dll"): (1) force-killing the bootloader mid-extraction, and
+rem (2) wiping ALL _MEI* dirs WHILE the new instance was extracting into one.
+rem So now we clear stale _MEI dirs EXACTLY ONCE -- AFTER the old app exited
+rem and BEFORE launching, so nothing live is touched -- launch ONCE, and NEVER
+rem kill the launched process (a slow extraction is healthy).  We wait only to
+rem tidy up the .bak after a confirmed-good start; if no ready signal arrives
+rem in a generous window we just stop waiting and KEEP the .bak for rollback.
 set "BUNDLE=%LOCALAPPDATA%\\FIREFLY\\bundle"
-for %%F in ("%TARGET%") do set "TIMG=%%~nxF"
 set "MARKER=%~dp0firefly_relaunch_ok.marker"
 del "%MARKER%" >NUL 2>&1
 set "SPTPALM_READY_MARKER=%MARKER%"
-ping -n 26 127.0.0.1 >NUL
-set /a LAUNCHN=0
-:relaunch
-set /a LAUNCHN+=1
-rem Best-effort: drop stale / partially-extracted _MEI dirs from earlier runs.
-rem A dir locked by a concurrent instance simply won't delete and is skipped.
+rem Give the just-exited old instance a moment to release its own _MEI handle.
+ping -n 4 127.0.0.1 >NUL
+rem Clear stale / partially-extracted _MEI dirs ONCE, BEFORE launching.  A dir
+rem still locked won't delete and is skipped.  This must NEVER run after launch
+rem -- doing so would strip the new instance's python3xx.dll mid-extraction.
 for /d %%D in ("%BUNDLE%\\_MEI*") do rmdir /s /q "%%D" >NUL 2>&1
-echo [firefly-update] launch attempt !LAUNCHN! (onefile extraction can take a few minutes) >>"%LOG%" 2>&1
+echo [firefly-update] launching new build (onefile extraction can take a few minutes) >>"%LOG%" 2>&1
 start "" "%TARGET%"
 set /a WAITM=0
 :waitmarker
 if exist "%MARKER%" goto ready
-rem Still extracting / starting?  While a FIREFLY process is alive, keep waiting
-rem -- do NOT kill it (killing mid-extraction is what corrupted the bundle).
-tasklist /FI "IMAGENAME eq %TIMG%" 2>NUL | find /I "%TIMG%" >NUL
-if errorlevel 1 (
-  echo [firefly-update] process exited before signalling ready (attempt !LAUNCHN!) >>"%LOG%" 2>&1
-  goto crashed
-)
 ping -n 3 127.0.0.1 >NUL
 set /a WAITM+=1
+rem ~300 x 3s ~= 15 min.  NEVER kill the process -- just stop waiting and keep
+rem the .bak so the user can roll back manually if the new build won't start.
 if !WAITM! LSS 300 goto waitmarker
-echo [firefly-update] no window after ~10 min but process alive; treating as wedged >>"%LOG%" 2>&1
-taskkill /F /IM "%TIMG%" >>"%LOG%" 2>&1
-ping -n 4 127.0.0.1 >NUL
-:crashed
-if !LAUNCHN! LSS 2 (
-  echo [firefly-update] retrying launch once >>"%LOG%" 2>&1
-  ping -n 6 127.0.0.1 >NUL
-  goto relaunch
-)
-rem Gave up: the new build never signalled it came up, so KEEP the backup next
-rem to the exe so the user can roll back (rename it) if it won't launch.
-echo [firefly-update] no ready signal; kept "%BACKUP%" for manual rollback >>"%LOG%" 2>&1
+echo [firefly-update] no ready signal in ~15 min; kept "%BACKUP%" for manual rollback >>"%LOG%" 2>&1
 del "%MARKER%" >NUL 2>&1
 goto end
 :ready
 rem Launched cleanly AND the copy was already SHA-256-verified, so the new exe
-rem is provably good — delete the backup instead of leaving it cluttering the
+rem is provably good -- delete the backup instead of leaving it cluttering the
 rem folder (e.g. a visible FIREFLY.exe.bak on the user's Desktop).
 del "%MARKER%" >NUL 2>&1
 del "%BACKUP%" >NUL 2>&1

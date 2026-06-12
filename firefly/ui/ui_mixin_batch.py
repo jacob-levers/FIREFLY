@@ -13,7 +13,8 @@ from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_VISUALISE, TAB_REPROCESS)
 from firefly.ui.ui_batch_filters import (is_analysis_output_dir,
-                                         is_raw_image_name)
+                                         is_raw_image_name,
+                                         is_palmtracer_loc_table)
 
 
 class BatchMixin:
@@ -81,17 +82,26 @@ class BatchMixin:
         # keeps the full CSV/TXT-capable filter and never skips analysis dirs).
         recursive = bool(getattr(self, "c_batch_recursive", None)
                          and self.c_batch_recursive.isChecked())
+        # palmTRACER mode: instead of raw acquisitions, surface already-analysed
+        # palmTRACER localisation tables (locPALMTracer.txt/.csv) that live INSIDE
+        # the `.PT` / NN_Analysis folders we'd normally prune.  Descend the whole
+        # tree and accept only those loc tables (one unit per .PT folder).
+        palmtracer_mode = bool(
+            getattr(self, "c_batch_input_mode", None)
+            and self.c_batch_input_mode.currentText().startswith("palmTRACER"))
         for dirpath, dirnames, filenames in os.walk(folder):
             # Prune IN-PLACE (so os.walk won't descend) our own output dirs and
             # hidden / AppleDouble folders — at EVERY level, not just the top.
-            # In recursive mode also prune palmTRACER analysis-output folders.
+            # In recursive raw-image mode also prune palmTRACER analysis folders;
+            # in palmTRACER mode we WANT to descend into them.
             dirnames[:] = sorted(
                 d for d in dirnames
                 if not d.startswith(".")
                 and d.lower() not in ("batch_results", "compare_results")
-                and not (recursive and is_analysis_output_dir(d)))
+                and not (recursive and not palmtracer_mode
+                         and is_analysis_output_dir(d)))
             rel = os.path.relpath(dirpath, folder)
-            if not recursive and rel != os.curdir:
+            if not recursive and not palmtracer_mode and rel != os.curdir:
                 # one-level mode: collect this immediate subfolder's files but
                 # don't descend any deeper.
                 dirnames[:] = []
@@ -101,6 +111,14 @@ class BatchMixin:
                 # without it, Mac-exported folders surface 4 KB `._<name>.czi`
                 # ghosts that get flagged corrupt and clutter the list.
                 if cname.startswith("."):
+                    continue
+                if palmtracer_mode:
+                    if not is_palmtracer_loc_table(cname):
+                        continue
+                    cfull = os.path.join(dirpath, cname)
+                    if os.path.isfile(cfull):
+                        display = cname if sub is None else f"{sub}/{cname}"
+                        candidates.append((display, cfull, sub))
                     continue
                 # Recursive sweep is raw-images-only: skip external-loc CSV/TXT
                 # tables (palmTRACER/FIREFLY exports), keeping just TIFF/CZI.
@@ -292,10 +310,10 @@ class BatchMixin:
             self.lbl_batch_summary.setText(
                 f"{n_series} series ({n_total_files} files) / "
                 f"{n_sel_series} series selected ({n_sel_files} files)")
-        folder = self.e_batch_folder.text().strip()
-        if folder:
+        out_root = self._batch_output_root()
+        if out_root:
             self.lbl_batch_output_path.setText(
-                f"Output → {os.path.join(folder, 'batch_results')}/<stem>/")
+                f"Output → {os.path.join(out_root, '<stem>')}/")
         else:
             self.lbl_batch_output_path.setText(
                 "Output → (pick an input folder first)")

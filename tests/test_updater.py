@@ -80,6 +80,12 @@ def test_parse_release_empty():
 
 
 # ── bundle-path resolution ──────────────────────────────────────────────
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="macOS .app bundle resolution uses POSIX os.path; on Windows "
+           "os.path rewrites the forward-slash test fixtures to backslashes "
+           "(C:\\Applications\\...), so the assertion is meaningless. The "
+           "function only ever runs on macOS; CI (Linux, POSIX) exercises it.")
 def test_current_app_bundle_path():
     exe = "/Applications/FIREFLY.app/Contents/MacOS/FIREFLY"
     assert u.current_app_bundle_path(exe) == "/Applications/FIREFLY.app"
@@ -122,17 +128,23 @@ def test_windows_helper_script():
     assert 'if /i not "!SRCHASH!"=="!DSTHASH!"' in s
     # Relaunch handshake: a fresh onefile exe re-extracts ~1.4 GB and AV scans it,
     # so the first launch can take minutes.  The helper clears stale/partial _MEI
-    # dirs, then waits for the ready marker for as long as the launched process
-    # stays alive (still extracting) — it must NOT kill a healthy-but-slow
-    # extraction (that left half-extracted _MEI dirs → the python3xx.dll load
-    # error); it only force-kills if the process wedges past a generous cap.
+    # dirs EXACTLY ONCE, BEFORE launching (the old app has already exited, so
+    # nothing live is touched), launches ONCE, and waits for the ready marker.
     assert 'set "SPTPALM_READY_MARKER=%MARKER%"' in s
     assert 'if exist "%MARKER%" goto ready' in s
     assert 'set "BUNDLE=' in s                         # bundle dir for _MEI cleanup
     assert 'rmdir /s /q' in s                          # clear stale/partial _MEI dirs
-    assert 'tasklist /FI "IMAGENAME eq %TIMG%"' in s   # wait while the process is alive
-    assert 'taskkill /F /IM "%TIMG%"' in s             # force-kill only if wedged past the cap
-    assert 'if !LAUNCHN! LSS 2' in s
+    # It must NEVER kill the launched process — killing mid-extraction (and the
+    # old loop's blanket _MEI wipe racing the new extraction) is exactly what
+    # left half-extracted _MEI dirs → the "Failed to load Python DLL
+    # python3xx.dll" error.  So: no taskkill of the relaunched build, no
+    # IMAGENAME poll, no relaunch retry loop.
+    assert "taskkill /F /IM" not in s
+    assert 'tasklist /FI "IMAGENAME' not in s
+    assert ":relaunch" not in s
+    assert "LAUNCHN" not in s
+    # The _MEI cleanup happens BEFORE the launch, not after it.
+    assert s.index('for /d %%D in ("%BUNDLE%') < s.index('start "" "%TARGET%"')
     # On a clean, verified relaunch the backup is removed (no clutter); it's the
     # ``:ready`` branch, distinct from the give-up branch which keeps it.
     assert 'del "%BACKUP%"' in s

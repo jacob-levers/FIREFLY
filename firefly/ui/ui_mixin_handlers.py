@@ -253,6 +253,25 @@ class HandlersMixin:
             self.e_batch_folder.setText(path)
             self._batch_rescan(path)
 
+    def _on_batch_pick_output_folder(self):
+        start = (self.e_batch_output_folder.text().strip()
+                 or self.e_batch_folder.text().strip()
+                 or os.path.expanduser("~"))
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select batch output folder", start)
+        if path:
+            self.e_batch_output_folder.setText(path)
+            self._batch_update_summary()
+
+    def _on_batch_input_mode_changed(self, *_):
+        """Toggle the palmTRACER sub-mode dropdown + re-scan when the batch
+        input type (Raw images vs palmTRACER data) changes."""
+        pt = self.c_batch_input_mode.currentText().startswith("palmTRACER")
+        self.c_batch_pt_mode.setVisible(pt)
+        path = self.e_batch_folder.text().strip()
+        if path:
+            self._batch_rescan(path)
+
     def _on_batch_rescan(self):
         path = self.e_batch_folder.text().strip()
         if path:

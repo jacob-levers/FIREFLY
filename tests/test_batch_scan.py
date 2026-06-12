@@ -6,7 +6,8 @@ WITHOUT PySide6 — the CI test runner installs only the analysis stack (no Qt),
 so importing ui_mixin_batch here would fail; the pure predicates do not.
 """
 from firefly.ui.ui_batch_filters import (is_analysis_output_dir,
-                                          is_raw_image_name)
+                                          is_raw_image_name,
+                                          is_palmtracer_loc_table)
 
 
 # ── analysis-output folders the recursive sweep must prune ──────────────
@@ -47,3 +48,19 @@ def test_is_raw_image_name_rejects_loc_tables():
               "trcPALMTracer-1-D.txt", "results.csv", "notes.txt",
               "data.tsv", "blob.bin"):
         assert not is_raw_image_name(n), n
+
+
+# ── palmTRACER loc-table detection (batch 'palmTRACER data' input mode) ──
+def test_is_palmtracer_loc_table_accepts_loc_tables():
+    for n in ("locPALMTracer.txt", "locPALMTracer.csv",
+              "LOCPALMTRACER.TXT",
+              "20260122_Syntaxin1a_DMSO_D1_Post_locPALMTracer.csv"):
+        assert is_palmtracer_loc_table(n), n
+
+
+def test_is_palmtracer_loc_table_rejects_others():
+    # raw images, track/D/MSD tables, and unrelated files are NOT loc tables
+    for n in ("stack.tif", "movie.czi",
+              "trcPALMTracer.txt", "trcPALMTracer-AllROI-MSD.csv",
+              "trcPALMTracer-1-D.txt", "results.csv", "notes.txt"):
+        assert not is_palmtracer_loc_table(n), n

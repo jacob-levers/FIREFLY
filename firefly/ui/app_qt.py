@@ -655,8 +655,15 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             import io
             import numpy as np
             import matplotlib
-            matplotlib.use("Agg", force=False)
-            import matplotlib.pyplot as plt
+            # OO Agg API only — NEVER pyplot here.  The GUI process activated the
+            # interactive QtAgg backend at import (top of this module); calling
+            # plt.subplots() under QtAgg builds a real on-screen FigureCanvasQTAgg
+            # (a parentless grey axes grid owned by pyplot's Gcf registry) that
+            # surfaces over other tabs.  Building figures with Figure()+Agg canvas
+            # keeps the render fully off-screen and never touches the global
+            # backend (so the Preferences LogD QtAgg canvas keeps working).
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
         except Exception as exc:
             self.lbl_fig_preview_single.setText(f"Preview unavailable: {exc}")
             self.lbl_fig_preview_compare.setText(f"Preview unavailable: {exc}")
@@ -683,19 +690,22 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             proj = cmap_map.get(proj_cmap_name, "inferno")
             rng = np.random.default_rng(0 if kind == "single" else 1)
             buf = io.BytesIO()
+            fig = Figure(figsize=(7, 3.2), facecolor=BG, dpi=110)
+            FigureCanvasAgg(fig)     # attach an off-screen Agg canvas (no Qt, no Gcf)
             try:
-                with plt.rc_context(_rc(theme)):
+                with matplotlib.rc_context(_rc(theme)):
                     if kind == "comparison":
-                        fig = self._render_comparison_preview(
-                            plt, np, rng, BG, PNL, TXT, GRD)
+                        self._render_comparison_preview(
+                            fig, np, rng, BG, PNL, TXT, GRD)
                     else:
-                        fig = self._render_single_sample_preview(
-                            plt, np, rng, BG, PNL, TXT, GRD, ACC, proj)
+                        self._render_single_sample_preview(
+                            fig, np, rng, BG, PNL, TXT, GRD, ACC, proj)
                     fig.savefig(buf, format="png", facecolor=BG, dpi=440,
                                 bbox_inches="tight")
-                    plt.close(fig)
             except Exception as exc:
                 return None, str(exc)
+            finally:
+                fig.clear()          # always release — even on the savefig error path
             buf.seek(0)
             pix = QtGui.QPixmap()
             if not pix.loadFromData(buf.read()):
@@ -737,11 +747,11 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             self._fit_preview_pixmap(obj)
         return super().eventFilter(obj, event)
 
-    def _render_single_sample_preview(self, plt, np, rng,
+    def _render_single_sample_preview(self, fig, np, rng,
                                        BG, PNL, TXT, GRD, ACC, proj_cmap):
-        """Two-panel mock-up: projection + MSD curves."""
-        fig, axes = plt.subplots(1, 2, figsize=(7, 3.2),
-                                  facecolor=BG, dpi=110)
+        """Two-panel mock-up: projection + MSD curves.  Draws onto the passed
+        OO `Figure` (off-screen Agg) — no pyplot."""
+        axes = fig.subplots(1, 2)
         # Panel A — fake max projection (Gaussian blob + noise)
         H = W = 48
         Y, X = np.mgrid[0:H, 0:W]
@@ -778,11 +788,11 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         fig.tight_layout()
         return fig
 
-    def _render_comparison_preview(self, plt, np, rng, BG, PNL, TXT, GRD):
+    def _render_comparison_preview(self, fig, np, rng, BG, PNL, TXT, GRD):
         """Two-panel mock-up resembling the Compare-tab figure: grouped
-        MSD lines + bar chart for two synthetic groups."""
-        fig, axes = plt.subplots(1, 2, figsize=(7, 3.2),
-                                  facecolor=BG, dpi=110)
+        MSD lines + bar chart for two synthetic groups.  Draws onto the passed
+        OO `Figure` (off-screen Agg) — no pyplot."""
+        axes = fig.subplots(1, 2)
         groups = [("Pre",  "#3b6ed8", 1.00),
                   ("Post", "#f78166", 0.70)]
         # Panel 1 — MSD per group
@@ -992,14 +1002,37 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
 
 
 
+    def _ensure_preview_window(self):
+        """Lazily create the reusable, non-modal window that hosts the preview
+        viewer (napari).  The `_RoiViewer` becomes its central widget."""
+        win = getattr(self, "_preview_window", None)
+        if win is None:
+            win = QtWidgets.QMainWindow(self)
+            win.setWindowFlag(QtCore.Qt.WindowType.Window, True)
+            win.setWindowTitle("FIREFLY — Preview viewer")
+            win.resize(1100, 820)
+            win.setCentralWidget(self._roi_viewer)
+            self._preview_window = win
+        return win
+
+    def _show_preview_window(self):
+        win = self._ensure_preview_window()
+        win.show(); win.raise_(); win.activateWindow()
+
+    def _on_open_preview_viewer(self):
+        """Open the preview window for the current single-mode file."""
+        self._show_preview_window()
+        self._roi_embedded_load_current_file()
+
     def _roi_load_specific_path(self, path: str):
-        """Load `path` into the embedded preview viewer.  Defers the
-        actual work one event-loop tick so the UI repaints first
-        (highlight / button-press feedback), then runs the heavy
-        napari load.  Status is surfaced via the viewer's own status
-        line so the user sees that something is happening."""
+        """Load `path` into the preview viewer window (opening it if needed).
+        Defers the actual work one event-loop tick so the UI repaints first
+        (highlight / button-press feedback), then runs the heavy napari load.
+        Status is surfaced via the viewer's own status line so the user sees
+        that something is happening."""
         if not (path and os.path.isfile(path)):
             return
+        self._show_preview_window()
         try:
             self.statusBar().showMessage(
                 f"Loading {os.path.basename(path)} into viewer…", 2000)
@@ -1033,6 +1066,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         ROI viewer.  In single mode that's `e_file`; in batch mode it's
         the currently-highlighted item in the file list."""
         if not hasattr(self, "_roi_viewer"):
+            return
+        # The viewer now lives in a separate window — only do the heavy napari
+        # load when that window is actually open (auto-update while it's shown;
+        # otherwise stay idle until the user clicks "Preview viewer").
+        win = getattr(self, "_preview_window", None)
+        if win is None or not win.isVisible():
             return
         path = ""
         if self.r_mode_batch.isChecked():
@@ -2757,6 +2796,17 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         self.statusBar().showMessage(
             "Running (external localisations)…" if is_loc else "Running…")
 
+    def _batch_output_root(self) -> str:
+        """Resolve the batch output root: the user-chosen 'Output folder' if
+        set, else <input folder>/batch_results.  The worker wraps each run in
+        its own per-stem subfolder, so this returns the PARENT only."""
+        w = getattr(self, "e_batch_output_folder", None)
+        user = w.text().strip() if w is not None else ""
+        if user:
+            return user
+        inp = self.e_batch_folder.text().strip()
+        return os.path.join(inp, "batch_results") if inp else ""
+
     def _collect_batch_params(self) -> "list[dict]":
         """Snapshot the currently-checked batch series + the current sidebar
         settings into a per-run params list.  Returns [] if nothing is checked.
@@ -2767,12 +2817,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         groups = self._batch_checked_series()
         if not groups:
             return []
-        # Batch outputs go to <input_folder>/batch_results/<stem>/.  Pass the
-        # parent `batch_results/` only; the worker wraps each run in its own
-        # per-stem subfolder (avoids the batch_results/<stem>/<stem>/ double-
-        # enclosure bug).
-        out_root = os.path.join(self.e_batch_folder.text().strip(),
-                                "batch_results")
+        # Batch outputs go to <out_root>/<stem>/.  Pass the parent only; the
+        # worker wraps each run in its own per-stem subfolder (avoids the
+        # <root>/<stem>/<stem>/ double-enclosure bug).
+        out_root = self._batch_output_root()
         _csv_preset_choice = self.c_csv_preset.currentText()
         _csv_preset = ("auto" if _csv_preset_choice == "Auto-detect"
                        else _csv_preset_choice)
