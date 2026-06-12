@@ -61,6 +61,29 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
                 _cols = _cols + ["particle"]
             return pd.DataFrame(columns=_cols)
 
+    # Alternative linkers (opt-in).  "lap" = Jaqaman two-step LAP (global
+    # gap-closing); "kalman" = constant-velocity Kalman LAP (TrackMate-style
+    # linear-motion tracker) — far better on directed / crossing motion, where
+    # trackpy's nearest-position linking swaps identities.  Default stays
+    # trackpy (best for pure Brownian diffusion).
+    if linker in ("lap", "kalman"):
+        from firefly.analysis import fa_linking_lap as _lap
+        _fn = (_lap.link_trajectories_kalman if linker == "kalman"
+               else _lap.link_trajectories_lap)
+        print(f"  Linking {len(locs):,} localisations  "
+              f"(linker={linker}, search_range={search_range}px, "
+              f"max_gap={memory}) ...")
+        t0 = time.perf_counter()
+        filtered = _fn(locs, search_range=search_range, max_gap=memory,
+                       min_len=min_len)
+        if max_len is not None and max_len > 0 and len(filtered):
+            lengths = filtered.groupby("particle")["frame"].count()
+            keep = lengths[lengths <= max_len].index
+            filtered = filtered[filtered["particle"].isin(keep)].reset_index(drop=True)
+        n = filtered["particle"].nunique() if len(filtered) else 0
+        print(f"  {n:,} trajectories in {time.perf_counter() - t0:.1f}s")
+        return filtered
+
     print(f"  Linking {len(locs):,} localisations  "
           f"(linker=trackpy, search_range={search_range}px, "
           f"memory={memory}) ...")

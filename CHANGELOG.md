@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.66.0
+
+### New: selectable trajectory linker — a Kalman (linear-motion) tracker for directed / crossing motion
+
+The **Linking** panel now has a **Linker** dropdown with three choices:
+**Trackpy** (the default — unchanged), **Kalman** (a constant-velocity,
+TrackMate-style "linear motion" tracker), and **LAP** (a global two-step
+gap-closing linker).
+
+The **Kalman** linker predicts each particle's next position from its estimated
+velocity, so it **keeps track identities through crossings and directed / fast
+transport** — exactly where the nearest-neighbour linker swaps or loses tracks.
+On simulated ground truth with crossing directed tracks it recovers the
+trajectories near-perfectly (point-level Jaccard ≈ 0.99) where trackpy drops to
+≈ 0.4. On pure Brownian diffusion it matches trackpy — validated on real
+Syntaxin1a data, where it reproduces the same diffusion-coefficient distribution
+(KS = 0.01) — so **trackpy stays the default** and Kalman is there for data with
+genuine directed motion. It is modestly slower than trackpy at low density and
+comparable at high density.
+
+Your linker choice is saved between sessions and recorded in each run's manifest.
+
 ## v2.65.10
 
 ### Fixed: a batch could hang forever on a corrupt (zero-filled) loc file

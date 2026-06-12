@@ -712,9 +712,24 @@ class BuildMixin:
         layout.addWidget(sec)
 
         # ── Linking ───────────────────────────────────────────────────────
-        # FIREFLY uses trackpy's recursive subnet linker exclusively.
+        # Linker is selectable: trackpy (default, best for Brownian diffusion),
+        # Kalman (linear-motion, for directed / crossing tracks), or LAP.
         sec, gl = self._make_form_section("Linking")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.c_linker = QtWidgets.QComboBox()
+        self.c_linker.addItem("Trackpy (default)", "trackpy")
+        self.c_linker.addItem("Kalman (linear motion)", "kalman")
+        self.c_linker.addItem("LAP (global gap-closing)", "lap")
+        self.c_linker.setToolTip(
+            "Trajectory linker.\n"
+            "Trackpy (default): recursive subnet nearest-neighbour — best for\n"
+            "  Brownian / diffusive motion (the validated default).\n"
+            "Kalman: constant-velocity prediction (TrackMate-style linear-motion\n"
+            "  tracker) — holds identities through crossings and directed / fast\n"
+            "  transport, where nearest-neighbour linking swaps tracks. Slightly\n"
+            "  slower than trackpy.\n"
+            "LAP: global two-step assignment with gap-closing.")
+        gl.addRow(_label_with_info("Linker", "linker"), self.c_linker)
         self.s_search_range = self._spin_int(5, 1, 30,
             tip="Maximum distance (px) a particle can move between consecutive\n"
                 "frames and still be linked as the same molecule — this is\n"
@@ -3638,9 +3653,9 @@ class BuildMixin:
                                     self.c_backend.currentText()),
             "workers":           int(self.s_workers.value()),
             "chunk_size":        int(self.s_chunk_size.value()),
-            # FIREFLY links exclusively with trackpy's recursive subnet
-            # linker.  Kept as an explicit key for the worker / manifest.
-            "linker":            "trackpy",
+            # Trajectory linker: trackpy (default) / kalman / lap.  Carried to
+            # the worker and recorded in the run manifest.
+            "linker":            str(self.c_linker.currentData() or "trackpy"),
             # ── Figures-tab knobs (single-sample figure output) ───────────
             "fig_theme":         self.c_fig_theme.currentText(),
             "fig_proj_cmap":     self.c_fig_proj_cmap.currentText(),

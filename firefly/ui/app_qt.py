@@ -1801,6 +1801,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("analysis/memory",          self.s_memory,          "spin",  int),
             ("analysis/min_track_len",   self.s_min_track_len,   "spin",  int),
             ("analysis/max_track_len",   self.s_max_track_len,   "spin",  int),
+            ("analysis/linker",          self.c_linker,          "combo"),
 
             # ── Diffusion & motion ────────────────────────────────────────
             ("analysis/max_lagtime",     self.s_max_lagtime,     "spin",  int),
