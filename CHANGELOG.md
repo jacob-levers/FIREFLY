@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.66.0
+
+### New: benchmark harness (`firefly.bench`) — measure FIREFLY against ground truth
+
+A Qt-free, headless benchmark harness that quantifies FIREFLY's detection,
+localisation, tracking and diffusion-recovery accuracy against **simulated
+ground-truth** sptPALM data — the evidence base for comparing with palmTRACER /
+TrackMate and steering future work (MLE localisation, LAP tracking, new
+detectors).
+
+- **Simulator** — a tool-agnostic forward model: pixel-integrated Gaussian PSF,
+  Poisson + read noise + offset/gain camera, per-emitter blinking/bleaching,
+  brightness spread, and known diffusion populations (immobile / confined /
+  Brownian / directed). Deterministic per seed; emits the stack + ground-truth
+  localisation and track tables.
+- **Metrics** — detection precision/recall/F1/Jaccard via Hungarian matching
+  (SMLM-challenge scoring), localisation RMSE vs a CRLB reference, ISBI-2012
+  tracking α/β/JSC/JSCθ/RMSE (Chenouard et al. 2014), and per-population D/α
+  recovery + a motion-class confusion matrix.
+- **Runner** — runs FIREFLY end-to-end in-process on an in-memory stack
+  (localise → link → MSD) and ingests palmTRACER/TrackMate/ThunderSTORM/Picasso
+  exports via the existing loaders for a head-to-head on the same data.
+- **Report + CLI** — `python -m firefly.bench.cli selfbench` writes a summary CSV
+  + comparison figure (pure matplotlib Agg, no Qt).
+
+Purely additive — no changes to the analysis pipeline or the app. 17 new tests
+run in CI. (Phase 1: FIREFLY-vs-ground-truth. External-tool ingestion and
+parameter sweeps follow.)
+
 ## v2.65.10
 
 ### Fixed: a batch could hang forever on a corrupt (zero-filled) loc file
