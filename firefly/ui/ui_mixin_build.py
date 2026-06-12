@@ -1003,6 +1003,13 @@ class BuildMixin:
         gl.addRow(_label_with_info("Chunk size (frames)", "chunk size"), self.s_chunk_size)
 
         # ── HYPERFLY — big-machine parallel batch ──
+        # Only EXPOSE these controls on a machine that clears the HYPER-FLY
+        # hardware bar (>=32 cores AND >=192 GB RAM).  On smaller boxes HYPER-FLY
+        # can never engage, so the settings would only confuse.  The widgets are
+        # still CREATED (so the QSettings binding + env export at run time stay
+        # valid with their defaults) — they're just not added to the form.
+        from firefly.analysis.fa_hyperfly import hyperfly_machine_eligible
+        self._hyperfly_eligible = hyperfly_machine_eligible()
         self.c_hyperfly = _QuietComboBox()
         self.c_hyperfly.addItems(["Auto (recommended)", "Always on", "Off"])
         self.c_hyperfly.setCurrentText("Auto (recommended)")
@@ -1013,15 +1020,12 @@ class BuildMixin:
             "• Auto       — engage automatically on capable machines.\n"
             "• Always on  — force it (best-effort on smaller boxes).\n"
             "• Off        — always process one file at a time.")
-        gl.addRow("HYPER-FLY batch", self.c_hyperfly)
         self.s_hyperfly_max_files = self._spin_int(0, 0, 999,
             tip="Cap how many files HYPER-FLY runs at once (0 = automatic).\n"
                 "Lower it if IT wants FIREFLY to use fewer resources.")
-        gl.addRow("Max files (0 = auto)", self.s_hyperfly_max_files)
         self.s_hyperfly_max_cores = self._spin_int(0, 0, N_CPUS,
             tip=f"Cap the total CPU cores HYPER-FLY uses across all files\n"
                 f"(0 = all {N_CPUS} cores).")
-        gl.addRow("Max cores (0 = auto)", self.s_hyperfly_max_cores)
         try:
             import psutil as _ps
             _ram_max_gb = max(8, int(_ps.virtual_memory().total / 1e9))
@@ -1031,7 +1035,6 @@ class BuildMixin:
             tip="Cap HYPER-FLY's peak RAM use across all files, in GB (0 = auto).\n"
                 "Lower it to leave headroom for other users on a shared machine —\n"
                 "fewer files run at once so the wave stays under the cap.")
-        gl.addRow("Max RAM GB (0 = auto)", self.s_hyperfly_max_ram)
         self.s_hyperfly_load_slots = self._spin_int(0, 0, 999,
             tip="How many files may LOAD into RAM at the same time.  Every file\n"
                 "in a wave starts by loading, so without this they'd all\n"
@@ -1041,7 +1044,6 @@ class BuildMixin:
                 "RAM, next loads), and lets each loading file decode on MORE\n"
                 "cores since few load at once.  0 = auto (≈ one load per 16\n"
                 "cores).  Lower it to be gentler on RAM / shared storage.")
-        gl.addRow("Concurrent loads (0 = auto)", self.s_hyperfly_load_slots)
         self.s_hyperfly_gpu_slots = self._spin_int(0, 0, 8,
             tip="HYPER-FLY + a GPU backend only: how many files may run GPU\n"
                 "detection at once.  A single GPU shared by every file would\n"
@@ -1050,7 +1052,13 @@ class BuildMixin:
                 "concurrent.  0 = auto (1 file on the GPU at a time — safe for\n"
                 "a single card).  Raise it only if the GPU has VRAM to spare.\n"
                 "Ignored entirely for CPU backends.")
-        gl.addRow("GPU detect slots (0 = auto)", self.s_hyperfly_gpu_slots)
+        if self._hyperfly_eligible:
+            gl.addRow("HYPER-FLY batch", self.c_hyperfly)
+            gl.addRow("Max files (0 = auto)", self.s_hyperfly_max_files)
+            gl.addRow("Max cores (0 = auto)", self.s_hyperfly_max_cores)
+            gl.addRow("Max RAM GB (0 = auto)", self.s_hyperfly_max_ram)
+            gl.addRow("Concurrent loads (0 = auto)", self.s_hyperfly_load_slots)
+            gl.addRow("GPU detect slots (0 = auto)", self.s_hyperfly_gpu_slots)
 
         # Experimental parallel CZI decode — opt-in until validated on real
         # Zeiss Elyra data.  Decodes compressed (JPEG-XR) subblocks across the

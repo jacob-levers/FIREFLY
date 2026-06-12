@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.65.4
+
+### HYPER-FLY controls hidden on machines that can't run it
+
+The HYPER-FLY settings in the Performance section (the **HYPER-FLY batch** mode
+selector plus **Max files / Max cores / Max RAM / Concurrent loads / GPU detect
+slots**) are now only shown when the machine clears HYPER-FLY's hardware bar —
+**≥32 CPU cores AND ≥192 GB RAM**. On smaller machines HYPER-FLY can never engage,
+so those rows are hidden to avoid confusion. (The controls still exist internally
+with safe defaults, so analysis is unaffected; on a capable box like the 128-core /
+752 GB node they appear as before.)
+
 ## v2.65.3
 
 ### New: batch palmTRACER "Use palmTRACER's own MSD/D" now renders full outputs

@@ -64,3 +64,23 @@ def test_is_palmtracer_loc_table_rejects_others():
               "trcPALMTracer.txt", "trcPALMTracer-AllROI-MSD.csv",
               "trcPALMTracer-1-D.txt", "results.csv", "notes.txt"):
         assert not is_palmtracer_loc_table(n), n
+
+
+# ── HYPER-FLY hardware-eligibility gate (controls the UI exposure) ───────
+def test_hyperfly_machine_eligible(monkeypatch):
+    from firefly.analysis import fa_hyperfly as hf
+    # clears both bars -> eligible
+    monkeypatch.setattr(hf, "N_CPUS", 128)
+    monkeypatch.setattr(hf, "_total_ram_gb", lambda: 752.0)
+    assert hf.hyperfly_machine_eligible() is True
+    # too few cores -> not eligible (even with plenty of RAM)
+    monkeypatch.setattr(hf, "N_CPUS", 8)
+    assert hf.hyperfly_machine_eligible() is False
+    # enough cores but too little RAM -> not eligible
+    monkeypatch.setattr(hf, "N_CPUS", 128)
+    monkeypatch.setattr(hf, "_total_ram_gb", lambda: 64.0)
+    assert hf.hyperfly_machine_eligible() is False
+    # exactly on the thresholds -> eligible (>=)
+    monkeypatch.setattr(hf, "N_CPUS", hf.HYPERFLY_MIN_CORES)
+    monkeypatch.setattr(hf, "_total_ram_gb", lambda: float(hf.HYPERFLY_MIN_RAM_GB))
+    assert hf.hyperfly_machine_eligible() is True

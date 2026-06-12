@@ -73,6 +73,15 @@ def hyperfly_active() -> bool:
             and _total_ram_gb() >= HYPERFLY_MIN_RAM_GB)
 
 
+def hyperfly_machine_eligible() -> bool:
+    """True if this machine clears the HYPERFLY hardware bar (>=32 cores AND
+    >=192 GB RAM), REGARDLESS of the configured mode.  Used to decide whether to
+    even expose the HYPER-FLY controls in the GUI — on a machine that can never
+    engage HYPER-FLY the settings would only confuse."""
+    return (N_CPUS >= HYPERFLY_MIN_CORES
+            and _total_ram_gb() >= HYPERFLY_MIN_RAM_GB)
+
+
 def _per_file_peak_gb(params: dict) -> float:
     """Conservative peak-RAM estimate (GB) for one file during the detect phase.
 
