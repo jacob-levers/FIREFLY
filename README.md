@@ -11,8 +11,9 @@ multi-page PDF report.
 
 FIREFLY specialises in **two detection engines — trackpy and PyTorch** —
 both Crocker-Grier-family centroid localisers, calibrated to agree to
-within the experiment's noise floor. Linking is done exclusively with
-trackpy's recursive subnet linker. You can also **import and analyse
+within the experiment's noise floor. Linking offers a choice of engines —
+trackpy's recursive subnet linker (the default), a Kalman linear-motion
+tracker, or a global LAP gap-closing linker. You can also **import and analyse
 localisation tables exported by other tools** (TrackMate, palmTRACER,
 Picasso, ThunderSTORM) — see [Analyse external localisations](#analyse-external-localisations).
 
@@ -148,8 +149,16 @@ every tab switch.
   platform (Apple MPS, NVIDIA CUDA, or CPU-trackpy). Both are
   Crocker-Grier-family centroid localisers calibrated to agree to within
   ~5 nm; the auto-resolver prefers the GPU but drops back cleanly when
-  it's unavailable. **Linking** is always done with trackpy's recursive
-  subnet linker.
+  it's unavailable.
+- **Selectable linker** — a **Linker** dropdown (Linking panel) chooses the
+  trajectory linker: **trackpy** (the default — Crocker-Grier recursive subnet,
+  best for Brownian / diffusive motion), **Kalman** (a constant-velocity,
+  TrackMate-style linear-motion tracker that predicts each particle's next
+  position from its velocity, so it holds track identities through crossings
+  and directed / fast transport where nearest-neighbour linking swaps tracks),
+  and **LAP** (a global two-step assignment with gap-closing). trackpy stays the
+  validated default; your choice persists between sessions and is recorded in
+  each run's manifest.
 - **Import external localisations** — analyse localisation tables produced
   by other software (TrackMate, palmTRACER, Picasso, ThunderSTORM) without
   re-detecting. Column conventions are auto-detected. The whole downstream
@@ -317,8 +326,8 @@ another tool produced — no re-detection.
 2. Set pixel size / frame interval (external tables rarely embed them).
    Optionally point **Background image** at the original stack so the
    figure's projection panel isn't blank.
-3. Click **Start**. Detection is skipped; linking (trackpy), MSD,
-   diffusion, motion classification and all figures run as normal.
+3. Click **Start**. Detection is skipped; linking (with your chosen linker),
+   MSD, diffusion, motion classification and all figures run as normal.
 
 > **palmTRACER `.PT` folders** can be analysed two ways. *Re-analyse with
 > FIREFLY* feeds the `locPALMTracer` localisation table through FIREFLY's own
