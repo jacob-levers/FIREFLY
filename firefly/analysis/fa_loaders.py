@@ -1839,6 +1839,23 @@ def load_external_locs(csv_path: str, preset: str = "auto",
             print(f"  Parsed file with sep={kwargs['sep']!r}, "
                   f"skiprows={header_line}, "
                   f"{len(df):,} rows × {df.shape[1]} columns")
+            # on_bad_lines="skip" drops ragged rows SILENTLY; surface roughly how
+            # many (non-blank file lines minus the metadata/header/extra rows
+            # minus the parsed rows) so a trailing summary row or corrupted lines
+            # aren't invisible.  Best-effort — wrong by ±1 only if a metadata row
+            # is blank.  (R2-3)
+            try:
+                with open(csv_path, "r", encoding="utf-8",
+                          errors="replace") as _fh:
+                    _nonblank = sum(1 for _ln in _fh if _ln.strip())
+                _dropped = (_nonblank - int(header_line) - 1
+                            - len(skip_extra) - len(df))
+                if _dropped >= 1:
+                    print(f"  WARN: ~{_dropped:,} row(s) were dropped as ragged "
+                          f"(wrong field count) while parsing — check the file "
+                          f"if that's unexpected.")
+            except Exception:
+                pass
             break
     if df is None:
         if last_exc is not None:
