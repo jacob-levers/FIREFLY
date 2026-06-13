@@ -1803,10 +1803,15 @@ def load_external_locs(csv_path: str, preset: str = "auto",
         # which map back to csv rows header_line+1, header_line+2…
         # So we need to skip data-row indices 0, 1, …, len(skip_extra)-1.
         skip_extra_data_rows = set(range(len(skip_extra)))
+        # Skip the metadata rows BEFORE the header (i < _h) AND the extra header
+        # rows after it.  The previous form wrapped this in a ternary —
+        # `(i < _h or (i-_h-1) in _s) if i > _h else False` — whose outermost
+        # `if i > _h` made the `i < _h` clause DEAD for rows at/before the
+        # header, so the leading metadata rows were NOT skipped and the column
+        # mapping silently shifted (no error).  A plain boolean-or is correct
+        # and short-circuits cleanly.  (#29)
         _skiprows = lambda i, _h=header_line, _s=skip_extra_data_rows: (
-            i < _h or (i - _h - 1) in _s
-            if i > _h else False
-        )
+            (i < _h) or ((i - _h - 1) in _s))
     else:
         _skiprows = header_line
     for kwargs in (

@@ -248,8 +248,18 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     idx  = np.linspace(0, len(stack)-1, min(200, len(stack)), dtype=int)
     proj = stack[idx].max(axis=0)
     from skimage import exposure as _exp
-    proj_eq = _exp.equalize_adapthist(
-        (proj / proj.max()).astype(np.float32), clip_limit=0.03)
+    # Guard the normalisation: when the projection is all zeros (an external-CSV
+    # run with no background image, or a genuinely dark sampled frame),
+    # proj/proj.max() is 0/0 = NaN.  Worse, equalize_adapthist of a FLAT field
+    # (NaN- or zero-derived) returns an all-1.0 array — a plausible-looking but
+    # MEANINGLESS solid-WHITE panel with the tracks over a blank field.  Skip the
+    # equalisation entirely and render a neutral dark background instead.  (#33)
+    _pmax = float(proj.max())
+    if _pmax > 0 and np.isfinite(_pmax):
+        proj_eq = _exp.equalize_adapthist(
+            (proj / _pmax).astype(np.float32), clip_limit=0.03)
+    else:
+        proj_eq = np.zeros_like(proj, dtype=np.float32)
     mcol = diff_df.set_index("particle")["motion"].to_dict()
 
     # A — max projection
