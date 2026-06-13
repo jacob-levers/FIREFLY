@@ -12,6 +12,9 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats as _stats
 from firefly.analysis.fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
+from firefly.analysis.fa_figure_common import (
+    fmt_stat_value, style_table_cells, render_polar_histogram,
+    rcparams_for_theme)
 
 
 def compute_circular_statistics(angles_deg):
@@ -257,16 +260,7 @@ def save_circular_statistics_pdf(angles_deg, stats, *, pdf_path,
     # log-space p-value computations into a human-readable "<1e-300"
     # — otherwise the supervisor sees "1e-300" and wonders why so
     # many tests give exactly that value.
-    def _fmt(x, prec=4):
-        try:
-            if x is None: return "—"
-            xf = float(x)
-            if np.isnan(xf): return "—"
-            if xf > 0.0 and xf <= 1e-300:
-                return "<1e-300"
-            return f"{xf:.{prec}g}"
-        except Exception:
-            return str(x)
+    _fmt = fmt_stat_value   # shared formatter (fa_figure_common)
 
     # One-line plain-English gloss per statistic.  Order matches the
     # CSV column order so the table reads top-to-bottom like the CSV.
@@ -331,31 +325,10 @@ def save_circular_statistics_pdf(angles_deg, stats, *, pdf_path,
              if circ_lin_result.get("n") is not None else "—"),
         ])
 
-    # ── rcParams snapshot ──────────────────────────────────────────────
-    # plt.rcParams persists across figures in the same process — the
-    # master figure renderer might have left things on the Dark palette
-    # (text.color = #e6edf3 etc.).  Snapshot then force everything to
-    # OUR palette so we can't accidentally pick up someone else's
-    # colours.  Restored at the end.
-    _rc_keys = ("text.color", "axes.labelcolor", "axes.edgecolor",
-                "xtick.color", "ytick.color", "axes.facecolor",
-                "axes.titlecolor", "figure.facecolor", "grid.color",
-                "font.family")
-    _rc_save = {k: plt.rcParams.get(k) for k in _rc_keys}
-    plt.rcParams.update({
-        "text.color":       pal["TXT"],
-        "axes.labelcolor":  pal["TXT"],
-        "axes.edgecolor":   pal["GRD"],
-        "xtick.color":      pal["TXT"],
-        "ytick.color":      pal["TXT"],
-        "axes.facecolor":   pal["PNL"],
-        "axes.titlecolor":  pal["TXT"],
-        "figure.facecolor": pal["BG"],
-        "grid.color":       pal["GRD"],
-        "font.family":      pal["FONT"],
-    })
-
-    try:
+    # Force matplotlib's global rcParams onto OUR palette for the duration of
+    # the render (restored on exit) so we can't pick up colours the master
+    # figure renderer left behind.  See rcparams_for_theme in fa_figure_common.
+    with rcparams_for_theme(plt, pal):
         # ── Layout (A4 portrait, all coords in figure-fraction) ─────────
         #
         # Vertical bands, top → bottom:
@@ -403,39 +376,7 @@ def save_circular_statistics_pdf(angles_deg, stats, *, pdf_path,
         ax_polar = fig.add_axes([0.08, 0.61, 0.36, 0.25], projection="polar")
         ax_polar.set_facecolor(pal["PNL"])
         if a.size >= 10:
-            nbins = 36
-            angles_rad = np.mod(np.deg2rad(a), 2.0 * np.pi)
-            bins  = np.linspace(0.0, 2.0 * np.pi, nbins + 1)
-            counts, edges = np.histogram(angles_rad, bins=bins)
-            widths  = np.diff(edges)
-            centers = 0.5 * (edges[:-1] + edges[1:])
-            ax_polar.set_theta_zero_location("N")
-            ax_polar.set_theta_direction(-1)  # CW positive — match master fig
-            ax_polar.bar(centers, counts, width=widths * 0.95,
-                         align="center", color=pal["ACC"],
-                         edgecolor=pal["PNL"], linewidth=0.4, alpha=0.92)
-            mu = stats.get("mean_direction_deg")
-            if mu is not None and not (isinstance(mu, float) and np.isnan(mu)):
-                r_max = float(counts.max()) if counts.size else 1.0
-                # Wrap signed μ into [0, 2π) so the arrow lands at the
-                # same place the bar histogram does.
-                mu_rad = np.mod(np.deg2rad(mu), 2.0 * np.pi)
-                ax_polar.annotate("",
-                    xy=(mu_rad, r_max * 0.95),
-                    xytext=(0, 0),
-                    arrowprops=dict(arrowstyle="->",
-                                    color=pal["ARROW"], lw=2.0))
-            # Show signed-angle labels at positive-angle slot positions
-            # so the visual reads "+45° upper-right, -45° upper-left",
-            # exactly like the master figure.
-            ax_polar.set_xticks(np.deg2rad(
-                [0, 45, 90, 135, 180, 225, 270, 315]))
-            ax_polar.set_xticklabels(
-                ["0°", "+45°", "+90°", "+135°", "±180°",
-                 "−135°", "−90°", "−45°"], fontsize=8)
-            ax_polar.set_yticklabels([])
-            ax_polar.tick_params(colors=pal["TXT"], labelsize=8)
-            ax_polar.grid(True, ls=":", alpha=0.4)
+            render_polar_histogram(ax_polar, a, stats, pal)
             # NB: deliberately no `set_title` here — matplotlib places
             # the polar title above the axes box (offset by `pad`), and
             # at this layout that overlaps the file-label rendered in
@@ -517,23 +458,7 @@ def save_circular_statistics_pdf(angles_deg, stats, *, pdf_path,
                            colLoc="left",
                            colWidths=[0.62, 0.28],
                            bbox=[0.20, 0.0, 0.80, 1.0])
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(9.0)
-        for (r, c), cell in tbl.get_celld().items():
-            cell.set_linewidth(0.5)
-            cell.set_edgecolor(pal["GRD"])
-            if r == 0:                       # column header row
-                cell.set_facecolor(pal["HDR_BG"])
-                cell.set_text_props(color=pal["HDR_TXT"], fontweight="bold")
-            else:
-                # Zebra-stripe data rows.  Use theme PNL for the
-                # "darker" stripes and ZEBRA for the lighter ones.
-                cell.set_facecolor(pal["ZEBRA"] if r % 2 == 0 else pal["PNL"])
-                if c == -1:                  # row-label column
-                    cell.set_text_props(family="monospace", fontsize=8.0,
-                                        color=pal["MUT"])
-                else:
-                    cell.set_text_props(color=pal["TXT"])
+        style_table_cells(tbl, pal, fontsize=9.0, label_col=True)
 
         # Footer — explicit short lines instead of `wrap=True`, because
         # matplotlib's fig.text wrap only kicks in when the text would
@@ -569,10 +494,6 @@ def save_circular_statistics_pdf(angles_deg, stats, *, pdf_path,
         with PdfPages(pdf_path) as pdf:
             pdf.savefig(fig, facecolor=pal["BG"])
         plt.close(fig)
-    finally:
-        # Restore rcParams so we don't bleed our palette into whatever
-        # plot the caller draws next.
-        plt.rcParams.update(_rc_save)
 
 
 def _circ_watson_williams(samples_deg):
@@ -1307,36 +1228,11 @@ def save_comparison_circular_statistics(groups_angles, *,
     if pdf_path is None:
         return per_group_stats
 
-    _rc_keys = ("text.color", "axes.labelcolor", "axes.edgecolor",
-                "xtick.color", "ytick.color", "axes.facecolor",
-                "axes.titlecolor", "figure.facecolor", "grid.color",
-                "font.family")
-    _rc_save = {k: plt.rcParams.get(k) for k in _rc_keys}
-    plt.rcParams.update({
-        "text.color":       pal["TXT"],
-        "axes.labelcolor":  pal["TXT"],
-        "axes.edgecolor":   pal["GRD"],
-        "xtick.color":      pal["TXT"],
-        "ytick.color":      pal["TXT"],
-        "axes.facecolor":   pal["PNL"],
-        "axes.titlecolor":  pal["TXT"],
-        "figure.facecolor": pal["BG"],
-        "grid.color":       pal["GRD"],
-        "font.family":      pal["FONT"],
-    })
+    # Force matplotlib's rcParams onto OUR palette for the render (restored on
+    # exit); see rcparams_for_theme in fa_figure_common.
+    _fmt = fmt_stat_value   # shared formatter (fa_figure_common)
 
-    def _fmt(x, prec=4):
-        try:
-            if x is None: return "—"
-            xf = float(x)
-            if np.isnan(xf): return "—"
-            if xf > 0.0 and xf <= 1e-300:
-                return "<1e-300"
-            return f"{xf:.{prec}g}"
-        except Exception:
-            return str(x)
-
-    try:
+    with rcparams_for_theme(plt, pal):
         with PdfPages(pdf_path) as pdf:
             # ── Page 1: comparison summary ─────────────────────────────
             # Landscape A4.  Layout, top → bottom:
@@ -1422,40 +1318,8 @@ def save_comparison_circular_statistics(groups_angles, *,
                     projection="polar")
                 ax.set_facecolor(pal["PNL"])
                 if a.size >= 10:
-                    # Match the master figure's polar convention:
-                    # 0° at top, CW positive, signed labels on slot
-                    # positions, [0, 2π) wrap for bar rendering.
-                    nbins = 36
-                    angles_rad = np.mod(np.deg2rad(a), 2.0 * np.pi)
-                    bins  = np.linspace(0.0, 2.0 * np.pi, nbins + 1)
-                    counts, edges = np.histogram(angles_rad, bins=bins)
-                    widths  = np.diff(edges)
-                    centers = 0.5 * (edges[:-1] + edges[1:])
-                    ax.set_theta_zero_location("N")
-                    ax.set_theta_direction(-1)
-                    bar_col = color or pal["ACC"]
-                    ax.bar(centers, counts, width=widths * 0.95,
-                           align="center", color=bar_col,
-                           edgecolor=pal["PNL"], linewidth=0.4,
-                           alpha=0.92)
-                    mu = stats.get("mean_direction_deg")
-                    if mu is not None and not (
-                            isinstance(mu, float) and np.isnan(mu)):
-                        r_max = float(counts.max()) if counts.size else 1.0
-                        mu_rad = np.mod(np.deg2rad(mu), 2.0 * np.pi)
-                        ax.annotate("",
-                            xy=(mu_rad, r_max * 0.95),
-                            xytext=(0, 0),
-                            arrowprops=dict(arrowstyle="->",
-                                            color=pal["ARROW"], lw=2.0))
-                    ax.set_xticks(np.deg2rad(
-                        [0, 45, 90, 135, 180, 225, 270, 315]))
-                    ax.set_xticklabels(
-                        ["0°", "+45°", "+90°", "+135°", "±180°",
-                         "−135°", "−90°", "−45°"], fontsize=tick_fs)
-                    ax.set_yticklabels([])
-                    ax.tick_params(colors=pal["TXT"], labelsize=tick_fs)
-                    ax.grid(True, ls=":", alpha=0.4)
+                    render_polar_histogram(ax, a, stats, pal,
+                                           color=color, tick_fontsize=tick_fs)
                     # Labels live ABOVE the cell.  Raising the label
                     # block above `cell_y + row_h` (rather than just
                     # inside the top of the cell) creates a clean gap
@@ -1517,19 +1381,7 @@ def save_comparison_circular_statistics(groups_angles, *,
             tbl = ax_tbl.table(cellText=cell, colLabels=col_labels,
                                cellLoc="left", colLoc="left",
                                bbox=[0.0, 0.0, 1.0, 1.0])
-            tbl.auto_set_font_size(False)
-            tbl.set_fontsize(9.0)
-            for (rr, cc), c_obj in tbl.get_celld().items():
-                c_obj.set_linewidth(0.5)
-                c_obj.set_edgecolor(pal["GRD"])
-                if rr == 0:
-                    c_obj.set_facecolor(pal["HDR_BG"])
-                    c_obj.set_text_props(color=pal["HDR_TXT"],
-                                         fontweight="bold")
-                else:
-                    c_obj.set_facecolor(
-                        pal["ZEBRA"] if rr % 2 == 0 else pal["PNL"])
-                    c_obj.set_text_props(color=pal["TXT"])
+            style_table_cells(tbl, pal, fontsize=9.0)
 
             # ── Between-group tests section ────────────────────────
             #
@@ -1777,20 +1629,7 @@ def save_comparison_circular_statistics(groups_angles, *,
                     cellLoc="left", colLoc="left",
                     colWidths=[0.60, 0.25, 0.10, 0.05],
                     bbox=[0.0, 0.0, 1.0, 1.0])
-                tbl.auto_set_font_size(False)
-                tbl.set_fontsize(8.5)
-                for (rr, cc), c_obj in tbl.get_celld().items():
-                    c_obj.set_linewidth(0.5)
-                    c_obj.set_edgecolor(pal["GRD"])
-                    c_obj.PAD = 0.06          # a little breathing room in-cell
-                    if rr == 0:
-                        c_obj.set_facecolor(pal["HDR_BG"])
-                        c_obj.set_text_props(color=pal["HDR_TXT"],
-                                             fontweight="bold")
-                    else:
-                        c_obj.set_facecolor(
-                            pal["ZEBRA"] if rr % 2 == 0 else pal["PNL"])
-                        c_obj.set_text_props(color=pal["TXT"])
+                style_table_cells(tbl, pal, fontsize=8.5, pad=0.06)
 
             # Taller area + a hard 11-row cap → each row gets ~2x the height it
             # had before, so the table reads cleanly instead of cramped.
@@ -1866,8 +1705,6 @@ def save_comparison_circular_statistics(groups_angles, *,
                 # we mirror its layout here in a fresh figure so the
                 # per-group pages all live in ONE multi-page PDF.
                 _write_single_group_page(pdf, a, stats, label, pal, color)
-    finally:
-        plt.rcParams.update(_rc_save)
 
     return per_group_stats
 
@@ -1884,16 +1721,7 @@ def _write_single_group_page(pdf, angles_deg, stats, label, pal,
     a = np.asarray(angles_deg, dtype=float).ravel()
     a = a[np.isfinite(a)]
 
-    def _fmt(x, prec=4):
-        try:
-            if x is None: return "—"
-            xf = float(x)
-            if np.isnan(xf): return "—"
-            if xf > 0.0 and xf <= 1e-300:
-                return "<1e-300"
-            return f"{xf:.{prec}g}"
-        except Exception:
-            return str(x)
+    _fmt = fmt_stat_value   # shared formatter (fa_figure_common)
 
     rows = [
         ("n", "Sample size", "count", f"{int(stats.get('n', 0)):,}"),
@@ -1952,35 +1780,7 @@ def _write_single_group_page(pdf, angles_deg, stats, label, pal,
     ax_polar = fig.add_axes([0.08, 0.61, 0.36, 0.25], projection="polar")
     ax_polar.set_facecolor(pal["PNL"])
     if a.size >= 10:
-        # Same convention as the master figure: 0° top, CW positive,
-        # signed labels on slot positions, [0, 2π) wrap for bars.
-        nbins = 36
-        angles_rad = np.mod(np.deg2rad(a), 2.0 * np.pi)
-        bins  = np.linspace(0.0, 2.0 * np.pi, nbins + 1)
-        counts, edges = np.histogram(angles_rad, bins=bins)
-        widths = np.diff(edges)
-        centers = 0.5 * (edges[:-1] + edges[1:])
-        ax_polar.set_theta_zero_location("N")
-        ax_polar.set_theta_direction(-1)
-        ax_polar.bar(centers, counts, width=widths * 0.95, align="center",
-                     color=group_color or pal["ACC"],
-                     edgecolor=pal["PNL"], linewidth=0.4, alpha=0.92)
-        mu = stats.get("mean_direction_deg")
-        if mu is not None and not (isinstance(mu, float) and np.isnan(mu)):
-            r_max = float(counts.max()) if counts.size else 1.0
-            mu_rad = np.mod(np.deg2rad(mu), 2.0 * np.pi)
-            ax_polar.annotate("",
-                xy=(mu_rad, r_max * 0.95), xytext=(0, 0),
-                arrowprops=dict(arrowstyle="->", color=pal["ARROW"],
-                                lw=2.0))
-        ax_polar.set_xticks(np.deg2rad(
-            [0, 45, 90, 135, 180, 225, 270, 315]))
-        ax_polar.set_xticklabels(
-            ["0°", "+45°", "+90°", "+135°", "±180°",
-             "−135°", "−90°", "−45°"], fontsize=8)
-        ax_polar.set_yticklabels([])
-        ax_polar.tick_params(colors=pal["TXT"], labelsize=8)
-        ax_polar.grid(True, ls=":", alpha=0.4)
+        render_polar_histogram(ax_polar, a, stats, pal, color=group_color)
         # Title intentionally omitted — see save_circular_statistics_pdf
         # for the rationale (header + footer already cover it).
     else:
@@ -2023,22 +1823,7 @@ def _write_single_group_page(pdf, angles_deg, stats, label, pal,
                        cellLoc="left", rowLoc="left", colLoc="left",
                        colWidths=[0.62, 0.28],
                        bbox=[0.20, 0.0, 0.80, 1.0])
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(9.0)
-    for (rr, cc), c_obj in tbl.get_celld().items():
-        c_obj.set_linewidth(0.5)
-        c_obj.set_edgecolor(pal["GRD"])
-        if rr == 0:
-            c_obj.set_facecolor(pal["HDR_BG"])
-            c_obj.set_text_props(color=pal["HDR_TXT"], fontweight="bold")
-        else:
-            c_obj.set_facecolor(
-                pal["ZEBRA"] if rr % 2 == 0 else pal["PNL"])
-            if cc == -1:
-                c_obj.set_text_props(family="monospace", fontsize=8.0,
-                                     color=pal["MUT"])
-            else:
-                c_obj.set_text_props(color=pal["TXT"])
+    style_table_cells(tbl, pal, fontsize=9.0, label_col=True)
 
     _foot_kw = dict(fontsize=7, color=pal["MUT"], ha="left",
                     va="bottom", family=pal["FONT"])
