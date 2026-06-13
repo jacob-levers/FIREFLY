@@ -1,6 +1,7 @@
 """MainWindow BuildMixin methods, split out of app_qt.py (#7)."""
 from __future__ import annotations
-from firefly.analysis.fa_constants import N_CPUS
+from firefly.analysis.fa_constants import (N_CPUS, DEFAULT_PIXEL_SIZE_UM,
+                                           DEFAULT_FRAME_INTERVAL_S)
 
 import os
 import sys
@@ -511,8 +512,13 @@ class BuildMixin:
         self.c_override_px.setToolTip(
             "If unchecked, the pixel size from the file's metadata is used.\n"
             "Check this only if the metadata is missing or wrong.")
-        self.s_pixel_size  = self._spin_dbl(0.106, 0.01, 1.0, 0.001, decimals=3,
+        self.s_pixel_size  = self._spin_dbl(DEFAULT_PIXEL_SIZE_UM, 0.01, 1.0, 0.001, decimals=3,
             tip="Physical pixel size in µm. Used to convert px → µm for D, MSD, etc.")
+        # When Override is off the run uses the file's metadata or the built-in
+        # default — the spinbox value is IGNORED (for both image and CSV inputs).
+        # Disable it so an edited-but-ignored value can't mislead.  (R2-12)
+        self.c_override_px.toggled.connect(self.s_pixel_size.setEnabled)
+        self.s_pixel_size.setEnabled(self.c_override_px.isChecked())
         row.addWidget(self.c_override_px); row.addWidget(self.s_pixel_size, 1)
         wpx = QtWidgets.QWidget(); wpx.setLayout(row)
         gl.addRow(_label_with_info("Pixel size (µm)", "pixel size"), wpx)
@@ -521,8 +527,10 @@ class BuildMixin:
         self.c_override_fi = QtWidgets.QCheckBox("Override")
         self.c_override_fi.setToolTip(
             "If unchecked, the frame interval from the file's metadata is used.")
-        self.s_frame_interval = self._spin_dbl(0.02, 0.001, 10.0, 0.001, decimals=3,
+        self.s_frame_interval = self._spin_dbl(DEFAULT_FRAME_INTERVAL_S, 0.001, 10.0, 0.001, decimals=3,
             tip="Time between frames in seconds. Used for diffusion coefficient units.")
+        self.c_override_fi.toggled.connect(self.s_frame_interval.setEnabled)
+        self.s_frame_interval.setEnabled(self.c_override_fi.isChecked())
         row.addWidget(self.c_override_fi); row.addWidget(self.s_frame_interval, 1)
         wfi = QtWidgets.QWidget(); wfi.setLayout(row)
         gl.addRow(_label_with_info("Frame interval (s)", "frame interval"), wfi)
@@ -2057,10 +2065,16 @@ class BuildMixin:
         cockpit.addWidget(self.live_view, 1)          # fills the rest
         self._analysis_stack.addWidget(cockpit_w)
 
-        # Page 1 — results: same _ResultsPanel as before.
+        # Page 1 — results: same _ResultsPanel as before, but inside a vertical
+        # scroll area so a short window SCROLLS the stats instead of compressing
+        # the grid until the rows overlap ("folding in on one another").  The
+        # page stays at stack index 1 and self.run_results is unchanged, so the
+        # show_results/show_stats calls and setCurrentIndex(1) keep working.
         self.run_results = _ResultsPanel(
             "Results will appear here after analysis.")
-        self._analysis_stack.addWidget(self.run_results)
+        _results_scroll = _NoHScrollArea()
+        _results_scroll.setWidget(self.run_results)
+        self._analysis_stack.addWidget(_results_scroll)
 
         # Page 2 — HYPERFLY dashboard: a grid of live per-file detection tiles,
         # shown in place of the single cockpit view while a parallel batch runs.

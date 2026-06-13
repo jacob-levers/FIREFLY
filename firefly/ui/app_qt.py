@@ -107,6 +107,9 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 
 from firefly import crash_reporter
+from firefly.analysis.fa_enums import Backend, MaskMode, MsgKind
+from firefly.analysis.fa_constants import (DEFAULT_PIXEL_SIZE_UM,
+                                           DEFAULT_FRAME_INTERVAL_S)
 from firefly.ui.ui_mixin_handlers import HandlersMixin
 from firefly.ui.ui_mixin_build import BuildMixin
 from firefly.ui.ui_mixin_batch import BatchMixin
@@ -1115,15 +1118,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             # Normalise the combo label to the short tokens the viewer
             # expects: "max", "blink", "mean", or "sum".  "Blink density"
             # in particular needs to collapse to plain "blink".
-            _mm_raw = self.c_roi_mask_mode.currentText().lower()
-            if _mm_raw.startswith("blink"):
-                mask_mode = "blink"
-            elif _mm_raw.startswith("max"):
-                mask_mode = "max"
-            elif _mm_raw.startswith("sum"):
-                mask_mode = "sum"
-            else:
-                mask_mode = "mean"
+            mask_mode = MaskMode.parse(self.c_roi_mask_mode.currentText()).value
             bg_sigma = float(self.s_roi_bg_sigma.value())
             self._roi_viewer.set_roi_mask_params(
                 mode=mode, auto_method=method,
@@ -2350,12 +2345,15 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         back to the dropdown.
         """
         value = self._backend_value_from_label(self.c_backend.currentText())
-        if not value or not value.startswith("torch-"):
+        bk = Backend.parse(value)
+        # Only the device-pinned GPU backends (torch-cuda / torch-mps) can hit
+        # the "picked a GPU the bundled torch can't use" footgun.  auto / torch
+        # / torch-cpu / trackpy resolve their device safely at run time.
+        if not bk.is_explicit_gpu:
             return True
-        forced = value[len("torch-"):].split(":", 1)[0]
         try:
             import torch as _t
-            if forced == "cuda" and not _t.cuda.is_available():
+            if bk is Backend.TORCH_CUDA and not _t.cuda.is_available():
                 msg = (
                     "You picked the NVIDIA CUDA backend, but the bundled "
                     "PyTorch is CPU-only.\n\n"
@@ -2379,7 +2377,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                     self.c_backend.setCurrentText("Auto")
                     return True
                 return False
-            if forced == "mps":
+            if bk is Backend.TORCH_MPS:
                 has_mps = (hasattr(_t.backends, "mps")
                            and _t.backends.mps.is_available())
                 if not has_mps:
@@ -2518,9 +2516,9 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 cls._BUILTIN_PRESETS_TAG: True,
                 # Imaging metadata — 100x oil, fast PALM acquisition
                 "analysis/override_px":     True,
-                "analysis/pixel_size":      0.106,
+                "analysis/pixel_size":      DEFAULT_PIXEL_SIZE_UM,
                 "analysis/override_fi":     True,
-                "analysis/frame_interval":  0.020,
+                "analysis/frame_interval":  DEFAULT_FRAME_INTERVAL_S,
                 # Preprocessing — flat well-spread cytoplasm; small radius
                 # tracks local background tightly without smearing the spots.
                 "analysis/bg_method":       "Uniform Filter",
@@ -2709,6 +2707,67 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 self.tabs.setCurrentIndex(i)
                 return
 
+    def _confirm_calibration_or_abort(self, params_list) -> bool:
+        """Pre-flight calibration gate.  If any image run in `params_list` would
+        silently use the built-in DEFAULT pixel size / frame interval (no
+        override ticked AND no metadata embedded in the file), ask the user
+        first.  Returns True to proceed with the launch, False to abort.
+
+        Diffusion coefficients scale as D ∝ px²/Δt, so a wrong-by-default
+        calibration makes every D wrong while the figure looks perfect — this
+        is the one place we refuse to let that happen silently.
+        """
+        try:
+            from firefly.analysis.fa_loaders import params_needing_calibration
+            missing = params_needing_calibration(params_list)
+        except Exception:
+            return True   # never block a run on a probe failure
+        if not missing:
+            return True
+        # Show the values the WORKER will actually use for these files — the
+        # built-in defaults — NOT the live spinbox.  A file is only in `missing`
+        # when its Override is OFF and it has no embedded metadata, so the run
+        # sends pixel_size=None and the worker falls back to these constants.
+        # Echoing an edited-but-not-overridden spinbox value here would assert a
+        # calibration the run won't use (the spinbox is always editable).  (#3)
+        px = float(DEFAULT_PIXEL_SIZE_UM)
+        fi = float(DEFAULT_FRAME_INTERVAL_S)
+        n = len(missing)
+        names = "\n".join("   • " + os.path.basename(m) for m in missing[:8])
+        if n > 8:
+            names += f"\n   … and {n - 8} more"
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        box.setWindowTitle("Calibration not found")
+        box.setText(f"{n} file(s) have no embedded pixel size / frame interval.")
+        box.setInformativeText(
+            f"FIREFLY will ASSUME px = {px:g} µm and Δt = {fi:g} s for them.\n"
+            f"Diffusion coefficients and velocities scale with these "
+            f"(D ∝ px²/Δt), so wrong calibration makes every D wrong.\n\n"
+            f"{names}")
+        b_set = box.addButton("Set calibration…",
+                              QtWidgets.QMessageBox.ButtonRole.ActionRole)
+        b_run = box.addButton("Run with defaults",
+                              QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(b_set)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is b_run:
+            return True
+        if clicked is b_set:
+            # Tick the overrides + focus the px field on the Import tab so the
+            # user can enter the real calibration, then re-launch.
+            try:
+                self.c_override_px.setChecked(True)
+                self.c_override_fi.setChecked(True)
+                self._switch_to_tab(TAB_IMPORT)
+                self.s_pixel_size.setFocus()
+                self.s_pixel_size.selectAll()
+            except Exception:
+                pass
+        return False
+
     def _start_single_run(self):
         fpath = self.e_file.text().strip()
         if not fpath or not os.path.isfile(fpath):
@@ -2729,9 +2788,6 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             # Irrelevant for a localisations table (no detection step).
             if not self._validate_selected_backend():
                 return
-        # Auto-switch to the Analysis tab so the user sees progress
-        self._switch_to_tab(TAB_ANALYSIS)
-        self._start_elapsed_timer()
 
         out_dir = self.e_outdir.text().strip() or (
             os.path.dirname(fpath) if is_loc else None)
@@ -2752,6 +2808,16 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             bg = self.e_csv_bg.text().strip()
             if bg and os.path.isfile(bg):
                 params["bg_image_path"] = bg
+
+        # Calibration pre-flight — warn before a run silently assumes the
+        # built-in default px/Δt (image input, no override, no embedded
+        # metadata).  Aborts here if the user chooses to set calibration first.
+        if not self._confirm_calibration_or_abort([params]):
+            return
+
+        # Commit to the run: switch to the Analysis tab + start the elapsed timer.
+        self._switch_to_tab(TAB_ANALYSIS)
+        self._start_elapsed_timer()
 
         # Persist before the long-running task in case of crash/abort.
         try:
@@ -2787,9 +2853,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         # push ~35 MB/s through this pipe.  If the GUI ever stalls for
         # a few seconds the queue grows unbounded and pushes the
         # system into swap (we had a user hard-freeze caused by that).
-        # 2000 messages is enough headroom for normal jitter; the
-        # worker drops preview/mass messages when full and keeps only
-        # the analysis-critical ones (log/progress/done/etc.).
+        # 2000 messages is enough headroom for normal jitter; the worker
+        # emits all high-volume messages (log/progress/preview/mass) with
+        # put_nowait and DROPS them when the queue is full (see _safe_put in
+        # firefly_worker), so a stalled GUI can never wedge the worker.  Only
+        # the low-volume terminal messages (done/error/stopped/batch_done) use
+        # a blocking/bounded put.
         self._msg_queue    = multiprocessing.Queue(maxsize=2000)
         self._cancel_event = multiprocessing.Event()
         self._proc = multiprocessing.Process(
@@ -2871,6 +2940,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         if not params_list:
             return False
         if not self._validate_selected_backend():
+            return False
+        # Calibration pre-flight (image inputs only; external-CSV excluded in
+        # the helper, since those always carry the visible sidebar value).
+        if not self._confirm_calibration_or_abort(params_list):
             return False
         self._switch_to_tab(TAB_ANALYSIS)
         self._start_elapsed_timer()
@@ -3054,9 +3127,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         # push ~35 MB/s through this pipe.  If the GUI ever stalls for
         # a few seconds the queue grows unbounded and pushes the
         # system into swap (we had a user hard-freeze caused by that).
-        # 2000 messages is enough headroom for normal jitter; the
-        # worker drops preview/mass messages when full and keeps only
-        # the analysis-critical ones (log/progress/done/etc.).
+        # 2000 messages is enough headroom for normal jitter; the worker
+        # emits all high-volume messages (log/progress/preview/mass) with
+        # put_nowait and DROPS them when the queue is full (see _safe_put in
+        # firefly_worker), so a stalled GUI can never wedge the worker.  Only
+        # the low-volume terminal messages (done/error/stopped/batch_done) use
+        # a blocking/bounded put.
         self._msg_queue    = multiprocessing.Queue(maxsize=2000)
         self._cancel_event = multiprocessing.Event()
         self._proc = multiprocessing.Process(
@@ -3080,10 +3156,27 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         stem    = payload.get("stem", "")
         summary = payload.get("summary") or {}
         n_tracks = summary.get("n_tracks", payload.get("n_tracks", 0))
-        headline = f"{stem}  —  {n_tracks:,} trajectories" if stem else \
-                   f"Analysis complete — {n_tracks:,} trajectories"
-        self.run_results.show_results(headline, out_dir)
+        # A zero-trajectory result is almost always a real problem (detection
+        # settings too strict, an ROI masking everything, or bad calibration
+        # suppressing detection) — surface it as a WARNING, not a green success
+        # with empty stats.  (#18)
+        if not n_tracks:
+            headline = (f"{stem}  —  no trajectories produced" if stem
+                        else "Analysis finished — NO trajectories produced")
+            self.run_results.show_results(headline, out_dir, severity="warn")
+        else:
+            headline = f"{stem}  —  {n_tracks:,} trajectories" if stem else \
+                       f"Analysis complete — {n_tracks:,} trajectories"
+            self.run_results.show_results(headline, out_dir)
         self.run_results.show_stats(summary)
+        # AFTER show_stats (which clears the flags container): a zero-trajectory
+        # run is almost always a real problem, so add an explicit warning banner
+        # instead of a silent green "complete".  (#18)
+        if not n_tracks:
+            self.run_results.show_warning(
+                "No trajectories were produced — check the detection settings "
+                "(diameter / minmass), the ROI, and the pixel-size / frame-"
+                "interval calibration.")
         try:    self.pipeline_diagram.set_complete()
         except AttributeError: pass
         self.run_stage_label.setText("Done")
@@ -3181,9 +3274,23 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 common_root = ""
             except Exception:
                 common_root = os.path.dirname(ok_dirs[0])
+        # Don't paint a failed batch in success-green.  All-failed → DANGER,
+        # any failures → WARN, otherwise success.  (#17)
+        if n_total and n_ok == 0:
+            _sev = "danger"
+            _warn = (f"Every file failed ({n_fail}/{n_total}). See the console "
+                     f"log for the per-file errors.")
+        elif n_fail:
+            _sev = "warn"
+            _warn = (f"{n_fail} of {n_total} file(s) failed. See the console log "
+                     f"for the per-file errors.")
+        else:
+            _sev, _warn = "success", None
         self.run_results.show_results(headline, common_root,
-                                      files=None)
+                                      files=None, severity=_sev)
         self.run_results.show_stats(agg_summary)
+        if _warn:
+            self.run_results.show_warning(_warn, severity=_sev)
 
     def _handle_compare_done(self, payload: dict):
         """Compare terminal message — figure + CSVs + PDF have been saved."""
@@ -3289,6 +3396,20 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             except Exception:
                 pass
         self._proc                  = None
+        # Mirror closeEvent's teardown: cancel the feeder thread + close the
+        # queue before dropping it.  Just rebinding to None leaks the feeder
+        # thread + OS pipe handle each run (the queue is only reclaimed at GC,
+        # whose feeder-join can stall on Windows if the worker was SIGKILL'd
+        # mid-write), so a session of start/Stop cycles accumulates handles. (#26)
+        try:
+            _q = self._msg_queue
+            if _q is not None:
+                try: _q.cancel_join_thread()
+                except Exception: pass
+                try: _q.close()
+                except Exception: pass
+        except Exception:
+            pass
         self._msg_queue             = None
         self._cancel_event          = None
         self._stop_requested_at     = None

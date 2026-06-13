@@ -11,7 +11,24 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.66.2"
+__version__ = "2.67.0"
+# TAG: an annotated `v2.67.0` tag is created on the release-prep commit (the one
+# that adds the CHANGELOG v2.67.0 section).  The in-app updater compares this
+# string against the latest *GitHub* tag, so it will not offer an update until
+# that tag is PUSHED / a GitHub release is published — the remaining manual
+# release step.  If this branch is squash-merged into main, re-create the tag on
+# the resulting commit so it lands on main's history.  (R3-3)
+# v2.67.0 — hostile-review remediation. NOTE: this release changes some
+# scientific OUTPUTS vs 2.66.x, so a re-analysis of old data may differ:
+#   • mobile fraction is now (finite, positive D) >= threshold (was D > threshold
+#     over all rows incl. failed NaN fits) — matches the panel; None for an
+#     all-immobile dataset (was 0.0).
+#   • short (3-lag) tracks with an unmeasurable anomalous exponent are now
+#     "Unknown" (were sometimes mislabelled Directed/Immobile).
+#   • a 3-component JDD that yields a negative population falls back to 2.
+#   • assumed pixel-size/frame-interval defaults are now unified at 0.106 µm /
+#     0.02 s everywhere (post-process was 0.03 s, Compare/CLI 0.05 s).
+# Plus many robustness/GUI/security fixes that don't change numbers.
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":
@@ -129,7 +146,9 @@ import io as _io
 # re-exported here so existing `sptpalm_analysis.N_CPUS` / `_Cancelled` /
 # `_tqdm` / `_dim_size` call sites keep working unchanged.
 from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm, _dim_size,
-                                           safe_process_workers)
+                                           safe_process_workers,
+                                           DEFAULT_PIXEL_SIZE_UM,
+                                           DEFAULT_FRAME_INTERVAL_S)
 
 
 tp.quiet()
@@ -552,18 +571,20 @@ def main():
 
     pixel_size = args.pixel_size or meta_px
     if pixel_size is None:
-        print("  WARNING: Pixel size not in metadata. Using 0.104 um/px.")
+        print(f"  WARNING: Pixel size not in metadata. Using "
+              f"{DEFAULT_PIXEL_SIZE_UM} um/px.")
         print("  (Override with --pixel-size)")
-        pixel_size = 0.104
+        pixel_size = DEFAULT_PIXEL_SIZE_UM
     else:
         src = "command line" if args.pixel_size else "CZI metadata"
         print(f"  Pixel size     : {pixel_size} um/px  [{src}]")
 
     frame_interval = args.frame_interval or meta_fi
     if frame_interval is None:
-        print("  WARNING: Frame interval not in metadata. Using 0.05 s.")
+        print(f"  WARNING: Frame interval not in metadata. Using "
+              f"{DEFAULT_FRAME_INTERVAL_S} s.")
         print("  (Override with --frame-interval)")
-        frame_interval = 0.05
+        frame_interval = DEFAULT_FRAME_INTERVAL_S
     else:
         src = "command line" if args.frame_interval else "CZI metadata"
         print(f"  Frame interval : {frame_interval} s/frame  [{src}]")

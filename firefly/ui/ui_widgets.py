@@ -25,6 +25,7 @@ from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _MOTION_PALETTE, _MOTION_ORDER,
                         _MOTION_CMAP_NAME, _open_folder)
 from firefly.analysis.fa_stats_config import glossary_def
+from firefly.analysis.fa_enums import MaskMode
 
 
 class _InfoIcon(QtWidgets.QLabel):
@@ -2419,6 +2420,18 @@ class _ResultsPanel(QtWidgets.QFrame):
         self._stats_container.hide()
         self._out_dir = ""
 
+    def show_warning(self, message: str, severity: str = "warn"):
+        """Show a one-off severity banner in the panel and set the readiness pill
+        to 'Completed with warnings'.  Reuses the QC-flag banner infrastructure.
+        Call AFTER show_stats(), which clears the flags container.  (#18)"""
+        try:
+            self._flags_layout.addWidget(_AlertBanner(severity, message))
+            self._flags_container.show()
+            self._qc_badge.set_state("blocked", "Completed with warnings")
+            self._qc_badge.show()
+        except Exception:
+            pass
+
     def _clear_stats(self):
         while self._stats_grid.count():
             item = self._stats_grid.takeAt(0)
@@ -2437,13 +2450,24 @@ class _ResultsPanel(QtWidgets.QFrame):
     def _add_stat_row(self, row: int, label: str, value: str,
                       value_colour: str | None = None,
                       tooltip: str | None = None):
+        # NB: the `padding: 1px 0 2px 0` on both cells is load-bearing, not
+        # cosmetic.  Segoe UI reports a line height exactly equal to its
+        # ascent+descent (zero leading), so a stat label's box is the exact
+        # pixel height of its glyph ink.  Under Windows fractional display
+        # scaling (125 %/150 %) each row's device height rounds down ~1 px and,
+        # with no slack, clips the bottom of the digits — comma tails, "µ",
+        # subscripts, parens — so the values look "half cut off" (they render
+        # fine at 100 % and on macOS, which is why it slipped through).  The
+        # bottom padding keeps the descenders clear of the rounding boundary.
         lbl = QtWidgets.QLabel(label)
         lbl.setStyleSheet(
-            f"color: {_THEME['TXT_MUTED']}; font-size: 12.5px;")
+            f"color: {_THEME['TXT_MUTED']}; font-size: 12.5px; "
+            f"padding: 1px 0 2px 0;")
         val = QtWidgets.QLabel(value)
         col = value_colour or _THEME['TXT']
         val.setStyleSheet(
-            f"color: {col}; font-size: 14px; font-weight: 600;")
+            f"color: {col}; font-size: 14px; font-weight: 600; "
+            f"padding: 1px 0 2px 0;")
         val.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
         if tooltip:
@@ -2556,7 +2580,8 @@ class _ResultsPanel(QtWidgets.QFrame):
                         Qt.AlignmentFlag.AlignLeft)
                     val = QtWidgets.QLabel(f"{n:,}  ({100 * n / total:.1f} %)")
                     val.setStyleSheet(
-                        "color: %s; font-size: 14px; font-weight: 600;" % col)
+                        "color: %s; font-size: 14px; font-weight: 600; "
+                        "padding: 1px 0 2px 0;" % col)
                     val.setTextInteractionFlags(
                         Qt.TextInteractionFlag.TextSelectableByMouse)
                     self._stats_grid.addWidget(
@@ -2672,11 +2697,22 @@ class _ResultsPanel(QtWidgets.QFrame):
         return ""
 
     def show_results(self, headline: str, out_dir: str,
-                     files: list[str] | None = None):
-        """Populate the panel with a completed run's outputs."""
+                     files: list[str] | None = None, severity: str = "success"):
+        """Populate the panel with a completed run's outputs.
+
+        `severity` controls the headline colour so a failed or empty run is NOT
+        painted like a successful one: 'success' (green), 'warn' (amber — e.g. a
+        zero-trajectory run or a partially-failed batch), or 'danger' (red —
+        e.g. every file in a batch failed).  (#17/#18)
+        """
+        _sev_color = {
+            "success": _THEME["SUCCESS"],
+            "warn":    _THEME.get("WARN", _THEME["SUCCESS"]),
+            "danger":  _THEME.get("DANGER", _THEME["SUCCESS"]),
+        }.get(severity, _THEME["SUCCESS"])
         self._headline.setText(headline)
         self._headline.setStyleSheet(
-            f"color: {_THEME['SUCCESS']}; font-size: 16px; font-weight: 700;")
+            f"color: {_sev_color}; font-size: 16px; font-weight: 700;")
         self._headline.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
@@ -3838,7 +3874,8 @@ class _RoiViewer(QtWidgets.QWidget):
         #           blinks repeatedly, autofluorescent background is
         #           steady so its blink-count is ~zero.
         # ── 1. Build the projection from the cached preview stack ──────
-        mode_proj = self._roi_mask_params.get("mask_mode", "mean")
+        mode_proj = MaskMode.parse(
+            self._roi_mask_params.get("mask_mode", "mean")).value
         stk = self._stack.astype(_np.float32, copy=False)
         if mode_proj == "max":
             proj = stk.max(axis=0)

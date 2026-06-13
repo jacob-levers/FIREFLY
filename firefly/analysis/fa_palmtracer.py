@@ -4,6 +4,8 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 """
 from __future__ import annotations
 
+from firefly.analysis.fa_constants import (DEFAULT_PIXEL_SIZE_UM,
+                                           DEFAULT_FRAME_INTERVAL_S)
 from firefly.analysis.fa_diffusion import (compute_msd_and_fit, compute_jdd,
                           compute_dwell_times, compute_turning_angles,
                           compute_mobile_fraction_over_time,
@@ -454,7 +456,17 @@ def load_summary_from_folder(folder, use_native=False):
         with open(params_path) as f:
             s["params"] = json.load(f)
     else:
-        s["params"] = {"pixel_size_um": 0.104, "frame_interval_s": 0.05}
+        # No params.json (deleted / older run): we don't KNOW this folder's
+        # calibration.  Previously this fabricated frame_interval_s=0.05 with the
+        # key PRESENT, so Compare's _fi_or_default used it SILENTLY and rescaled
+        # the group's MSD/AUC 2.5x vs siblings.  Assume the app-wide defaults
+        # (consistent with everywhere else) and WARN loudly at load time.  (R2-2)
+        print(f"  WARNING: '{disp}' has no {stem}_params.json — assuming default "
+              f"calibration (px={DEFAULT_PIXEL_SIZE_UM} µm, "
+              f"Δt={DEFAULT_FRAME_INTERVAL_S} s).  Restore/set params.json for "
+              f"this folder if that's wrong; MSD and AUC scale with Δt.")
+        s["params"] = {"pixel_size_um": DEFAULT_PIXEL_SIZE_UM,
+                       "frame_interval_s": DEFAULT_FRAME_INTERVAL_S}
 
     # Ensemble MSD
     msd_path = os.path.join(data_dir, f"{stem}_ensemble_msd.csv")

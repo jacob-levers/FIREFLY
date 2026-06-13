@@ -16,6 +16,16 @@ import sys
 
 from tqdm import tqdm
 
+# ── Canonical calibration defaults ───────────────────────────────────────────
+# Diffusion coefficients scale as D ∝ px²/Δt, so the pixel size and frame
+# interval assumed when a file has neither an override nor embedded metadata
+# MUST be identical everywhere.  They had silently drifted — post-process used
+# Δt = 0.03 s and the comparison reader used 0.05 s, while the worker/GUI used
+# 0.02 s — which rescaled D and the MSD axis between code paths.  Every default
+# site now references these so they can never diverge again.
+DEFAULT_PIXEL_SIZE_UM = 0.106
+DEFAULT_FRAME_INTERVAL_S = 0.02
+
 # Worker-count default for the parallel localisation / MSD passes.
 N_CPUS = multiprocessing.cpu_count()
 

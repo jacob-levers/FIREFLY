@@ -32,6 +32,13 @@ import sys
 import time
 import traceback
 
+# Qt-free, stdlib-only (imports `enum`); safe to load before the CUDA sidecar
+# block since it pulls in no torch.  MsgKind is the one source of truth for the
+# worker→GUI message-queue kinds emitted throughout this module.
+from firefly.analysis.fa_enums import MsgKind
+from firefly.analysis.fa_constants import (
+    DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S)
+
 
 # ── CUDA sidecar injection ───────────────────────────────────────────────────
 # Must run BEFORE any torch import so the CUDA-built torch in
@@ -50,6 +57,96 @@ except Exception:
 # insurance in case the parent's setting somehow didn't reach the child.
 os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+
+# Linking / MSD knobs a post-process re-ROI must reproduce from the original
+# run.  Single source of truth shared by the params.json writer (the safety-net
+# fallback when `p` is somehow missing a key) and the Post-process reader
+# (`_postproc_linking_params`, the fallback for pre-2.67 params.json files that
+# predate persisting these knobs).  Values match the GUI's analysis defaults.
+_POSTPROC_LINK_DEFAULTS = {
+    "diameter":      7,
+    "search_range":  5,
+    "memory":        3,
+    "min_track_len": 5,
+    "max_track_len": None,
+    "max_lagtime":   20,
+    "n_fit":         5,
+}
+
+
+def _safe_put(q, item):
+    """Non-blocking emit for high-volume log / progress messages.
+
+    The GUI message queue is bounded (maxsize=2000).  A BLOCKING ``put()`` there
+    would wedge this worker if the GUI thread ever stalls long enough to fill it
+    — the worker would block inside put() with no cancel check, recoverable only
+    by the Stop→SIGKILL escalation.  Dropping a log/progress line when the queue
+    is momentarily full is harmless: the next line (and the low-volume terminal
+    DONE/ERROR message) gets through once the GUI drains.  (#7)
+    """
+    try:
+        q.put_nowait(item)
+    except Exception:
+        pass
+
+
+def _put_reliable(q, item, timeout=30.0):
+    """RELIABLE bounded emit for LOW-volume, IMPORTANT messages: explicit worker
+    log lines (a WARN about an assumed calibration, a cluster-subsample NOTE)
+    and the terminal DONE/ERROR/STOPPED/BATCH_DONE messages.
+
+    These must not be silently dropped the way `_safe_put` drops high-volume
+    chatter (#7) — a missing WARN is a data-integrity problem, and a dropped
+    terminal message can wedge the GUI.  A blocking `put()` (the old behaviour)
+    could instead wedge the WORKER forever on a frozen GUI.  This compromises:
+    deliver immediately when the queue has room (the normal case), tolerate a
+    stall with a bounded retry, and after `timeout` seconds give up rather than
+    block indefinitely.  (R2-4)
+
+    The default timeout is generous (30 s) because the terminal DONE carries the
+    run's result: dropping it makes the GUI think the run produced no result.
+    A non-frozen GUI drains the queue every ~33 ms, so this only ever waits when
+    the GUI is genuinely hung — and even then a dropped DONE is now handled as
+    "completed, summary unavailable" rather than a crash on the GUI side.  (R3-1)
+    """
+    import time as _t
+    deadline = _t.monotonic() + float(timeout)
+    while True:
+        try:
+            q.put(item, timeout=0.25)
+            return True
+        except Exception:
+            if _t.monotonic() >= deadline:
+                return False
+
+
+def _atomic_write_json(obj, path, **dump_kwargs):
+    """Write JSON to `path` atomically (tmp file + os.replace).
+
+    The machine-readable sidecars (params.json, summary_metrics.json,
+    run_manifest.json) are parsed by OTHER subsystems — Compare globs
+    *_summary_metrics.json / *_params.json, Post-process reads the manifest.  An
+    in-place write torn by a Stop→SIGKILL mid-save leaves a half-written file
+    that those readers then ingest and crash on / mis-parse.  Writing to a temp
+    file and atomically renaming guarantees a reader sees either the old file or
+    a complete new one, never a torn one.  (#28)
+    """
+    import json as _j
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as _fp:
+            _j.dump(obj, _fp, **dump_kwargs)
+        os.replace(tmp, path)
+    except Exception:
+        # Never leave a half-written .tmp behind on a failed dump/replace
+        # (e.g. the destination is locked by Compare reading it).  (R2-5)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        raise
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -82,12 +179,12 @@ class QueueLogStream:
             line = self._buf[:cut]
             self._buf = self._buf[cut + 1:]
             if line.strip():
-                self._q.put(("log", line.rstrip()))
+                _safe_put(self._q, (MsgKind.LOG, line.rstrip()))
         return len(s)
 
     def flush(self):
         if self._buf.strip():
-            self._q.put(("log", self._buf.rstrip()))
+            _safe_put(self._q, (MsgKind.LOG, self._buf.rstrip()))
             self._buf = ""
 
     def isatty(self) -> bool: return False
@@ -187,8 +284,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
     }
 
     path = os.path.join(out_dir, f"{stem}_run_manifest.json")
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2)
+    _atomic_write_json(manifest, path, indent=2)   # tmp + os.replace (#28)
     return path
 
 
@@ -272,7 +368,7 @@ def _start_memory_watchdog(cancel_event, msg_queue,
                         except Exception: pass
                     cancel_event.set()
                     try:
-                        msg_queue.put_nowait(("log",
+                        msg_queue.put_nowait((MsgKind.LOG,
                             f"\n  ⚠ CRITICAL: only {free_gb:.2f} GB RAM "
                             f"free for {sustained_polls * poll_s:.1f}s "
                             f"(threshold {critical_gb:.2f} GB on a "
@@ -293,7 +389,7 @@ def _start_memory_watchdog(cancel_event, msg_queue,
                 # on a queue that the memory-starved GUI may have
                 # stopped draining.
                 try:
-                    msg_queue.put_nowait(("log",
+                    msg_queue.put_nowait((MsgKind.LOG,
                         f"  ⚠ Memory pressure: {free_gb:.2f} GB RAM "
                         f"free (warn < {warn_gb:.1f} GB / abort < "
                         f"{critical_gb:.1f} GB).  Run will abort if "
@@ -352,7 +448,7 @@ def _start_disk_watchdog(out_dir, cancel_event, msg_queue,
                 if cancel_event is not None and not cancel_event.is_set():
                     cancel_event.set()
                     try:
-                        msg_queue.put_nowait(("log",
+                        msg_queue.put_nowait((MsgKind.LOG,
                             f"\n  ⚠ CRITICAL: only {free_mb:.0f} MB "
                             f"free on output disk — aborting before "
                             f"a save fails and corrupts the output "
@@ -362,7 +458,7 @@ def _start_disk_watchdog(out_dir, cancel_event, msg_queue,
                 return
             if not warned and free_mb < warn_mb:
                 try:
-                    msg_queue.put_nowait(("log",
+                    msg_queue.put_nowait((MsgKind.LOG,
                         f"  ⚠ Disk space low on output volume: "
                         f"{free_mb:.0f} MB free (warn < "
                         f"{warn_mb:.0f} MB / abort < {critical_mb:.0f} "
@@ -468,8 +564,8 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
     # cache=False so we never write firefly_extras into the user's source folder.
     s = load_summary_from_palmtracer(folder, use_native=True, cache=False)
     params = s.get("params") or {}
-    px = float(params.get("pixel_size_um", 0.106) or 0.106)
-    fi = float(params.get("frame_interval_s", 0.02) or 0.02)
+    px = float(params.get("pixel_size_um", DEFAULT_PIXEL_SIZE_UM) or DEFAULT_PIXEL_SIZE_UM)
+    fi = float(params.get("frame_interval_s", DEFAULT_FRAME_INTERVAL_S) or DEFAULT_FRAME_INTERVAL_S)
     locs    = s.get("locs")
     tracks  = s.get("tracks")
     diff_df = s.get("diffusion")
@@ -488,15 +584,26 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
     stack = proj[None, :, :]
 
     fig_dpi = int(p.get("fig_dpi", 150)) or 150
-    fig_data = make_figure(
-        stack, tracks, imsd_df, emsd_df, diff_df, px, fi,
-        fig_theme=p.get("theme", "Dark"),
-        proj_cmap=p.get("fig_proj_cmap", "Inferno"),
-        jdd=s.get("jdd"), turning_angles=s.get("turning_angles"),
-        mobile_frac_df=s.get("mobile_fraction"), dwell_df=s.get("dwell_times"),
-        want_panels=set())
-    figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
-    fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
+    # Figure is derived; never let a render failure discard the CSV outputs
+    # saved below (#5).  (_Cancelled isn't imported in this module-level helper,
+    # so re-raise it by type name — the idiom used elsewhere in this file.)
+    figure_path = ""
+    try:
+        fig_data = make_figure(
+            stack, tracks, imsd_df, emsd_df, diff_df, px, fi,
+            fig_theme=p.get("theme", "Dark"),
+            proj_cmap=p.get("fig_proj_cmap", "Inferno"),
+            jdd=s.get("jdd"), turning_angles=s.get("turning_angles"),
+            mobile_frac_df=s.get("mobile_fraction"), dwell_df=s.get("dwell_times"),
+            want_panels=set())
+        figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
+        fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
+    except Exception as _fig_exc:
+        if type(_fig_exc).__name__ in ("_Cancelled", "_Stopped"):
+            raise
+        figure_path = ""
+        log(f"  WARN: native figure render failed ({_fig_exc}) — saving the "
+            f"CSV outputs anyway; the figure will be missing.")
 
     try:
         save_palmtracer_csvs(data_dir, stem, locs, tracks, diff_df, imsd_df,
@@ -554,6 +661,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         make_figure, save_palmtracer_csvs, apply_roi_mask, _Cancelled,
         load_external_locs,
     )
+    from firefly.analysis.fa_enums import ROIMode, MaskMode
 
     # Helper: check stop event at major pipeline boundaries.  Most of the
     # pipeline's interruptibility comes from passing `cancel_event` deep
@@ -608,9 +716,9 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             return _render_palmtracer_native(
                 p, out_dir, stem, fig_dir, data_dir, extras_dir,
-                lambda m: msg_queue.put(("log", m)))
+                lambda m: msg_queue.put((MsgKind.LOG, m)))
         except Exception as _pt_exc:
-            msg_queue.put(("log", f"  WARN: native palmTRACER render failed "
+            msg_queue.put((MsgKind.LOG, f"  WARN: native palmTRACER render failed "
                                   f"({_pt_exc}); re-analysing instead."))
 
     # ── Pre-flight disk-space check ────────────────────────────────────────
@@ -700,8 +808,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     _log(f"  WARN: load-slot release failed ({_rel_exc})")
         # Override file-embedded metadata only when the user explicitly
         # ticked the "Override" checkbox.
-        px = p.get("pixel_size") or meta_px or 0.106
-        fi = p.get("frame_interval") or meta_fi or 0.02
+        px = p.get("pixel_size") or meta_px or DEFAULT_PIXEL_SIZE_UM
+        fi = p.get("frame_interval") or meta_fi or DEFAULT_FRAME_INTERVAL_S
         n_frames = len(stack)
         _log(f"  Shape: {stack.shape}  (T x Y x X)")
         # Surface the REAL in-RAM footprint per file — the planner's pre-load
@@ -722,9 +830,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             _missing = " and ".join(
                 lbl for lbl, val in (("pixel size", meta_px),
                                      ("frame interval", meta_fi)) if not val)
-            _log(f"  NOTE: {_missing} not found in file metadata; "
-                 f"using px={px} µm, fi={fi} s — set an override in the "
-                 f"sidebar if these are wrong")
+            _log(f"  WARNING: {_missing} not found in file metadata — "
+                 f"ASSUMING px={px} µm, fi={fi} s.  Diffusion coefficients and "
+                 f"velocities scale with these (D ∝ px²/Δt); set an override in "
+                 f"the sidebar if they are wrong.")
         # Sample frames for the figure-background panel.
         n_proj = min(200, n_frames)
         proj_idx = _np.linspace(0, n_frames - 1, n_proj, dtype=int)
@@ -735,8 +844,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _prog(5, "Reading localisations from CSV…")
         # Pixel size and frame interval come from the GUI; we don't try
         # to infer them from the CSV (most tools don't embed them).
-        px = float(p.get("pixel_size") or 0.106)
-        fi = float(p.get("frame_interval") or 0.02)
+        px = float(p.get("pixel_size") or DEFAULT_PIXEL_SIZE_UM)
+        fi = float(p.get("frame_interval") or DEFAULT_FRAME_INTERVAL_S)
         locs_extern = load_external_locs(
             fpath,
             preset=p.get("csv_preset", "auto"),
@@ -815,7 +924,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             import queue as _q
             arr = masses if len(masses) <= 20000 else masses[:20000]
-            try:    msg_queue.put_nowait(("mass_chunk", arr.tolist()))
+            try:    msg_queue.put_nowait((MsgKind.MASS_CHUNK, arr.tolist()))
             except _q.Full: pass     # drop — non-essential
         except Exception:
             pass
@@ -913,7 +1022,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             if _system_under_pressure():
                 time.sleep(period)
                 continue
-            try:    msg_queue.put_nowait(("preview_frame", payload))
+            try:    msg_queue.put_nowait((MsgKind.PREVIEW_FRAME, payload))
             except _queue.Full: pass    # IPC queue saturated; drop
             except Exception:   pass
             time.sleep(period)
@@ -1040,7 +1149,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # Per-file polygon overrides the global mode: if a polygon was set
     # for this file in the Import-tab ROI editor, treat it as polygon-mode
     # regardless of what the sidebar says.
-    roi_mode_user = p.get("roi_mode", "none")   # what the user picked
+    # Validate + normalise the ROI token through the enum (one source of truth;
+    # an unknown value now logs + falls back to 'none' instead of silently
+    # threading a bogus string through the dispatch below).  Kept as a string so
+    # the existing branch logic is unchanged.
+    roi_mode_user = ROIMode.parse(p.get("roi_mode", "none"), log=_log).value
     roi_mode = roi_mode_user
     roi_from_imagej = False                      # set when a sibling ImageJ ROI
                                                  # is what produced the polygon
@@ -1236,28 +1349,58 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                         # NB: keep this `bool`, not `uint8` — see
                         # apply_roi_mask for why uint8 breaks pandas
                         # row indexing.
-                        roi_mask = _np.zeros((h, w), dtype=bool)
-                        for poly in polys:
-                            m = polygon2mask((h, w), _np.asarray(poly))
-                            roi_mask |= m.astype(bool)
-                        n_polys = len(polys)
-                        roi_source_label = (
-                            f"ImageJ ROI ({n_polys} region(s))"
-                            if roi_from_imagej
-                            else f"Manual polygon ({n_polys} shape(s))")
-                        _log(f"  User polygon ROI: {n_polys} shape(s), "
-                             f"{100.0 * roi_mask.mean():.1f}% of frame")
+                        # The polygon is in the coordinates of its ORIGINAL
+                        # movie.  If it was drawn on a differently-sized movie (a
+                        # full-frame ROI applied to a cropped/binned export, or
+                        # swapped Y/X), polygon2mask silently CLIPS out-of-frame
+                        # vertices and keeps the WRONG region with no error.
+                        # Detect that and skip the ROI — mirrors the sister-TIFF
+                        # shape check above.  (#13)
+                        _all_v = _np.concatenate(
+                            [_np.asarray(poly, dtype=float) for poly in polys],
+                            axis=0)
+                        _max_y = float(_all_v[:, 0].max())
+                        _max_x = float(_all_v[:, 1].max())
+                        if (_max_y > h + 1.0 or _max_x > w + 1.0
+                                or float(_all_v.min()) < -1.0):
+                            _log(f"  WARN: ROI polygon extent (y≤{_max_y:.0f}, "
+                                 f"x≤{_max_x:.0f}) exceeds the movie frame "
+                                 f"{h}×{w} — it was drawn on a differently-sized "
+                                 f"movie.  Skipping ROI to avoid masking the "
+                                 f"wrong region.")
+                            roi_mask = None
+                        else:
+                            roi_mask = _np.zeros((h, w), dtype=bool)
+                            for poly in polys:
+                                m = polygon2mask((h, w), _np.asarray(poly))
+                                roi_mask |= m.astype(bool)
+                            n_polys = len(polys)
+                            roi_source_label = (
+                                f"ImageJ ROI ({n_polys} region(s))"
+                                if roi_from_imagej
+                                else f"Manual polygon ({n_polys} shape(s))")
+                            _log(f"  User polygon ROI: {n_polys} shape(s), "
+                                 f"{100.0 * roi_mask.mean():.1f}% of frame")
                     except Exception as poly_exc:
                         _log(f"  WARN: polygon ROI failed — {poly_exc}.")
                         roi_mask = None
 
             if roi_mask is None and mean_proj is not None:
+                # If a SPECIFIC ROI (polygon / sister / ImageJ) was requested but
+                # couldn't be applied (skipped above — e.g. a frame-size
+                # mismatch), this intensity-threshold pipeline runs as a fallback
+                # and would otherwise apply an ROI the user didn't ask for with
+                # no indication.  Say so explicitly.  (R2-13)
+                if roi_mode not in ("auto", "manual"):
+                    _log(f"  NOTE: the requested '{roi_mode}' ROI was not applied "
+                         f"(see the warning above) — falling back to an "
+                         f"intensity-threshold ROI for this file.")
                 # Shared GUI/worker ROI pipeline — DoG background
                 # subtraction + morphology + top-N components.
                 # Whatever the user tunes in the ROI preview viewer is
                 # what gets applied here, byte-for-byte identical.
-                mask_mode = str(p.get("roi_mask_mode", "Max")).strip().lower()
-                if mask_mode.startswith("blink"):
+                mask_mode = MaskMode.parse(p.get("roi_mask_mode", "Max"), log=_log)
+                if mask_mode is MaskMode.BLINK:
                     # Streaming Welford-based per-pixel mean+std baseline
                     # gives us a real blink-density map in a single
                     # pass over the stack (see preprocess_and_localise_
@@ -1273,15 +1416,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                              "(no stack loaded?) — falling back to Max.")
                         proj = max_proj
                         mode_hint = "max"
-                elif mask_mode.startswith("max"):
+                elif mask_mode is MaskMode.MAX:
                     proj = max_proj
                     mode_hint = "max"
-                elif mask_mode.startswith("sum"):
+                elif mask_mode is MaskMode.SUM:
                     # Sum is just mean × frame_count up to a scale that
                     # normalisation removes, so route it to mean_proj.
                     proj = mean_proj
                     mode_hint = "sum"
-                else:  # "mean" (default for legacy presets)
+                else:  # MaskMode.MEAN (also the fallback for unknown values)
                     proj = mean_proj
                     mode_hint = "mean"
 
@@ -1591,10 +1734,18 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     mf  = compute_mobile_fraction_over_time(
         tracks, diff_df, fi,
         d_threshold=float(p.get("mobile_d_threshold", 0.05)))
-    cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(
-        locs, px,
-        eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
-        min_samples=int(p.get("cluster_min_samples", 10)))
+    # Guarded like van_hove/vacf above: a degenerate cluster input (e.g. a
+    # stray non-finite coordinate that slipped through) must not crash an
+    # otherwise-complete run after linking + MSD already succeeded.  (#6)
+    try:
+        cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(
+            locs, px,
+            eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
+            min_samples=int(p.get("cluster_min_samples", 10)))
+    except Exception as _cl_exc:
+        _log(f"  WARN: cluster analysis failed ({_cl_exc}) — skipping it; the "
+             f"localisation/track/diffusion results are unaffected.")
+        cluster_labels, cluster_stats_df, cluster_xy = None, None, None
     # Honest subsample note: compute_clusters caps DBSCAN at 250k localisations.
     _cl_attrs = getattr(cluster_stats_df, "attrs", {}) or {}
     cluster_subsampled_n = (int(_cl_attrs["n_used_locs"])
@@ -1651,16 +1802,27 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         want_panels = None if _allowed_panels is None else set(_allowed_panels)
     else:
         want_panels = set()
-    fig_data = make_figure(
-        proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
-        fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
-        jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
-        cluster_labels=cluster_labels, cluster_locs=cluster_xy,
-        cluster_subsampled_n=cluster_subsampled_n,
-        dwell_df=dwell_df, dwell_tau=dwell_tau,
-        van_hove=van_hove, vacf=vacf,
-        return_pdf_bytes=want_pdf, want_panels=want_panels,
-        traj_background=fig_traj_bg)
+    # The figure is a DERIVED artifact; the CSV tables below are the
+    # irreplaceable output.  A render exception must NOT discard a complete,
+    # already-computed run — degrade to "figure skipped" and continue to the
+    # (individually fault-tolerant) saves with fig_data=None.  (#5)
+    try:
+        fig_data = make_figure(
+            proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
+            fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
+            jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
+            cluster_labels=cluster_labels, cluster_locs=cluster_xy,
+            cluster_subsampled_n=cluster_subsampled_n,
+            dwell_df=dwell_df, dwell_tau=dwell_tau,
+            van_hove=van_hove, vacf=vacf,
+            return_pdf_bytes=want_pdf, want_panels=want_panels,
+            traj_background=fig_traj_bg)
+    except _Cancelled:
+        raise
+    except Exception as _fig_exc:
+        _log(f"  WARN: figure rendering failed ({_fig_exc}) — saving the data "
+             f"tables anyway; the figure will be missing.\n{traceback.format_exc()}")
+        fig_data = None
     del proj_sample
 
     # ── Save outputs ──────────────────────────────────────────────────────
@@ -1750,31 +1912,29 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _log(f"  WARN: ensemble-MSD save failed: {exc}")
     try:
         if jdd:
-            import json as _json
             def _jsonable(x):
                 # numpy scalars / arrays / pandas → JSON-friendly
                 if hasattr(x, "tolist"):    return x.tolist()
                 if isinstance(x, (set,)):   return list(x)
                 return x
             payload = {k: _jsonable(v) for k, v in jdd.items()}
-            with open(os.path.join(extras_dir,
-                                    f"{stem}_jdd.json"), "w") as _fp:
-                _json.dump(payload, _fp, indent=2, default=str)
+            _atomic_write_json(                # tmp + os.replace (R2-5)
+                payload, os.path.join(extras_dir, f"{stem}_jdd.json"),
+                indent=2, default=str)
             extras_saved.append("JDD")
     except Exception as exc:
         _log(f"  WARN: JDD save failed: {exc}")
     try:
         if van_hove is not None:
-            import json as _json
             # Compact payload: the histogram + scalars for plotting, but NOT
             # the (potentially huge) raw displacement arrays.
             vh = {k: v for k, v in van_hove.items()
                   if k not in ("displacements_um", "dx_um", "dy_um")}
             vh = {k: (v.tolist() if hasattr(v, "tolist") else v)
                   for k, v in vh.items()}
-            with open(os.path.join(extras_dir,
-                                    f"{stem}_van_hove.json"), "w") as _fp:
-                _json.dump(vh, _fp, indent=2, default=str)
+            _atomic_write_json(                # tmp + os.replace (R2-5)
+                vh, os.path.join(extras_dir, f"{stem}_van_hove.json"),
+                indent=2, default=str)
             extras_saved.append(
                 f"van Hove (alpha2={van_hove['non_gaussian_alpha2']:.3f})")
     except Exception as exc:
@@ -1782,12 +1942,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
 
     try:
         if vacf is not None:
-            import json as _json
             vc = {k: (v.tolist() if hasattr(v, "tolist") else v)
                   for k, v in vacf.items()}
-            with open(os.path.join(extras_dir,
-                                    f"{stem}_vacf.json"), "w") as _fp:
-                _json.dump(vc, _fp, indent=2, default=str)
+            _atomic_write_json(                # tmp + os.replace (R2-5)
+                vc, os.path.join(extras_dir, f"{stem}_vacf.json"),
+                indent=2, default=str)
             extras_saved.append(
                 f"VACF (persistence={vacf['persistence']:.3f})")
     except Exception as exc:
@@ -2010,13 +2169,23 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # frame interval, etc.  Matches the schema written by the
     # PALM-Tracer summary loader.
     try:
-        import json as _json
-        with open(os.path.join(extras_dir,
-                                f"{stem}_params.json"), "w") as _fp:
-            _json.dump({
+        _atomic_write_json({               # tmp + os.replace (#28)
                 "stem":             stem,
                 "pixel_size_um":    float(px),
                 "frame_interval_s": float(fi),
+                # Linking / MSD knobs ACTUALLY used for this run.  Post-process
+                # reads these back so a re-ROI reproduces the original
+                # link → MSD result instead of silently falling back to today's
+                # defaults (the linking half of the calibration bug fixed in
+                # 2.67.0).  Stored under the same request-side keys the analysis
+                # entry point reads — see _postproc_linking_params.
+                "diameter":         int(p.get("diameter", _POSTPROC_LINK_DEFAULTS["diameter"])),
+                "search_range":     int(p.get("search_range", _POSTPROC_LINK_DEFAULTS["search_range"])),
+                "memory":           int(p.get("memory", _POSTPROC_LINK_DEFAULTS["memory"])),
+                "min_track_len":    int(p.get("min_track_len", _POSTPROC_LINK_DEFAULTS["min_track_len"])),
+                "max_track_len":    (int(p["max_track_len"]) if p.get("max_track_len") else None),
+                "max_lagtime":      int(p.get("max_lagtime", _POSTPROC_LINK_DEFAULTS["max_lagtime"])),
+                "n_fit":            int(p.get("n_fit", _POSTPROC_LINK_DEFAULTS["n_fit"])),
                 "n_localisations":  int(len(locs)),
                 "n_tracks":         int(diff_df.shape[0]) if diff_df is not None else 0,
                 "n_frames":         int(n_frames),
@@ -2040,7 +2209,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 # tab uses this to reload a background image.  Stored as
                 # absolute path so the source location survives folder moves.
                 "input_file":       os.path.abspath(p.get("file", "")) if p.get("file") else None,
-            }, _fp, indent=2)
+            }, os.path.join(extras_dir, f"{stem}_params.json"), indent=2)
         extras_saved.append("params")
     except Exception as exc:
         _log(f"  WARN: params save failed: {exc}")
@@ -2069,7 +2238,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         figure_path = ""
 
     # Optional: vector PDF copy of the combined figure
-    if want_pdf and fig_data.get("pdf_bytes"):
+    if want_pdf and fig_data and fig_data.get("pdf_bytes"):
         try:
             pdf_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.pdf")
             with open(pdf_path, "wb") as _fh:
@@ -2081,7 +2250,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # Optional: per-panel PNGs (one image per labelled panel of the grid).
     # The user can filter which panels get written via the Figures tab's
     # "Single-sample panels to export individually" checkbox grid.
-    if _eff_per_panel and fig_data.get("panels"):
+    if _eff_per_panel and fig_data and fig_data.get("panels"):
         try:
             allowed = p.get("fig_single_panels")
             if allowed is None:
@@ -2150,8 +2319,17 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 }
             if "D" in diff_df.columns:
                 d_thresh = float(p.get("mobile_d_threshold", 0.05))
-                summary["mobile_fraction"] = float(
-                    (diff_df["D"] > d_thresh).mean())
+                # Match the canonical definition used by the mobile-fraction
+                # panel and the mob/immob ratio (fa_diffusion): D >= threshold
+                # over FINITE, POSITIVE D only.  The old `(D > thresh).mean()`
+                # used strict `>` and counted NaN-D failed fits in the
+                # denominator (NaN > t is False), so the headline number was
+                # biased low and disagreed with its own panel.  (#9)
+                _d = diff_df["D"].to_numpy(dtype=float)
+                _valid = np.isfinite(_d) & (_d > 0)
+                summary["mobile_fraction"] = (
+                    float((_d[_valid] >= d_thresh).mean())
+                    if _valid.any() else None)
             if "loc_sigma_nm" in diff_df.columns:
                 _ls = diff_df["loc_sigma_nm"].dropna()
                 if len(_ls):
@@ -2278,12 +2456,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # so a batch of N runs can be aggregated by globbing
     # firefly_extras/*_summary_metrics.json — no need to re-open each CSV.
     try:
-        import json as _json
         _sm = dict(summary)
         _sm["stem"] = stem
-        with open(os.path.join(extras_dir,
-                               f"{stem}_summary_metrics.json"), "w") as _fp:
-            _json.dump(_sm, _fp, indent=2, default=str)
+        _atomic_write_json(                # tmp + os.replace (#28)
+            _sm, os.path.join(extras_dir, f"{stem}_summary_metrics.json"),
+            indent=2, default=str)
     except Exception as exc:
         _log(f"  WARN: summary-metrics save failed: {exc}")
 
@@ -2319,8 +2496,8 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     except Exception:
         pass
 
-    def _log(msg: str):       msg_queue.put(("log", msg))
-    def _prog(pct, msg):      msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):       _put_reliable(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg):      _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — aborts the run cleanly if free RAM falls
     # below the critical threshold, preventing the OS-level OOM /
@@ -2343,17 +2520,24 @@ def run_analysis(params: dict, msg_queue, cancel_event):
         _log("── Worker subprocess started ──")
         _prog(0, "Importing pipeline…")
         payload = _run_one_analysis(params, msg_queue, cancel_event, _log, _prog)
-        msg_queue.put(("done", payload))
+        _put_reliable(msg_queue, (MsgKind.DONE, payload))
     except _NoTracks as nt:
         # Linker produced 0 trajectories — not a crash.  Treat as "done"
         # with the partial payload so the UI resets cleanly.
-        msg_queue.put(("done", nt.args[0]))
+        _put_reliable(msg_queue, (MsgKind.DONE, nt.args[0]))
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
-            msg_queue.put(("log", "\n── Stopped by user ──"))
-            msg_queue.put(("stopped", None))
+            msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
+            _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
-            msg_queue.put(("error", traceback.format_exc()))
+            _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+            # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
+            # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
+            # the GUI's dead-process branch must still treat exit!=0 as a crash —
+            # NOT as a clean "completed" (R3-1's exit==0 ⇒ success would otherwise
+            # report a FAILED run as completed).  sys.exit (not os._exit) so the
+            # queue feeder still flushes a successfully-enqueued ERROR.  (R4-1)
+            sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2363,6 +2547,47 @@ def run_analysis(params: dict, msg_queue, cancel_event):
         except Exception: pass
         try: sys.stderr.flush()
         except Exception: pass
+
+
+def _postproc_calibration(orig_params: dict):
+    """Recover (pixel_size, frame_interval) for a post-process re-run from a
+    run's persisted ``*_params.json``.
+
+    params.json stores calibration under the CANONICAL keys ``pixel_size_um`` /
+    ``frame_interval_s`` (the schema the Compare loader reads), but the analysis
+    entry point reads the REQUEST keys ``pixel_size`` / ``frame_interval``.  A
+    plain ``new_p.setdefault("frame_interval", …)`` therefore never sees the
+    persisted value and ALWAYS falls back to the default — so re-applying an ROI
+    to a run that used a custom px/Δt override silently recomputed every D at the
+    DEFAULT calibration (D ∝ px²/Δt).  Map the canonical values across explicitly
+    so the re-ROI reproduces the original run's calibration; fall back to the
+    shared default only when params.json genuinely lacks the value (a missing or
+    pre-2.67 params file).
+    """
+    px = float(orig_params.get("pixel_size_um") or DEFAULT_PIXEL_SIZE_UM)
+    fi = float(orig_params.get("frame_interval_s") or DEFAULT_FRAME_INTERVAL_S)
+    return px, fi
+
+
+def _postproc_linking_params(orig_params: dict) -> dict:
+    """Recover the linking / MSD knobs for a post-process re-run from a run's
+    persisted ``*_params.json``.
+
+    A post-process is documented to "reproduce the original run with only the
+    ROI changed", so the link → MSD stage must use the SAME search_range,
+    memory, min/max track length, max_lagtime, n_fit and detection diameter the
+    original run used — NOT today's defaults.  Unlike the calibration (which
+    params.json stores under the CANONICAL keys ``pixel_size_um`` /
+    ``frame_interval_s`` while the entry point reads ``pixel_size`` /
+    ``frame_interval`` — see :func:`_postproc_calibration`), these knobs are
+    persisted under the SAME request-side keys the entry point reads, so no
+    remapping is needed.  We only supply a default for any key a pre-2.67
+    params.json — written before these knobs were persisted — happens to lack.
+    A present key is returned verbatim (so a stored ``memory: 0`` or
+    ``max_track_len: None`` survives; only a MISSING key falls back).
+    """
+    return {k: orig_params.get(k, default)
+            for k, default in _POSTPROC_LINK_DEFAULTS.items()}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2387,8 +2612,8 @@ def run_postproc(params: dict, msg_queue, cancel_event):
     """
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
-    def _log(msg: str):  msg_queue.put(("log", msg))
-    def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):  _put_reliable(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     _wd_stop = _start_memory_watchdog(cancel_event, msg_queue)
     _disk_stop = None
@@ -2518,18 +2743,23 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             "roi_mode":       "none",
             "roi_polygon":    None,
         })
-        # Sensible defaults if orig_params was missing any key.
-        new_p.setdefault("pixel_size",   0.106)
-        new_p.setdefault("frame_interval", 0.03)
-        new_p.setdefault("diameter",     7)
+        # Carry the ORIGINAL run's calibration across.  A post-process is meant to
+        # reproduce the original run with only the ROI changed, so px/Δt must come
+        # from the persisted params — NOT a default.  (orig_params stores them as
+        # pixel_size_um / frame_interval_s; the analysis entry point reads
+        # pixel_size / frame_interval — see _postproc_calibration for the mapping
+        # and the silent-default bug it fixes.)
+        new_p["pixel_size"], new_p["frame_interval"] = _postproc_calibration(orig_params)
+        # Carry the ORIGINAL run's linking / MSD knobs (search_range, memory,
+        # min/max track len, max_lagtime, n_fit, diameter) across so the re-ROI
+        # reproduces the original link → MSD result rather than today's defaults
+        # — the linking half of the px/Δt calibration fix above.  These are
+        # persisted under the request-side keys, so _postproc_linking_params
+        # falls back to defaults only for a pre-2.67 params.json that lacks them.
+        new_p.update(_postproc_linking_params(orig_params))
+        # Sensible defaults for any other knob orig_params was missing.
         new_p.setdefault("minmass",      1.0)
         new_p.setdefault("auto_minmass", False)
-        new_p.setdefault("search_range", 5)
-        new_p.setdefault("memory",       3)
-        new_p.setdefault("min_track_len", 5)
-        new_p.setdefault("max_track_len", None)
-        new_p.setdefault("max_lagtime",  20)
-        new_p.setdefault("n_fit",        5)
         new_p.setdefault("workers",      max(1, os.cpu_count() or 1))
         new_p.setdefault("chunk_size",   500)
 
@@ -2540,15 +2770,22 @@ def run_postproc(params: dict, msg_queue, cancel_event):
         # the GUI can offer to "Open the post-processed run".
         payload["source_folder"] = src
         payload["postproc_output"] = out_dir
-        msg_queue.put(("done", payload))
+        _put_reliable(msg_queue, (MsgKind.DONE, payload))
     except _NoTracks as nt:
-        msg_queue.put(("done", nt.args[0]))
+        _put_reliable(msg_queue, (MsgKind.DONE, nt.args[0]))
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
-            msg_queue.put(("log", "\n── Stopped by user ──"))
-            msg_queue.put(("stopped", None))
+            msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
+            _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
-            msg_queue.put(("error", traceback.format_exc()))
+            _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+            # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
+            # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
+            # the GUI's dead-process branch must still treat exit!=0 as a crash —
+            # NOT as a clean "completed" (R3-1's exit==0 ⇒ success would otherwise
+            # report a FAILED run as completed).  sys.exit (not os._exit) so the
+            # queue feeder still flushes a successfully-enqueued ERROR.  (R4-1)
+            sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2586,8 +2823,8 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
 
-    def _log(msg: str):  msg_queue.put(("log", msg))
-    def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):  _put_reliable(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — Compare can load multiple full tracks
     # DataFrames simultaneously + re-derive MSD/JDD/dwell/turning
@@ -2672,7 +2909,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         results_json = os.path.join(out_dir, f"{out_stem}_results.json")
 
         _prog(100, "Comparison complete")
-        msg_queue.put(("compare_done", {
+        _put_reliable(msg_queue, (MsgKind.COMPARE_DONE, {
             "output_dir":   out_dir,
             "figure_path":  figure_path if os.path.isfile(figure_path) else "",
             "summary_csv":  summary_csv if os.path.isfile(summary_csv) else "",
@@ -2684,15 +2921,22 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
 
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
-            msg_queue.put(("log", "\n── Stopped by user ──"))
-            msg_queue.put(("stopped", None))
+            msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
+            _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         elif type(exc).__name__ == "CompareInputError":
             # Expected user-input problem (no valid folders, drive unmounted,
             # <2 groups) — surface a clean popup, NOT a crash report.
-            msg_queue.put(("log", f"\n  {exc}"))
-            msg_queue.put(("compare_error", str(exc)))
+            msg_queue.put((MsgKind.LOG, f"\n  {exc}"))
+            _put_reliable(msg_queue, (MsgKind.COMPARE_ERROR, str(exc)))
         else:
-            msg_queue.put(("error", traceback.format_exc()))
+            _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+            # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
+            # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
+            # the GUI's dead-process branch must still treat exit!=0 as a crash —
+            # NOT as a clean "completed" (R3-1's exit==0 ⇒ success would otherwise
+            # report a FAILED run as completed).  sys.exit (not os._exit) so the
+            # queue feeder still flushes a successfully-enqueued ERROR.  (R4-1)
+            sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2804,13 +3048,13 @@ class _HFQueue:
                 payload = _hf_downscale_preview(dict(item[1]))
                 payload["file"] = self._idx
                 payload["stem"] = self._stem
-                self._q.put(("preview_frame", payload))
+                self._q.put((MsgKind.PREVIEW_FRAME, payload))
             except Exception:
                 pass
             return
         try:
             if kind == "log":
-                self._q.put(("log", f"[{self._stem}] {item[1]}"))
+                self._q.put((MsgKind.LOG, f"[{self._stem}] {item[1]}"))
             else:
                 self._q.put(item)
         except Exception:
@@ -2861,7 +3105,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
     # Test hook: exercise the engine plumbing (spawn → fan-in → forwarder →
     # collector) without the heavy real pipeline.  Set FIREFLY_HYPERFLY_SELFTEST.
     if os.environ.get("FIREFLY_HYPERFLY_SELFTEST"):
-        try:    fan_q.put(("log", f"[{stem}] selftest worker"))
+        try:    fan_q.put((MsgKind.LOG, f"[{stem}] selftest worker"))
         except Exception: pass
         return {"ok": True, "stem": stem, "out_dir": "",
                 "n_tracks": index, "n_locs": index * 10}
@@ -2873,7 +3117,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
     # from the collector on completion, and only genuinely important lines
     # (warnings / errors) from the chatty pipeline in between.
     def _emit(line):
-        try:    fan_q.put(("log", f"[{stem}] {line}"))
+        try:    fan_q.put((MsgKind.LOG, f"[{stem}] {line}"))
         except Exception: pass
 
     class _ConsoleQ:
@@ -2912,7 +3156,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
         norm = _hf_norm_stage(s)
         if norm and norm != _prog_state["stage"]:
             _prog_state["stage"] = norm
-            try:    fan_q.put(("log", f"  [{stem}] {norm}"))
+            try:    fan_q.put((MsgKind.LOG, f"  [{stem}] {norm}"))
             except Exception: pass
         # Dashboard tile: throttled stage/percent.
         try:
@@ -2921,14 +3165,14 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
             if now - _prog_state["t"] < 0.2:        # ~5 Hz per file
                 return
             _prog_state["t"] = now
-            fan_q.put(("hf_tile", {"file": index, "stem": stem,
+            fan_q.put((MsgKind.HF_TILE, {"file": index, "stem": stem,
                                    "pct": int(pct), "stage": s}))
         except Exception:
             pass
 
-    try:    fan_q.put(("log", f"▶ [{stem}] ({index}/{n_total}) started"))
+    try:    fan_q.put((MsgKind.LOG, f"▶ [{stem}] ({index}/{n_total}) started"))
     except Exception: pass
-    try:    fan_q.put(("hf_tile", {"file": index, "stem": stem,
+    try:    fan_q.put((MsgKind.HF_TILE, {"file": index, "stem": stem,
                                    "state": "running"}))
     except Exception: pass
 
@@ -2995,7 +3239,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         try:
             from firefly.analysis.fa_localize import backend_uses_gpu as _buse
             if params_list and _buse(params_list[0].get("backend")):
-                msg_queue.put(("log",
+                msg_queue.put((MsgKind.LOG,
                     f"  HYPER-FLY: GPU detected — gating GPU detection to "
                     f"{_gpu_slots} file(s) at a time (CPU stages stay "
                     f"concurrent)."))
@@ -3043,7 +3287,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         # ballooned RAM in the pre-stagger builds.
         if K >= 2 and _load_slots < K:
             try:
-                msg_queue.put(("log",
+                msg_queue.put((MsgKind.LOG,
                     f"  HYPER-FLY: staggering loads to {_load_slots} file(s) at "
                     f"a time (of {K}), {load_core_budget} cores each — RAM ramps "
                     f"up gradually instead of all {K} at once."))
@@ -3061,6 +3305,25 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         mirror.start()
 
         # Forwarder: drain the fan-in queue → the real GUI queue.
+        # Kinds the forwarder MUST deliver (per-file completion / terminal).
+        # Everything else (LOG/HF_TILE/PREVIEW_FRAME/HYPERFLY_STATUS/PROGRESS) is
+        # high-volume or cosmetic and is dropped on a full GUI queue.
+        _critical = (MsgKind.FILE_DONE, MsgKind.FILE_ERROR, MsgKind.BATCH_DONE,
+                     MsgKind.COMPARE_DONE, MsgKind.COMPARE_ERROR, MsgKind.DONE,
+                     MsgKind.STOPPED, MsgKind.ERROR)
+
+        def _forward_one(item):
+            kind = item[0] if isinstance(item, tuple) and item else None
+            if kind in _critical:
+                # Deliver, but with a bounded timeout so a wedged GUI can't block
+                # the forwarder forever (which would back up the UNBOUNDED Manager
+                # fan_q and grow the Manager process's memory without bound).  (#25)
+                try:    msg_queue.put(item, timeout=2.0)
+                except Exception: pass
+            else:
+                try:    msg_queue.put_nowait(item)
+                except Exception: pass   # full GUI queue → drop a log/preview
+
         def _forward():
             while True:
                 try:
@@ -3069,13 +3332,12 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     if stop_threads.is_set():
                         try:
                             while True:
-                                msg_queue.put(fan_q.get_nowait())
+                                _forward_one(fan_q.get_nowait())
                         except Exception:
                             pass
                         return
                     continue
-                try:    msg_queue.put(item)
-                except Exception: pass
+                _forward_one(item)
         forwarder = _threading.Thread(target=_forward, daemon=True)
         forwarder.start()
 
@@ -3093,7 +3355,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     return
                 el = _time.monotonic() - _hb_t0
                 try:
-                    msg_queue.put(("log",
+                    msg_queue.put((MsgKind.LOG,
                         f"  HYPER-FLY working… {d}/{n} done · "
                         f"{min(K, n - d)} running  ({el:.0f}s)"))
                 except Exception:
@@ -3127,7 +3389,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                 if payload.get("ok"):
                     results[i - 1] = {"index": i, "ok": True,
                                       "file": params["file"], **payload}
-                    msg_queue.put(("file_done", {
+                    _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
                         "index": i, "total": n,
                         "stem":     payload.get("stem"),
                         "out_dir":  payload.get("out_dir"),
@@ -3135,12 +3397,12 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                         "n_locs":   payload.get("n_locs", 0),
                     }))
                     # Clean per-file ledger line (the readable HYPERFLY console).
-                    msg_queue.put(("log",
+                    msg_queue.put((MsgKind.LOG,
                         f"  ✓ [{_stem}] {int(payload.get('n_locs', 0)):,} locs · "
                         f"{int(payload.get('n_tracks', 0)):,} tracks   "
                         f"({done}/{n})"))
                     # Mark this file's dashboard tile done (frees its lane).
-                    msg_queue.put(("hf_tile", {
+                    msg_queue.put((MsgKind.HF_TILE, {
                         "file": i, "stem": _stem, "state": "done",
                         "n_locs": payload.get("n_locs", 0),
                         "n_tracks": payload.get("n_tracks", 0)}))
@@ -3148,14 +3410,14 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     results[i - 1] = {"index": i, "ok": False,
                                       "file": params["file"],
                                       "error": payload.get("error", "")}
-                    msg_queue.put(("file_error", {
+                    _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                         "index": i, "total": n, "file": params["file"],
                         "tb": payload.get("tb", payload.get("error", "")),
                     }))
-                    msg_queue.put(("log",
+                    msg_queue.put((MsgKind.LOG,
                         f"  ✗ [{_stem}] failed: {payload.get('error', '')}   "
                         f"({done}/{n})"))
-                    msg_queue.put(("hf_tile", {
+                    msg_queue.put((MsgKind.HF_TILE, {
                         "file": i, "stem": _stem, "state": "failed",
                         "error": payload.get("error", "")}))
                 _prog(int(100 * done / max(1, n)),
@@ -3329,8 +3591,8 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     if "FIREFLY_BULK_FIGURES" not in os.environ and len(params_list) >= 2:
         os.environ["FIREFLY_BULK_FIGURES"] = "1"
 
-    def _log(msg: str):  msg_queue.put(("log", msg))
-    def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):  _put_reliable(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — one shared across the whole batch so a series
     # halfway through doesn't push the system into swap.  We pass a
@@ -3370,7 +3632,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
         except Exception:
             _plan = {"active": False}
         if _plan.get("active"):
-            msg_queue.put(("hyperfly_status", {
+            msg_queue.put((MsgKind.HYPERFLY_STATUS, {
                 "active": True,
                 "n_concurrent": _plan.get("n_concurrent"),
                 "per_file_workers": _plan.get("per_file_workers"),
@@ -3393,7 +3655,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             # the serial path does (emit 'stopped' instead of 'batch_done').
             if cancel_event.is_set():
                 _log("\n── Batch stopped by user ──")
-                msg_queue.put(("stopped", None))
+                _put_reliable(msg_queue, (MsgKind.STOPPED, None))
                 return
             results = _hf_results
             _serial_iter = []
@@ -3417,7 +3679,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     results.append({"index": i, "ok": False,
                                     "file": params["file"],
                                     "error": "memory watchdog abort"})
-                    msg_queue.put(("file_error", {
+                    _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                         "index": i, "total": n,
                         "file": params["file"],
                         "tb": "Aborted by memory watchdog "
@@ -3425,7 +3687,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     }))
                     continue
                 _log("\n── Batch stopped by user ──")
-                msg_queue.put(("stopped", None))
+                _put_reliable(msg_queue, (MsgKind.STOPPED, None))
                 return
 
             fname = os.path.basename(params["file"])
@@ -3439,7 +3701,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             # GUI hook — reset per-file UI elements (mass histogram).  Live
             # view is fine; new preview_frame messages will overwrite the
             # previous file's frame so no explicit reset is needed there.
-            msg_queue.put(("file_starting", {
+            msg_queue.put((MsgKind.FILE_STARTING, {
                 "index": i, "total": n, "file": fname,
             }))
 
@@ -3448,7 +3710,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     params, msg_queue, cancel_event, _log, _prog)
                 results.append({"index": i, "ok": True, "file": params["file"],
                                 **payload})
-                msg_queue.put(("file_done", {
+                _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
                     "index": i, "total": n,
                     "stem":     payload.get("stem"),
                     "out_dir":  payload.get("out_dir"),
@@ -3458,7 +3720,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             except _NoTracks as nt:
                 results.append({"index": i, "ok": True, "file": params["file"],
                                 **nt.args[0]})
-                msg_queue.put(("file_done", {
+                _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
                     "index": i, "total": n,
                     "stem":     nt.args[0].get("stem"),
                     "out_dir":  nt.args[0].get("out_dir"),
@@ -3478,7 +3740,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                         results.append({"index": i, "ok": False,
                                         "file": params["file"],
                                         "error": "memory watchdog abort"})
-                        msg_queue.put(("file_error", {
+                        _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                             "index": i, "total": n,
                             "file": params["file"],
                             "tb": "Aborted by memory watchdog "
@@ -3494,14 +3756,14 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                         except Exception: pass
                         continue
                     _log("\n── Batch stopped by user ──")
-                    msg_queue.put(("stopped", None))
+                    _put_reliable(msg_queue, (MsgKind.STOPPED, None))
                     return
                 tb = traceback.format_exc()
                 _log(f"\n  ⚠ File {i}/{n} ({fname}) FAILED: {exc}")
                 _log(tb)
                 results.append({"index": i, "ok": False, "file": params["file"],
                                 "error": str(exc)})
-                msg_queue.put(("file_error", {
+                _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                     "index": i, "total": n,
                     "file": params["file"], "tb": tb,
                 }))
@@ -3553,13 +3815,16 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
         _log(f"  Batch complete: {n_ok}/{n} succeeded, {n_fail} failed")
         _log("══════════════════════════════════════════════════════════════════")
         _prog(100, "Batch complete!")
-        msg_queue.put(("batch_done", {
+        _put_reliable(msg_queue, (MsgKind.BATCH_DONE, {
             "n_total": n, "n_ok": n_ok, "n_fail": n_fail,
             "results": results,
         }))
 
     except BaseException:
-        msg_queue.put(("error", traceback.format_exc()))
+        _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+        # Exit non-zero so the exit code reflects the failure even if the ERROR
+        # message above was dropped (see the sibling sites).  (R4-1)
+        sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()

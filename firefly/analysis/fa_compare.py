@@ -8,9 +8,10 @@ import os
 import json
 import math
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
-                                           motion_class_colors, label_text_color)
+                                           motion_class_colors, label_text_color,
+                                           DEFAULT_FRAME_INTERVAL_S)
 from firefly.analysis.fa_theme import _theme_palette, style_axes
-from firefly.analysis.fa_palmtracer import load_summary_from_folder
+from firefly.analysis.fa_palmtracer import load_summary_from_folder, _win_long_path
 
 import numpy as np
 import pandas as pd
@@ -29,6 +30,29 @@ from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
 
 
 from firefly.analysis import fa_twoway
+
+
+_FI_DEFAULT_WARNED: set = set()   # stems already warned about a missing Δt
+
+
+def _fi_or_default(params, stem="", _warned=_FI_DEFAULT_WARNED):
+    """Frame interval (s) from a folder's params dict, falling back to the
+    app-wide default and WARNING (once per stem) when the key is absent.
+
+    A missing ``frame_interval_s`` used to silently default to 0.05 s here while
+    the rest of the app uses 0.02 s, rescaling this folder's AUC-MSD and MSD
+    time axis 2.5x against its siblings with no warning (#11).  Now it uses the
+    SAME default as everywhere else and says so, so the discrepancy is visible.
+    """
+    v = params.get("frame_interval_s")
+    if v is not None:
+        return float(v)
+    if stem not in _warned:
+        _warned.add(stem)
+        print(f"  Compare WARNING: '{stem or '<folder>'}' has no frame_interval_s "
+              f"in its params — assuming Δt = {DEFAULT_FRAME_INTERVAL_S} s.  MSD and "
+              f"AUC scale with Δt; set it so groups are compared on the same axis.")
+    return float(DEFAULT_FRAME_INTERVAL_S)
 
 
 class CompareInputError(Exception):
@@ -869,6 +893,11 @@ def compare_groups(groups,
     """
     import matplotlib.pyplot as plt
     from firefly.analysis.fa_stats_config import normalize_stats_config
+    # Reset the "already warned about a missing Δt" dedup per comparison run.
+    # It's a module global (so _fi_or_default can warn once per stem within a
+    # run), but if it persisted across runs a GUI re-run would suppress the
+    # warning entirely, and stale stems would linger for the whole session (R4-3).
+    _FI_DEFAULT_WARNED.clear()
     cfg = normalize_stats_config(stats_config)
     # Bar-panel annotation handles, so the optional across-metric correction
     # post-pass can update the on-figure stars to agree with the CSV.
@@ -957,7 +986,7 @@ def compare_groups(groups,
     summary_rows = []
     def _row(group_label, timepoint, summary):
         p = summary["params"]
-        fi = float(p.get("frame_interval_s", 0.05))
+        fi = _fi_or_default(p, summary.get("stem", ""))
         d = summary["diffusion"]
         stem = summary["stem"]
         cell, _matched = (fa_twoway.derive_subject_key(stem, timepoint_tokens)
@@ -1104,7 +1133,7 @@ def compare_groups(groups,
             for s in summaries:
                 e = s["ensemble_msd"]
                 if e is None: continue
-                fi = float(s["params"].get("frame_interval_s", 0.05))
+                fi = _fi_or_default(s["params"], s.get("stem", ""))
                 t = e["lag_frame"].values * fi
                 y = e["msd_um2"].values
                 order = np.argsort(t)
@@ -1342,7 +1371,7 @@ def compare_groups(groups,
         for grp_label, summaries, _ in _zip_groups():
             arrs = []
             for s in summaries:
-                fi = float(s["params"].get("frame_interval_s", 0.05))
+                fi = _fi_or_default(s["params"], s.get("stem", ""))
                 tl = _track_lengths(s["tracks"], fi)
                 if len(tl):
                     arrs.append(tl)
@@ -1752,13 +1781,17 @@ def compare_groups(groups,
         except (TypeError, ValueError):
             return ""
 
-    # Population-heterogeneity (non-Gaussian alpha2) and directionality (VACF
-    # persistence) are per-replicate scalars in summary_df; test them across
-    # groups (flat mode) so they appear in the stats table and CSV even though
-    # they have no dedicated figure panel.  The two-way report covers the
+    # The headline diffusion endpoints (median_D, median_alpha), population
+    # heterogeneity (non-Gaussian alpha2) and directionality (VACF persistence)
+    # are per-replicate scalars in summary_df with no dedicated figure panel;
+    # test them across groups (flat mode) so they appear in the stats table and
+    # CSV.  median_D / median_alpha were declared in the across-metric family
+    # below but never actually tested — the most important diffusion metrics had
+    # no comparison stats at all.  (#35)  The two-way report covers the
     # two-factor case separately.
     if not two_factor:
-        for _m in ("nongauss_alpha2", "vacf_persistence"):
+        for _m in ("median_D", "median_alpha",
+                   "nongauss_alpha2", "vacf_persistence"):
             if _m in summary_df.columns and _m not in stats_records:
                 arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
                         .dropna().to_numpy() for lbl in labels]
@@ -1927,17 +1960,36 @@ def compare_groups(groups,
         pdf_path  = os.path.join(output_dir, f"{output_stem}.pdf")
         csv_path  = os.path.join(output_dir, f"{output_stem}_summary.csv")
         stats_csv = os.path.join(output_dir, f"{output_stem}_stats.csv")
-        fig.savefig(png_path, dpi=200, bbox_inches="tight",
-                    facecolor=fig.get_facecolor())
-        fig.savefig(pdf_path, bbox_inches="tight", facecolor=fig.get_facecolor())
-        summary_df.to_csv(csv_path, index=False)
+        # Write the IRREPLACEABLE data tables first and guard every save
+        # independently, so a figure-save failure (disk full, or a deep Windows
+        # output path) can't discard the summary/stats CSVs the scientist needs
+        # — the same "one save kills everything" trap the single-file pipeline
+        # was hardened against.  Paths run through _win_long_path so a >260-char
+        # Windows path (OneDrive/RDM) doesn't fail the writes.  (#23)
+        try:
+            summary_df.to_csv(_win_long_path(csv_path), index=False)
+            print(f"  Saved: {csv_path}")
+        except Exception as _e:
+            print(f"  WARN: comparison summary CSV save failed: {_e}")
         if len(stats_df):
-            _write_prism_ttests(stats_csv, stats_df, stats_config=cfg)
-        print(f"  Saved: {png_path}")
-        print(f"  Saved: {pdf_path}")
-        print(f"  Saved: {csv_path}")
-        if len(stats_df):
-            print(f"  Saved: {stats_csv}")
+            try:
+                _write_prism_ttests(_win_long_path(stats_csv), stats_df,
+                                    stats_config=cfg)
+                print(f"  Saved: {stats_csv}")
+            except Exception as _e:
+                print(f"  WARN: comparison stats CSV save failed: {_e}")
+        try:
+            fig.savefig(_win_long_path(png_path), dpi=200, bbox_inches="tight",
+                        facecolor=fig.get_facecolor())
+            print(f"  Saved: {png_path}")
+        except Exception as _e:
+            print(f"  WARN: comparison figure PNG save failed: {_e}")
+        try:
+            fig.savefig(_win_long_path(pdf_path), bbox_inches="tight",
+                        facecolor=fig.get_facecolor())
+            print(f"  Saved: {pdf_path}")
+        except Exception as _e:
+            print(f"  WARN: comparison figure PDF save failed: {_e}")
 
         # ── Two-factor ANOVA CSV ─────────────────────────────────────────────
         if two_factor and twoway_df is not None and len(twoway_df):
@@ -1976,22 +2028,23 @@ def compare_groups(groups,
         else:
             try:
                 groups_angles_pooled = []
-                # Per-track (mean_angle_deg, D) pairs per group, used for
-                # the circular-linear correlation between a track's
-                # average turning bias and its diffusion coefficient.
-                # One list of pairs per group; each list pools across
-                # the group's replicates.
-                track_angle_d_pairs = []
                 # Per-replicate angle arrays — one list of arrays per group.
                 # Used to compute per-replicate κ, R̄, μ for the Welch t-test
                 # and per-replicate Watson-Williams F-test (treats each
                 # replicate as one data point, the statistically defensible
                 # framing for n=5 vs n=3 designs).
+                #
+                # NOTE: the per-track (angle, D) pairs for a circular-linear
+                # correlation used to be assembled here — running
+                # compute_per_track_mean_angle on every track of every replicate
+                # — and then thrown away, because the pooled correlation is
+                # disabled in compute_circular_comparison_tests for the SAME
+                # pseudoreplication reason as the other pooled tests (n =
+                # thousands of tracks → p ≈ 0 regardless of the real effect).
+                # That dead computation is removed.  (#31)
                 per_replicate_angles = {}
                 for label, ss, color in zip(labels, all_summaries, colors):
                     pooled = []
-                    t_angles_g = []
-                    t_D_g      = []
                     rep_angle_arrays = []
                     for s in ss:
                         ta = s.get("turning_angles")
@@ -2000,32 +2053,9 @@ def compare_groups(groups,
                             if arr.size:
                                 pooled.append(arr)
                                 rep_angle_arrays.append(arr)
-                        tracks = s.get("tracks")
-                        diff_df = s.get("diffusion")
-                        if tracks is None or diff_df is None:
-                            continue
-                        if "D" not in diff_df.columns:
-                            continue
-                        try:
-                            pairs = compute_per_track_mean_angle(tracks)
-                            if not pairs:
-                                continue
-                            d_map = dict(zip(diff_df["particle"].astype(int),
-                                             diff_df["D"].astype(float)))
-                            for pid, mu_deg in pairs:
-                                d_val = d_map.get(int(pid))
-                                if d_val is None or not np.isfinite(d_val):
-                                    continue
-                                t_angles_g.append(float(mu_deg))
-                                t_D_g.append(float(d_val))
-                        except Exception:
-                            continue
                     pooled_arr = (np.concatenate(pooled)
                                   if pooled else np.array([], dtype=float))
                     groups_angles_pooled.append((label, pooled_arr, color))
-                    track_angle_d_pairs.append(
-                        (np.asarray(t_angles_g, dtype=float),
-                         np.asarray(t_D_g,      dtype=float)))
                     per_replicate_angles[label] = rep_angle_arrays
                 # Stem for the split circular CSVs (the function derives
                 # _circular_per_group / _per_replicate / _tests from this and
@@ -2038,7 +2068,6 @@ def compare_groups(groups,
                     groups_angles_pooled,
                     csv_path=cs_csv, pdf_path=cs_pdf,
                     fig_theme=theme,
-                    track_angle_d_pairs=track_angle_d_pairs,
                     per_replicate_angles=per_replicate_angles,
                     stats_config=cfg)
                 print(f"  Saved: {cs_pdf}")

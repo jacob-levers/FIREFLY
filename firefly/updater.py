@@ -228,6 +228,17 @@ def _sha256_file(path: str) -> Optional[str]:
         return None
 
 
+def _is_verifiable_digest(digest: str) -> bool:
+    """True only when ``digest`` is a usable ``"sha256:<64-hex>"`` we can
+    actually authenticate the binary against.  A missing / malformed digest
+    means we CANNOT verify the download, so the caller must fail closed."""
+    d = (digest or "").strip().lower()
+    if not d.startswith("sha256:"):
+        return False
+    want = d.split(":", 1)[1].strip()
+    return len(want) == 64 and all(c in "0123456789abcdef" for c in want)
+
+
 def _digest_matches(path: str, digest: str) -> bool:
     """True if ``path``'s SHA-256 matches GitHub's asset ``digest``
     (``"sha256:HEX"``).  Returns True when no usable digest is supplied — we
@@ -259,6 +270,23 @@ def download_asset(asset: dict,
         raise UpdaterError("No installer is available for your platform.")
     dest = os.path.join(updates_dir(), asset["name"])
     digest = str(asset.get("digest") or "")
+    # Fail CLOSED when GitHub didn't publish a verifiable SHA-256: the only other
+    # checks are "size > 1 MB and starts with MZ", which any substituted or
+    # transit-corrupted PE passes.  The installer is unsigned and gets atomically
+    # swapped in + relaunched, so an unauthenticated binary must NOT be installed
+    # automatically — route the user to the Releases page to download by hand. (#20)
+    # The received digest is echoed so a future GitHub digest-format change (which
+    # would otherwise silently disable auto-update for everyone) is diagnosable
+    # from the log instead of looking like "this release has no checksum".  (R2-10)
+    if not _is_verifiable_digest(digest):
+        _seen = repr(digest) if digest else "(none provided)"
+        raise UpdaterError(
+            "FIREFLY can't verify this download is authentic — the release asset "
+            f"has no usable SHA-256 checksum (got digest={_seen}). Nothing was "
+            "installed; download the installer manually from the Releases page "
+            "instead. (If auto-update suddenly stopped working for everyone, the "
+            "GitHub asset-digest format may have changed.)",
+            reveal_path=updates_dir())
     _last = {"hash_failed": False}
 
     def _validate(path: str) -> bool:
@@ -319,12 +347,16 @@ def macos_helper_script(pid: int, dmg: str, target_app: str,
     """Bash helper that waits for ``pid`` to exit, swaps the new
     ``FIREFLY.app`` from ``dmg`` into ``target_app``, clears quarantine,
     relaunches, and self-deletes."""
+    # Read pid/dmg/target/log from the POSITIONAL ARGS the Popen call already
+    # passes ($1..$4), NOT by interpolating the paths into the script text — a
+    # path containing a double-quote, $ or backtick would otherwise break the
+    # assignment or expand metacharacters, corrupting the swap (or worse).  (#21)
     return f"""#!/bin/bash
 set -u
-PID="{pid}"
-DMG="{dmg}"
-TARGET="{target_app}"
-LOG="{log_path}"
+PID="$1"
+DMG="$2"
+TARGET="$3"
+LOG="$4"
 exec >>"$LOG" 2>&1
 echo "[firefly-update] waiting for pid $PID to exit"
 waited=0
@@ -417,12 +449,17 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
         fails (restored backup) or the relaunch never signals ready, so a
         manual rollback is still possible exactly when it might be needed.
     """
+    # Read pid/exe/target/log from the POSITIONAL ARGS the Popen call already
+    # passes (%~1..%~4 — the tilde strips surrounding quotes), NOT by
+    # interpolating the paths into the script.  cmd performs %VAR% expansion on
+    # a `set "TARGET=<literal-path>"` line, so a path containing '%' (legal in
+    # Windows folder names, e.g. C:\50%off\) would be mangled mid-path.  (#32)
     return f"""@echo off
 setlocal enabledelayedexpansion
-set "PID={pid}"
-set "NEWEXE={new_exe}"
-set "TARGET={target_exe}"
-set "LOG={log_path}"
+set "PID=%~1"
+set "NEWEXE=%~2"
+set "TARGET=%~3"
+set "LOG=%~4"
 set "BACKUP=%TARGET%.bak"
 echo [firefly-update] waiting for pid %PID% to exit >>"%LOG%" 2>&1
 set /a WAITED=0

@@ -525,7 +525,20 @@ def find_sibling_imagej_roi(directory: str, stem: str):
             hits = [p for p in glob.glob(os.path.join(directory, pat))
                     if _not_appledouble(p)]
             if len(hits) == 1:
-                return hits[0]
+                # A lone, non-name-matched ROI is only unambiguous when it can
+                # belong to exactly one movie.  In a batch directory with many
+                # movies and one stray ROI, returning it here applied the SAME
+                # wrong ROI to every movie, silently discarding the real signal.
+                # Use it only when its name relates to this stem OR there is a
+                # single movie in the folder.  (#14)
+                roi_base = os.path.basename(hits[0]).lower()
+                stem_match = bool(stem) and stem.lower() in roi_base
+                movies = [p for p in glob.glob(os.path.join(directory, "*"))
+                          if _not_appledouble(p)
+                          and os.path.splitext(p)[1].lower()
+                          in (".tif", ".tiff", ".czi")]
+                if stem_match or len(movies) <= 1:
+                    return hits[0]
     except Exception:
         pass
     return None

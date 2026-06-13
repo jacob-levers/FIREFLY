@@ -4,7 +4,7 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 """
 from __future__ import annotations
 
-
+from firefly.analysis.fa_enums import FigureTheme
 
 
 _THEME_REQUIRED_KEYS = (
@@ -26,8 +26,8 @@ def _theme_palette(theme: str) -> dict:
     `_validate_palette` check at the bottom will catch a regression at
     module-import time rather than at PDF-render time.
     """
-    t = (theme or "Dark").strip()
-    if t == "Light":
+    t = FigureTheme.parse(theme)
+    if t is FigureTheme.LIGHT:
         pal = {"BG":   "#ffffff", "PNL":  "#f6f8fa",
                "TXT":  "#24292f", "MUT":  "#57606a",
                "GRD":  "#d0d7de", "ACC":  "#0969da",
@@ -35,7 +35,7 @@ def _theme_palette(theme: str) -> dict:
                "ZEBRA":"#f3f4f6", "FONT": "sans-serif",
                "ARROW":"#d93636",
                "BAR_FILL":"#0969da", "SIG":"#d93636"}
-    elif t == "Publication":
+    elif t is FigureTheme.PUBLICATION:
         pal = {"BG":   "#ffffff", "PNL":  "#ffffff",
                "TXT":  "#000000", "MUT":  "#444444",
                "GRD":  "#cccccc", "ACC":  "#333333",
@@ -43,7 +43,7 @@ def _theme_palette(theme: str) -> dict:
                "ZEBRA":"#f2f2f2", "FONT": "DejaVu Sans",
                "ARROW":"#000000",
                "BAR_FILL":"#333333", "SIG":"#000000"}
-    elif t == "AMOLED":
+    elif t is FigureTheme.AMOLED:
         # Pure-black backgrounds for OLED displays.  Mirrors Dark
         # otherwise so the figures are recognisable as the same FIREFLY
         # output.  PNL nudged to #0a0a0a so card-style panels still

@@ -17,6 +17,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 from firefly import sptpalm_analysis
 from firefly import crash_reporter
 from firefly import cuda_installer
+from firefly.analysis.fa_enums import MsgKind
 from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_RESULTS, TAB_VISUALISE, TAB_REPROCESS)
@@ -665,11 +666,30 @@ class HandlersMixin:
             self._start_single_run()
 
     def _on_poll_queue(self):
+        """Re-entrancy-guarded QTimer slot for the queue drain.
+
+        A terminal handler in the drain (_handle_failed / _handle_compare_error)
+        can open a MODAL dialog whose nested Qt event loop re-fires this 33 ms
+        timer.  Without this guard the re-entrant call would see the now-dead
+        subprocess and fire _handle_failed a SECOND time (stacked crash dialogs),
+        or null _msg_queue/_proc under the outer frame.  The try/finally ensures
+        the flag clears even if a handler raises.  (#1)
+        """
+        if getattr(self, "_poll_busy", False):
+            return
+        self._poll_busy = True
+        try:
+            self._drain_msg_queue()
+        finally:
+            self._poll_busy = False
+
+    def _drain_msg_queue(self):
         """Drain pending messages from the subprocess's message queue.
 
-        Called on a QTimer at ~30 Hz while a run is active.  We process at
-        most a few hundred messages per tick to keep the UI responsive
-        when tqdm is spamming progress updates during fast stages.
+        Called via the re-entrancy-guarded _on_poll_queue slot at ~30 Hz while a
+        run is active.  We process at most a few hundred messages per tick to
+        keep the UI responsive when tqdm is spamming progress updates during
+        fast stages.
         """
         if self._msg_queue is None:
             return
@@ -708,15 +728,15 @@ class HandlersMixin:
             except queue.Empty:
                 break
             budget -= 1
-            if kind == "log":
+            if kind == MsgKind.LOG:
                 log_buf.append(payload)
-            elif kind == "progress":
+            elif kind == MsgKind.PROGRESS:
                 last_progress = payload   # drop earlier intra-tick updates
-            elif kind == "mass_chunk":
+            elif kind == MsgKind.MASS_CHUNK:
                 # Live histogram update from the localisation stream
                 try:    self.mass_hist.add_chunk(payload)
                 except AttributeError: pass
-            elif kind == "preview_frame":
+            elif kind == MsgKind.PREVIEW_FRAME:
                 # Live detection-view update.  Payload carries a flat
                 # bytes blob + shape so we can reconstruct the frame
                 # array without round-tripping through numpy in the
@@ -742,12 +762,12 @@ class HandlersMixin:
                                 payload.get("n_frames", 0))
                 except (AttributeError, ValueError, KeyError):
                     pass
-            elif kind == "done":
+            elif kind == MsgKind.DONE:
                 # Single-file completion.  Only valid in non-batch mode;
                 # in batch mode the per-file messages are "file_done".
                 self._handle_done(payload)
                 worker_done = True
-            elif kind == "hyperfly_status":
+            elif kind == MsgKind.HYPERFLY_STATUS:
                 # Big-machine parallel batch engaged — announce it, light up the
                 # animated pill, and switch the cockpit to the live tile grid.
                 try:
@@ -774,7 +794,7 @@ class HandlersMixin:
                                 pass
                 except Exception:
                     pass
-            elif kind == "hf_tile":
+            elif kind == MsgKind.HF_TILE:
                 # Per-file dashboard tile update (running / progress / done / fail).
                 try:
                     dash = getattr(self, "hyperfly_dashboard", None)
@@ -793,7 +813,7 @@ class HandlersMixin:
                                              payload.get("stage", ""))
                 except Exception:
                     pass
-            elif kind == "file_starting":
+            elif kind == MsgKind.FILE_STARTING:
                 # New file in a batch — wipe the mass histogram so it
                 # doesn't accumulate values from the previous file's
                 # localisations.  Live view is fine — preview_frame
@@ -806,23 +826,23 @@ class HandlersMixin:
                 # Update the overall-batch bar (files remaining).
                 try:    self._handle_file_starting(payload)
                 except AttributeError: pass
-            elif kind == "file_done":
+            elif kind == MsgKind.FILE_DONE:
                 self._handle_file_done(payload)
-            elif kind == "file_error":
+            elif kind == MsgKind.FILE_ERROR:
                 self._handle_file_error(payload)
-            elif kind == "batch_done":
+            elif kind == MsgKind.BATCH_DONE:
                 self._handle_batch_done(payload)
                 worker_done = True
-            elif kind == "compare_done":
+            elif kind == MsgKind.COMPARE_DONE:
                 self._handle_compare_done(payload)
                 worker_done = True
-            elif kind == "compare_error":
+            elif kind == MsgKind.COMPARE_ERROR:
                 self._handle_compare_error(payload)
                 worker_done = True
-            elif kind == "stopped":
+            elif kind == MsgKind.STOPPED:
                 self._handle_stopped()
                 worker_done = True
-            elif kind == "error":
+            elif kind == MsgKind.ERROR:
                 self._handle_failed(payload)
                 worker_done = True
 
@@ -884,17 +904,53 @@ class HandlersMixin:
         # wrote in the last instant will be picked up by the next
         # tick (~33 ms away) anyway.
         if not worker_done and self._proc is not None and not self._proc.is_alive():
-            # Drain any pending logs without blocking.
-            for _ in range(64):
+            # Drain remaining messages without blocking, and HONOR a terminal
+            # message the worker posted just before exiting.  A run that actually
+            # COMPLETED in the moment between the Stop click and the kill must be
+            # reported as done (its figure/summary kept), not discarded as
+            # "Stopped" — the race the SIGTERM/SIGKILL escalation can otherwise
+            # lose.  (#27)
+            _terminal = None
+            for _ in range(256):
                 try:
                     kind, payload = self._msg_queue.get_nowait()
                 except (queue.Empty, Exception):
                     break
-                if kind == "log":
+                if kind == MsgKind.LOG:
                     log_widget.appendPlainText(payload)
-            # If the user pressed Stop, treat exit as "stopped", not an error
-            if getattr(self, "_stop_requested_at", None) is not None:
+                elif kind in (MsgKind.DONE, MsgKind.BATCH_DONE,
+                              MsgKind.COMPARE_DONE, MsgKind.COMPARE_ERROR):
+                    _terminal = (kind, payload)   # last one wins
+                elif kind == MsgKind.FILE_DONE:
+                    self._handle_file_done(payload)
+                elif kind == MsgKind.FILE_ERROR:
+                    self._handle_file_error(payload)
+            if _terminal is not None:
+                _k, _pl = _terminal
+                if   _k == MsgKind.DONE:          self._handle_done(_pl)
+                elif _k == MsgKind.BATCH_DONE:    self._handle_batch_done(_pl)
+                elif _k == MsgKind.COMPARE_DONE:  self._handle_compare_done(_pl)
+                elif _k == MsgKind.COMPARE_ERROR: self._handle_compare_error(_pl)
+            elif getattr(self, "_stop_requested_at", None) is not None:
+                # User pressed Stop and the run did NOT complete → stopped.
                 self._handle_stopped()
+            elif self._proc.exitcode == 0:
+                # Clean exit (0) but no terminal DONE arrived.  The subprocess
+                # raised NO exception — it COMPLETED — but its result message
+                # never reached the queue (almost always because the GUI was
+                # briefly stalled when the worker finished and the bounded
+                # terminal put gave up).  This is NOT a crash: do not fire a
+                # crash report/dialog.  We just lack the figure path / summary,
+                # so report completion and point at the output folder.  (R3-1)
+                self.run_results.show_results(
+                    "Analysis finished — result summary didn't reach the UI",
+                    "", severity="warn")
+                self.run_results.show_warning(
+                    "The run completed (the subprocess exited cleanly) but its "
+                    "final result message didn't make it back to the UI — the "
+                    "output files were still written. Check the output folder.")
+                self.statusBar().showMessage(
+                    "Analysis finished — see the output folder")
             else:
                 self._handle_failed(
                     f"Analysis subprocess exited abnormally "

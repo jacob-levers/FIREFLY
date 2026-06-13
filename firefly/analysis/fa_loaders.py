@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _dim_size, _tqdm,
-                                           _cpu_core_budget)
+                                           _cpu_core_budget, DEFAULT_PIXEL_SIZE_UM)
 from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
 
@@ -886,6 +886,71 @@ def _parse_ome_metadata(tif):
     return px_um, fi_s
 
 
+def probe_metadata(path, channel=0):
+    """Read ONLY the acquisition metadata (pixel size µm, frame interval s) from
+    an image file, WITHOUT decoding any pixel data.
+
+    Returns ``(pixel_size_um_or_None, frame_interval_s_or_None)`` — either may be
+    None when the file doesn't embed it.  Header-only and cheap: this is the
+    pre-flight probe the GUI uses to decide whether a run would silently fall
+    back to the built-in default calibration.  Never raises — returns
+    ``(None, None)`` on any error or unsupported format.
+    """
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".tif", ".tiff") and HAS_TIFFFILE:
+            with tifffile.TiffFile(path) as tif:
+                return _parse_ome_metadata(tif)
+        if ext == ".czi":
+            if HAS_AICS:
+                czi = aicspylibczi.CziFile(path)
+                meta = _parse_czi_metadata(
+                    czi.meta if hasattr(czi, "meta") else None)
+            elif HAS_CZIFILE:
+                with czifile.CziFile(path) as czi:
+                    meta = _parse_czi_metadata(czi.metadata())
+            else:
+                meta = None
+            if meta:
+                return (meta.get("pixel_size_um"),
+                        meta.get("frame_interval_s"))
+    except Exception:
+        pass
+    return (None, None)
+
+
+def params_needing_calibration(params_list):
+    """Given a list of worker-params dicts, return the input file paths whose
+    pixel size OR frame interval would fall back to the built-in DEFAULT — i.e.
+    an image input where the params carry no explicit ``pixel_size`` /
+    ``frame_interval`` (the user left the Override unticked) AND the file embeds
+    no such metadata.
+
+    external-CSV params (``source == "external_csv"``) are excluded: the GUI
+    always passes the visible sidebar value for those, so they are not a *hidden*
+    default.  Pure + Qt-free so it can be unit-tested headlessly.
+    """
+    missing = []
+    for p in params_list:
+        try:
+            if p.get("source") == "external_csv":
+                continue
+            fp = p.get("file")
+            if not fp:
+                continue
+            if os.path.splitext(fp)[1].lower() not in (".tif", ".tiff", ".czi"):
+                continue
+            px, fi = probe_metadata(fp, int(p.get("channel", 0) or 0))
+            px_defaulted = (not p.get("pixel_size")) and (not px)
+            fi_defaulted = (not p.get("frame_interval")) and (not fi)
+            if px_defaulted or fi_defaulted:
+                missing.append(fp)
+        except Exception:
+            # Never let a probe failure block a run; treat as "known".
+            continue
+    return missing
+
+
 def _find_tif_series(path):
     """Find split TIFF files belonging to the same acquisition.
 
@@ -1548,7 +1613,7 @@ def _autodetect_csv_preset(columns: "list[str]") -> "str | None":
 
 
 def load_external_locs(csv_path: str, preset: str = "auto",
-                       pixel_size_um: float = 0.106,
+                       pixel_size_um: float = DEFAULT_PIXEL_SIZE_UM,
                        column_map: "dict | None" = None,
                        frame_offset: int | None = None):
     """Load a localisations file exported by an external tool and map
@@ -1738,10 +1803,15 @@ def load_external_locs(csv_path: str, preset: str = "auto",
         # which map back to csv rows header_line+1, header_line+2…
         # So we need to skip data-row indices 0, 1, …, len(skip_extra)-1.
         skip_extra_data_rows = set(range(len(skip_extra)))
+        # Skip the metadata rows BEFORE the header (i < _h) AND the extra header
+        # rows after it.  The previous form wrapped this in a ternary —
+        # `(i < _h or (i-_h-1) in _s) if i > _h else False` — whose outermost
+        # `if i > _h` made the `i < _h` clause DEAD for rows at/before the
+        # header, so the leading metadata rows were NOT skipped and the column
+        # mapping silently shifted (no error).  A plain boolean-or is correct
+        # and short-circuits cleanly.  (#29)
         _skiprows = lambda i, _h=header_line, _s=skip_extra_data_rows: (
-            i < _h or (i - _h - 1) in _s
-            if i > _h else False
-        )
+            (i < _h) or ((i - _h - 1) in _s))
     else:
         _skiprows = header_line
     for kwargs in (
@@ -1753,8 +1823,14 @@ def load_external_locs(csv_path: str, preset: str = "auto",
         if callable(_skiprows) and kwargs.get("engine") == "c":
             continue
         try:
+            # on_bad_lines="skip": tolerate a ragged trailing summary row (e.g.
+            # "TOTAL,12345,,," with extra columns) that some exporters append,
+            # instead of aborting the whole parse.  The shape check below still
+            # rejects a wrong separator (which would skip-then-collapse to one
+            # column).  Same-shape rows with non-numeric cells are handled later
+            # by the to_numeric coercion.  (#2/#24)
             attempt = _pd.read_csv(
-                csv_path, skiprows=_skiprows, **kwargs)
+                csv_path, skiprows=_skiprows, on_bad_lines="skip", **kwargs)
         except Exception as exc:
             last_exc = exc
             continue
@@ -1763,6 +1839,27 @@ def load_external_locs(csv_path: str, preset: str = "auto",
             print(f"  Parsed file with sep={kwargs['sep']!r}, "
                   f"skiprows={header_line}, "
                   f"{len(df):,} rows × {df.shape[1]} columns")
+            # on_bad_lines="skip" drops ragged rows SILENTLY; surface roughly how
+            # many (non-blank file lines minus the metadata/header/extra rows
+            # minus the parsed rows) so a trailing summary row or corrupted lines
+            # aren't invisible.  Best-effort — wrong by ±1 only if a metadata row
+            # is blank.  (R2-3)  Counting means re-reading the file, so SKIP it
+            # for large CSVs (a 100s-of-MB localisation table shouldn't pay a
+            # full second disk pass for a cosmetic warning).  (R3-2)
+            try:
+                _RAGGED_COUNT_MAX_BYTES = 64 * 1024 * 1024   # 64 MB
+                if os.path.getsize(csv_path) <= _RAGGED_COUNT_MAX_BYTES:
+                    with open(csv_path, "r", encoding="utf-8",
+                              errors="replace") as _fh:
+                        _nonblank = sum(1 for _ln in _fh if _ln.strip())
+                    _dropped = (_nonblank - int(header_line) - 1
+                                - len(skip_extra) - len(df))
+                    if _dropped >= 1:
+                        print(f"  WARN: ~{_dropped:,} row(s) were dropped as "
+                              f"ragged (wrong field count) while parsing — check "
+                              f"the file if that's unexpected.")
+            except Exception:
+                pass
             break
     if df is None:
         if last_exc is not None:
@@ -1776,7 +1873,7 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     # drop a PALM-Tracer file in and have the units come out right
     # without typing 0.106 again.
     pt_px = pt_meta.get("pixel_size_um")
-    if pt_px and abs(pixel_size_um - 0.106) < 1e-9:
+    if pt_px and abs(pixel_size_um - DEFAULT_PIXEL_SIZE_UM) < 1e-9:
         # Default value — replace with PALM-Tracer's value
         print(f"  Using pixel size {pt_px:.4f} µm from PALM-Tracer metadata")
         pixel_size_um = float(pt_px)
@@ -1818,23 +1915,61 @@ def load_external_locs(csv_path: str, preset: str = "auto",
                     f"{spec.get(required, ())}.  Header was: "
                     f"{list(df.columns)}")
 
-    out = _pd.DataFrame()
-    out["frame"] = df[mapping["frame"]].astype("int64")
+    # ── Coerce the required numeric columns gracefully ────────────────────
+    # A single blank / 'NA' / footer-summary cell, a thousands-separator comma,
+    # or a mis-detected delimiter must NOT abort the whole file with an opaque
+    # pandas cast error (the old `.astype('int64')` / `.astype(float)` did).
+    # Non-numeric cells become NaN; those rows — plus any with a NaN coordinate
+    # from an upstream rejected fit (ThunderSTORM/Picasso emit these routinely)
+    # and any with a negative frame after offset — are dropped with a clear
+    # count, mirroring the TRACK_ID handling below.  (#2 / #24 / #6)
+    _frame = _pd.to_numeric(df[mapping["frame"]], errors="coerce")
+    _x = _pd.to_numeric(df[mapping["x"]], errors="coerce")
+    _y = _pd.to_numeric(df[mapping["y"]], errors="coerce")
     fo = frame_offset if frame_offset is not None else spec.get("frame_offset", 0)
     if fo:
-        out["frame"] = out["frame"] + int(fo)
-    if (out["frame"] < 0).any():
-        # Drop any negative-frame rows that resulted from a wrong offset
-        n_bad = int((out["frame"] < 0).sum())
-        print(f"  WARN: {n_bad} localisations have frame < 0 after offset "
-              f"({fo}) — dropping them.")
-        keep = out["frame"] >= 0
-        df = df.loc[keep].reset_index(drop=True)
-        out = out.loc[keep].reset_index(drop=True)
+        _frame = _frame + int(fo)
 
-    x = df[mapping["x"]].astype(float).values
-    y = df[mapping["y"]].astype(float).values
+    _bad_cell = _frame.isna() | _x.isna() | _y.isna()
+    _neg_frame = _frame.notna() & (_frame < 0)
+    n_cell = int(_bad_cell.sum())
+    n_neg = int(_neg_frame.sum())
+    if n_cell:
+        print(f"  WARN: {n_cell:,} of {len(df):,} rows have a non-numeric / "
+              f"blank / NaN frame/x/y cell — dropping them (wrong preset or "
+              f"CSV delimiter?).")
+    if n_neg:
+        print(f"  WARN: {n_neg:,} localisations have frame < 0 after offset "
+              f"({fo}) — dropping them.")
+    _keep = (~_bad_cell) & (~_neg_frame)
+    if (n_cell or n_neg) and not bool(_keep.any()):
+        # There WERE rows but every one was unusable — a clearer message than
+        # the generic empty-file error.  A header-only / 0-row file (n_cell ==
+        # n_neg == 0) falls through to the existing "No localisations found"
+        # check at the end of the function.
+        raise ValueError(
+            f"No localisations found in {csv_path}: every row had a "
+            f"non-numeric/blank frame/x/y value or a negative frame "
+            f"(check the preset and the CSV delimiter).")
+    df = df.loc[_keep.values].reset_index(drop=True)
+    _frame = _frame.loc[_keep].reset_index(drop=True)
+    _x = _x.loc[_keep].reset_index(drop=True)
+    _y = _y.loc[_keep].reset_index(drop=True)
+
+    out = _pd.DataFrame()
+    out["frame"] = _frame.astype("int64")
+
+    # Spatial unit conversion.  Guard the pixel size: dividing µm/nm coordinates
+    # by a zero / negative / non-finite px would make every coordinate inf/NaN
+    # and silently corrupt every downstream metric, so fail loudly first.  (#30)
+    x = _x.values.astype(float)
+    y = _y.values.astype(float)
     _xy_unit = (spec.get("xy_unit") or "px").lower()
+    if _xy_unit in ("nm", "um", "µm", "micron", "microns"):
+        if not (pixel_size_um and pixel_size_um > 0 and np.isfinite(pixel_size_um)):
+            raise ValueError(
+                f"Pixel size must be a positive, finite number to convert "
+                f"'{_xy_unit}' coordinates to pixels — got {pixel_size_um!r}.")
     if _xy_unit == "nm":
         x = x / (pixel_size_um * 1000.0)
         y = y / (pixel_size_um * 1000.0)
@@ -1847,7 +1982,8 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     out["y"] = y
 
     if "mass" in mapping:
-        out["mass"] = df[mapping["mass"]].astype(float).values
+        out["mass"] = _pd.to_numeric(
+            df[mapping["mass"]], errors="coerce").fillna(1.0).values
     else:
         # Detection already happened upstream; downstream stages tolerate
         # a constant mass column.  Filter-by-mass becomes a no-op which

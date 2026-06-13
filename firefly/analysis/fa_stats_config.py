@@ -392,7 +392,10 @@ STATS_GLOSSARY = {
     "Circular-linear correlation":
         "Correlates a circular quantity (a track's average turning angle) with a "
         "linear one (its diffusion coefficient) — do more-directed tracks diffuse "
-        "differently?",
+        "differently?  (Not currently emitted in a comparison: pooling per-track "
+        "pairs across replicates inflates n to thousands, so the p-value is "
+        "meaningless — the same pseudoreplication reason the other pooled "
+        "circular tests are reported per-replicate instead.)",
     "Circular outputs":
         "The extra circular-statistics CSV files and PDF report produced alongside "
         "the comparison figure (separate from the turning-angle figure panels).",

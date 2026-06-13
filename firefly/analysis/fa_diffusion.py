@@ -150,8 +150,23 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
         # Fallback for very short tracks (or a non-converging joint fit): the
         # legacy two-step estimate (linear D + log-log alpha).  Less accurate
         # near the localisation floor but always returns something.
-        try:    alpha = float(np.polyfit(np.log(t_ok), np.log(m_ok), 1)[0])
-        except Exception: pass
+        # The bare log-log slope on as few as 3 noisy MSD points is UNBOUNDED,
+        # so a 4-frame jitter track could yield alpha = 4.5 / -3 and be
+        # confidently mislabelled "Directed"/"Immobile".  Keep it only when it
+        # lands in the physical [0, 2] the joint fit enforces; an out-of-range
+        # slope is a noise artefact, not super-/sub-diffusion → treat alpha as
+        # UNMEASURABLE rather than trusting it.  (#10)  We classify it as
+        # "Unknown", NOT "Immobile": a directed-but-noisy 3-point track is not
+        # necessarily immobile, so claiming Immobile would just swap one
+        # misclassification for another — Unknown is the honest label.  (R2-14)
+        try:
+            _slope = float(np.polyfit(np.log(t_ok), np.log(m_ok), 1)[0])
+            if 0.0 <= _slope <= 2.0:
+                alpha = _slope
+            else:
+                alpha = np.nan   # → "Unknown" (immobile stays False)
+        except Exception:
+            pass
         try:
             popt, _ = curve_fit(msd_linear, t_ok, m_ok, p0=[0.01, 0],
                                 bounds=([0, -np.inf], [np.inf, np.inf]),
@@ -221,6 +236,15 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     _require_positive_finite("frame_interval", frame_interval)
     if max_lagtime < 1:
         raise ValueError(f"max_lagtime must be >= 1 (got {max_lagtime!r})")
+    # The MSD has only `max_lagtime` lags, so a fit window n_fit > max_lagtime
+    # was silently truncated to max_lagtime — the fit quietly used fewer lags
+    # than the user requested, changing D/alpha with no warning.  Clamp loudly
+    # so the actual window is what the user sees.  (#34)
+    if n_fit > max_lagtime:
+        print(f"  WARN: n_fit ({n_fit}) exceeds max_lagtime ({max_lagtime}); "
+              f"the MSD only has {max_lagtime} lags, so the fit uses "
+              f"{max_lagtime} (not {n_fit}).  Lower n_fit or raise max_lagtime.")
+        n_fit = int(max_lagtime)
 
     lag_times  = np.arange(1, max_lagtime + 1) * frame_interval
     grouped    = tracks.groupby("particle")
@@ -421,8 +445,26 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
     elif n_components == 2:
         pairs = sorted([(popt[0], popt[2]), (popt[1], 1.0 - popt[2])])
     else:
-        f3    = 1.0 - popt[3] - popt[4]
-        pairs = sorted([(popt[0], popt[3]), (popt[1], popt[4]), (popt[2], f3)])
+        # f1 (popt[3]) and f2 (popt[4]) are each bounded to 0.97 with NO
+        # constraint that f1 + f2 <= 1, so f3 = 1 - f1 - f2 can be NEGATIVE — an
+        # impossible population weight that also draws a negative PDF lobe.  (#8)
+        f1, f2 = float(popt[3]), float(popt[4])
+        f3 = 1.0 - f1 - f2
+        if f3 < -0.02:
+            # The 3-component model is unjustified for this data → fall back to
+            # the physically-valid 2-component fit rather than report a negative
+            # fraction.
+            print(f"  WARN: 3-component JDD gave a negative population fraction "
+                  f"(f3 = {f3:.3f}); falling back to a 2-component fit.")
+            return compute_jdd(tracks, pixel_size_um, frame_interval_s,
+                               n_components=2)
+        # Tiny negative from optimiser noise → clamp + renormalise to a valid
+        # simplex (fractions in [0,1] summing to 1).
+        f3 = max(f3, 0.0)
+        _tot = f1 + f2 + f3
+        if _tot > 0:
+            f1, f2, f3 = f1 / _tot, f2 / _tot, f3 / _tot
+        pairs = sorted([(popt[0], f1), (popt[1], f2), (popt[2], f3)])
 
     D_values  = [p[0] for p in pairs]
     fractions = [p[1] for p in pairs]
