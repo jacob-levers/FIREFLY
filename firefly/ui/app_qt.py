@@ -107,6 +107,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 
 from firefly import crash_reporter
+from firefly.analysis.fa_enums import Backend, MaskMode, MsgKind
 from firefly.ui.ui_mixin_handlers import HandlersMixin
 from firefly.ui.ui_mixin_build import BuildMixin
 from firefly.ui.ui_mixin_batch import BatchMixin
@@ -1115,15 +1116,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             # Normalise the combo label to the short tokens the viewer
             # expects: "max", "blink", "mean", or "sum".  "Blink density"
             # in particular needs to collapse to plain "blink".
-            _mm_raw = self.c_roi_mask_mode.currentText().lower()
-            if _mm_raw.startswith("blink"):
-                mask_mode = "blink"
-            elif _mm_raw.startswith("max"):
-                mask_mode = "max"
-            elif _mm_raw.startswith("sum"):
-                mask_mode = "sum"
-            else:
-                mask_mode = "mean"
+            mask_mode = MaskMode.parse(self.c_roi_mask_mode.currentText()).value
             bg_sigma = float(self.s_roi_bg_sigma.value())
             self._roi_viewer.set_roi_mask_params(
                 mode=mode, auto_method=method,
@@ -2350,12 +2343,15 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         back to the dropdown.
         """
         value = self._backend_value_from_label(self.c_backend.currentText())
-        if not value or not value.startswith("torch-"):
+        bk = Backend.parse(value)
+        # Only the device-pinned GPU backends (torch-cuda / torch-mps) can hit
+        # the "picked a GPU the bundled torch can't use" footgun.  auto / torch
+        # / torch-cpu / trackpy resolve their device safely at run time.
+        if not bk.is_explicit_gpu:
             return True
-        forced = value[len("torch-"):].split(":", 1)[0]
         try:
             import torch as _t
-            if forced == "cuda" and not _t.cuda.is_available():
+            if bk is Backend.TORCH_CUDA and not _t.cuda.is_available():
                 msg = (
                     "You picked the NVIDIA CUDA backend, but the bundled "
                     "PyTorch is CPU-only.\n\n"
@@ -2379,7 +2375,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                     self.c_backend.setCurrentText("Auto")
                     return True
                 return False
-            if forced == "mps":
+            if bk is Backend.TORCH_MPS:
                 has_mps = (hasattr(_t.backends, "mps")
                            and _t.backends.mps.is_available())
                 if not has_mps:

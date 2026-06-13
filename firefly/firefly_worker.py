@@ -32,6 +32,11 @@ import sys
 import time
 import traceback
 
+# Qt-free, stdlib-only (imports `enum`); safe to load before the CUDA sidecar
+# block since it pulls in no torch.  MsgKind is the one source of truth for the
+# worker→GUI message-queue kinds emitted throughout this module.
+from firefly.analysis.fa_enums import MsgKind
+
 
 # ── CUDA sidecar injection ───────────────────────────────────────────────────
 # Must run BEFORE any torch import so the CUDA-built torch in
@@ -82,12 +87,12 @@ class QueueLogStream:
             line = self._buf[:cut]
             self._buf = self._buf[cut + 1:]
             if line.strip():
-                self._q.put(("log", line.rstrip()))
+                self._q.put((MsgKind.LOG, line.rstrip()))
         return len(s)
 
     def flush(self):
         if self._buf.strip():
-            self._q.put(("log", self._buf.rstrip()))
+            self._q.put((MsgKind.LOG, self._buf.rstrip()))
             self._buf = ""
 
     def isatty(self) -> bool: return False
@@ -272,7 +277,7 @@ def _start_memory_watchdog(cancel_event, msg_queue,
                         except Exception: pass
                     cancel_event.set()
                     try:
-                        msg_queue.put_nowait(("log",
+                        msg_queue.put_nowait((MsgKind.LOG,
                             f"\n  ⚠ CRITICAL: only {free_gb:.2f} GB RAM "
                             f"free for {sustained_polls * poll_s:.1f}s "
                             f"(threshold {critical_gb:.2f} GB on a "
@@ -293,7 +298,7 @@ def _start_memory_watchdog(cancel_event, msg_queue,
                 # on a queue that the memory-starved GUI may have
                 # stopped draining.
                 try:
-                    msg_queue.put_nowait(("log",
+                    msg_queue.put_nowait((MsgKind.LOG,
                         f"  ⚠ Memory pressure: {free_gb:.2f} GB RAM "
                         f"free (warn < {warn_gb:.1f} GB / abort < "
                         f"{critical_gb:.1f} GB).  Run will abort if "
@@ -352,7 +357,7 @@ def _start_disk_watchdog(out_dir, cancel_event, msg_queue,
                 if cancel_event is not None and not cancel_event.is_set():
                     cancel_event.set()
                     try:
-                        msg_queue.put_nowait(("log",
+                        msg_queue.put_nowait((MsgKind.LOG,
                             f"\n  ⚠ CRITICAL: only {free_mb:.0f} MB "
                             f"free on output disk — aborting before "
                             f"a save fails and corrupts the output "
@@ -362,7 +367,7 @@ def _start_disk_watchdog(out_dir, cancel_event, msg_queue,
                 return
             if not warned and free_mb < warn_mb:
                 try:
-                    msg_queue.put_nowait(("log",
+                    msg_queue.put_nowait((MsgKind.LOG,
                         f"  ⚠ Disk space low on output volume: "
                         f"{free_mb:.0f} MB free (warn < "
                         f"{warn_mb:.0f} MB / abort < {critical_mb:.0f} "
@@ -554,6 +559,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         make_figure, save_palmtracer_csvs, apply_roi_mask, _Cancelled,
         load_external_locs,
     )
+    from firefly.analysis.fa_enums import ROIMode, MaskMode
 
     # Helper: check stop event at major pipeline boundaries.  Most of the
     # pipeline's interruptibility comes from passing `cancel_event` deep
@@ -608,9 +614,9 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             return _render_palmtracer_native(
                 p, out_dir, stem, fig_dir, data_dir, extras_dir,
-                lambda m: msg_queue.put(("log", m)))
+                lambda m: msg_queue.put((MsgKind.LOG, m)))
         except Exception as _pt_exc:
-            msg_queue.put(("log", f"  WARN: native palmTRACER render failed "
+            msg_queue.put((MsgKind.LOG, f"  WARN: native palmTRACER render failed "
                                   f"({_pt_exc}); re-analysing instead."))
 
     # ── Pre-flight disk-space check ────────────────────────────────────────
@@ -816,7 +822,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             import queue as _q
             arr = masses if len(masses) <= 20000 else masses[:20000]
-            try:    msg_queue.put_nowait(("mass_chunk", arr.tolist()))
+            try:    msg_queue.put_nowait((MsgKind.MASS_CHUNK, arr.tolist()))
             except _q.Full: pass     # drop — non-essential
         except Exception:
             pass
@@ -914,7 +920,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             if _system_under_pressure():
                 time.sleep(period)
                 continue
-            try:    msg_queue.put_nowait(("preview_frame", payload))
+            try:    msg_queue.put_nowait((MsgKind.PREVIEW_FRAME, payload))
             except _queue.Full: pass    # IPC queue saturated; drop
             except Exception:   pass
             time.sleep(period)
@@ -1041,7 +1047,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # Per-file polygon overrides the global mode: if a polygon was set
     # for this file in the Import-tab ROI editor, treat it as polygon-mode
     # regardless of what the sidebar says.
-    roi_mode_user = p.get("roi_mode", "none")   # what the user picked
+    # Validate + normalise the ROI token through the enum (one source of truth;
+    # an unknown value now logs + falls back to 'none' instead of silently
+    # threading a bogus string through the dispatch below).  Kept as a string so
+    # the existing branch logic is unchanged.
+    roi_mode_user = ROIMode.parse(p.get("roi_mode", "none"), log=_log).value
     roi_mode = roi_mode_user
     roi_from_imagej = False                      # set when a sibling ImageJ ROI
                                                  # is what produced the polygon
@@ -1257,8 +1267,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 # subtraction + morphology + top-N components.
                 # Whatever the user tunes in the ROI preview viewer is
                 # what gets applied here, byte-for-byte identical.
-                mask_mode = str(p.get("roi_mask_mode", "Max")).strip().lower()
-                if mask_mode.startswith("blink"):
+                mask_mode = MaskMode.parse(p.get("roi_mask_mode", "Max"), log=_log)
+                if mask_mode is MaskMode.BLINK:
                     # Streaming Welford-based per-pixel mean+std baseline
                     # gives us a real blink-density map in a single
                     # pass over the stack (see preprocess_and_localise_
@@ -1274,15 +1284,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                              "(no stack loaded?) — falling back to Max.")
                         proj = max_proj
                         mode_hint = "max"
-                elif mask_mode.startswith("max"):
+                elif mask_mode is MaskMode.MAX:
                     proj = max_proj
                     mode_hint = "max"
-                elif mask_mode.startswith("sum"):
+                elif mask_mode is MaskMode.SUM:
                     # Sum is just mean × frame_count up to a scale that
                     # normalisation removes, so route it to mean_proj.
                     proj = mean_proj
                     mode_hint = "sum"
-                else:  # "mean" (default for legacy presets)
+                else:  # MaskMode.MEAN (also the fallback for unknown values)
                     proj = mean_proj
                     mode_hint = "mean"
 
@@ -2320,8 +2330,8 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     except Exception:
         pass
 
-    def _log(msg: str):       msg_queue.put(("log", msg))
-    def _prog(pct, msg):      msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):       msg_queue.put((MsgKind.LOG, msg))
+    def _prog(pct, msg):      msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — aborts the run cleanly if free RAM falls
     # below the critical threshold, preventing the OS-level OOM /
@@ -2344,17 +2354,17 @@ def run_analysis(params: dict, msg_queue, cancel_event):
         _log("── Worker subprocess started ──")
         _prog(0, "Importing pipeline…")
         payload = _run_one_analysis(params, msg_queue, cancel_event, _log, _prog)
-        msg_queue.put(("done", payload))
+        msg_queue.put((MsgKind.DONE, payload))
     except _NoTracks as nt:
         # Linker produced 0 trajectories — not a crash.  Treat as "done"
         # with the partial payload so the UI resets cleanly.
-        msg_queue.put(("done", nt.args[0]))
+        msg_queue.put((MsgKind.DONE, nt.args[0]))
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
-            msg_queue.put(("log", "\n── Stopped by user ──"))
-            msg_queue.put(("stopped", None))
+            msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
+            msg_queue.put((MsgKind.STOPPED, None))
         else:
-            msg_queue.put(("error", traceback.format_exc()))
+            msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2388,8 +2398,8 @@ def run_postproc(params: dict, msg_queue, cancel_event):
     """
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
-    def _log(msg: str):  msg_queue.put(("log", msg))
-    def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):  msg_queue.put((MsgKind.LOG, msg))
+    def _prog(pct, msg): msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
 
     _wd_stop = _start_memory_watchdog(cancel_event, msg_queue)
     _disk_stop = None
@@ -2541,15 +2551,15 @@ def run_postproc(params: dict, msg_queue, cancel_event):
         # the GUI can offer to "Open the post-processed run".
         payload["source_folder"] = src
         payload["postproc_output"] = out_dir
-        msg_queue.put(("done", payload))
+        msg_queue.put((MsgKind.DONE, payload))
     except _NoTracks as nt:
-        msg_queue.put(("done", nt.args[0]))
+        msg_queue.put((MsgKind.DONE, nt.args[0]))
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
-            msg_queue.put(("log", "\n── Stopped by user ──"))
-            msg_queue.put(("stopped", None))
+            msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
+            msg_queue.put((MsgKind.STOPPED, None))
         else:
-            msg_queue.put(("error", traceback.format_exc()))
+            msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2587,8 +2597,8 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
 
-    def _log(msg: str):  msg_queue.put(("log", msg))
-    def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):  msg_queue.put((MsgKind.LOG, msg))
+    def _prog(pct, msg): msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — Compare can load multiple full tracks
     # DataFrames simultaneously + re-derive MSD/JDD/dwell/turning
@@ -2673,7 +2683,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         results_json = os.path.join(out_dir, f"{out_stem}_results.json")
 
         _prog(100, "Comparison complete")
-        msg_queue.put(("compare_done", {
+        msg_queue.put((MsgKind.COMPARE_DONE, {
             "output_dir":   out_dir,
             "figure_path":  figure_path if os.path.isfile(figure_path) else "",
             "summary_csv":  summary_csv if os.path.isfile(summary_csv) else "",
@@ -2685,15 +2695,15 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
 
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
-            msg_queue.put(("log", "\n── Stopped by user ──"))
-            msg_queue.put(("stopped", None))
+            msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
+            msg_queue.put((MsgKind.STOPPED, None))
         elif type(exc).__name__ == "CompareInputError":
             # Expected user-input problem (no valid folders, drive unmounted,
             # <2 groups) — surface a clean popup, NOT a crash report.
-            msg_queue.put(("log", f"\n  {exc}"))
-            msg_queue.put(("compare_error", str(exc)))
+            msg_queue.put((MsgKind.LOG, f"\n  {exc}"))
+            msg_queue.put((MsgKind.COMPARE_ERROR, str(exc)))
         else:
-            msg_queue.put(("error", traceback.format_exc()))
+            msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2805,13 +2815,13 @@ class _HFQueue:
                 payload = _hf_downscale_preview(dict(item[1]))
                 payload["file"] = self._idx
                 payload["stem"] = self._stem
-                self._q.put(("preview_frame", payload))
+                self._q.put((MsgKind.PREVIEW_FRAME, payload))
             except Exception:
                 pass
             return
         try:
             if kind == "log":
-                self._q.put(("log", f"[{self._stem}] {item[1]}"))
+                self._q.put((MsgKind.LOG, f"[{self._stem}] {item[1]}"))
             else:
                 self._q.put(item)
         except Exception:
@@ -2862,7 +2872,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
     # Test hook: exercise the engine plumbing (spawn → fan-in → forwarder →
     # collector) without the heavy real pipeline.  Set FIREFLY_HYPERFLY_SELFTEST.
     if os.environ.get("FIREFLY_HYPERFLY_SELFTEST"):
-        try:    fan_q.put(("log", f"[{stem}] selftest worker"))
+        try:    fan_q.put((MsgKind.LOG, f"[{stem}] selftest worker"))
         except Exception: pass
         return {"ok": True, "stem": stem, "out_dir": "",
                 "n_tracks": index, "n_locs": index * 10}
@@ -2874,7 +2884,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
     # from the collector on completion, and only genuinely important lines
     # (warnings / errors) from the chatty pipeline in between.
     def _emit(line):
-        try:    fan_q.put(("log", f"[{stem}] {line}"))
+        try:    fan_q.put((MsgKind.LOG, f"[{stem}] {line}"))
         except Exception: pass
 
     class _ConsoleQ:
@@ -2913,7 +2923,7 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
         norm = _hf_norm_stage(s)
         if norm and norm != _prog_state["stage"]:
             _prog_state["stage"] = norm
-            try:    fan_q.put(("log", f"  [{stem}] {norm}"))
+            try:    fan_q.put((MsgKind.LOG, f"  [{stem}] {norm}"))
             except Exception: pass
         # Dashboard tile: throttled stage/percent.
         try:
@@ -2922,14 +2932,14 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
             if now - _prog_state["t"] < 0.2:        # ~5 Hz per file
                 return
             _prog_state["t"] = now
-            fan_q.put(("hf_tile", {"file": index, "stem": stem,
+            fan_q.put((MsgKind.HF_TILE, {"file": index, "stem": stem,
                                    "pct": int(pct), "stage": s}))
         except Exception:
             pass
 
-    try:    fan_q.put(("log", f"▶ [{stem}] ({index}/{n_total}) started"))
+    try:    fan_q.put((MsgKind.LOG, f"▶ [{stem}] ({index}/{n_total}) started"))
     except Exception: pass
-    try:    fan_q.put(("hf_tile", {"file": index, "stem": stem,
+    try:    fan_q.put((MsgKind.HF_TILE, {"file": index, "stem": stem,
                                    "state": "running"}))
     except Exception: pass
 
@@ -2996,7 +3006,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         try:
             from firefly.analysis.fa_localize import backend_uses_gpu as _buse
             if params_list and _buse(params_list[0].get("backend")):
-                msg_queue.put(("log",
+                msg_queue.put((MsgKind.LOG,
                     f"  HYPER-FLY: GPU detected — gating GPU detection to "
                     f"{_gpu_slots} file(s) at a time (CPU stages stay "
                     f"concurrent)."))
@@ -3044,7 +3054,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         # ballooned RAM in the pre-stagger builds.
         if K >= 2 and _load_slots < K:
             try:
-                msg_queue.put(("log",
+                msg_queue.put((MsgKind.LOG,
                     f"  HYPER-FLY: staggering loads to {_load_slots} file(s) at "
                     f"a time (of {K}), {load_core_budget} cores each — RAM ramps "
                     f"up gradually instead of all {K} at once."))
@@ -3094,7 +3104,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     return
                 el = _time.monotonic() - _hb_t0
                 try:
-                    msg_queue.put(("log",
+                    msg_queue.put((MsgKind.LOG,
                         f"  HYPER-FLY working… {d}/{n} done · "
                         f"{min(K, n - d)} running  ({el:.0f}s)"))
                 except Exception:
@@ -3128,7 +3138,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                 if payload.get("ok"):
                     results[i - 1] = {"index": i, "ok": True,
                                       "file": params["file"], **payload}
-                    msg_queue.put(("file_done", {
+                    msg_queue.put((MsgKind.FILE_DONE, {
                         "index": i, "total": n,
                         "stem":     payload.get("stem"),
                         "out_dir":  payload.get("out_dir"),
@@ -3136,12 +3146,12 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                         "n_locs":   payload.get("n_locs", 0),
                     }))
                     # Clean per-file ledger line (the readable HYPERFLY console).
-                    msg_queue.put(("log",
+                    msg_queue.put((MsgKind.LOG,
                         f"  ✓ [{_stem}] {int(payload.get('n_locs', 0)):,} locs · "
                         f"{int(payload.get('n_tracks', 0)):,} tracks   "
                         f"({done}/{n})"))
                     # Mark this file's dashboard tile done (frees its lane).
-                    msg_queue.put(("hf_tile", {
+                    msg_queue.put((MsgKind.HF_TILE, {
                         "file": i, "stem": _stem, "state": "done",
                         "n_locs": payload.get("n_locs", 0),
                         "n_tracks": payload.get("n_tracks", 0)}))
@@ -3149,14 +3159,14 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     results[i - 1] = {"index": i, "ok": False,
                                       "file": params["file"],
                                       "error": payload.get("error", "")}
-                    msg_queue.put(("file_error", {
+                    msg_queue.put((MsgKind.FILE_ERROR, {
                         "index": i, "total": n, "file": params["file"],
                         "tb": payload.get("tb", payload.get("error", "")),
                     }))
-                    msg_queue.put(("log",
+                    msg_queue.put((MsgKind.LOG,
                         f"  ✗ [{_stem}] failed: {payload.get('error', '')}   "
                         f"({done}/{n})"))
-                    msg_queue.put(("hf_tile", {
+                    msg_queue.put((MsgKind.HF_TILE, {
                         "file": i, "stem": _stem, "state": "failed",
                         "error": payload.get("error", "")}))
                 _prog(int(100 * done / max(1, n)),
@@ -3330,8 +3340,8 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     if "FIREFLY_BULK_FIGURES" not in os.environ and len(params_list) >= 2:
         os.environ["FIREFLY_BULK_FIGURES"] = "1"
 
-    def _log(msg: str):  msg_queue.put(("log", msg))
-    def _prog(pct, msg): msg_queue.put(("progress", (int(pct), str(msg))))
+    def _log(msg: str):  msg_queue.put((MsgKind.LOG, msg))
+    def _prog(pct, msg): msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — one shared across the whole batch so a series
     # halfway through doesn't push the system into swap.  We pass a
@@ -3371,7 +3381,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
         except Exception:
             _plan = {"active": False}
         if _plan.get("active"):
-            msg_queue.put(("hyperfly_status", {
+            msg_queue.put((MsgKind.HYPERFLY_STATUS, {
                 "active": True,
                 "n_concurrent": _plan.get("n_concurrent"),
                 "per_file_workers": _plan.get("per_file_workers"),
@@ -3394,7 +3404,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             # the serial path does (emit 'stopped' instead of 'batch_done').
             if cancel_event.is_set():
                 _log("\n── Batch stopped by user ──")
-                msg_queue.put(("stopped", None))
+                msg_queue.put((MsgKind.STOPPED, None))
                 return
             results = _hf_results
             _serial_iter = []
@@ -3418,7 +3428,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     results.append({"index": i, "ok": False,
                                     "file": params["file"],
                                     "error": "memory watchdog abort"})
-                    msg_queue.put(("file_error", {
+                    msg_queue.put((MsgKind.FILE_ERROR, {
                         "index": i, "total": n,
                         "file": params["file"],
                         "tb": "Aborted by memory watchdog "
@@ -3426,7 +3436,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     }))
                     continue
                 _log("\n── Batch stopped by user ──")
-                msg_queue.put(("stopped", None))
+                msg_queue.put((MsgKind.STOPPED, None))
                 return
 
             fname = os.path.basename(params["file"])
@@ -3440,7 +3450,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             # GUI hook — reset per-file UI elements (mass histogram).  Live
             # view is fine; new preview_frame messages will overwrite the
             # previous file's frame so no explicit reset is needed there.
-            msg_queue.put(("file_starting", {
+            msg_queue.put((MsgKind.FILE_STARTING, {
                 "index": i, "total": n, "file": fname,
             }))
 
@@ -3449,7 +3459,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     params, msg_queue, cancel_event, _log, _prog)
                 results.append({"index": i, "ok": True, "file": params["file"],
                                 **payload})
-                msg_queue.put(("file_done", {
+                msg_queue.put((MsgKind.FILE_DONE, {
                     "index": i, "total": n,
                     "stem":     payload.get("stem"),
                     "out_dir":  payload.get("out_dir"),
@@ -3459,7 +3469,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             except _NoTracks as nt:
                 results.append({"index": i, "ok": True, "file": params["file"],
                                 **nt.args[0]})
-                msg_queue.put(("file_done", {
+                msg_queue.put((MsgKind.FILE_DONE, {
                     "index": i, "total": n,
                     "stem":     nt.args[0].get("stem"),
                     "out_dir":  nt.args[0].get("out_dir"),
@@ -3479,7 +3489,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                         results.append({"index": i, "ok": False,
                                         "file": params["file"],
                                         "error": "memory watchdog abort"})
-                        msg_queue.put(("file_error", {
+                        msg_queue.put((MsgKind.FILE_ERROR, {
                             "index": i, "total": n,
                             "file": params["file"],
                             "tb": "Aborted by memory watchdog "
@@ -3495,14 +3505,14 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                         except Exception: pass
                         continue
                     _log("\n── Batch stopped by user ──")
-                    msg_queue.put(("stopped", None))
+                    msg_queue.put((MsgKind.STOPPED, None))
                     return
                 tb = traceback.format_exc()
                 _log(f"\n  ⚠ File {i}/{n} ({fname}) FAILED: {exc}")
                 _log(tb)
                 results.append({"index": i, "ok": False, "file": params["file"],
                                 "error": str(exc)})
-                msg_queue.put(("file_error", {
+                msg_queue.put((MsgKind.FILE_ERROR, {
                     "index": i, "total": n,
                     "file": params["file"], "tb": tb,
                 }))
@@ -3554,13 +3564,13 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
         _log(f"  Batch complete: {n_ok}/{n} succeeded, {n_fail} failed")
         _log("══════════════════════════════════════════════════════════════════")
         _prog(100, "Batch complete!")
-        msg_queue.put(("batch_done", {
+        msg_queue.put((MsgKind.BATCH_DONE, {
             "n_total": n, "n_ok": n_ok, "n_fail": n_fail,
             "results": results,
         }))
 
     except BaseException:
-        msg_queue.put(("error", traceback.format_exc()))
+        msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()

@@ -17,6 +17,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 from firefly import sptpalm_analysis
 from firefly import crash_reporter
 from firefly import cuda_installer
+from firefly.analysis.fa_enums import MsgKind
 from firefly.ui.ui_theme import _THEME
 from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_RESULTS, TAB_VISUALISE, TAB_REPROCESS)
@@ -708,15 +709,15 @@ class HandlersMixin:
             except queue.Empty:
                 break
             budget -= 1
-            if kind == "log":
+            if kind == MsgKind.LOG:
                 log_buf.append(payload)
-            elif kind == "progress":
+            elif kind == MsgKind.PROGRESS:
                 last_progress = payload   # drop earlier intra-tick updates
-            elif kind == "mass_chunk":
+            elif kind == MsgKind.MASS_CHUNK:
                 # Live histogram update from the localisation stream
                 try:    self.mass_hist.add_chunk(payload)
                 except AttributeError: pass
-            elif kind == "preview_frame":
+            elif kind == MsgKind.PREVIEW_FRAME:
                 # Live detection-view update.  Payload carries a flat
                 # bytes blob + shape so we can reconstruct the frame
                 # array without round-tripping through numpy in the
@@ -742,12 +743,12 @@ class HandlersMixin:
                                 payload.get("n_frames", 0))
                 except (AttributeError, ValueError, KeyError):
                     pass
-            elif kind == "done":
+            elif kind == MsgKind.DONE:
                 # Single-file completion.  Only valid in non-batch mode;
                 # in batch mode the per-file messages are "file_done".
                 self._handle_done(payload)
                 worker_done = True
-            elif kind == "hyperfly_status":
+            elif kind == MsgKind.HYPERFLY_STATUS:
                 # Big-machine parallel batch engaged — announce it, light up the
                 # animated pill, and switch the cockpit to the live tile grid.
                 try:
@@ -774,7 +775,7 @@ class HandlersMixin:
                                 pass
                 except Exception:
                     pass
-            elif kind == "hf_tile":
+            elif kind == MsgKind.HF_TILE:
                 # Per-file dashboard tile update (running / progress / done / fail).
                 try:
                     dash = getattr(self, "hyperfly_dashboard", None)
@@ -793,7 +794,7 @@ class HandlersMixin:
                                              payload.get("stage", ""))
                 except Exception:
                     pass
-            elif kind == "file_starting":
+            elif kind == MsgKind.FILE_STARTING:
                 # New file in a batch — wipe the mass histogram so it
                 # doesn't accumulate values from the previous file's
                 # localisations.  Live view is fine — preview_frame
@@ -806,23 +807,23 @@ class HandlersMixin:
                 # Update the overall-batch bar (files remaining).
                 try:    self._handle_file_starting(payload)
                 except AttributeError: pass
-            elif kind == "file_done":
+            elif kind == MsgKind.FILE_DONE:
                 self._handle_file_done(payload)
-            elif kind == "file_error":
+            elif kind == MsgKind.FILE_ERROR:
                 self._handle_file_error(payload)
-            elif kind == "batch_done":
+            elif kind == MsgKind.BATCH_DONE:
                 self._handle_batch_done(payload)
                 worker_done = True
-            elif kind == "compare_done":
+            elif kind == MsgKind.COMPARE_DONE:
                 self._handle_compare_done(payload)
                 worker_done = True
-            elif kind == "compare_error":
+            elif kind == MsgKind.COMPARE_ERROR:
                 self._handle_compare_error(payload)
                 worker_done = True
-            elif kind == "stopped":
+            elif kind == MsgKind.STOPPED:
                 self._handle_stopped()
                 worker_done = True
-            elif kind == "error":
+            elif kind == MsgKind.ERROR:
                 self._handle_failed(payload)
                 worker_done = True
 
@@ -890,7 +891,7 @@ class HandlersMixin:
                     kind, payload = self._msg_queue.get_nowait()
                 except (queue.Empty, Exception):
                     break
-                if kind == "log":
+                if kind == MsgKind.LOG:
                     log_widget.appendPlainText(payload)
             # If the user pressed Stop, treat exit as "stopped", not an error
             if getattr(self, "_stop_requested_at", None) is not None:

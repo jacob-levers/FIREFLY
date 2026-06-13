@@ -25,6 +25,7 @@ from firefly.ui.ui_helpers import (_make_cogwheel_icon, _make_close_x_icon,
                         _MOTION_PALETTE, _MOTION_ORDER,
                         _MOTION_CMAP_NAME, _open_folder)
 from firefly.analysis.fa_stats_config import glossary_def
+from firefly.analysis.fa_enums import MaskMode
 
 
 class _InfoIcon(QtWidgets.QLabel):
@@ -3838,7 +3839,8 @@ class _RoiViewer(QtWidgets.QWidget):
         #           blinks repeatedly, autofluorescent background is
         #           steady so its blink-count is ~zero.
         # ── 1. Build the projection from the cached preview stack ──────
-        mode_proj = self._roi_mask_params.get("mask_mode", "mean")
+        mode_proj = MaskMode.parse(
+            self._roi_mask_params.get("mask_mode", "mean")).value
         stk = self._stack.astype(_np.float32, copy=False)
         if mode_proj == "max":
             proj = stk.max(axis=0)

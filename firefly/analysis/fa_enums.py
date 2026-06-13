@@ -1,0 +1,171 @@
+"""Typed dispatch tokens for FIREFLY.
+
+ONE source of truth for the stringly-typed modes that used to be compared with
+bare ``==`` / ``.startswith()`` chains (and could silently fall through to a wrong
+default on an unknown value — the bug class behind the "Mean projection vs Sister
+TIFF" / "Welch κ … (Kruskal-Wallis)" mislabels).
+
+Each enum's ``.value`` is the EXACT wire string persisted to
+``<stem>_run_manifest.json`` / the GUI settings, so ``parse()`` round-trips
+byte-for-byte.  ``parse()`` is case-insensitive, accepts the legacy / GUI-display
+spellings, and on an UNKNOWN value calls ``log`` (if given) and returns the
+documented fallback — never a *silent* wrong default.
+
+Qt-free so the spawned analysis worker can import it.
+"""
+from __future__ import annotations
+
+from enum import Enum
+
+try:                       # Python 3.11+
+    from enum import StrEnum
+except ImportError:        # pragma: no cover - fallback for <3.11
+    class StrEnum(str, Enum):  # type: ignore
+        pass
+
+
+def _warn(log, msg: str) -> None:
+    if callable(log):
+        try:
+            log(msg)
+        except Exception:
+            pass
+
+
+class ROIMode(Enum):
+    """How the analysis builds its region-of-interest mask."""
+    NONE = "none"        # no ROI — whole frame
+    AUTO = "auto"        # intensity-projection auto-threshold
+    MANUAL = "manual"    # intensity-projection at a manual threshold
+    POLYGON = "polygon"  # user-drawn / ImageJ polygon rasterised to a mask
+    SISTER = "sister"    # microscope-exported sister TIFF (e.g. _green.tif)
+    IMAGEJ = "imagej"    # auto-paired sibling ImageJ RoiSet.zip / .roi
+
+    @classmethod
+    def parse(cls, value, *, log=None) -> "ROIMode":
+        s = str(value if value is not None else "none").strip().lower()
+        for m in cls:
+            if s == m.value:
+                return m
+        _warn(log, f"  WARNING: unknown ROI mode {value!r} — treating as 'none' "
+                   f"(no ROI).")
+        return cls.NONE
+
+
+class MaskMode(Enum):
+    """Which per-pixel projection an intensity-threshold ROI is built from.
+    ``.value`` doubles as the ``mode_hint`` the mask builder expects."""
+    MAX = "max"      # max projection
+    MEAN = "mean"    # mean projection (also the Sum target — sum ∝ mean)
+    SUM = "sum"      # sum projection (routed to the mean projection)
+    BLINK = "blink"  # blink-density projection
+
+    @classmethod
+    def parse(cls, value, *, log=None) -> "MaskMode":
+        """Maps the GUI display strings ("Max" / "Mean" / "Sum" / "Blink
+        density") case-insensitively, preserving the historical prefix dispatch.
+        An empty/missing value → Mean (the legacy default for the `else` branch);
+        an *unknown* non-empty value → Mean with a logged warning (was silent)."""
+        s = str(value if value is not None else "").strip().lower()
+        if s.startswith("blink"):
+            return cls.BLINK
+        if s.startswith("max"):
+            return cls.MAX
+        if s.startswith("sum"):
+            return cls.SUM
+        if s.startswith("mean") or s == "":
+            return cls.MEAN
+        _warn(log, f"  WARNING: unknown ROI mask mode {value!r} — using Mean "
+                   f"projection.")
+        return cls.MEAN
+
+
+class FigureTheme(Enum):
+    """Figure colour theme.  Values are the exact strings stored in the run
+    manifest / settings."""
+    DARK = "Dark"
+    LIGHT = "Light"
+    PUBLICATION = "Publication"
+    AMOLED = "AMOLED"
+
+    @classmethod
+    def parse(cls, value, *, log=None) -> "FigureTheme":
+        s = str(value if value is not None else "Dark").strip()
+        for m in cls:
+            if s.lower() == m.value.lower():
+                return m
+        _warn(log, f"  WARNING: unknown figure theme {value!r} — using Dark.")
+        return cls.DARK
+
+
+class Backend(Enum):
+    """Detection backend (base name; a ``:<device-index>`` suffix like
+    ``torch-cuda:0`` is handled by the caller, not the enum)."""
+    AUTO = "auto"
+    TRACKPY = "trackpy"
+    TORCH = "torch"            # GPU-auto device
+    TORCH_CPU = "torch-cpu"
+    TORCH_CUDA = "torch-cuda"
+    TORCH_MPS = "torch-mps"
+
+    @classmethod
+    def parse(cls, value, *, log=None) -> "Backend":
+        s = str(value if value is not None else "auto").strip().lower()
+        s = s.split(":", 1)[0]                 # drop a ":device-index" suffix
+        for m in cls:
+            if s == m.value:
+                return m
+        _warn(log, f"  WARNING: unknown backend {value!r} — using auto.")
+        return cls.AUTO
+
+    @property
+    def is_torch(self) -> bool:
+        return self in (Backend.TORCH, Backend.TORCH_CPU,
+                        Backend.TORCH_CUDA, Backend.TORCH_MPS)
+
+    @property
+    def is_explicit_gpu(self) -> bool:
+        """True for the device-pinned GPU backends.  Plain ``torch`` / ``auto``
+        resolve their device at runtime, so GPU-ness is decided there, not here."""
+        return self in (Backend.TORCH_CUDA, Backend.TORCH_MPS)
+
+
+class MsgKind(StrEnum):
+    """Worker→GUI message-queue kinds — one source of truth so a typo can't
+    silently drop a message.  StrEnum members compare equal to their plain
+    string, so emit/read sites can be migrated incrementally.
+
+    Payload contracts (the worker sets these keys; the GUI reads them
+    defensively with ``.get()``):
+      LOG            : str
+      PROGRESS       : (int pct, str stage)
+      MASS_CHUNK     : list[float]
+      PREVIEW_FRAME  : {shape:[H,W], frame:bytes, xs, ys, idx, n_frames, [file]}
+      DONE           : {stem, out_dir, figure_path, summary:{...}, n_tracks, n_locs}
+      FILE_STARTING  : {index, total, file}
+      FILE_DONE      : {index, total, stem, out_dir, n_tracks, n_locs}
+      FILE_ERROR     : {index, total, file, tb}
+      BATCH_DONE     : {n_total, n_ok, n_fail, results:[...]}
+      COMPARE_DONE   : {output_dir, figure_path, summary_csv, stats_csv,
+                        pdf_report, results_json, n_groups}
+      COMPARE_ERROR  : str
+      HF_TILE        : {file, stem, state, [pct, stage, n_locs, n_tracks, error]}
+      HYPERFLY_STATUS: {active, n_concurrent, per_file_workers, reason}
+      STOPPED        : None
+      ERROR          : str
+    """
+    LOG = "log"
+    PROGRESS = "progress"
+    MASS_CHUNK = "mass_chunk"
+    PREVIEW_FRAME = "preview_frame"
+    DONE = "done"
+    FILE_STARTING = "file_starting"
+    FILE_DONE = "file_done"
+    FILE_ERROR = "file_error"
+    BATCH_DONE = "batch_done"
+    COMPARE_DONE = "compare_done"
+    COMPARE_ERROR = "compare_error"
+    HF_TILE = "hf_tile"
+    HYPERFLY_STATUS = "hyperfly_status"
+    STOPPED = "stopped"
+    ERROR = "error"
