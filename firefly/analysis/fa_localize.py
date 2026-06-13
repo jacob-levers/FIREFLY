@@ -3175,7 +3175,11 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
         for sp in ax.spines.values():
             sp.set_edgecolor(pal["GRD"])
         ax.tick_params(colors=pal["TXT"])
-        ax.legend(frameon=False, fontsize=8, labelcolor=pal["TXT"], loc="best")
+        # Legend BELOW the axes (horizontal) so it can never sit on top of the
+        # histogram / curves.  savefig(bbox_inches="tight") expands the canvas to
+        # include it, so nothing is clipped.
+        ax.legend(frameon=False, fontsize=8, labelcolor=pal["TXT"],
+                  loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3)
 
         # ── Right: linkability sweep ─────────────────────────────────────────
         if has_sweep:
@@ -3217,7 +3221,8 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
                 ax2.axvline(np.log10(max(t[ki], 1e-12)), color=pal["TXT"],
                             ls=":", lw=1.0, alpha=0.6, label="knee")
             ax2.legend(handles=[l1, l2, l3], frameon=False, fontsize=7.5,
-                       labelcolor=pal["TXT"], loc="best")
+                       labelcolor=pal["TXT"], loc="upper center",
+                       bbox_to_anchor=(0.5, -0.16), ncol=3)
 
         title = "Auto-threshold audit"
         if stem:
