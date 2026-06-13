@@ -1,5 +1,88 @@
 # Changelog
 
+## v2.67.0
+
+A large correctness, robustness and honesty pass — the result of a multi-round
+adversarial self-review spanning the figure/data pipeline, the GUI's status
+reporting, the statistics, and the updater. Most changes make the app fail
+*loudly* instead of silently, or recover a complete run that older versions
+would have thrown away. A few change the **numbers** on the same input — always
+toward the app's own canonical definitions; those are called out first.
+
+### ⚠ Results that can change on identical data (reproducibility)
+
+Re-running data analysed on v2.66.x can produce different values in these cases.
+None is a regression — each fixes a definition that disagreed with itself — but
+if you compare against archived outputs, expect:
+
+- **Mobile fraction (headline).** Now computed over tracks with a finite,
+  positive diffusion coefficient using `D ≥ threshold`, instead of over *all*
+  tracks (which diluted the fraction with failed fits). The headline now agrees
+  with the figure's own mobile-fraction panel. The new value is always ≥ the old
+  one; per-track D values in the CSV are unchanged.
+- **Post-process (re-apply ROI).** The frame-interval default on this path was
+  0.03 s while the rest of the app used 0.02 s, so a re-ROI silently rescaled
+  every D by 1.5×. It now uses the same default — and it now correctly carries
+  the *original run's* pixel size / frame interval across, where before it always
+  reverted to the default and ignored a custom calibration.
+- **Comparison statistics.** The cross-metric family now actually tests
+  `median_D` and `median_alpha` (previously declared but never reported), and the
+  parametric-vs-nonparametric choice is made once per comparison instead of
+  per pair — so some pairwise tests and corrected p-values can change. Raw and
+  within-metric p-values are unchanged.
+
+Metadata-less inputs (a TIF/CZI with no embedded calibration and no override, or
+a comparison folder missing its params file) now assume the unified
+0.106 µm / 0.02 s default instead of older per-path values (0.104 / 0.05). Files
+that carry their own calibration are unaffected.
+
+### A failed figure no longer discards a finished run
+
+The single-run and comparison pipelines saved the figure *before* the data CSVs,
+unguarded — so an exception while rendering a multi-minute run threw the whole
+result away. Core CSVs are now written first and figure rendering is guarded: a
+render error logs a warning and the data still lands.
+
+### The GUI stops painting failures green
+
+A zero-trajectory run and an all-failed batch used to render in success-green
+with empty stats. They now show a warning/danger banner pointing at detection /
+ROI / calibration. A genuine crash now reports as a crash (the worker's exit
+code reflects failure), while a clean finish whose summary didn't reach the UI is
+reported as "completed", not a crash — the status tells the truth in every case.
+
+### Malformed external CSVs degrade gracefully
+
+A blank / NA / footer cell, a mis-detected delimiter, or ragged rows used to
+raise an opaque error or silently produce all-NaN coordinates. Bad cells and rows
+are now coerced/dropped with a reported count, and a non-finite or non-positive
+pixel size is rejected with a clear message.
+
+### Crash-free, more coherent statistics
+
+Antipodal / degenerate angle sets no longer raise an uncaught error that voided
+an entire circular comparison. Short-track motion classification no longer emits
+an over-confident label from an unidentifiable 3-point fit (it returns
+"Unknown"), and the JDD 3-component fit can no longer report a negative
+population fraction.
+
+### Safer updater and GPU setup
+
+The updater now refuses to install a release asset that lacks a verifiable
+`sha256` digest (instead of trusting a size + header check); install paths are
+passed to the update helper without shell interpolation; and the CUDA sidecar
+loader rejects non-local / world-writable locations before adding them to the
+import path.
+
+### Smaller fixes
+
+Unified px/Δt calibration constants into one module; atomic (tmp + replace)
+sidecar/JSON writes; results-panel values no longer clip under Windows
+fractional scaling and the panel scrolls instead of overlapping in a small
+window; auto-threshold audit legends no longer cover the plotted data; TrackMate
+files with a multi-row preamble parse correctly; an all-zero projection panel no
+longer renders blank.
+
 ## v2.66.2
 
 ### Separate figure settings for batch / HYPER-FLY runs

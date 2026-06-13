@@ -12,11 +12,12 @@ import os
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 __version__ = "2.67.0"
-# ⚠ PENDING TAG: 2.67.0 is bumped on the dev branch ahead of its release so dev
-# builds self-identify, but `git tag v2.67.0` has NOT been created yet.  Per the
-# checklist above, create the tag when this branch is merged/released; until
-# then this version is intentionally "ahead of latest", so the updater offers no
-# update (correct for a dev build).  (R3-3)
+# TAG: an annotated `v2.67.0` tag is created on the release-prep commit (the one
+# that adds the CHANGELOG v2.67.0 section).  The in-app updater compares this
+# string against the latest *GitHub* tag, so it will not offer an update until
+# that tag is PUSHED / a GitHub release is published — the remaining manual
+# release step.  If this branch is squash-merged into main, re-create the tag on
+# the resulting commit so it lands on main's history.  (R3-3)
 # v2.67.0 — hostile-review remediation. NOTE: this release changes some
 # scientific OUTPUTS vs 2.66.x, so a re-analysis of old data may differ:
 #   • mobile fraction is now (finite, positive D) >= threshold (was D > threshold
