@@ -11,7 +11,18 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.66.2"
+__version__ = "2.67.0"
+# v2.67.0 — hostile-review remediation. NOTE: this release changes some
+# scientific OUTPUTS vs 2.66.x, so a re-analysis of old data may differ:
+#   • mobile fraction is now (finite, positive D) >= threshold (was D > threshold
+#     over all rows incl. failed NaN fits) — matches the panel; None for an
+#     all-immobile dataset (was 0.0).
+#   • short (3-lag) tracks with an unmeasurable anomalous exponent are now
+#     "Unknown" (were sometimes mislabelled Directed/Immobile).
+#   • a 3-component JDD that yields a negative population falls back to 2.
+#   • assumed pixel-size/frame-interval defaults are now unified at 0.106 µm /
+#     0.02 s everywhere (post-process was 0.03 s, Compare/CLI 0.05 s).
+# Plus many robustness/GUI/security fixes that don't change numbers.
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":
