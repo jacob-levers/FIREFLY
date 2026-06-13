@@ -20,11 +20,15 @@ if you compare against archived outputs, expect:
   tracks (which diluted the fraction with failed fits). The headline now agrees
   with the figure's own mobile-fraction panel. The new value is always ≥ the old
   one; per-track D values in the CSV are unchanged.
-- **Post-process (re-apply ROI).** The frame-interval default on this path was
-  0.03 s while the rest of the app used 0.02 s, so a re-ROI silently rescaled
-  every D by 1.5×. It now uses the same default — and it now correctly carries
-  the *original run's* pixel size / frame interval across, where before it always
-  reverted to the default and ignored a custom calibration.
+- **Post-process (re-apply ROI).** A re-ROI now faithfully reproduces the
+  original run, changing only the ROI. Previously it silently reverted to default
+  settings: the frame-interval default on this path was 0.03 s (vs 0.02 s
+  everywhere else, rescaling every D by 1.5×), and it always used the default
+  pixel size, frame interval **and linking / MSD parameters** (search range,
+  memory, track-length limits, max lag time, fit points, detection diameter)
+  instead of the values the original run actually used — so which tracks formed,
+  and their D, could differ from the run being re-ROI'd. It now carries all of
+  them across from the run's saved parameters.
 - **Comparison statistics.** The cross-metric family now actually tests
   `median_D` and `median_alpha` (previously declared but never reported), and the
   parametric-vs-nonparametric choice is made once per comparison instead of

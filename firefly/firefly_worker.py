@@ -59,6 +59,22 @@ os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 
+# Linking / MSD knobs a post-process re-ROI must reproduce from the original
+# run.  Single source of truth shared by the params.json writer (the safety-net
+# fallback when `p` is somehow missing a key) and the Post-process reader
+# (`_postproc_linking_params`, the fallback for pre-2.67 params.json files that
+# predate persisting these knobs).  Values match the GUI's analysis defaults.
+_POSTPROC_LINK_DEFAULTS = {
+    "diameter":      7,
+    "search_range":  5,
+    "memory":        3,
+    "min_track_len": 5,
+    "max_track_len": None,
+    "max_lagtime":   20,
+    "n_fit":         5,
+}
+
+
 def _safe_put(q, item):
     """Non-blocking emit for high-volume log / progress messages.
 
@@ -2157,6 +2173,19 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "stem":             stem,
                 "pixel_size_um":    float(px),
                 "frame_interval_s": float(fi),
+                # Linking / MSD knobs ACTUALLY used for this run.  Post-process
+                # reads these back so a re-ROI reproduces the original
+                # link → MSD result instead of silently falling back to today's
+                # defaults (the linking half of the calibration bug fixed in
+                # 2.67.0).  Stored under the same request-side keys the analysis
+                # entry point reads — see _postproc_linking_params.
+                "diameter":         int(p.get("diameter", _POSTPROC_LINK_DEFAULTS["diameter"])),
+                "search_range":     int(p.get("search_range", _POSTPROC_LINK_DEFAULTS["search_range"])),
+                "memory":           int(p.get("memory", _POSTPROC_LINK_DEFAULTS["memory"])),
+                "min_track_len":    int(p.get("min_track_len", _POSTPROC_LINK_DEFAULTS["min_track_len"])),
+                "max_track_len":    (int(p["max_track_len"]) if p.get("max_track_len") else None),
+                "max_lagtime":      int(p.get("max_lagtime", _POSTPROC_LINK_DEFAULTS["max_lagtime"])),
+                "n_fit":            int(p.get("n_fit", _POSTPROC_LINK_DEFAULTS["n_fit"])),
                 "n_localisations":  int(len(locs)),
                 "n_tracks":         int(diff_df.shape[0]) if diff_df is not None else 0,
                 "n_frames":         int(n_frames),
@@ -2540,6 +2569,27 @@ def _postproc_calibration(orig_params: dict):
     return px, fi
 
 
+def _postproc_linking_params(orig_params: dict) -> dict:
+    """Recover the linking / MSD knobs for a post-process re-run from a run's
+    persisted ``*_params.json``.
+
+    A post-process is documented to "reproduce the original run with only the
+    ROI changed", so the link → MSD stage must use the SAME search_range,
+    memory, min/max track length, max_lagtime, n_fit and detection diameter the
+    original run used — NOT today's defaults.  Unlike the calibration (which
+    params.json stores under the CANONICAL keys ``pixel_size_um`` /
+    ``frame_interval_s`` while the entry point reads ``pixel_size`` /
+    ``frame_interval`` — see :func:`_postproc_calibration`), these knobs are
+    persisted under the SAME request-side keys the entry point reads, so no
+    remapping is needed.  We only supply a default for any key a pre-2.67
+    params.json — written before these knobs were persisted — happens to lack.
+    A present key is returned verbatim (so a stored ``memory: 0`` or
+    ``max_track_len: None`` survives; only a MISSING key falls back).
+    """
+    return {k: orig_params.get(k, default)
+            for k, default in _POSTPROC_LINK_DEFAULTS.items()}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT — POST-PROCESS  (re-apply ROI to an existing run)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2700,16 +2750,16 @@ def run_postproc(params: dict, msg_queue, cancel_event):
         # pixel_size / frame_interval — see _postproc_calibration for the mapping
         # and the silent-default bug it fixes.)
         new_p["pixel_size"], new_p["frame_interval"] = _postproc_calibration(orig_params)
+        # Carry the ORIGINAL run's linking / MSD knobs (search_range, memory,
+        # min/max track len, max_lagtime, n_fit, diameter) across so the re-ROI
+        # reproduces the original link → MSD result rather than today's defaults
+        # — the linking half of the px/Δt calibration fix above.  These are
+        # persisted under the request-side keys, so _postproc_linking_params
+        # falls back to defaults only for a pre-2.67 params.json that lacks them.
+        new_p.update(_postproc_linking_params(orig_params))
         # Sensible defaults for any other knob orig_params was missing.
-        new_p.setdefault("diameter",     7)
         new_p.setdefault("minmass",      1.0)
         new_p.setdefault("auto_minmass", False)
-        new_p.setdefault("search_range", 5)
-        new_p.setdefault("memory",       3)
-        new_p.setdefault("min_track_len", 5)
-        new_p.setdefault("max_track_len", None)
-        new_p.setdefault("max_lagtime",  20)
-        new_p.setdefault("n_fit",        5)
         new_p.setdefault("workers",      max(1, os.cpu_count() or 1))
         new_p.setdefault("chunk_size",   500)
 

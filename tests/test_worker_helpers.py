@@ -13,6 +13,7 @@ import pytest
 
 from firefly.firefly_worker import (
     _safe_put, _put_reliable, _atomic_write_json, _postproc_calibration,
+    _postproc_linking_params, _POSTPROC_LINK_DEFAULTS,
 )
 from firefly.analysis.fa_constants import (
     DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S,
@@ -87,3 +88,51 @@ def test_postproc_calibration_falls_back_when_absent():
     assert _postproc_calibration(
         {"pixel_size_um": 0, "frame_interval_s": None}
     ) == (DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S)
+
+
+def test_postproc_linking_params_recovers_persisted_values():
+    """A post-process must re-link/re-fit at the ORIGINAL run's linking & MSD
+    knobs, not the defaults.  Before 2.67 these knobs were never written to
+    params.json, so run_postproc's setdefault always fell through to the
+    hard-coded defaults — a re-ROI of a run that used e.g. search_range=9 was
+    silently re-linked at search_range=5, changing which detections joined into
+    tracks.  Now the run persists them and _postproc_linking_params reads them
+    back verbatim."""
+    orig = {
+        "diameter":      11,
+        "search_range":  9,
+        "memory":        1,
+        "min_track_len": 8,
+        "max_track_len": 200,
+        "max_lagtime":   30,
+        "n_fit":         7,
+    }
+    recovered = _postproc_linking_params(orig)
+    assert recovered == orig
+    # And NONE of them silently collapsed to a default (the bug being guarded).
+    for k, v in orig.items():
+        assert recovered[k] != _POSTPROC_LINK_DEFAULTS[k], (
+            f"{k} fell back to the default instead of the persisted value")
+
+
+def test_postproc_linking_params_falls_back_when_absent():
+    """A pre-2.67 params.json lacking the linking knobs (or a partial file) must
+    fall back to today's defaults for the MISSING keys only — mirroring how
+    _postproc_calibration falls back."""
+    # Empty / missing → every key is the shared default.
+    assert _postproc_linking_params({}) == _POSTPROC_LINK_DEFAULTS
+    # Partial file: persisted keys win, absent keys take the default.
+    recovered = _postproc_linking_params({"search_range": 12})
+    assert recovered["search_range"] == 12
+    assert recovered["memory"] == _POSTPROC_LINK_DEFAULTS["memory"]
+    assert recovered["max_lagtime"] == _POSTPROC_LINK_DEFAULTS["max_lagtime"]
+
+
+def test_postproc_linking_params_preserves_present_falsy_values():
+    """A PRESENT key is returned verbatim even when falsy — a stored
+    ``memory: 0`` (link with no gap memory) or ``max_track_len: None`` (no cap)
+    is a real choice, not 'absent'.  Guards against a regression to a
+    truthiness-based ``orig.get(k) or default`` that would clobber them."""
+    recovered = _postproc_linking_params({"memory": 0, "max_track_len": None})
+    assert recovered["memory"] == 0
+    assert recovered["max_track_len"] is None
