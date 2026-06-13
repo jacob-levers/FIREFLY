@@ -1843,17 +1843,21 @@ def load_external_locs(csv_path: str, preset: str = "auto",
             # many (non-blank file lines minus the metadata/header/extra rows
             # minus the parsed rows) so a trailing summary row or corrupted lines
             # aren't invisible.  Best-effort — wrong by ±1 only if a metadata row
-            # is blank.  (R2-3)
+            # is blank.  (R2-3)  Counting means re-reading the file, so SKIP it
+            # for large CSVs (a 100s-of-MB localisation table shouldn't pay a
+            # full second disk pass for a cosmetic warning).  (R3-2)
             try:
-                with open(csv_path, "r", encoding="utf-8",
-                          errors="replace") as _fh:
-                    _nonblank = sum(1 for _ln in _fh if _ln.strip())
-                _dropped = (_nonblank - int(header_line) - 1
-                            - len(skip_extra) - len(df))
-                if _dropped >= 1:
-                    print(f"  WARN: ~{_dropped:,} row(s) were dropped as ragged "
-                          f"(wrong field count) while parsing — check the file "
-                          f"if that's unexpected.")
+                _RAGGED_COUNT_MAX_BYTES = 64 * 1024 * 1024   # 64 MB
+                if os.path.getsize(csv_path) <= _RAGGED_COUNT_MAX_BYTES:
+                    with open(csv_path, "r", encoding="utf-8",
+                              errors="replace") as _fh:
+                        _nonblank = sum(1 for _ln in _fh if _ln.strip())
+                    _dropped = (_nonblank - int(header_line) - 1
+                                - len(skip_extra) - len(df))
+                    if _dropped >= 1:
+                        print(f"  WARN: ~{_dropped:,} row(s) were dropped as "
+                              f"ragged (wrong field count) while parsing — check "
+                              f"the file if that's unexpected.")
             except Exception:
                 pass
             break
