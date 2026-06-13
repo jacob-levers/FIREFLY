@@ -1364,6 +1364,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                         roi_mask = None
 
             if roi_mask is None and mean_proj is not None:
+                # If a SPECIFIC ROI (polygon / sister / ImageJ) was requested but
+                # couldn't be applied (skipped above — e.g. a frame-size
+                # mismatch), this intensity-threshold pipeline runs as a fallback
+                # and would otherwise apply an ROI the user didn't ask for with
+                # no indication.  Say so explicitly.  (R2-13)
+                if roi_mode not in ("auto", "manual"):
+                    _log(f"  NOTE: the requested '{roi_mode}' ROI was not applied "
+                         f"(see the warning above) — falling back to an "
+                         f"intensity-threshold ROI for this file.")
                 # Shared GUI/worker ROI pipeline — DoG background
                 # subtraction + morphology + top-N components.
                 # Whatever the user tunes in the ROI preview viewer is

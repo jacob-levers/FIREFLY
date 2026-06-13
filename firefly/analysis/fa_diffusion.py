@@ -155,14 +155,16 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
         # confidently mislabelled "Directed"/"Immobile".  Keep it only when it
         # lands in the physical [0, 2] the joint fit enforces; an out-of-range
         # slope is a noise artefact, not super-/sub-diffusion → treat alpha as
-        # unmeasurable (Immobile by displacement) rather than trusting it.  (#10)
+        # UNMEASURABLE rather than trusting it.  (#10)  We classify it as
+        # "Unknown", NOT "Immobile": a directed-but-noisy 3-point track is not
+        # necessarily immobile, so claiming Immobile would just swap one
+        # misclassification for another — Unknown is the honest label.  (R2-14)
         try:
             _slope = float(np.polyfit(np.log(t_ok), np.log(m_ok), 1)[0])
             if 0.0 <= _slope <= 2.0:
                 alpha = _slope
             else:
-                alpha = np.nan
-                immobile = True
+                alpha = np.nan   # → "Unknown" (immobile stays False)
         except Exception:
             pass
         try:
