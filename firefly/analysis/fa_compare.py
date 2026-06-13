@@ -893,6 +893,11 @@ def compare_groups(groups,
     """
     import matplotlib.pyplot as plt
     from firefly.analysis.fa_stats_config import normalize_stats_config
+    # Reset the "already warned about a missing Δt" dedup per comparison run.
+    # It's a module global (so _fi_or_default can warn once per stem within a
+    # run), but if it persisted across runs a GUI re-run would suppress the
+    # warning entirely, and stale stems would linger for the whole session (R4-3).
+    _FI_DEFAULT_WARNED.clear()
     cfg = normalize_stats_config(stats_config)
     # Bar-panel annotation handles, so the optional across-metric correction
     # post-pass can update the on-figure stars to agree with the CSV.

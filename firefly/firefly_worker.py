@@ -2502,6 +2502,13 @@ def run_analysis(params: dict, msg_queue, cancel_event):
             _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
             _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+            # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
+            # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
+            # the GUI's dead-process branch must still treat exit!=0 as a crash —
+            # NOT as a clean "completed" (R3-1's exit==0 ⇒ success would otherwise
+            # report a FAILED run as completed).  sys.exit (not os._exit) so the
+            # queue feeder still flushes a successfully-enqueued ERROR.  (R4-1)
+            sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2700,6 +2707,13 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
             _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+            # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
+            # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
+            # the GUI's dead-process branch must still treat exit!=0 as a crash —
+            # NOT as a clean "completed" (R3-1's exit==0 ⇒ success would otherwise
+            # report a FAILED run as completed).  sys.exit (not os._exit) so the
+            # queue feeder still flushes a successfully-enqueued ERROR.  (R4-1)
+            sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2844,6 +2858,13 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
             _put_reliable(msg_queue, (MsgKind.COMPARE_ERROR, str(exc)))
         else:
             _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+            # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
+            # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
+            # the GUI's dead-process branch must still treat exit!=0 as a crash —
+            # NOT as a clean "completed" (R3-1's exit==0 ⇒ success would otherwise
+            # report a FAILED run as completed).  sys.exit (not os._exit) so the
+            # queue feeder still flushes a successfully-enqueued ERROR.  (R4-1)
+            sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -3729,6 +3750,9 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
 
     except BaseException:
         _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
+        # Exit non-zero so the exit code reflects the failure even if the ERROR
+        # message above was dropped (see the sibling sites).  (R4-1)
+        sys.exit(1)
     finally:
         if _wd_stop is not None:
             _wd_stop.set()

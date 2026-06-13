@@ -34,5 +34,8 @@ def test_show_results_severity_changes_headline_colour():
 def test_show_warning_adds_a_banner():
     p = ui_widgets._ResultsPanel("idle")
     p.show_stats({})                 # empty summary → clears the flags container
-    p.show_warning("No trajectories were produced")
-    assert p._flags_layout.count() >= 1     # a severity banner was added
+    p.show_warning("No trajectories were produced", severity="warn")
+    assert p._flags_layout.count() == 1
+    banner = p._flags_layout.itemAt(0).widget()
+    # Assert it's actually an alert banner, not just "some widget got added".
+    assert isinstance(banner, ui_widgets._AlertBanner)
