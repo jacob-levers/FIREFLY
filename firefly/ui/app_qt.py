@@ -2853,9 +2853,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         # push ~35 MB/s through this pipe.  If the GUI ever stalls for
         # a few seconds the queue grows unbounded and pushes the
         # system into swap (we had a user hard-freeze caused by that).
-        # 2000 messages is enough headroom for normal jitter; the
-        # worker drops preview/mass messages when full and keeps only
-        # the analysis-critical ones (log/progress/done/etc.).
+        # 2000 messages is enough headroom for normal jitter; the worker
+        # emits all high-volume messages (log/progress/preview/mass) with
+        # put_nowait and DROPS them when the queue is full (see _safe_put in
+        # firefly_worker), so a stalled GUI can never wedge the worker.  Only
+        # the low-volume terminal messages (done/error/stopped/batch_done) use
+        # a blocking/bounded put.
         self._msg_queue    = multiprocessing.Queue(maxsize=2000)
         self._cancel_event = multiprocessing.Event()
         self._proc = multiprocessing.Process(
@@ -3124,9 +3127,12 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         # push ~35 MB/s through this pipe.  If the GUI ever stalls for
         # a few seconds the queue grows unbounded and pushes the
         # system into swap (we had a user hard-freeze caused by that).
-        # 2000 messages is enough headroom for normal jitter; the
-        # worker drops preview/mass messages when full and keeps only
-        # the analysis-critical ones (log/progress/done/etc.).
+        # 2000 messages is enough headroom for normal jitter; the worker
+        # emits all high-volume messages (log/progress/preview/mass) with
+        # put_nowait and DROPS them when the queue is full (see _safe_put in
+        # firefly_worker), so a stalled GUI can never wedge the worker.  Only
+        # the low-volume terminal messages (done/error/stopped/batch_done) use
+        # a blocking/bounded put.
         self._msg_queue    = multiprocessing.Queue(maxsize=2000)
         self._cancel_event = multiprocessing.Event()
         self._proc = multiprocessing.Process(
@@ -3390,6 +3396,20 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             except Exception:
                 pass
         self._proc                  = None
+        # Mirror closeEvent's teardown: cancel the feeder thread + close the
+        # queue before dropping it.  Just rebinding to None leaks the feeder
+        # thread + OS pipe handle each run (the queue is only reclaimed at GC,
+        # whose feeder-join can stall on Windows if the worker was SIGKILL'd
+        # mid-write), so a session of start/Stop cycles accumulates handles. (#26)
+        try:
+            _q = self._msg_queue
+            if _q is not None:
+                try: _q.cancel_join_thread()
+                except Exception: pass
+                try: _q.close()
+                except Exception: pass
+        except Exception:
+            pass
         self._msg_queue             = None
         self._cancel_event          = None
         self._stop_requested_at     = None

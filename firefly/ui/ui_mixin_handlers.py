@@ -904,16 +904,35 @@ class HandlersMixin:
         # wrote in the last instant will be picked up by the next
         # tick (~33 ms away) anyway.
         if not worker_done and self._proc is not None and not self._proc.is_alive():
-            # Drain any pending logs without blocking.
-            for _ in range(64):
+            # Drain remaining messages without blocking, and HONOR a terminal
+            # message the worker posted just before exiting.  A run that actually
+            # COMPLETED in the moment between the Stop click and the kill must be
+            # reported as done (its figure/summary kept), not discarded as
+            # "Stopped" — the race the SIGTERM/SIGKILL escalation can otherwise
+            # lose.  (#27)
+            _terminal = None
+            for _ in range(256):
                 try:
                     kind, payload = self._msg_queue.get_nowait()
                 except (queue.Empty, Exception):
                     break
                 if kind == MsgKind.LOG:
                     log_widget.appendPlainText(payload)
-            # If the user pressed Stop, treat exit as "stopped", not an error
-            if getattr(self, "_stop_requested_at", None) is not None:
+                elif kind in (MsgKind.DONE, MsgKind.BATCH_DONE,
+                              MsgKind.COMPARE_DONE, MsgKind.COMPARE_ERROR):
+                    _terminal = (kind, payload)   # last one wins
+                elif kind == MsgKind.FILE_DONE:
+                    self._handle_file_done(payload)
+                elif kind == MsgKind.FILE_ERROR:
+                    self._handle_file_error(payload)
+            if _terminal is not None:
+                _k, _pl = _terminal
+                if   _k == MsgKind.DONE:          self._handle_done(_pl)
+                elif _k == MsgKind.BATCH_DONE:    self._handle_batch_done(_pl)
+                elif _k == MsgKind.COMPARE_DONE:  self._handle_compare_done(_pl)
+                elif _k == MsgKind.COMPARE_ERROR: self._handle_compare_error(_pl)
+            elif getattr(self, "_stop_requested_at", None) is not None:
+                # User pressed Stop and the run did NOT complete → stopped.
                 self._handle_stopped()
             else:
                 self._handle_failed(

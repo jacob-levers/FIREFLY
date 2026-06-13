@@ -11,7 +11,7 @@ from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORD
                                            motion_class_colors, label_text_color,
                                            DEFAULT_FRAME_INTERVAL_S)
 from firefly.analysis.fa_theme import _theme_palette, style_axes
-from firefly.analysis.fa_palmtracer import load_summary_from_folder
+from firefly.analysis.fa_palmtracer import load_summary_from_folder, _win_long_path
 
 import numpy as np
 import pandas as pd
@@ -1955,17 +1955,36 @@ def compare_groups(groups,
         pdf_path  = os.path.join(output_dir, f"{output_stem}.pdf")
         csv_path  = os.path.join(output_dir, f"{output_stem}_summary.csv")
         stats_csv = os.path.join(output_dir, f"{output_stem}_stats.csv")
-        fig.savefig(png_path, dpi=200, bbox_inches="tight",
-                    facecolor=fig.get_facecolor())
-        fig.savefig(pdf_path, bbox_inches="tight", facecolor=fig.get_facecolor())
-        summary_df.to_csv(csv_path, index=False)
+        # Write the IRREPLACEABLE data tables first and guard every save
+        # independently, so a figure-save failure (disk full, or a deep Windows
+        # output path) can't discard the summary/stats CSVs the scientist needs
+        # — the same "one save kills everything" trap the single-file pipeline
+        # was hardened against.  Paths run through _win_long_path so a >260-char
+        # Windows path (OneDrive/RDM) doesn't fail the writes.  (#23)
+        try:
+            summary_df.to_csv(_win_long_path(csv_path), index=False)
+            print(f"  Saved: {csv_path}")
+        except Exception as _e:
+            print(f"  WARN: comparison summary CSV save failed: {_e}")
         if len(stats_df):
-            _write_prism_ttests(stats_csv, stats_df, stats_config=cfg)
-        print(f"  Saved: {png_path}")
-        print(f"  Saved: {pdf_path}")
-        print(f"  Saved: {csv_path}")
-        if len(stats_df):
-            print(f"  Saved: {stats_csv}")
+            try:
+                _write_prism_ttests(_win_long_path(stats_csv), stats_df,
+                                    stats_config=cfg)
+                print(f"  Saved: {stats_csv}")
+            except Exception as _e:
+                print(f"  WARN: comparison stats CSV save failed: {_e}")
+        try:
+            fig.savefig(_win_long_path(png_path), dpi=200, bbox_inches="tight",
+                        facecolor=fig.get_facecolor())
+            print(f"  Saved: {png_path}")
+        except Exception as _e:
+            print(f"  WARN: comparison figure PNG save failed: {_e}")
+        try:
+            fig.savefig(_win_long_path(pdf_path), bbox_inches="tight",
+                        facecolor=fig.get_facecolor())
+            print(f"  Saved: {pdf_path}")
+        except Exception as _e:
+            print(f"  WARN: comparison figure PDF save failed: {_e}")
 
         # ── Two-factor ANOVA CSV ─────────────────────────────────────────────
         if two_factor and twoway_df is not None and len(twoway_df):

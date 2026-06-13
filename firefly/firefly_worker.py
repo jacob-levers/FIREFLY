@@ -59,6 +59,40 @@ os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 
+def _safe_put(q, item):
+    """Non-blocking emit for high-volume log / progress messages.
+
+    The GUI message queue is bounded (maxsize=2000).  A BLOCKING ``put()`` there
+    would wedge this worker if the GUI thread ever stalls long enough to fill it
+    — the worker would block inside put() with no cancel check, recoverable only
+    by the Stop→SIGKILL escalation.  Dropping a log/progress line when the queue
+    is momentarily full is harmless: the next line (and the low-volume terminal
+    DONE/ERROR message) gets through once the GUI drains.  (#7)
+    """
+    try:
+        q.put_nowait(item)
+    except Exception:
+        pass
+
+
+def _atomic_write_json(obj, path, **dump_kwargs):
+    """Write JSON to `path` atomically (tmp file + os.replace).
+
+    The machine-readable sidecars (params.json, summary_metrics.json,
+    run_manifest.json) are parsed by OTHER subsystems — Compare globs
+    *_summary_metrics.json / *_params.json, Post-process reads the manifest.  An
+    in-place write torn by a Stop→SIGKILL mid-save leaves a half-written file
+    that those readers then ingest and crash on / mis-parse.  Writing to a temp
+    file and atomically renaming guarantees a reader sees either the old file or
+    a complete new one, never a torn one.  (#28)
+    """
+    import json as _j
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as _fp:
+        _j.dump(obj, _fp, **dump_kwargs)
+    os.replace(tmp, path)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CROSS-PROCESS LOG STREAM
 # ══════════════════════════════════════════════════════════════════════════════
@@ -89,12 +123,12 @@ class QueueLogStream:
             line = self._buf[:cut]
             self._buf = self._buf[cut + 1:]
             if line.strip():
-                self._q.put((MsgKind.LOG, line.rstrip()))
+                _safe_put(self._q, (MsgKind.LOG, line.rstrip()))
         return len(s)
 
     def flush(self):
         if self._buf.strip():
-            self._q.put((MsgKind.LOG, self._buf.rstrip()))
+            _safe_put(self._q, (MsgKind.LOG, self._buf.rstrip()))
             self._buf = ""
 
     def isatty(self) -> bool: return False
@@ -194,8 +228,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
     }
 
     path = os.path.join(out_dir, f"{stem}_run_manifest.json")
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2)
+    _atomic_write_json(manifest, path, indent=2)   # tmp + os.replace (#28)
     return path
 
 
@@ -2074,10 +2107,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # frame interval, etc.  Matches the schema written by the
     # PALM-Tracer summary loader.
     try:
-        import json as _json
-        with open(os.path.join(extras_dir,
-                                f"{stem}_params.json"), "w") as _fp:
-            _json.dump({
+        _atomic_write_json({               # tmp + os.replace (#28)
                 "stem":             stem,
                 "pixel_size_um":    float(px),
                 "frame_interval_s": float(fi),
@@ -2104,7 +2134,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 # tab uses this to reload a background image.  Stored as
                 # absolute path so the source location survives folder moves.
                 "input_file":       os.path.abspath(p.get("file", "")) if p.get("file") else None,
-            }, _fp, indent=2)
+            }, os.path.join(extras_dir, f"{stem}_params.json"), indent=2)
         extras_saved.append("params")
     except Exception as exc:
         _log(f"  WARN: params save failed: {exc}")
@@ -2351,12 +2381,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # so a batch of N runs can be aggregated by globbing
     # firefly_extras/*_summary_metrics.json — no need to re-open each CSV.
     try:
-        import json as _json
         _sm = dict(summary)
         _sm["stem"] = stem
-        with open(os.path.join(extras_dir,
-                               f"{stem}_summary_metrics.json"), "w") as _fp:
-            _json.dump(_sm, _fp, indent=2, default=str)
+        _atomic_write_json(                # tmp + os.replace (#28)
+            _sm, os.path.join(extras_dir, f"{stem}_summary_metrics.json"),
+            indent=2, default=str)
     except Exception as exc:
         _log(f"  WARN: summary-metrics save failed: {exc}")
 
@@ -2392,8 +2421,8 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     except Exception:
         pass
 
-    def _log(msg: str):       msg_queue.put((MsgKind.LOG, msg))
-    def _prog(pct, msg):      msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
+    def _log(msg: str):       _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg):      _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — aborts the run cleanly if free RAM falls
     # below the critical threshold, preventing the OS-level OOM /
@@ -2460,8 +2489,8 @@ def run_postproc(params: dict, msg_queue, cancel_event):
     """
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
-    def _log(msg: str):  msg_queue.put((MsgKind.LOG, msg))
-    def _prog(pct, msg): msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
+    def _log(msg: str):  _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     _wd_stop = _start_memory_watchdog(cancel_event, msg_queue)
     _disk_stop = None
@@ -2662,8 +2691,8 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
 
-    def _log(msg: str):  msg_queue.put((MsgKind.LOG, msg))
-    def _prog(pct, msg): msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
+    def _log(msg: str):  _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — Compare can load multiple full tracks
     # DataFrames simultaneously + re-derive MSD/JDD/dwell/turning
@@ -3137,6 +3166,25 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         mirror.start()
 
         # Forwarder: drain the fan-in queue → the real GUI queue.
+        # Kinds the forwarder MUST deliver (per-file completion / terminal).
+        # Everything else (LOG/HF_TILE/PREVIEW_FRAME/HYPERFLY_STATUS/PROGRESS) is
+        # high-volume or cosmetic and is dropped on a full GUI queue.
+        _critical = (MsgKind.FILE_DONE, MsgKind.FILE_ERROR, MsgKind.BATCH_DONE,
+                     MsgKind.COMPARE_DONE, MsgKind.COMPARE_ERROR, MsgKind.DONE,
+                     MsgKind.STOPPED, MsgKind.ERROR)
+
+        def _forward_one(item):
+            kind = item[0] if isinstance(item, tuple) and item else None
+            if kind in _critical:
+                # Deliver, but with a bounded timeout so a wedged GUI can't block
+                # the forwarder forever (which would back up the UNBOUNDED Manager
+                # fan_q and grow the Manager process's memory without bound).  (#25)
+                try:    msg_queue.put(item, timeout=2.0)
+                except Exception: pass
+            else:
+                try:    msg_queue.put_nowait(item)
+                except Exception: pass   # full GUI queue → drop a log/preview
+
         def _forward():
             while True:
                 try:
@@ -3145,13 +3193,12 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     if stop_threads.is_set():
                         try:
                             while True:
-                                msg_queue.put(fan_q.get_nowait())
+                                _forward_one(fan_q.get_nowait())
                         except Exception:
                             pass
                         return
                     continue
-                try:    msg_queue.put(item)
-                except Exception: pass
+                _forward_one(item)
         forwarder = _threading.Thread(target=_forward, daemon=True)
         forwarder.start()
 
@@ -3405,8 +3452,8 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     if "FIREFLY_BULK_FIGURES" not in os.environ and len(params_list) >= 2:
         os.environ["FIREFLY_BULK_FIGURES"] = "1"
 
-    def _log(msg: str):  msg_queue.put((MsgKind.LOG, msg))
-    def _prog(pct, msg): msg_queue.put((MsgKind.PROGRESS, (int(pct), str(msg))))
+    def _log(msg: str):  _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — one shared across the whole batch so a series
     # halfway through doesn't push the system into swap.  We pass a
