@@ -801,6 +801,37 @@ def test_load_external_locs_empty_raises(tmp_path):
         L.load_external_locs(str(p), preset="Picasso", pixel_size_um=0.1)
 
 
+def test_load_external_locs_coerces_malformed_cells(tmp_path):
+    """Regression (#2/#24/#6): a blank / 'NA' / NaN frame|x|y cell, and a ragged
+    trailing summary row, are dropped gracefully instead of aborting the whole
+    file with an opaque pandas cast / parser error.  The clean rows survive."""
+    from firefly.analysis import fa_loaders as L
+    p = tmp_path / "messy.csv"
+    p.write_text(
+        "frame,x,y\n"
+        "0,10,20\n"
+        "1,,30\n"            # blank x   → drop
+        "2,NA,40\n"          # 'NA' x    → drop
+        "3,nan,5\n"          # NaN x     → drop (#6 rejected-fit coords)
+        "TOTAL,9,9,9,9\n"    # ragged    → skipped at read (#2 footer)
+        "4,11,21\n")
+    out = L.load_external_locs(str(p), preset="auto",
+                               pixel_size_um=0.106, frame_offset=0)
+    assert list(out["frame"]) == [0, 4]          # only the two clean rows
+    assert out["x"].notna().all() and out["y"].notna().all()
+
+
+def test_load_external_locs_all_rows_bad_raises(tmp_path):
+    """Regression (#2/#24): a file whose every data row is unusable raises a
+    clear 'No localisations found' error, not a pandas traceback."""
+    from firefly.analysis import fa_loaders as L
+    p = tmp_path / "allbad.csv"
+    p.write_text("frame,x,y\n0,,\n1,NA,NA\n")
+    with pytest.raises(ValueError, match="No localisations found"):
+        L.load_external_locs(str(p), preset="auto", pixel_size_um=0.106,
+                             frame_offset=0)
+
+
 def test_link_trajectories_validates_input():
     """link_trajectories gives a clear error for a missing required column and
     drops negative-frame rows (with a warning) instead of a cryptic trackpy

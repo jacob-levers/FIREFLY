@@ -495,15 +495,26 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
     stack = proj[None, :, :]
 
     fig_dpi = int(p.get("fig_dpi", 150)) or 150
-    fig_data = make_figure(
-        stack, tracks, imsd_df, emsd_df, diff_df, px, fi,
-        fig_theme=p.get("theme", "Dark"),
-        proj_cmap=p.get("fig_proj_cmap", "Inferno"),
-        jdd=s.get("jdd"), turning_angles=s.get("turning_angles"),
-        mobile_frac_df=s.get("mobile_fraction"), dwell_df=s.get("dwell_times"),
-        want_panels=set())
-    figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
-    fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
+    # Figure is derived; never let a render failure discard the CSV outputs
+    # saved below (#5).  (_Cancelled isn't imported in this module-level helper,
+    # so re-raise it by type name — the idiom used elsewhere in this file.)
+    figure_path = ""
+    try:
+        fig_data = make_figure(
+            stack, tracks, imsd_df, emsd_df, diff_df, px, fi,
+            fig_theme=p.get("theme", "Dark"),
+            proj_cmap=p.get("fig_proj_cmap", "Inferno"),
+            jdd=s.get("jdd"), turning_angles=s.get("turning_angles"),
+            mobile_frac_df=s.get("mobile_fraction"), dwell_df=s.get("dwell_times"),
+            want_panels=set())
+        figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
+        fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
+    except Exception as _fig_exc:
+        if type(_fig_exc).__name__ in ("_Cancelled", "_Stopped"):
+            raise
+        figure_path = ""
+        log(f"  WARN: native figure render failed ({_fig_exc}) — saving the "
+            f"CSV outputs anyway; the figure will be missing.")
 
     try:
         save_palmtracer_csvs(data_dir, stem, locs, tracks, diff_df, imsd_df,
@@ -1604,10 +1615,18 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     mf  = compute_mobile_fraction_over_time(
         tracks, diff_df, fi,
         d_threshold=float(p.get("mobile_d_threshold", 0.05)))
-    cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(
-        locs, px,
-        eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
-        min_samples=int(p.get("cluster_min_samples", 10)))
+    # Guarded like van_hove/vacf above: a degenerate cluster input (e.g. a
+    # stray non-finite coordinate that slipped through) must not crash an
+    # otherwise-complete run after linking + MSD already succeeded.  (#6)
+    try:
+        cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(
+            locs, px,
+            eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
+            min_samples=int(p.get("cluster_min_samples", 10)))
+    except Exception as _cl_exc:
+        _log(f"  WARN: cluster analysis failed ({_cl_exc}) — skipping it; the "
+             f"localisation/track/diffusion results are unaffected.")
+        cluster_labels, cluster_stats_df, cluster_xy = None, None, None
     # Honest subsample note: compute_clusters caps DBSCAN at 250k localisations.
     _cl_attrs = getattr(cluster_stats_df, "attrs", {}) or {}
     cluster_subsampled_n = (int(_cl_attrs["n_used_locs"])
@@ -1664,16 +1683,27 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         want_panels = None if _allowed_panels is None else set(_allowed_panels)
     else:
         want_panels = set()
-    fig_data = make_figure(
-        proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
-        fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
-        jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
-        cluster_labels=cluster_labels, cluster_locs=cluster_xy,
-        cluster_subsampled_n=cluster_subsampled_n,
-        dwell_df=dwell_df, dwell_tau=dwell_tau,
-        van_hove=van_hove, vacf=vacf,
-        return_pdf_bytes=want_pdf, want_panels=want_panels,
-        traj_background=fig_traj_bg)
+    # The figure is a DERIVED artifact; the CSV tables below are the
+    # irreplaceable output.  A render exception must NOT discard a complete,
+    # already-computed run — degrade to "figure skipped" and continue to the
+    # (individually fault-tolerant) saves with fig_data=None.  (#5)
+    try:
+        fig_data = make_figure(
+            proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
+            fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
+            jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
+            cluster_labels=cluster_labels, cluster_locs=cluster_xy,
+            cluster_subsampled_n=cluster_subsampled_n,
+            dwell_df=dwell_df, dwell_tau=dwell_tau,
+            van_hove=van_hove, vacf=vacf,
+            return_pdf_bytes=want_pdf, want_panels=want_panels,
+            traj_background=fig_traj_bg)
+    except _Cancelled:
+        raise
+    except Exception as _fig_exc:
+        _log(f"  WARN: figure rendering failed ({_fig_exc}) — saving the data "
+             f"tables anyway; the figure will be missing.\n{traceback.format_exc()}")
+        fig_data = None
     del proj_sample
 
     # ── Save outputs ──────────────────────────────────────────────────────
@@ -2082,7 +2112,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         figure_path = ""
 
     # Optional: vector PDF copy of the combined figure
-    if want_pdf and fig_data.get("pdf_bytes"):
+    if want_pdf and fig_data and fig_data.get("pdf_bytes"):
         try:
             pdf_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.pdf")
             with open(pdf_path, "wb") as _fh:
@@ -2094,7 +2124,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # Optional: per-panel PNGs (one image per labelled panel of the grid).
     # The user can filter which panels get written via the Figures tab's
     # "Single-sample panels to export individually" checkbox grid.
-    if _eff_per_panel and fig_data.get("panels"):
+    if _eff_per_panel and fig_data and fig_data.get("panels"):
         try:
             allowed = p.get("fig_single_panels")
             if allowed is None:

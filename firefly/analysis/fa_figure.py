@@ -4,6 +4,7 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 """
 from __future__ import annotations
 
+import functools
 import os
 from scipy.optimize import curve_fit
 from scipy.stats import gaussian_kde
@@ -123,6 +124,32 @@ def _filled_kde(ax, x_grid, binwidth, values, color, label, *,
     return 0.0
 
 
+def _close_figs_on_error(fn):
+    """Ensure a renderer that raises part-way through doesn't LEAK its
+    matplotlib figure.  make_figure() builds a single (20x38) pyplot figure and
+    only closes it on the success path; an exception anywhere in the ~600 lines
+    of panel rendering used to skip that close, and pyplot retains every leaked
+    figure for the life of the process.  Across a batch (one worker process for
+    N files) that is unbounded memory growth that can trip the very OOM guard
+    the run was hardened against.  This closes only the figures the wrapped call
+    itself created (the fignum diff), then re-raises.  (#4)
+    """
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        _before = set(plt.get_fignums())
+        try:
+            return fn(*args, **kwargs)
+        except BaseException:
+            for _n in set(plt.get_fignums()) - _before:
+                try:
+                    plt.close(_n)
+                except Exception:
+                    pass
+            raise
+    return _wrapper
+
+
+@_close_figs_on_error
 def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 pixel_size, frame_interval, output_path=None, roi_mask=None,
                 fig_theme="Dark", proj_cmap="Inferno", jdd=None,

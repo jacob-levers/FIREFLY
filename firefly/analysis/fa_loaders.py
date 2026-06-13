@@ -1818,8 +1818,14 @@ def load_external_locs(csv_path: str, preset: str = "auto",
         if callable(_skiprows) and kwargs.get("engine") == "c":
             continue
         try:
+            # on_bad_lines="skip": tolerate a ragged trailing summary row (e.g.
+            # "TOTAL,12345,,," with extra columns) that some exporters append,
+            # instead of aborting the whole parse.  The shape check below still
+            # rejects a wrong separator (which would skip-then-collapse to one
+            # column).  Same-shape rows with non-numeric cells are handled later
+            # by the to_numeric coercion.  (#2/#24)
             attempt = _pd.read_csv(
-                csv_path, skiprows=_skiprows, **kwargs)
+                csv_path, skiprows=_skiprows, on_bad_lines="skip", **kwargs)
         except Exception as exc:
             last_exc = exc
             continue
@@ -1883,23 +1889,61 @@ def load_external_locs(csv_path: str, preset: str = "auto",
                     f"{spec.get(required, ())}.  Header was: "
                     f"{list(df.columns)}")
 
-    out = _pd.DataFrame()
-    out["frame"] = df[mapping["frame"]].astype("int64")
+    # ── Coerce the required numeric columns gracefully ────────────────────
+    # A single blank / 'NA' / footer-summary cell, a thousands-separator comma,
+    # or a mis-detected delimiter must NOT abort the whole file with an opaque
+    # pandas cast error (the old `.astype('int64')` / `.astype(float)` did).
+    # Non-numeric cells become NaN; those rows — plus any with a NaN coordinate
+    # from an upstream rejected fit (ThunderSTORM/Picasso emit these routinely)
+    # and any with a negative frame after offset — are dropped with a clear
+    # count, mirroring the TRACK_ID handling below.  (#2 / #24 / #6)
+    _frame = _pd.to_numeric(df[mapping["frame"]], errors="coerce")
+    _x = _pd.to_numeric(df[mapping["x"]], errors="coerce")
+    _y = _pd.to_numeric(df[mapping["y"]], errors="coerce")
     fo = frame_offset if frame_offset is not None else spec.get("frame_offset", 0)
     if fo:
-        out["frame"] = out["frame"] + int(fo)
-    if (out["frame"] < 0).any():
-        # Drop any negative-frame rows that resulted from a wrong offset
-        n_bad = int((out["frame"] < 0).sum())
-        print(f"  WARN: {n_bad} localisations have frame < 0 after offset "
-              f"({fo}) — dropping them.")
-        keep = out["frame"] >= 0
-        df = df.loc[keep].reset_index(drop=True)
-        out = out.loc[keep].reset_index(drop=True)
+        _frame = _frame + int(fo)
 
-    x = df[mapping["x"]].astype(float).values
-    y = df[mapping["y"]].astype(float).values
+    _bad_cell = _frame.isna() | _x.isna() | _y.isna()
+    _neg_frame = _frame.notna() & (_frame < 0)
+    n_cell = int(_bad_cell.sum())
+    n_neg = int(_neg_frame.sum())
+    if n_cell:
+        print(f"  WARN: {n_cell:,} of {len(df):,} rows have a non-numeric / "
+              f"blank / NaN frame/x/y cell — dropping them (wrong preset or "
+              f"CSV delimiter?).")
+    if n_neg:
+        print(f"  WARN: {n_neg:,} localisations have frame < 0 after offset "
+              f"({fo}) — dropping them.")
+    _keep = (~_bad_cell) & (~_neg_frame)
+    if (n_cell or n_neg) and not bool(_keep.any()):
+        # There WERE rows but every one was unusable — a clearer message than
+        # the generic empty-file error.  A header-only / 0-row file (n_cell ==
+        # n_neg == 0) falls through to the existing "No localisations found"
+        # check at the end of the function.
+        raise ValueError(
+            f"No localisations found in {csv_path}: every row had a "
+            f"non-numeric/blank frame/x/y value or a negative frame "
+            f"(check the preset and the CSV delimiter).")
+    df = df.loc[_keep.values].reset_index(drop=True)
+    _frame = _frame.loc[_keep].reset_index(drop=True)
+    _x = _x.loc[_keep].reset_index(drop=True)
+    _y = _y.loc[_keep].reset_index(drop=True)
+
+    out = _pd.DataFrame()
+    out["frame"] = _frame.astype("int64")
+
+    # Spatial unit conversion.  Guard the pixel size: dividing µm/nm coordinates
+    # by a zero / negative / non-finite px would make every coordinate inf/NaN
+    # and silently corrupt every downstream metric, so fail loudly first.  (#30)
+    x = _x.values.astype(float)
+    y = _y.values.astype(float)
     _xy_unit = (spec.get("xy_unit") or "px").lower()
+    if _xy_unit in ("nm", "um", "µm", "micron", "microns"):
+        if not (pixel_size_um and pixel_size_um > 0 and np.isfinite(pixel_size_um)):
+            raise ValueError(
+                f"Pixel size must be a positive, finite number to convert "
+                f"'{_xy_unit}' coordinates to pixels — got {pixel_size_um!r}.")
     if _xy_unit == "nm":
         x = x / (pixel_size_um * 1000.0)
         y = y / (pixel_size_um * 1000.0)
@@ -1912,7 +1956,8 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     out["y"] = y
 
     if "mass" in mapping:
-        out["mass"] = df[mapping["mass"]].astype(float).values
+        out["mass"] = _pd.to_numeric(
+            df[mapping["mass"]], errors="coerce").fillna(1.0).values
     else:
         # Detection already happened upstream; downstream stages tolerate
         # a constant mass column.  Filter-by-mass becomes a no-op which
