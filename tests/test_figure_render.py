@@ -121,6 +121,7 @@ def test_save_circular_statistics_pdf(tmp_path):
     save_circular_statistics_pdf(a, stats, pdf_path=str(out),
                                  file_label="unit_stem", fig_theme="Dark")
     assert out.exists() and out.stat().st_size > 0
+    pytest.importorskip("pypdf")   # deep content check; skip where pypdf is absent
     from pypdf import PdfReader
     r = PdfReader(str(out))
     assert len(r.pages) == 1
@@ -139,6 +140,7 @@ def test_save_comparison_circular_statistics(tmp_path):
     save_comparison_circular_statistics(
         groups, csv_path=str(csv), pdf_path=str(pdf), fig_theme="Dark")
     assert pdf.exists() and pdf.stat().st_size > 0
+    pytest.importorskip("pypdf")   # deep content check; skip where pypdf is absent
     from pypdf import PdfReader
     r = PdfReader(str(pdf))
     # summary page + one per group

@@ -33,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install "numpy>=2,<3" "pandas>=2.2,<3" scipy matplotlib \
                       scikit-image trackpy joblib tqdm scikit-learn psutil \
-                      threadpoolctl pytest
+                      threadpoolctl pytest pypdf
           pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
 
       - name: Run tests

@@ -246,6 +246,11 @@ def test_is_verifiable_digest():
     assert u._is_verifiable_digest("sha256:" + "g" * 64) is False  # non-hex
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="Windows-only path-trust semantics: os.path.splitdrive finds no drive "
+           "letter on POSIX so every C:\\ path is refused, and the CUDA sidecar "
+           "feature only runs on Windows.")
 def test_cuda_sidecar_base_trust():
     """Regression (#22): the sidecar dir is prepended to sys.path[0] before any
     import, so an untrusted base (UNC / shared / world-writable) must be refused
