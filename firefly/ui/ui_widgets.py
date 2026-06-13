@@ -2438,13 +2438,24 @@ class _ResultsPanel(QtWidgets.QFrame):
     def _add_stat_row(self, row: int, label: str, value: str,
                       value_colour: str | None = None,
                       tooltip: str | None = None):
+        # NB: the `padding: 1px 0 2px 0` on both cells is load-bearing, not
+        # cosmetic.  Segoe UI reports a line height exactly equal to its
+        # ascent+descent (zero leading), so a stat label's box is the exact
+        # pixel height of its glyph ink.  Under Windows fractional display
+        # scaling (125 %/150 %) each row's device height rounds down ~1 px and,
+        # with no slack, clips the bottom of the digits — comma tails, "µ",
+        # subscripts, parens — so the values look "half cut off" (they render
+        # fine at 100 % and on macOS, which is why it slipped through).  The
+        # bottom padding keeps the descenders clear of the rounding boundary.
         lbl = QtWidgets.QLabel(label)
         lbl.setStyleSheet(
-            f"color: {_THEME['TXT_MUTED']}; font-size: 12.5px;")
+            f"color: {_THEME['TXT_MUTED']}; font-size: 12.5px; "
+            f"padding: 1px 0 2px 0;")
         val = QtWidgets.QLabel(value)
         col = value_colour or _THEME['TXT']
         val.setStyleSheet(
-            f"color: {col}; font-size: 14px; font-weight: 600;")
+            f"color: {col}; font-size: 14px; font-weight: 600; "
+            f"padding: 1px 0 2px 0;")
         val.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
         if tooltip:
@@ -2557,7 +2568,8 @@ class _ResultsPanel(QtWidgets.QFrame):
                         Qt.AlignmentFlag.AlignLeft)
                     val = QtWidgets.QLabel(f"{n:,}  ({100 * n / total:.1f} %)")
                     val.setStyleSheet(
-                        "color: %s; font-size: 14px; font-weight: 600;" % col)
+                        "color: %s; font-size: 14px; font-weight: 600; "
+                        "padding: 1px 0 2px 0;" % col)
                     val.setTextInteractionFlags(
                         Qt.TextInteractionFlag.TextSelectableByMouse)
                     self._stats_grid.addWidget(
