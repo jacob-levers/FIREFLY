@@ -275,12 +275,17 @@ def download_asset(asset: dict,
     # transit-corrupted PE passes.  The installer is unsigned and gets atomically
     # swapped in + relaunched, so an unauthenticated binary must NOT be installed
     # automatically — route the user to the Releases page to download by hand. (#20)
+    # The received digest is echoed so a future GitHub digest-format change (which
+    # would otherwise silently disable auto-update for everyone) is diagnosable
+    # from the log instead of looking like "this release has no checksum".  (R2-10)
     if not _is_verifiable_digest(digest):
+        _seen = repr(digest) if digest else "(none provided)"
         raise UpdaterError(
-            "This release didn't publish a SHA-256 checksum for its installer, "
-            "so FIREFLY can't verify the download is authentic. Nothing was "
-            "installed — download the installer manually from the Releases page "
-            "instead.",
+            "FIREFLY can't verify this download is authentic — the release asset "
+            f"has no usable SHA-256 checksum (got digest={_seen}). Nothing was "
+            "installed; download the installer manually from the Releases page "
+            "instead. (If auto-update suddenly stopped working for everyone, the "
+            "GitHub asset-digest format may have changed.)",
             reveal_path=updates_dir())
     _last = {"hash_failed": False}
 

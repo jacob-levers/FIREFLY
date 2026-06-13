@@ -198,13 +198,24 @@ def _sidecar_base_is_trusted(base: str) -> bool:
     world-writable shared system roots (ProgramData, Users\\Public, Windows).  A
     normal per-user local path (the %LOCALAPPDATA% default, or a user-chosen
     local folder) is fine.  (#22)
+
+    This is a PATH heuristic, not a full ACL/owner check (a real owner check
+    needs pywin32, which isn't a dependency).  It resolves junctions/symlinks
+    first so a trusted-looking path that REPARSES to a UNC/shared target is
+    still caught, but it can't detect a directory under the user profile that
+    has been explicitly made world-writable.  (R2-9)
     """
     try:
         if not base or not isinstance(base, str):
             return False
         if base.startswith("\\\\") or base.startswith("//"):
             return False                      # UNC / network share
-        ab = os.path.abspath(base)
+        # Resolve junctions/symlinks so a trusted-looking path that reparses to
+        # a UNC or shared target is judged on its REAL destination.  (R2-9)
+        try:
+            ab = os.path.realpath(base)
+        except Exception:
+            ab = os.path.abspath(base)
         low = ab.replace("/", "\\").lower()
         if low.startswith("\\\\"):
             return False                      # resolved to UNC

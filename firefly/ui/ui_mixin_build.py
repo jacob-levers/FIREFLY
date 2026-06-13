@@ -514,6 +514,11 @@ class BuildMixin:
             "Check this only if the metadata is missing or wrong.")
         self.s_pixel_size  = self._spin_dbl(DEFAULT_PIXEL_SIZE_UM, 0.01, 1.0, 0.001, decimals=3,
             tip="Physical pixel size in µm. Used to convert px → µm for D, MSD, etc.")
+        # When Override is off the run uses the file's metadata or the built-in
+        # default — the spinbox value is IGNORED (for both image and CSV inputs).
+        # Disable it so an edited-but-ignored value can't mislead.  (R2-12)
+        self.c_override_px.toggled.connect(self.s_pixel_size.setEnabled)
+        self.s_pixel_size.setEnabled(self.c_override_px.isChecked())
         row.addWidget(self.c_override_px); row.addWidget(self.s_pixel_size, 1)
         wpx = QtWidgets.QWidget(); wpx.setLayout(row)
         gl.addRow(_label_with_info("Pixel size (µm)", "pixel size"), wpx)
@@ -524,6 +529,8 @@ class BuildMixin:
             "If unchecked, the frame interval from the file's metadata is used.")
         self.s_frame_interval = self._spin_dbl(DEFAULT_FRAME_INTERVAL_S, 0.001, 10.0, 0.001, decimals=3,
             tip="Time between frames in seconds. Used for diffusion coefficient units.")
+        self.c_override_fi.toggled.connect(self.s_frame_interval.setEnabled)
+        self.s_frame_interval.setEnabled(self.c_override_fi.isChecked())
         row.addWidget(self.c_override_fi); row.addWidget(self.s_frame_interval, 1)
         wfi = QtWidgets.QWidget(); wfi.setLayout(row)
         gl.addRow(_label_with_info("Frame interval (s)", "frame interval"), wfi)
