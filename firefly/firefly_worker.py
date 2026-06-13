@@ -2520,6 +2520,26 @@ def run_analysis(params: dict, msg_queue, cancel_event):
         except Exception: pass
 
 
+def _postproc_calibration(orig_params: dict):
+    """Recover (pixel_size, frame_interval) for a post-process re-run from a
+    run's persisted ``*_params.json``.
+
+    params.json stores calibration under the CANONICAL keys ``pixel_size_um`` /
+    ``frame_interval_s`` (the schema the Compare loader reads), but the analysis
+    entry point reads the REQUEST keys ``pixel_size`` / ``frame_interval``.  A
+    plain ``new_p.setdefault("frame_interval", …)`` therefore never sees the
+    persisted value and ALWAYS falls back to the default — so re-applying an ROI
+    to a run that used a custom px/Δt override silently recomputed every D at the
+    DEFAULT calibration (D ∝ px²/Δt).  Map the canonical values across explicitly
+    so the re-ROI reproduces the original run's calibration; fall back to the
+    shared default only when params.json genuinely lacks the value (a missing or
+    pre-2.67 params file).
+    """
+    px = float(orig_params.get("pixel_size_um") or DEFAULT_PIXEL_SIZE_UM)
+    fi = float(orig_params.get("frame_interval_s") or DEFAULT_FRAME_INTERVAL_S)
+    return px, fi
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT — POST-PROCESS  (re-apply ROI to an existing run)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2673,12 +2693,14 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             "roi_mode":       "none",
             "roi_polygon":    None,
         })
-        # Sensible defaults if orig_params was missing any key.  These MUST match
-        # the primary analysis defaults — a post-process is meant to reproduce the
-        # original run with only the ROI changed, so a divergent Δt (was 0.03 s
-        # here vs 0.02 s everywhere else) would silently rescale every D.
-        new_p.setdefault("pixel_size",     DEFAULT_PIXEL_SIZE_UM)
-        new_p.setdefault("frame_interval", DEFAULT_FRAME_INTERVAL_S)
+        # Carry the ORIGINAL run's calibration across.  A post-process is meant to
+        # reproduce the original run with only the ROI changed, so px/Δt must come
+        # from the persisted params — NOT a default.  (orig_params stores them as
+        # pixel_size_um / frame_interval_s; the analysis entry point reads
+        # pixel_size / frame_interval — see _postproc_calibration for the mapping
+        # and the silent-default bug it fixes.)
+        new_p["pixel_size"], new_p["frame_interval"] = _postproc_calibration(orig_params)
+        # Sensible defaults for any other knob orig_params was missing.
         new_p.setdefault("diameter",     7)
         new_p.setdefault("minmass",      1.0)
         new_p.setdefault("auto_minmass", False)
