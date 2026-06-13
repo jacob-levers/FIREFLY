@@ -112,9 +112,19 @@ def _atomic_write_json(obj, path, **dump_kwargs):
     """
     import json as _j
     tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as _fp:
-        _j.dump(obj, _fp, **dump_kwargs)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as _fp:
+            _j.dump(obj, _fp, **dump_kwargs)
+        os.replace(tmp, path)
+    except Exception:
+        # Never leave a half-written .tmp behind on a failed dump/replace
+        # (e.g. the destination is locked by Compare reading it).  (R2-5)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        raise
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1871,31 +1881,29 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _log(f"  WARN: ensemble-MSD save failed: {exc}")
     try:
         if jdd:
-            import json as _json
             def _jsonable(x):
                 # numpy scalars / arrays / pandas → JSON-friendly
                 if hasattr(x, "tolist"):    return x.tolist()
                 if isinstance(x, (set,)):   return list(x)
                 return x
             payload = {k: _jsonable(v) for k, v in jdd.items()}
-            with open(os.path.join(extras_dir,
-                                    f"{stem}_jdd.json"), "w") as _fp:
-                _json.dump(payload, _fp, indent=2, default=str)
+            _atomic_write_json(                # tmp + os.replace (R2-5)
+                payload, os.path.join(extras_dir, f"{stem}_jdd.json"),
+                indent=2, default=str)
             extras_saved.append("JDD")
     except Exception as exc:
         _log(f"  WARN: JDD save failed: {exc}")
     try:
         if van_hove is not None:
-            import json as _json
             # Compact payload: the histogram + scalars for plotting, but NOT
             # the (potentially huge) raw displacement arrays.
             vh = {k: v for k, v in van_hove.items()
                   if k not in ("displacements_um", "dx_um", "dy_um")}
             vh = {k: (v.tolist() if hasattr(v, "tolist") else v)
                   for k, v in vh.items()}
-            with open(os.path.join(extras_dir,
-                                    f"{stem}_van_hove.json"), "w") as _fp:
-                _json.dump(vh, _fp, indent=2, default=str)
+            _atomic_write_json(                # tmp + os.replace (R2-5)
+                vh, os.path.join(extras_dir, f"{stem}_van_hove.json"),
+                indent=2, default=str)
             extras_saved.append(
                 f"van Hove (alpha2={van_hove['non_gaussian_alpha2']:.3f})")
     except Exception as exc:
@@ -1903,12 +1911,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
 
     try:
         if vacf is not None:
-            import json as _json
             vc = {k: (v.tolist() if hasattr(v, "tolist") else v)
                   for k, v in vacf.items()}
-            with open(os.path.join(extras_dir,
-                                    f"{stem}_vacf.json"), "w") as _fp:
-                _json.dump(vc, _fp, indent=2, default=str)
+            _atomic_write_json(                # tmp + os.replace (R2-5)
+                vc, os.path.join(extras_dir, f"{stem}_vacf.json"),
+                indent=2, default=str)
             extras_saved.append(
                 f"VACF (persistence={vacf['persistence']:.3f})")
     except Exception as exc:
