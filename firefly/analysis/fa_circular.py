@@ -130,7 +130,11 @@ def compute_circular_statistics(angles_deg):
         kappa = 1.0 / denom
     if n < 15:
         if kappa < 2.0:
-            kappa = max(kappa - 2.0 / (n * kappa), 0.0)
+            # Guard the divisor: when R̄ == 0 (e.g. exactly antipodal angles)
+            # kappa == 0.0, and `2.0 / (n * kappa)` is a plain-float division by
+            # zero → ZeroDivisionError that (uncaught) voids the ENTIRE circular
+            # comparison output for the run.  A zero kappa stays zero.  (#15)
+            kappa = max(kappa - 2.0 / (n * max(kappa, 1e-12)), 0.0)
         else:
             kappa = ((n - 1.0) ** 3) * kappa / (n ** 3 + n)
 
@@ -945,7 +949,12 @@ def compute_circular_comparison_tests(groups, *, track_angle_d_pairs=None,
                 a = a[np.isfinite(a)]
                 if a.size < 2:
                     continue
-                cs = compute_circular_statistics(a)
+                # Defensive: one pathological replicate must not take down the
+                # whole group's (and the whole run's) circular comparison.  (#15)
+                try:
+                    cs = compute_circular_statistics(a)
+                except Exception:
+                    cs = None
                 if cs is None:
                     continue
                 k_val  = cs.get("concentration_kappa")
@@ -2331,6 +2340,17 @@ def _stat_test_n(arrays, labels, stats_config=None):
             for a in arrays]
     valid_idx = [i for i, a in enumerate(arrs) if len(a) >= 2]
 
+    # Decide parametric vs non-parametric ONCE for the whole metric (over all
+    # valid groups jointly) and reuse it for the omnibus AND every pairwise, so
+    # the reported test family is coherent.  Previously the omnibus decided over
+    # all groups while each pairwise re-ran the normality test on just its two,
+    # producing e.g. a Kruskal-Wallis omnibus "explained" by Welch's-t pairwise
+    # rows, and inflating the chance of flipping on noise.  (#16)
+    _metric_parametric = (
+        _decide_parametric([arrs[i] for i in valid_idx],
+                           cfg["parametric_strategy"], cfg["alpha"])
+        if len(valid_idx) >= 2 else True)
+
     omnibus = None
     pairwise = []
 
@@ -2370,8 +2390,7 @@ def _stat_test_n(arrays, labels, stats_config=None):
         from scipy.stats import kruskal
         valid_arrs = [arrs[i] for i in valid_idx]
 
-        parametric = _decide_parametric(valid_arrs, cfg["parametric_strategy"],
-                                        cfg["alpha"])
+        parametric = _metric_parametric
 
         if len(valid_arrs) == 2:
             from scipy.stats import ttest_ind
@@ -2411,8 +2430,9 @@ def _stat_test_n(arrays, labels, stats_config=None):
                     p = np.nan
                     test_name = "n<2"
                 else:
-                    if _decide_parametric((a, b), cfg["parametric_strategy"],
-                                          cfg["alpha"]):
+                    # Same metric-level decision as the omnibus (#16) — don't
+                    # re-decide per pair.
+                    if _metric_parametric:
                         p = ttest_ind(a, b, equal_var=False).pvalue
                         test_name = "Welch's t-test"
                     else:

@@ -1776,13 +1776,17 @@ def compare_groups(groups,
         except (TypeError, ValueError):
             return ""
 
-    # Population-heterogeneity (non-Gaussian alpha2) and directionality (VACF
-    # persistence) are per-replicate scalars in summary_df; test them across
-    # groups (flat mode) so they appear in the stats table and CSV even though
-    # they have no dedicated figure panel.  The two-way report covers the
+    # The headline diffusion endpoints (median_D, median_alpha), population
+    # heterogeneity (non-Gaussian alpha2) and directionality (VACF persistence)
+    # are per-replicate scalars in summary_df with no dedicated figure panel;
+    # test them across groups (flat mode) so they appear in the stats table and
+    # CSV.  median_D / median_alpha were declared in the across-metric family
+    # below but never actually tested — the most important diffusion metrics had
+    # no comparison stats at all.  (#35)  The two-way report covers the
     # two-factor case separately.
     if not two_factor:
-        for _m in ("nongauss_alpha2", "vacf_persistence"):
+        for _m in ("median_D", "median_alpha",
+                   "nongauss_alpha2", "vacf_persistence"):
             if _m in summary_df.columns and _m not in stats_records:
                 arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
                         .dropna().to_numpy() for lbl in labels]
@@ -2000,22 +2004,23 @@ def compare_groups(groups,
         else:
             try:
                 groups_angles_pooled = []
-                # Per-track (mean_angle_deg, D) pairs per group, used for
-                # the circular-linear correlation between a track's
-                # average turning bias and its diffusion coefficient.
-                # One list of pairs per group; each list pools across
-                # the group's replicates.
-                track_angle_d_pairs = []
                 # Per-replicate angle arrays — one list of arrays per group.
                 # Used to compute per-replicate κ, R̄, μ for the Welch t-test
                 # and per-replicate Watson-Williams F-test (treats each
                 # replicate as one data point, the statistically defensible
                 # framing for n=5 vs n=3 designs).
+                #
+                # NOTE: the per-track (angle, D) pairs for a circular-linear
+                # correlation used to be assembled here — running
+                # compute_per_track_mean_angle on every track of every replicate
+                # — and then thrown away, because the pooled correlation is
+                # disabled in compute_circular_comparison_tests for the SAME
+                # pseudoreplication reason as the other pooled tests (n =
+                # thousands of tracks → p ≈ 0 regardless of the real effect).
+                # That dead computation is removed.  (#31)
                 per_replicate_angles = {}
                 for label, ss, color in zip(labels, all_summaries, colors):
                     pooled = []
-                    t_angles_g = []
-                    t_D_g      = []
                     rep_angle_arrays = []
                     for s in ss:
                         ta = s.get("turning_angles")
@@ -2024,32 +2029,9 @@ def compare_groups(groups,
                             if arr.size:
                                 pooled.append(arr)
                                 rep_angle_arrays.append(arr)
-                        tracks = s.get("tracks")
-                        diff_df = s.get("diffusion")
-                        if tracks is None or diff_df is None:
-                            continue
-                        if "D" not in diff_df.columns:
-                            continue
-                        try:
-                            pairs = compute_per_track_mean_angle(tracks)
-                            if not pairs:
-                                continue
-                            d_map = dict(zip(diff_df["particle"].astype(int),
-                                             diff_df["D"].astype(float)))
-                            for pid, mu_deg in pairs:
-                                d_val = d_map.get(int(pid))
-                                if d_val is None or not np.isfinite(d_val):
-                                    continue
-                                t_angles_g.append(float(mu_deg))
-                                t_D_g.append(float(d_val))
-                        except Exception:
-                            continue
                     pooled_arr = (np.concatenate(pooled)
                                   if pooled else np.array([], dtype=float))
                     groups_angles_pooled.append((label, pooled_arr, color))
-                    track_angle_d_pairs.append(
-                        (np.asarray(t_angles_g, dtype=float),
-                         np.asarray(t_D_g,      dtype=float)))
                     per_replicate_angles[label] = rep_angle_arrays
                 # Stem for the split circular CSVs (the function derives
                 # _circular_per_group / _per_replicate / _tests from this and
@@ -2062,7 +2044,6 @@ def compare_groups(groups,
                     groups_angles_pooled,
                     csv_path=cs_csv, pdf_path=cs_pdf,
                     fig_theme=theme,
-                    track_angle_d_pairs=track_angle_d_pairs,
                     per_replicate_angles=per_replicate_angles,
                     stats_config=cfg)
                 print(f"  Saved: {cs_pdf}")

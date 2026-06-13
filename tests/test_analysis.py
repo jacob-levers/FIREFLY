@@ -866,6 +866,34 @@ def test_msd_fallback_alpha_is_physical(capsys):
     assert ((a >= 0.0) & (a <= 2.0)).all()
 
 
+def test_circular_stats_antipodal_no_zerodivision():
+    """Regression (#15): exactly-antipodal angles give R̄ = 0 → κ = 0; the
+    small-n bias correction must not divide by zero and crash the whole
+    circular comparison."""
+    import numpy as np
+    from firefly.analysis.fa_circular import compute_circular_statistics
+    for ang in ([90.0, -90.0], [0.0, 180.0], [45.0, -135.0]):
+        cs = compute_circular_statistics(np.asarray(ang, dtype=float))
+        assert cs is not None
+        assert cs.get("concentration_kappa") == 0.0
+
+
+def test_circular_n_group_test_family_is_coherent():
+    """Regression (#16): the omnibus and the pairwise rows use ONE
+    parametric-vs-nonparametric decision, so a Kruskal-Wallis omnibus is never
+    paired with Welch's-t post-hoc rows."""
+    import numpy as np
+    from firefly.analysis.fa_circular import _stat_test_n
+    rng = np.random.default_rng(0)
+    a = rng.normal(0, 1, 8)
+    b = rng.normal(0.5, 1, 8)
+    c = np.r_[rng.normal(0, 1, 7), 50.0]   # one heavy outlier → non-normal
+    omn, pw = _stat_test_n([a, b, c], ["A", "B", "C"])
+    tests = {omn["test"]} | {p["test"] for p in pw
+                             if p.get("test") not in ("n<2", "n<3")}
+    assert not ("Kruskal-Wallis" in tests and "Welch's t-test" in tests)
+
+
 def test_jdd_three_component_fractions_are_a_valid_simplex():
     """Regression (#8): 3-component JDD never reports a negative population
     fraction; fractions are in [0, 1] and sum to ~1."""
