@@ -934,6 +934,23 @@ class HandlersMixin:
             elif getattr(self, "_stop_requested_at", None) is not None:
                 # User pressed Stop and the run did NOT complete → stopped.
                 self._handle_stopped()
+            elif self._proc.exitcode == 0:
+                # Clean exit (0) but no terminal DONE arrived.  The subprocess
+                # raised NO exception — it COMPLETED — but its result message
+                # never reached the queue (almost always because the GUI was
+                # briefly stalled when the worker finished and the bounded
+                # terminal put gave up).  This is NOT a crash: do not fire a
+                # crash report/dialog.  We just lack the figure path / summary,
+                # so report completion and point at the output folder.  (R3-1)
+                self.run_results.show_results(
+                    "Analysis finished — result summary didn't reach the UI",
+                    "", severity="warn")
+                self.run_results.show_warning(
+                    "The run completed (the subprocess exited cleanly) but its "
+                    "final result message didn't make it back to the UI — the "
+                    "output files were still written. Check the output folder.")
+                self.statusBar().showMessage(
+                    "Analysis finished — see the output folder")
             else:
                 self._handle_failed(
                     f"Analysis subprocess exited abnormally "

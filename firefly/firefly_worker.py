@@ -75,7 +75,7 @@ def _safe_put(q, item):
         pass
 
 
-def _put_reliable(q, item, timeout=3.0):
+def _put_reliable(q, item, timeout=30.0):
     """RELIABLE bounded emit for LOW-volume, IMPORTANT messages: explicit worker
     log lines (a WARN about an assumed calibration, a cluster-subsample NOTE)
     and the terminal DONE/ERROR/STOPPED/BATCH_DONE messages.
@@ -85,8 +85,14 @@ def _put_reliable(q, item, timeout=3.0):
     terminal message can wedge the GUI.  A blocking `put()` (the old behaviour)
     could instead wedge the WORKER forever on a frozen GUI.  This compromises:
     deliver immediately when the queue has room (the normal case), tolerate a
-    brief stall with a bounded retry, and after `timeout` seconds give up rather
-    than block indefinitely.  (R2-4)
+    stall with a bounded retry, and after `timeout` seconds give up rather than
+    block indefinitely.  (R2-4)
+
+    The default timeout is generous (30 s) because the terminal DONE carries the
+    run's result: dropping it makes the GUI think the run produced no result.
+    A non-frozen GUI drains the queue every ~33 ms, so this only ever waits when
+    the GUI is genuinely hung — and even then a dropped DONE is now handled as
+    "completed, summary unavailable" rather than a crash on the GUI side.  (R3-1)
     """
     import time as _t
     deadline = _t.monotonic() + float(timeout)
