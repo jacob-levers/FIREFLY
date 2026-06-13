@@ -75,6 +75,30 @@ def _safe_put(q, item):
         pass
 
 
+def _put_reliable(q, item, timeout=3.0):
+    """RELIABLE bounded emit for LOW-volume, IMPORTANT messages: explicit worker
+    log lines (a WARN about an assumed calibration, a cluster-subsample NOTE)
+    and the terminal DONE/ERROR/STOPPED/BATCH_DONE messages.
+
+    These must not be silently dropped the way `_safe_put` drops high-volume
+    chatter (#7) — a missing WARN is a data-integrity problem, and a dropped
+    terminal message can wedge the GUI.  A blocking `put()` (the old behaviour)
+    could instead wedge the WORKER forever on a frozen GUI.  This compromises:
+    deliver immediately when the queue has room (the normal case), tolerate a
+    brief stall with a bounded retry, and after `timeout` seconds give up rather
+    than block indefinitely.  (R2-4)
+    """
+    import time as _t
+    deadline = _t.monotonic() + float(timeout)
+    while True:
+        try:
+            q.put(item, timeout=0.25)
+            return True
+        except Exception:
+            if _t.monotonic() >= deadline:
+                return False
+
+
 def _atomic_write_json(obj, path, **dump_kwargs):
     """Write JSON to `path` atomically (tmp file + os.replace).
 
@@ -2421,7 +2445,7 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     except Exception:
         pass
 
-    def _log(msg: str):       _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _log(msg: str):       _put_reliable(msg_queue, (MsgKind.LOG, msg))
     def _prog(pct, msg):      _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — aborts the run cleanly if free RAM falls
@@ -2445,17 +2469,17 @@ def run_analysis(params: dict, msg_queue, cancel_event):
         _log("── Worker subprocess started ──")
         _prog(0, "Importing pipeline…")
         payload = _run_one_analysis(params, msg_queue, cancel_event, _log, _prog)
-        msg_queue.put((MsgKind.DONE, payload))
+        _put_reliable(msg_queue, (MsgKind.DONE, payload))
     except _NoTracks as nt:
         # Linker produced 0 trajectories — not a crash.  Treat as "done"
         # with the partial payload so the UI resets cleanly.
-        msg_queue.put((MsgKind.DONE, nt.args[0]))
+        _put_reliable(msg_queue, (MsgKind.DONE, nt.args[0]))
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
             msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
-            msg_queue.put((MsgKind.STOPPED, None))
+            _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
-            msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
+            _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2489,7 +2513,7 @@ def run_postproc(params: dict, msg_queue, cancel_event):
     """
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
-    def _log(msg: str):  _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _log(msg: str):  _put_reliable(msg_queue, (MsgKind.LOG, msg))
     def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     _wd_stop = _start_memory_watchdog(cancel_event, msg_queue)
@@ -2645,15 +2669,15 @@ def run_postproc(params: dict, msg_queue, cancel_event):
         # the GUI can offer to "Open the post-processed run".
         payload["source_folder"] = src
         payload["postproc_output"] = out_dir
-        msg_queue.put((MsgKind.DONE, payload))
+        _put_reliable(msg_queue, (MsgKind.DONE, payload))
     except _NoTracks as nt:
-        msg_queue.put((MsgKind.DONE, nt.args[0]))
+        _put_reliable(msg_queue, (MsgKind.DONE, nt.args[0]))
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
             msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
-            msg_queue.put((MsgKind.STOPPED, None))
+            _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
-            msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
+            _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -2691,7 +2715,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
     sys.stdout = QueueLogStream(msg_queue)
     sys.stderr = QueueLogStream(msg_queue)
 
-    def _log(msg: str):  _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _log(msg: str):  _put_reliable(msg_queue, (MsgKind.LOG, msg))
     def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — Compare can load multiple full tracks
@@ -2777,7 +2801,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         results_json = os.path.join(out_dir, f"{out_stem}_results.json")
 
         _prog(100, "Comparison complete")
-        msg_queue.put((MsgKind.COMPARE_DONE, {
+        _put_reliable(msg_queue, (MsgKind.COMPARE_DONE, {
             "output_dir":   out_dir,
             "figure_path":  figure_path if os.path.isfile(figure_path) else "",
             "summary_csv":  summary_csv if os.path.isfile(summary_csv) else "",
@@ -2790,14 +2814,14 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
             msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
-            msg_queue.put((MsgKind.STOPPED, None))
+            _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         elif type(exc).__name__ == "CompareInputError":
             # Expected user-input problem (no valid folders, drive unmounted,
             # <2 groups) — surface a clean popup, NOT a crash report.
             msg_queue.put((MsgKind.LOG, f"\n  {exc}"))
-            msg_queue.put((MsgKind.COMPARE_ERROR, str(exc)))
+            _put_reliable(msg_queue, (MsgKind.COMPARE_ERROR, str(exc)))
         else:
-            msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
+            _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
@@ -3250,7 +3274,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                 if payload.get("ok"):
                     results[i - 1] = {"index": i, "ok": True,
                                       "file": params["file"], **payload}
-                    msg_queue.put((MsgKind.FILE_DONE, {
+                    _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
                         "index": i, "total": n,
                         "stem":     payload.get("stem"),
                         "out_dir":  payload.get("out_dir"),
@@ -3271,7 +3295,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     results[i - 1] = {"index": i, "ok": False,
                                       "file": params["file"],
                                       "error": payload.get("error", "")}
-                    msg_queue.put((MsgKind.FILE_ERROR, {
+                    _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                         "index": i, "total": n, "file": params["file"],
                         "tb": payload.get("tb", payload.get("error", "")),
                     }))
@@ -3452,7 +3476,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     if "FIREFLY_BULK_FIGURES" not in os.environ and len(params_list) >= 2:
         os.environ["FIREFLY_BULK_FIGURES"] = "1"
 
-    def _log(msg: str):  _safe_put(msg_queue, (MsgKind.LOG, msg))
+    def _log(msg: str):  _put_reliable(msg_queue, (MsgKind.LOG, msg))
     def _prog(pct, msg): _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
     # Memory watchdog — one shared across the whole batch so a series
@@ -3516,7 +3540,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             # the serial path does (emit 'stopped' instead of 'batch_done').
             if cancel_event.is_set():
                 _log("\n── Batch stopped by user ──")
-                msg_queue.put((MsgKind.STOPPED, None))
+                _put_reliable(msg_queue, (MsgKind.STOPPED, None))
                 return
             results = _hf_results
             _serial_iter = []
@@ -3540,7 +3564,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     results.append({"index": i, "ok": False,
                                     "file": params["file"],
                                     "error": "memory watchdog abort"})
-                    msg_queue.put((MsgKind.FILE_ERROR, {
+                    _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                         "index": i, "total": n,
                         "file": params["file"],
                         "tb": "Aborted by memory watchdog "
@@ -3548,7 +3572,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     }))
                     continue
                 _log("\n── Batch stopped by user ──")
-                msg_queue.put((MsgKind.STOPPED, None))
+                _put_reliable(msg_queue, (MsgKind.STOPPED, None))
                 return
 
             fname = os.path.basename(params["file"])
@@ -3571,7 +3595,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                     params, msg_queue, cancel_event, _log, _prog)
                 results.append({"index": i, "ok": True, "file": params["file"],
                                 **payload})
-                msg_queue.put((MsgKind.FILE_DONE, {
+                _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
                     "index": i, "total": n,
                     "stem":     payload.get("stem"),
                     "out_dir":  payload.get("out_dir"),
@@ -3581,7 +3605,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
             except _NoTracks as nt:
                 results.append({"index": i, "ok": True, "file": params["file"],
                                 **nt.args[0]})
-                msg_queue.put((MsgKind.FILE_DONE, {
+                _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
                     "index": i, "total": n,
                     "stem":     nt.args[0].get("stem"),
                     "out_dir":  nt.args[0].get("out_dir"),
@@ -3601,7 +3625,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                         results.append({"index": i, "ok": False,
                                         "file": params["file"],
                                         "error": "memory watchdog abort"})
-                        msg_queue.put((MsgKind.FILE_ERROR, {
+                        _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                             "index": i, "total": n,
                             "file": params["file"],
                             "tb": "Aborted by memory watchdog "
@@ -3617,14 +3641,14 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                         except Exception: pass
                         continue
                     _log("\n── Batch stopped by user ──")
-                    msg_queue.put((MsgKind.STOPPED, None))
+                    _put_reliable(msg_queue, (MsgKind.STOPPED, None))
                     return
                 tb = traceback.format_exc()
                 _log(f"\n  ⚠ File {i}/{n} ({fname}) FAILED: {exc}")
                 _log(tb)
                 results.append({"index": i, "ok": False, "file": params["file"],
                                 "error": str(exc)})
-                msg_queue.put((MsgKind.FILE_ERROR, {
+                _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
                     "index": i, "total": n,
                     "file": params["file"], "tb": tb,
                 }))
@@ -3676,13 +3700,13 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
         _log(f"  Batch complete: {n_ok}/{n} succeeded, {n_fail} failed")
         _log("══════════════════════════════════════════════════════════════════")
         _prog(100, "Batch complete!")
-        msg_queue.put((MsgKind.BATCH_DONE, {
+        _put_reliable(msg_queue, (MsgKind.BATCH_DONE, {
             "n_total": n, "n_ok": n_ok, "n_fail": n_fail,
             "results": results,
         }))
 
     except BaseException:
-        msg_queue.put((MsgKind.ERROR, traceback.format_exc()))
+        _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
     finally:
         if _wd_stop is not None:
             _wd_stop.set()
