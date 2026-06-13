@@ -2058,10 +2058,16 @@ class BuildMixin:
         cockpit.addWidget(self.live_view, 1)          # fills the rest
         self._analysis_stack.addWidget(cockpit_w)
 
-        # Page 1 — results: same _ResultsPanel as before.
+        # Page 1 — results: same _ResultsPanel as before, but inside a vertical
+        # scroll area so a short window SCROLLS the stats instead of compressing
+        # the grid until the rows overlap ("folding in on one another").  The
+        # page stays at stack index 1 and self.run_results is unchanged, so the
+        # show_results/show_stats calls and setCurrentIndex(1) keep working.
         self.run_results = _ResultsPanel(
             "Results will appear here after analysis.")
-        self._analysis_stack.addWidget(self.run_results)
+        _results_scroll = _NoHScrollArea()
+        _results_scroll.setWidget(self.run_results)
+        self._analysis_stack.addWidget(_results_scroll)
 
         # Page 2 — HYPERFLY dashboard: a grid of live per-file detection tiles,
         # shown in place of the single cockpit view while a parallel batch runs.
