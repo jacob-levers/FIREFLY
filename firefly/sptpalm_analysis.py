@@ -129,7 +129,9 @@ import io as _io
 # re-exported here so existing `sptpalm_analysis.N_CPUS` / `_Cancelled` /
 # `_tqdm` / `_dim_size` call sites keep working unchanged.
 from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm, _dim_size,
-                                           safe_process_workers)
+                                           safe_process_workers,
+                                           DEFAULT_PIXEL_SIZE_UM,
+                                           DEFAULT_FRAME_INTERVAL_S)
 
 
 tp.quiet()
@@ -552,18 +554,20 @@ def main():
 
     pixel_size = args.pixel_size or meta_px
     if pixel_size is None:
-        print("  WARNING: Pixel size not in metadata. Using 0.104 um/px.")
+        print(f"  WARNING: Pixel size not in metadata. Using "
+              f"{DEFAULT_PIXEL_SIZE_UM} um/px.")
         print("  (Override with --pixel-size)")
-        pixel_size = 0.104
+        pixel_size = DEFAULT_PIXEL_SIZE_UM
     else:
         src = "command line" if args.pixel_size else "CZI metadata"
         print(f"  Pixel size     : {pixel_size} um/px  [{src}]")
 
     frame_interval = args.frame_interval or meta_fi
     if frame_interval is None:
-        print("  WARNING: Frame interval not in metadata. Using 0.05 s.")
+        print(f"  WARNING: Frame interval not in metadata. Using "
+              f"{DEFAULT_FRAME_INTERVAL_S} s.")
         print("  (Override with --frame-interval)")
-        frame_interval = 0.05
+        frame_interval = DEFAULT_FRAME_INTERVAL_S
     else:
         src = "command line" if args.frame_interval else "CZI metadata"
         print(f"  Frame interval : {frame_interval} s/frame  [{src}]")
