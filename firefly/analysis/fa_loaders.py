@@ -886,6 +886,71 @@ def _parse_ome_metadata(tif):
     return px_um, fi_s
 
 
+def probe_metadata(path, channel=0):
+    """Read ONLY the acquisition metadata (pixel size µm, frame interval s) from
+    an image file, WITHOUT decoding any pixel data.
+
+    Returns ``(pixel_size_um_or_None, frame_interval_s_or_None)`` — either may be
+    None when the file doesn't embed it.  Header-only and cheap: this is the
+    pre-flight probe the GUI uses to decide whether a run would silently fall
+    back to the built-in default calibration.  Never raises — returns
+    ``(None, None)`` on any error or unsupported format.
+    """
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".tif", ".tiff") and HAS_TIFFFILE:
+            with tifffile.TiffFile(path) as tif:
+                return _parse_ome_metadata(tif)
+        if ext == ".czi":
+            if HAS_AICS:
+                czi = aicspylibczi.CziFile(path)
+                meta = _parse_czi_metadata(
+                    czi.meta if hasattr(czi, "meta") else None)
+            elif HAS_CZIFILE:
+                with czifile.CziFile(path) as czi:
+                    meta = _parse_czi_metadata(czi.metadata())
+            else:
+                meta = None
+            if meta:
+                return (meta.get("pixel_size_um"),
+                        meta.get("frame_interval_s"))
+    except Exception:
+        pass
+    return (None, None)
+
+
+def params_needing_calibration(params_list):
+    """Given a list of worker-params dicts, return the input file paths whose
+    pixel size OR frame interval would fall back to the built-in DEFAULT — i.e.
+    an image input where the params carry no explicit ``pixel_size`` /
+    ``frame_interval`` (the user left the Override unticked) AND the file embeds
+    no such metadata.
+
+    external-CSV params (``source == "external_csv"``) are excluded: the GUI
+    always passes the visible sidebar value for those, so they are not a *hidden*
+    default.  Pure + Qt-free so it can be unit-tested headlessly.
+    """
+    missing = []
+    for p in params_list:
+        try:
+            if p.get("source") == "external_csv":
+                continue
+            fp = p.get("file")
+            if not fp:
+                continue
+            if os.path.splitext(fp)[1].lower() not in (".tif", ".tiff", ".czi"):
+                continue
+            px, fi = probe_metadata(fp, int(p.get("channel", 0) or 0))
+            px_defaulted = (not p.get("pixel_size")) and (not px)
+            fi_defaulted = (not p.get("frame_interval")) and (not fi)
+            if px_defaulted or fi_defaulted:
+                missing.append(fp)
+        except Exception:
+            # Never let a probe failure block a run; treat as "known".
+            continue
+    return missing
+
+
 def _find_tif_series(path):
     """Find split TIFF files belonging to the same acquisition.
 

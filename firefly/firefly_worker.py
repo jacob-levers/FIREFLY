@@ -722,9 +722,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             _missing = " and ".join(
                 lbl for lbl, val in (("pixel size", meta_px),
                                      ("frame interval", meta_fi)) if not val)
-            _log(f"  NOTE: {_missing} not found in file metadata; "
-                 f"using px={px} µm, fi={fi} s — set an override in the "
-                 f"sidebar if these are wrong")
+            _log(f"  WARNING: {_missing} not found in file metadata — "
+                 f"ASSUMING px={px} µm, fi={fi} s.  Diffusion coefficients and "
+                 f"velocities scale with these (D ∝ px²/Δt); set an override in "
+                 f"the sidebar if they are wrong.")
         # Sample frames for the figure-background panel.
         n_proj = min(200, n_frames)
         proj_idx = _np.linspace(0, n_frames - 1, n_proj, dtype=int)

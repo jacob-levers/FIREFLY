@@ -2854,3 +2854,48 @@ def test_ui_anim_respects_reduce_motion(monkeypatch):
     monkeypatch.setattr(ui_anim, "reduce_motion", lambda: False)
     assert ui_anim.fade_in(QtWidgets.QLabel("y")) is not None
     assert ui_anim.animate_height(QtWidgets.QWidget(), 0, 50) is not None
+
+
+# ── calibration pre-flight gate (fix/calibration-preflight) ───────────────────
+def test_probe_metadata_absent_returns_none(tmp_path):
+    """A plain TIFF with no embedded resolution/interval → (None, None), so the
+    pre-flight knows the run would fall back to the built-in default."""
+    tifffile = pytest.importorskip("tifffile")
+    from firefly.analysis import fa_loaders as L
+    p = str(tmp_path / "plain.tif")
+    tifffile.imwrite(p, np.zeros((3, 8, 8), np.uint16))   # no metadata
+    assert L.probe_metadata(p) == (None, None)
+
+
+def test_params_needing_calibration_decision_matrix(tmp_path, monkeypatch):
+    """The pure gate predicate: a run 'needs calibration' iff it's an image input
+    with neither an explicit override NOR embedded metadata for px/Δt.  CSV
+    inputs are excluded (the GUI always passes the visible sidebar value)."""
+    from firefly.analysis import fa_loaders as L
+    img = str(tmp_path / "movie.tif")
+    csv = str(tmp_path / "spots.csv")
+
+    def setprobe(px, fi):
+        monkeypatch.setattr(L, "probe_metadata", lambda p, channel=0: (px, fi))
+
+    # (a) override set (explicit px+fi) → never flagged, even with no metadata
+    setprobe(None, None)
+    assert L.params_needing_calibration(
+        [{"file": img, "pixel_size": 0.1, "frame_interval": 0.02}]) == []
+    # (b) no override + no embedded metadata → flagged
+    setprobe(None, None)
+    assert L.params_needing_calibration(
+        [{"file": img, "pixel_size": None, "frame_interval": None}]) == [img]
+    # (c) no override + BOTH embedded → not flagged
+    setprobe(0.1, 0.02)
+    assert L.params_needing_calibration(
+        [{"file": img, "pixel_size": None, "frame_interval": None}]) == []
+    # (d) no override + only px embedded (Δt would default) → still flagged
+    setprobe(0.1, None)
+    assert L.params_needing_calibration(
+        [{"file": img, "pixel_size": None, "frame_interval": None}]) == [img]
+    # (e) external-CSV input → excluded regardless
+    setprobe(None, None)
+    assert L.params_needing_calibration(
+        [{"file": csv, "source": "external_csv",
+          "pixel_size": None, "frame_interval": None}]) == []

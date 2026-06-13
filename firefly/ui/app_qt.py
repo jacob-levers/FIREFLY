@@ -2709,6 +2709,61 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 self.tabs.setCurrentIndex(i)
                 return
 
+    def _confirm_calibration_or_abort(self, params_list) -> bool:
+        """Pre-flight calibration gate.  If any image run in `params_list` would
+        silently use the built-in DEFAULT pixel size / frame interval (no
+        override ticked AND no metadata embedded in the file), ask the user
+        first.  Returns True to proceed with the launch, False to abort.
+
+        Diffusion coefficients scale as D ∝ px²/Δt, so a wrong-by-default
+        calibration makes every D wrong while the figure looks perfect — this
+        is the one place we refuse to let that happen silently.
+        """
+        try:
+            from firefly.analysis.fa_loaders import params_needing_calibration
+            missing = params_needing_calibration(params_list)
+        except Exception:
+            return True   # never block a run on a probe failure
+        if not missing:
+            return True
+        px = float(self.s_pixel_size.value())
+        fi = float(self.s_frame_interval.value())
+        n = len(missing)
+        names = "\n".join("   • " + os.path.basename(m) for m in missing[:8])
+        if n > 8:
+            names += f"\n   … and {n - 8} more"
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        box.setWindowTitle("Calibration not found")
+        box.setText(f"{n} file(s) have no embedded pixel size / frame interval.")
+        box.setInformativeText(
+            f"FIREFLY will ASSUME px = {px:g} µm and Δt = {fi:g} s for them.\n"
+            f"Diffusion coefficients and velocities scale with these "
+            f"(D ∝ px²/Δt), so wrong calibration makes every D wrong.\n\n"
+            f"{names}")
+        b_set = box.addButton("Set calibration…",
+                              QtWidgets.QMessageBox.ButtonRole.ActionRole)
+        b_run = box.addButton("Run with defaults",
+                              QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(b_set)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is b_run:
+            return True
+        if clicked is b_set:
+            # Tick the overrides + focus the px field on the Import tab so the
+            # user can enter the real calibration, then re-launch.
+            try:
+                self.c_override_px.setChecked(True)
+                self.c_override_fi.setChecked(True)
+                self._switch_to_tab(TAB_IMPORT)
+                self.s_pixel_size.setFocus()
+                self.s_pixel_size.selectAll()
+            except Exception:
+                pass
+        return False
+
     def _start_single_run(self):
         fpath = self.e_file.text().strip()
         if not fpath or not os.path.isfile(fpath):
@@ -2729,9 +2784,6 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             # Irrelevant for a localisations table (no detection step).
             if not self._validate_selected_backend():
                 return
-        # Auto-switch to the Analysis tab so the user sees progress
-        self._switch_to_tab(TAB_ANALYSIS)
-        self._start_elapsed_timer()
 
         out_dir = self.e_outdir.text().strip() or (
             os.path.dirname(fpath) if is_loc else None)
@@ -2752,6 +2804,16 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             bg = self.e_csv_bg.text().strip()
             if bg and os.path.isfile(bg):
                 params["bg_image_path"] = bg
+
+        # Calibration pre-flight — warn before a run silently assumes the
+        # built-in default px/Δt (image input, no override, no embedded
+        # metadata).  Aborts here if the user chooses to set calibration first.
+        if not self._confirm_calibration_or_abort([params]):
+            return
+
+        # Commit to the run: switch to the Analysis tab + start the elapsed timer.
+        self._switch_to_tab(TAB_ANALYSIS)
+        self._start_elapsed_timer()
 
         # Persist before the long-running task in case of crash/abort.
         try:
@@ -2871,6 +2933,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         if not params_list:
             return False
         if not self._validate_selected_backend():
+            return False
+        # Calibration pre-flight (image inputs only; external-CSV excluded in
+        # the helper, since those always carry the visible sidebar value).
+        if not self._confirm_calibration_or_abort(params_list):
             return False
         self._switch_to_tab(TAB_ANALYSIS)
         self._start_elapsed_timer()
