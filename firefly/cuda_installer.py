@@ -188,6 +188,40 @@ def sidecar_base() -> str:
     return _default_sidecar_base()
 
 
+def _sidecar_base_is_trusted(base: str) -> bool:
+    """Whether ``base`` is safe to prepend to ``sys.path[0]`` before imports.
+
+    The extracted sidecar dir is injected at the front of sys.path BEFORE any
+    import, so "can write into this directory" literally means "can run code as
+    the FIREFLY user".  Refuse the locations another principal could plant a
+    malicious ``torch`` / ``sitecustomize`` into: UNC / network paths, and the
+    world-writable shared system roots (ProgramData, Users\\Public, Windows).  A
+    normal per-user local path (the %LOCALAPPDATA% default, or a user-chosen
+    local folder) is fine.  (#22)
+    """
+    try:
+        if not base or not isinstance(base, str):
+            return False
+        if base.startswith("\\\\") or base.startswith("//"):
+            return False                      # UNC / network share
+        ab = os.path.abspath(base)
+        low = ab.replace("/", "\\").lower()
+        if low.startswith("\\\\"):
+            return False                      # resolved to UNC
+        drive = os.path.splitdrive(ab)[0]
+        if not drive.endswith(":"):
+            return False                      # no local drive letter
+        sysdrive = (os.environ.get("SystemDrive", "C:") + "\\").lower()
+        windir = (os.environ.get("WINDIR", sysdrive + "windows")).replace(
+            "/", "\\").lower()
+        bad_roots = (sysdrive + "programdata", sysdrive + "users\\public", windir)
+        if any(low == r or low.startswith(r + "\\") for r in bad_roots):
+            return False                      # multi-user / world-writable root
+        return True
+    except Exception:
+        return False
+
+
 def set_sidecar_base(new_base: Optional[str]) -> None:
     """Persist (or clear, when None) the user-chosen sidecar base location."""
     try:
@@ -1215,6 +1249,17 @@ def inject_sidecar_into_sys_path() -> None:
         return
     try:
         if not is_installed():
+            return
+        # Refuse to inject from an untrusted base (UNC / shared / world-writable
+        # location): prepending it to sys.path[0] would let anyone who can write
+        # there run code as FIREFLY.  Fall back to the bundled CPU torch.  (#22)
+        if not _sidecar_base_is_trusted(sidecar_base()):
+            try:
+                print("  WARNING: the CUDA sidecar is in a non-trusted location "
+                      "(network/shared/world-writable) — ignoring it for "
+                      "safety; re-install GPU support under %LOCALAPPDATA%.")
+            except Exception:
+                pass
             return
         target = sidecar_extracted_dir()
         # ABI gate: never inject a torch built for a different Python

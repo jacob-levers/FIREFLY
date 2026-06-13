@@ -123,7 +123,11 @@ def test_current_app_bundle_path():
 def test_macos_helper_script():
     s = u.macos_helper_script(4321, "/u/FIREFLY-macOS.dmg",
                               "/Applications/FIREFLY.app", "/u/relaunch.log")
-    assert 'PID="4321"' in s
+    # Paths come from the POSITIONAL ARGS the Popen call passes ($1..$4), NOT
+    # interpolated into the script — a path with a quote/$/backtick must not be
+    # able to break the script (#21).
+    assert 'PID="$1"' in s and 'DMG="$2"' in s
+    assert "/u/FIREFLY-macOS.dmg" not in s      # path is NOT baked into the body
     assert 'kill -0 "$PID"' in s
     assert "hdiutil attach" in s
     assert "xattr -dr com.apple.quarantine" in s
@@ -134,7 +138,10 @@ def test_macos_helper_script():
 def test_windows_helper_script():
     s = u.windows_helper_script(4321, r"C:\u\FIREFLY-Windows.exe",
                                 r"C:\app\FIREFLY.exe", r"C:\u\relaunch.log")
-    assert 'set "PID=4321"' in s
+    # Paths come from the POSITIONAL ARGS the Popen call passes (%~1..%~4), NOT
+    # interpolated — cmd would otherwise %-expand a '%' in the path (#32).
+    assert 'set "PID=%~1"' in s and 'set "NEWEXE=%~2"' in s
+    assert r"C:\u\FIREFLY-Windows.exe" not in s   # path is NOT baked into the body
     assert 'tasklist /FI "PID eq %PID%"' in s
     assert "taskkill /F /T /PID %PID%" in s   # force-kill if the app hangs
     assert "copy /Y" in s
@@ -225,6 +232,32 @@ def test_sha256_and_digest_verification(tmp_path):
     assert u._digest_matches(str(f), "sha256:" + "0" * 64) is False   # wrong → reject
     assert u._digest_matches(str(f), "") is True                       # no digest → pass
     assert u._digest_matches(str(f), "sha256:short") is True           # malformed → pass
+
+
+def test_is_verifiable_digest():
+    """Regression (#20): download_asset uses this to FAIL CLOSED when GitHub
+    didn't publish a usable SHA-256, instead of installing an unverified binary
+    that only had to be '>1 MB and start with MZ'."""
+    assert u._is_verifiable_digest("sha256:" + "a" * 64) is True
+    assert u._is_verifiable_digest("SHA256:" + "A" * 64) is True   # case-insensitive
+    assert u._is_verifiable_digest("") is False                    # absent
+    assert u._is_verifiable_digest("sha256:abc") is False          # too short
+    assert u._is_verifiable_digest("md5:" + "a" * 32) is False     # wrong algorithm
+    assert u._is_verifiable_digest("sha256:" + "g" * 64) is False  # non-hex
+
+
+def test_cuda_sidecar_base_trust():
+    """Regression (#22): the sidecar dir is prepended to sys.path[0] before any
+    import, so an untrusted base (UNC / shared / world-writable) must be refused
+    — otherwise anyone who can write there runs code as FIREFLY."""
+    from firefly import cuda_installer as ci
+    assert ci._sidecar_base_is_trusted(r"C:\Users\me\AppData\Local\FIREFLY\tc")
+    assert ci._sidecar_base_is_trusted(r"D:\firefly-cuda")
+    assert not ci._sidecar_base_is_trusted(r"\\server\share\cuda")   # UNC
+    assert not ci._sidecar_base_is_trusted("//server/share/cuda")    # UNC (posix sep)
+    assert not ci._sidecar_base_is_trusted(r"C:\ProgramData\cuda")   # world-writable
+    assert not ci._sidecar_base_is_trusted(r"C:\Users\Public\cuda")  # shared
+    assert not ci._sidecar_base_is_trusted("")
 
 
 # ── download validation (pure for the windows PE check) ─────────────────
