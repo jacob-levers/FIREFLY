@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _dim_size, _tqdm,
-                                           _cpu_core_budget)
+                                           _cpu_core_budget, DEFAULT_PIXEL_SIZE_UM)
 from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
 
@@ -1613,7 +1613,7 @@ def _autodetect_csv_preset(columns: "list[str]") -> "str | None":
 
 
 def load_external_locs(csv_path: str, preset: str = "auto",
-                       pixel_size_um: float = 0.106,
+                       pixel_size_um: float = DEFAULT_PIXEL_SIZE_UM,
                        column_map: "dict | None" = None,
                        frame_offset: int | None = None):
     """Load a localisations file exported by an external tool and map
@@ -1841,7 +1841,7 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     # drop a PALM-Tracer file in and have the units come out right
     # without typing 0.106 again.
     pt_px = pt_meta.get("pixel_size_um")
-    if pt_px and abs(pixel_size_um - 0.106) < 1e-9:
+    if pt_px and abs(pixel_size_um - DEFAULT_PIXEL_SIZE_UM) < 1e-9:
         # Default value — replace with PALM-Tracer's value
         print(f"  Using pixel size {pt_px:.4f} µm from PALM-Tracer metadata")
         pixel_size_um = float(pt_px)

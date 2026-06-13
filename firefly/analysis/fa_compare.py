@@ -8,7 +8,8 @@ import os
 import json
 import math
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
-                                           motion_class_colors, label_text_color)
+                                           motion_class_colors, label_text_color,
+                                           DEFAULT_FRAME_INTERVAL_S)
 from firefly.analysis.fa_theme import _theme_palette, style_axes
 from firefly.analysis.fa_palmtracer import load_summary_from_folder
 
@@ -29,6 +30,29 @@ from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
 
 
 from firefly.analysis import fa_twoway
+
+
+_FI_DEFAULT_WARNED: set = set()   # stems already warned about a missing Δt
+
+
+def _fi_or_default(params, stem="", _warned=_FI_DEFAULT_WARNED):
+    """Frame interval (s) from a folder's params dict, falling back to the
+    app-wide default and WARNING (once per stem) when the key is absent.
+
+    A missing ``frame_interval_s`` used to silently default to 0.05 s here while
+    the rest of the app uses 0.02 s, rescaling this folder's AUC-MSD and MSD
+    time axis 2.5x against its siblings with no warning (#11).  Now it uses the
+    SAME default as everywhere else and says so, so the discrepancy is visible.
+    """
+    v = params.get("frame_interval_s")
+    if v is not None:
+        return float(v)
+    if stem not in _warned:
+        _warned.add(stem)
+        print(f"  Compare WARNING: '{stem or '<folder>'}' has no frame_interval_s "
+              f"in its params — assuming Δt = {DEFAULT_FRAME_INTERVAL_S} s.  MSD and "
+              f"AUC scale with Δt; set it so groups are compared on the same axis.")
+    return float(DEFAULT_FRAME_INTERVAL_S)
 
 
 class CompareInputError(Exception):
@@ -957,7 +981,7 @@ def compare_groups(groups,
     summary_rows = []
     def _row(group_label, timepoint, summary):
         p = summary["params"]
-        fi = float(p.get("frame_interval_s", 0.05))
+        fi = _fi_or_default(p, summary.get("stem", ""))
         d = summary["diffusion"]
         stem = summary["stem"]
         cell, _matched = (fa_twoway.derive_subject_key(stem, timepoint_tokens)
@@ -1104,7 +1128,7 @@ def compare_groups(groups,
             for s in summaries:
                 e = s["ensemble_msd"]
                 if e is None: continue
-                fi = float(s["params"].get("frame_interval_s", 0.05))
+                fi = _fi_or_default(s["params"], s.get("stem", ""))
                 t = e["lag_frame"].values * fi
                 y = e["msd_um2"].values
                 order = np.argsort(t)
@@ -1342,7 +1366,7 @@ def compare_groups(groups,
         for grp_label, summaries, _ in _zip_groups():
             arrs = []
             for s in summaries:
-                fi = float(s["params"].get("frame_interval_s", 0.05))
+                fi = _fi_or_default(s["params"], s.get("stem", ""))
                 tl = _track_lengths(s["tracks"], fi)
                 if len(tl):
                     arrs.append(tl)

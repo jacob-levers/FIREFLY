@@ -1,6 +1,7 @@
 """MainWindow BuildMixin methods, split out of app_qt.py (#7)."""
 from __future__ import annotations
-from firefly.analysis.fa_constants import N_CPUS
+from firefly.analysis.fa_constants import (N_CPUS, DEFAULT_PIXEL_SIZE_UM,
+                                           DEFAULT_FRAME_INTERVAL_S)
 
 import os
 import sys
@@ -511,7 +512,7 @@ class BuildMixin:
         self.c_override_px.setToolTip(
             "If unchecked, the pixel size from the file's metadata is used.\n"
             "Check this only if the metadata is missing or wrong.")
-        self.s_pixel_size  = self._spin_dbl(0.106, 0.01, 1.0, 0.001, decimals=3,
+        self.s_pixel_size  = self._spin_dbl(DEFAULT_PIXEL_SIZE_UM, 0.01, 1.0, 0.001, decimals=3,
             tip="Physical pixel size in µm. Used to convert px → µm for D, MSD, etc.")
         row.addWidget(self.c_override_px); row.addWidget(self.s_pixel_size, 1)
         wpx = QtWidgets.QWidget(); wpx.setLayout(row)
@@ -521,7 +522,7 @@ class BuildMixin:
         self.c_override_fi = QtWidgets.QCheckBox("Override")
         self.c_override_fi.setToolTip(
             "If unchecked, the frame interval from the file's metadata is used.")
-        self.s_frame_interval = self._spin_dbl(0.02, 0.001, 10.0, 0.001, decimals=3,
+        self.s_frame_interval = self._spin_dbl(DEFAULT_FRAME_INTERVAL_S, 0.001, 10.0, 0.001, decimals=3,
             tip="Time between frames in seconds. Used for diffusion coefficient units.")
         row.addWidget(self.c_override_fi); row.addWidget(self.s_frame_interval, 1)
         wfi = QtWidgets.QWidget(); wfi.setLayout(row)

@@ -36,6 +36,8 @@ import traceback
 # block since it pulls in no torch.  MsgKind is the one source of truth for the
 # worker→GUI message-queue kinds emitted throughout this module.
 from firefly.analysis.fa_enums import MsgKind
+from firefly.analysis.fa_constants import (
+    DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S)
 
 
 # ── CUDA sidecar injection ───────────────────────────────────────────────────
@@ -473,8 +475,8 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
     # cache=False so we never write firefly_extras into the user's source folder.
     s = load_summary_from_palmtracer(folder, use_native=True, cache=False)
     params = s.get("params") or {}
-    px = float(params.get("pixel_size_um", 0.106) or 0.106)
-    fi = float(params.get("frame_interval_s", 0.02) or 0.02)
+    px = float(params.get("pixel_size_um", DEFAULT_PIXEL_SIZE_UM) or DEFAULT_PIXEL_SIZE_UM)
+    fi = float(params.get("frame_interval_s", DEFAULT_FRAME_INTERVAL_S) or DEFAULT_FRAME_INTERVAL_S)
     locs    = s.get("locs")
     tracks  = s.get("tracks")
     diff_df = s.get("diffusion")
@@ -706,8 +708,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     _log(f"  WARN: load-slot release failed ({_rel_exc})")
         # Override file-embedded metadata only when the user explicitly
         # ticked the "Override" checkbox.
-        px = p.get("pixel_size") or meta_px or 0.106
-        fi = p.get("frame_interval") or meta_fi or 0.02
+        px = p.get("pixel_size") or meta_px or DEFAULT_PIXEL_SIZE_UM
+        fi = p.get("frame_interval") or meta_fi or DEFAULT_FRAME_INTERVAL_S
         n_frames = len(stack)
         _log(f"  Shape: {stack.shape}  (T x Y x X)")
         # Surface the REAL in-RAM footprint per file — the planner's pre-load
@@ -742,8 +744,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _prog(5, "Reading localisations from CSV…")
         # Pixel size and frame interval come from the GUI; we don't try
         # to infer them from the CSV (most tools don't embed them).
-        px = float(p.get("pixel_size") or 0.106)
-        fi = float(p.get("frame_interval") or 0.02)
+        px = float(p.get("pixel_size") or DEFAULT_PIXEL_SIZE_UM)
+        fi = float(p.get("frame_interval") or DEFAULT_FRAME_INTERVAL_S)
         locs_extern = load_external_locs(
             fpath,
             preset=p.get("csv_preset", "auto"),
@@ -2529,9 +2531,12 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             "roi_mode":       "none",
             "roi_polygon":    None,
         })
-        # Sensible defaults if orig_params was missing any key.
-        new_p.setdefault("pixel_size",   0.106)
-        new_p.setdefault("frame_interval", 0.03)
+        # Sensible defaults if orig_params was missing any key.  These MUST match
+        # the primary analysis defaults — a post-process is meant to reproduce the
+        # original run with only the ROI changed, so a divergent Δt (was 0.03 s
+        # here vs 0.02 s everywhere else) would silently rescale every D.
+        new_p.setdefault("pixel_size",     DEFAULT_PIXEL_SIZE_UM)
+        new_p.setdefault("frame_interval", DEFAULT_FRAME_INTERVAL_S)
         new_p.setdefault("diameter",     7)
         new_p.setdefault("minmass",      1.0)
         new_p.setdefault("auto_minmass", False)

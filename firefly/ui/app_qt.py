@@ -108,6 +108,8 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 
 from firefly import crash_reporter
 from firefly.analysis.fa_enums import Backend, MaskMode, MsgKind
+from firefly.analysis.fa_constants import (DEFAULT_PIXEL_SIZE_UM,
+                                           DEFAULT_FRAME_INTERVAL_S)
 from firefly.ui.ui_mixin_handlers import HandlersMixin
 from firefly.ui.ui_mixin_build import BuildMixin
 from firefly.ui.ui_mixin_batch import BatchMixin
@@ -2514,9 +2516,9 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 cls._BUILTIN_PRESETS_TAG: True,
                 # Imaging metadata — 100x oil, fast PALM acquisition
                 "analysis/override_px":     True,
-                "analysis/pixel_size":      0.106,
+                "analysis/pixel_size":      DEFAULT_PIXEL_SIZE_UM,
                 "analysis/override_fi":     True,
-                "analysis/frame_interval":  0.020,
+                "analysis/frame_interval":  DEFAULT_FRAME_INTERVAL_S,
                 # Preprocessing — flat well-spread cytoplasm; small radius
                 # tracks local background tightly without smearing the spots.
                 "analysis/bg_method":       "Uniform Filter",
