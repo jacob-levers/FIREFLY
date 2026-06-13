@@ -832,6 +832,65 @@ def test_load_external_locs_all_rows_bad_raises(tmp_path):
                              frame_offset=0)
 
 
+def _synthetic_tracks(n_tracks=25, n_frames=8, step=0.1, seed=0):
+    import numpy as np, pandas as pd
+    rng = np.random.default_rng(seed)
+    rows = []
+    for pid in range(n_tracks):
+        x = np.cumsum(rng.standard_normal(n_frames)) * step
+        y = np.cumsum(rng.standard_normal(n_frames)) * step
+        for f in range(n_frames):
+            rows.append((pid, f, x[f], y[f]))
+    return pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+
+
+def test_msd_fit_clamps_n_fit_to_max_lagtime(capsys):
+    """Regression (#34): n_fit > max_lagtime is clamped with a warning instead
+    of silently fitting fewer lags than requested."""
+    from firefly.analysis.fa_diffusion import compute_msd_and_fit
+    tr = _synthetic_tracks()
+    compute_msd_and_fit(tr, 0.106, 0.02, max_lagtime=5, n_fit=20)
+    assert "n_fit" in capsys.readouterr().out  # warned about the clamp
+
+
+def test_msd_fallback_alpha_is_physical(capsys):
+    """Regression (#10): the short-track fallback never emits an alpha outside
+    the physical [0, 2] range that would mislabel noise as 'Directed'."""
+    import numpy as np
+    from firefly.analysis.fa_diffusion import compute_msd_and_fit
+    # 4-frame tracks → only 3 MSD lags → exercises the n_ok==3 fallback path
+    tr = _synthetic_tracks(n_tracks=40, n_frames=4, seed=3)
+    _, _, diff = compute_msd_and_fit(tr, 0.106, 0.02, max_lagtime=3, n_fit=3)
+    a = diff["alpha"].to_numpy(dtype=float)
+    a = a[np.isfinite(a)]
+    assert ((a >= 0.0) & (a <= 2.0)).all()
+
+
+def test_jdd_three_component_fractions_are_a_valid_simplex():
+    """Regression (#8): 3-component JDD never reports a negative population
+    fraction; fractions are in [0, 1] and sum to ~1."""
+    import numpy as np, pandas as pd
+    from firefly.analysis.fa_diffusion import compute_jdd
+    rng = np.random.default_rng(1)
+    rows = []
+    pid = 0
+    # two strong, well-separated populations → pushes f1+f2 toward the bound
+    for D, n in [(0.005, 120), (0.5, 120)]:
+        sd = float(np.sqrt(2 * D * 0.02))
+        for _ in range(n):
+            x = np.cumsum(rng.normal(0, sd, 6))
+            y = np.cumsum(rng.normal(0, sd, 6))
+            for f in range(6):
+                rows.append((pid, f, x[f] / 0.106, y[f] / 0.106))
+            pid += 1
+    tr = pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+    res = compute_jdd(tr, 0.106, 0.02, n_components=3)
+    if res is not None:
+        fr = np.asarray(res["fractions"], dtype=float)
+        assert (fr >= -1e-9).all(), f"negative fraction: {fr}"
+        assert abs(fr.sum() - 1.0) < 1e-6, f"fractions sum to {fr.sum()}"
+
+
 def test_link_trajectories_validates_input():
     """link_trajectories gives a clear error for a missing required column and
     drops negative-frame rows (with a warning) instead of a cryptic trackpy

@@ -2724,8 +2724,14 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             return True   # never block a run on a probe failure
         if not missing:
             return True
-        px = float(self.s_pixel_size.value())
-        fi = float(self.s_frame_interval.value())
+        # Show the values the WORKER will actually use for these files — the
+        # built-in defaults — NOT the live spinbox.  A file is only in `missing`
+        # when its Override is OFF and it has no embedded metadata, so the run
+        # sends pixel_size=None and the worker falls back to these constants.
+        # Echoing an edited-but-not-overridden spinbox value here would assert a
+        # calibration the run won't use (the spinbox is always editable).  (#3)
+        px = float(DEFAULT_PIXEL_SIZE_UM)
+        fi = float(DEFAULT_FRAME_INTERVAL_S)
         n = len(missing)
         names = "\n".join("   • " + os.path.basename(m) for m in missing[:8])
         if n > 8:

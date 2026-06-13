@@ -1260,17 +1260,38 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                         # NB: keep this `bool`, not `uint8` — see
                         # apply_roi_mask for why uint8 breaks pandas
                         # row indexing.
-                        roi_mask = _np.zeros((h, w), dtype=bool)
-                        for poly in polys:
-                            m = polygon2mask((h, w), _np.asarray(poly))
-                            roi_mask |= m.astype(bool)
-                        n_polys = len(polys)
-                        roi_source_label = (
-                            f"ImageJ ROI ({n_polys} region(s))"
-                            if roi_from_imagej
-                            else f"Manual polygon ({n_polys} shape(s))")
-                        _log(f"  User polygon ROI: {n_polys} shape(s), "
-                             f"{100.0 * roi_mask.mean():.1f}% of frame")
+                        # The polygon is in the coordinates of its ORIGINAL
+                        # movie.  If it was drawn on a differently-sized movie (a
+                        # full-frame ROI applied to a cropped/binned export, or
+                        # swapped Y/X), polygon2mask silently CLIPS out-of-frame
+                        # vertices and keeps the WRONG region with no error.
+                        # Detect that and skip the ROI — mirrors the sister-TIFF
+                        # shape check above.  (#13)
+                        _all_v = _np.concatenate(
+                            [_np.asarray(poly, dtype=float) for poly in polys],
+                            axis=0)
+                        _max_y = float(_all_v[:, 0].max())
+                        _max_x = float(_all_v[:, 1].max())
+                        if (_max_y > h + 1.0 or _max_x > w + 1.0
+                                or float(_all_v.min()) < -1.0):
+                            _log(f"  WARN: ROI polygon extent (y≤{_max_y:.0f}, "
+                                 f"x≤{_max_x:.0f}) exceeds the movie frame "
+                                 f"{h}×{w} — it was drawn on a differently-sized "
+                                 f"movie.  Skipping ROI to avoid masking the "
+                                 f"wrong region.")
+                            roi_mask = None
+                        else:
+                            roi_mask = _np.zeros((h, w), dtype=bool)
+                            for poly in polys:
+                                m = polygon2mask((h, w), _np.asarray(poly))
+                                roi_mask |= m.astype(bool)
+                            n_polys = len(polys)
+                            roi_source_label = (
+                                f"ImageJ ROI ({n_polys} region(s))"
+                                if roi_from_imagej
+                                else f"Manual polygon ({n_polys} shape(s))")
+                            _log(f"  User polygon ROI: {n_polys} shape(s), "
+                                 f"{100.0 * roi_mask.mean():.1f}% of frame")
                     except Exception as poly_exc:
                         _log(f"  WARN: polygon ROI failed — {poly_exc}.")
                         roi_mask = None
@@ -2193,8 +2214,17 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 }
             if "D" in diff_df.columns:
                 d_thresh = float(p.get("mobile_d_threshold", 0.05))
-                summary["mobile_fraction"] = float(
-                    (diff_df["D"] > d_thresh).mean())
+                # Match the canonical definition used by the mobile-fraction
+                # panel and the mob/immob ratio (fa_diffusion): D >= threshold
+                # over FINITE, POSITIVE D only.  The old `(D > thresh).mean()`
+                # used strict `>` and counted NaN-D failed fits in the
+                # denominator (NaN > t is False), so the headline number was
+                # biased low and disagreed with its own panel.  (#9)
+                _d = diff_df["D"].to_numpy(dtype=float)
+                _valid = np.isfinite(_d) & (_d > 0)
+                summary["mobile_fraction"] = (
+                    float((_d[_valid] >= d_thresh).mean())
+                    if _valid.any() else None)
             if "loc_sigma_nm" in diff_df.columns:
                 _ls = diff_df["loc_sigma_nm"].dropna()
                 if len(_ls):
