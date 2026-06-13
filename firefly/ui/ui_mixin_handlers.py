@@ -666,11 +666,30 @@ class HandlersMixin:
             self._start_single_run()
 
     def _on_poll_queue(self):
+        """Re-entrancy-guarded QTimer slot for the queue drain.
+
+        A terminal handler in the drain (_handle_failed / _handle_compare_error)
+        can open a MODAL dialog whose nested Qt event loop re-fires this 33 ms
+        timer.  Without this guard the re-entrant call would see the now-dead
+        subprocess and fire _handle_failed a SECOND time (stacked crash dialogs),
+        or null _msg_queue/_proc under the outer frame.  The try/finally ensures
+        the flag clears even if a handler raises.  (#1)
+        """
+        if getattr(self, "_poll_busy", False):
+            return
+        self._poll_busy = True
+        try:
+            self._drain_msg_queue()
+        finally:
+            self._poll_busy = False
+
+    def _drain_msg_queue(self):
         """Drain pending messages from the subprocess's message queue.
 
-        Called on a QTimer at ~30 Hz while a run is active.  We process at
-        most a few hundred messages per tick to keep the UI responsive
-        when tqdm is spamming progress updates during fast stages.
+        Called via the re-entrancy-guarded _on_poll_queue slot at ~30 Hz while a
+        run is active.  We process at most a few hundred messages per tick to
+        keep the UI responsive when tqdm is spamming progress updates during
+        fast stages.
         """
         if self._msg_queue is None:
             return

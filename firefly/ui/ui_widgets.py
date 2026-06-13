@@ -2420,6 +2420,18 @@ class _ResultsPanel(QtWidgets.QFrame):
         self._stats_container.hide()
         self._out_dir = ""
 
+    def show_warning(self, message: str, severity: str = "warn"):
+        """Show a one-off severity banner in the panel and set the readiness pill
+        to 'Completed with warnings'.  Reuses the QC-flag banner infrastructure.
+        Call AFTER show_stats(), which clears the flags container.  (#18)"""
+        try:
+            self._flags_layout.addWidget(_AlertBanner(severity, message))
+            self._flags_container.show()
+            self._qc_badge.set_state("blocked", "Completed with warnings")
+            self._qc_badge.show()
+        except Exception:
+            pass
+
     def _clear_stats(self):
         while self._stats_grid.count():
             item = self._stats_grid.takeAt(0)
@@ -2685,11 +2697,22 @@ class _ResultsPanel(QtWidgets.QFrame):
         return ""
 
     def show_results(self, headline: str, out_dir: str,
-                     files: list[str] | None = None):
-        """Populate the panel with a completed run's outputs."""
+                     files: list[str] | None = None, severity: str = "success"):
+        """Populate the panel with a completed run's outputs.
+
+        `severity` controls the headline colour so a failed or empty run is NOT
+        painted like a successful one: 'success' (green), 'warn' (amber — e.g. a
+        zero-trajectory run or a partially-failed batch), or 'danger' (red —
+        e.g. every file in a batch failed).  (#17/#18)
+        """
+        _sev_color = {
+            "success": _THEME["SUCCESS"],
+            "warn":    _THEME.get("WARN", _THEME["SUCCESS"]),
+            "danger":  _THEME.get("DANGER", _THEME["SUCCESS"]),
+        }.get(severity, _THEME["SUCCESS"])
         self._headline.setText(headline)
         self._headline.setStyleSheet(
-            f"color: {_THEME['SUCCESS']}; font-size: 16px; font-weight: 700;")
+            f"color: {_sev_color}; font-size: 16px; font-weight: 700;")
         self._headline.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 

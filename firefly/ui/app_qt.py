@@ -3150,10 +3150,27 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         stem    = payload.get("stem", "")
         summary = payload.get("summary") or {}
         n_tracks = summary.get("n_tracks", payload.get("n_tracks", 0))
-        headline = f"{stem}  —  {n_tracks:,} trajectories" if stem else \
-                   f"Analysis complete — {n_tracks:,} trajectories"
-        self.run_results.show_results(headline, out_dir)
+        # A zero-trajectory result is almost always a real problem (detection
+        # settings too strict, an ROI masking everything, or bad calibration
+        # suppressing detection) — surface it as a WARNING, not a green success
+        # with empty stats.  (#18)
+        if not n_tracks:
+            headline = (f"{stem}  —  no trajectories produced" if stem
+                        else "Analysis finished — NO trajectories produced")
+            self.run_results.show_results(headline, out_dir, severity="warn")
+        else:
+            headline = f"{stem}  —  {n_tracks:,} trajectories" if stem else \
+                       f"Analysis complete — {n_tracks:,} trajectories"
+            self.run_results.show_results(headline, out_dir)
         self.run_results.show_stats(summary)
+        # AFTER show_stats (which clears the flags container): a zero-trajectory
+        # run is almost always a real problem, so add an explicit warning banner
+        # instead of a silent green "complete".  (#18)
+        if not n_tracks:
+            self.run_results.show_warning(
+                "No trajectories were produced — check the detection settings "
+                "(diameter / minmass), the ROI, and the pixel-size / frame-"
+                "interval calibration.")
         try:    self.pipeline_diagram.set_complete()
         except AttributeError: pass
         self.run_stage_label.setText("Done")
@@ -3251,9 +3268,23 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 common_root = ""
             except Exception:
                 common_root = os.path.dirname(ok_dirs[0])
+        # Don't paint a failed batch in success-green.  All-failed → DANGER,
+        # any failures → WARN, otherwise success.  (#17)
+        if n_total and n_ok == 0:
+            _sev = "danger"
+            _warn = (f"Every file failed ({n_fail}/{n_total}). See the console "
+                     f"log for the per-file errors.")
+        elif n_fail:
+            _sev = "warn"
+            _warn = (f"{n_fail} of {n_total} file(s) failed. See the console log "
+                     f"for the per-file errors.")
+        else:
+            _sev, _warn = "success", None
         self.run_results.show_results(headline, common_root,
-                                      files=None)
+                                      files=None, severity=_sev)
         self.run_results.show_stats(agg_summary)
+        if _warn:
+            self.run_results.show_warning(_warn, severity=_sev)
 
     def _handle_compare_done(self, payload: dict):
         """Compare terminal message — figure + CSVs + PDF have been saved."""
