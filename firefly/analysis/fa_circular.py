@@ -2196,7 +2196,9 @@ def _two_group_nonparametric(a, b, which="mann_whitney", seed=0):
             res = permutation_test(
                 (a, b), lambda x, y: np.mean(x) - np.mean(y),
                 permutation_type="independent", vectorized=False,
-                n_resamples=9999, alternative="two-sided", random_state=seed)
+                # rng= is scipy's current seed kwarg (accepted since 1.15),
+                # replacing the deprecated random_state=; same reproducible draw.
+                n_resamples=9999, alternative="two-sided", rng=seed)
             return (float(res.pvalue), "Permutation")
     except Exception:
         pass
@@ -2301,8 +2303,9 @@ def _dunnett_records(valid_arrs, valid_idx, labels, control_label):
         others_k = [k for k in range(len(valid_arrs)) if k != ctrl_k]
         if not others_k:
             return []
+        # rng= replaces the deprecated random_state= (scipy >= 1.15).
         res = dunnett(*[valid_arrs[k] for k in others_k],
-                      control=valid_arrs[ctrl_k], random_state=0)
+                      control=valid_arrs[ctrl_k], rng=0)
         pj = np.atleast_1d(res.pvalue)
         recs = []
         for pos, k in enumerate(others_k):
