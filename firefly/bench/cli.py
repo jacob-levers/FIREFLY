@@ -104,6 +104,52 @@ def _compare(args):
     return 0
 
 
+def _challenge(args):
+    from firefly.bench.config import RunConfig
+    from firefly.bench.public import load_gt_dataset
+    from firefly.bench.runners import compare_engines
+    from firefly.bench.report import build_report_table, render_report_figure
+
+    sim = load_gt_dataset(args.tif, args.gt, pixel_size_um=args.pixel_size,
+                          frame_interval_s=args.frame_interval)
+    m = sim.meta
+    print(f"[bench] loaded {sim.stack.shape} stack, {len(sim.gt_locs):,} GT locs "
+          f"(px={m['pixel_size_um']*1000:.1f}nm, sigma={m['psf_sigma_px']:.2f}px, "
+          f"~{m['photons_per_emitter']:.0f} photons)")
+    backends = [b.strip() for b in args.backends.split(",") if b.strip()]
+    if any(b != "trackpy" for b in backends):
+        try:
+            import torch  # noqa: F401
+        except Exception:
+            dropped = [b for b in backends if b != "trackpy"]
+            backends = [b for b in backends if b == "trackpy"]
+            print(f"[bench] PyTorch unavailable — skipping {dropped}")
+    if not backends:
+        print("[bench] no runnable backends.")
+        return 1
+
+    base_rc = (RunConfig(minmass=args.minmass, workers=args.workers)
+               if args.minmass is not None else RunConfig(workers=args.workers))
+    print(f"[bench] running {backends} on external GT "
+          + (f"(fixed minmass={args.minmass})" if args.minmass is not None
+             else "(each engine auto-thresholds)"))
+    rows = compare_engines(sim, backends=backends, linkers=[args.linker],
+                           base_run_cfg=base_rc)
+    table = build_report_table(rows)
+
+    os.makedirs(args.out, exist_ok=True)
+    csv_p = os.path.join(args.out, "challenge_comparison.csv")
+    png_p = os.path.join(args.out, "challenge_comparison.png")
+    table.to_csv(csv_p, index=False)
+    render_report_figure(rows, sim, out_path=png_p)
+    det = ["tool", "f1", "jaccard", "precision", "recall", "rmse_nm", "n_matched"]
+    print(table[det].to_string(index=False))
+    print(f"[bench] wrote {csv_p}\n[bench] wrote {png_p}")
+    print("[bench] note: a per-localisation GT (no track IDs) scores DETECTION; "
+          "tracking metrics are N/A.")
+    return 0
+
+
 def _ingest(args):
     import json
     import pandas as pd
@@ -160,6 +206,25 @@ def main(argv=None):
     cm.add_argument("--tiff", action="store_true", help="also write sim_stack.tif")
     cm.add_argument("--gt", action="store_true", help="also write GT CSVs")
     cm.set_defaults(func=_compare)
+
+    ch = sub.add_parser("challenge",
+                        help="score the engines on an EXTERNAL image stack + GT CSV")
+    ch.add_argument("--tif", required=True, help="image stack (TIFF)")
+    ch.add_argument("--gt", required=True,
+                    help="ground-truth localisations CSV (frame + x/y in nm or px; "
+                         "EPFL SMLM / ThunderSTORM / SPT-Simulator conventions)")
+    ch.add_argument("--out", default="bench_challenge", help="output dir")
+    ch.add_argument("--backends", default="trackpy,torch,atrous",
+                    help="comma list of detection backends")
+    ch.add_argument("--linker", default="trackpy", help="linker (trackpy|lap|kalman)")
+    ch.add_argument("--pixel-size", dest="pixel_size", type=float, default=None,
+                    help="µm/px (default: inferred from the GT field extent)")
+    ch.add_argument("--frame-interval", dest="frame_interval", type=float,
+                    default=0.02, help="seconds/frame (display only for detection)")
+    ch.add_argument("--minmass", type=float, default=None,
+                    help="fixed minmass for ALL engines (default: auto-threshold)")
+    ch.add_argument("--workers", type=int, default=1, help="CPU workers per engine")
+    ch.set_defaults(func=_challenge)
 
     ig = sub.add_parser("ingest", help="score an external tool export vs a saved GT")
     ig.add_argument("--gt-dir", required=True, help="dir with ground_truth_* files")
