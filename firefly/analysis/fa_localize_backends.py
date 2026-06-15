@@ -1602,9 +1602,9 @@ class AtrousWaveletBackend(TorchBackend):
     and mass run on the bandpassed ``signal``, so the ``mass`` column stays on
     the trackpy scale and ``minmass`` means the same thing across all backends.
 
-    EXPERIMENTAL: ``_ATROUS_K_SIGMA`` (detection sensitivity) is calibrated for
-    count parity against TrackpyBackend in a separate step; until then it
-    defaults to a conservative ~3σ noise floor.
+    ``_ATROUS_K_SIGMA`` (detection sensitivity) is calibrated for count parity
+    against the Crocker–Grier detectors on synthetic ground truth — see the
+    constant's provenance comment below.
     """
     name = "atrous"
 

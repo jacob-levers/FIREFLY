@@ -311,12 +311,15 @@ def _find_czi_series(path):
 
 
 def _czi_parallel_decode_enabled() -> bool:
-    """Opt-in flag (default OFF) for the parallel JPEG-XR CZI decode path.
+    """Flag (default ON) for the parallel JPEG-XR CZI decode path.
 
-    Default off so a build behaves EXACTLY like the trusted single-threaded
-    bulk read unless a user explicitly enables it (to validate the speedup on
-    real Zeiss Elyra data before it becomes the default)."""
-    return os.environ.get("FIREFLY_CZI_PARALLEL_DECODE", "0").strip().lower() in (
+    Decodes compressed CZI subblocks across the file's core budget instead of on
+    one core.  Safe by construction — `_decode_czi_parallel` spot-checks each
+    file's frames against the trusted single-threaded bulk read and silently
+    falls back on ANY disagreement — so it is on by default.  Set
+    ``FIREFLY_CZI_PARALLEL_DECODE=0`` (or untick "Parallel CZI decode") to force
+    the reference decoder."""
+    return os.environ.get("FIREFLY_CZI_PARALLEL_DECODE", "1").strip().lower() in (
         "1", "true", "yes", "on")
 
 

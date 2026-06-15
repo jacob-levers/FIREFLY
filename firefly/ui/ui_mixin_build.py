@@ -1055,11 +1055,11 @@ class BuildMixin:
             "• Crocker–Grier — PyTorch (Apple MPS) — force Apple GPU; on some\n"
             "    M-chips may hit MPS allocator issues at very low minmass.\n"
             "• Crocker–Grier — PyTorch (CPU) — force PyTorch on CPU (benchmarking).\n"
-            "• À trous wavelet — PyTorch (experimental) — a DIFFERENT, multi-scale\n"
-            "    wavelet detector; can find faint spots in low-SNR / structured\n"
-            "    background.  Shares refinement with the Crocker–Grier PyTorch path,\n"
-            "    so mass / minmass match.  Sensitivity not yet calibrated — verify "
-            "counts.")
+            "• À trous wavelet — PyTorch — a DIFFERENT, multi-scale wavelet\n"
+            "    detector; can find faint spots in low-SNR / structured background.\n"
+            "    Shares refinement with the Crocker–Grier PyTorch path, so mass /\n"
+            "    minmass match.  Detection sensitivity is calibrated for count\n"
+            "    parity with trackpy.")
         gl.addRow(_label_with_info("Detection backend", "detection backend"), self.c_backend)
         self.s_workers = self._spin_int(N_CPUS, 1, N_CPUS,
             tip="Parallel CPU workers for the trackpy backend's multiprocessing\n"
@@ -1129,11 +1129,13 @@ class BuildMixin:
             gl.addRow("Concurrent loads (0 = auto)", self.s_hyperfly_load_slots)
             gl.addRow("GPU detect slots (0 = auto)", self.s_hyperfly_gpu_slots)
 
-        # Experimental parallel CZI decode — opt-in until validated on real
-        # Zeiss Elyra data.  Decodes compressed (JPEG-XR) subblocks across the
-        # file's core budget instead of one core, so loading uses the whole box.
-        self.c_czi_parallel = QtWidgets.QCheckBox("Parallel CZI decode (experimental)")
-        self.c_czi_parallel.setChecked(False)
+        # Parallel CZI decode (default ON).  Decodes compressed (JPEG-XR)
+        # subblocks across the file's core budget instead of one core, so loading
+        # uses the whole box.  Safe by construction — each file's decode is
+        # spot-checked against the reference decoder and silently falls back on
+        # any disagreement, so it can never corrupt frames.
+        self.c_czi_parallel = QtWidgets.QCheckBox("Parallel CZI decode")
+        self.c_czi_parallel.setChecked(True)
         self.c_czi_parallel.setToolTip(
             "Decode compressed Zeiss CZI stacks (JPEG-XR / Elyra) across many\n"
             "cores instead of one — so loading uses the cores HYPER-FLY already\n"
@@ -1141,8 +1143,8 @@ class BuildMixin:
             "on heavily-compressed data.\n"
             "Safe: each file's decode is spot-checked against the reference\n"
             "decoder and silently falls back to it on any disagreement, so it\n"
-            "cannot corrupt frames. Off by default until you've validated the\n"
-            "speed-up on your own data.")
+            "cannot corrupt frames. On by default; untick to force the\n"
+            "single-threaded reference decoder.")
         gl.addRow("CZI loading", self.c_czi_parallel)
 
         # GPU-acceleration entry point — Windows only.  When CUDA is NOT

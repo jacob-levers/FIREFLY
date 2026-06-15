@@ -2297,7 +2297,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         "Crocker–Grier — PyTorch (NVIDIA CUDA)":    "torch-cuda",
         "Crocker–Grier — PyTorch (Apple MPS)":      "torch-mps",
         "Crocker–Grier — PyTorch (CPU)":            "torch-cpu",
-        "À trous wavelet — PyTorch (experimental)": "atrous",
+        "À trous wavelet — PyTorch":                "atrous",
     }
     # Stale dropdown labels → current label, applied on settings restore so a
     # saved preference still resolves after a label rename.  The old "Torch
@@ -2316,7 +2316,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         "Torch — NVIDIA CUDA":            "Crocker–Grier — PyTorch (NVIDIA CUDA)",
         "Torch — Apple MPS":              "Crocker–Grier — PyTorch (Apple MPS)",
         "Torch — CPU":                    "Crocker–Grier — PyTorch (CPU)",
-        "À trous wavelet (experimental)": "À trous wavelet — PyTorch (experimental)",
+        "À trous wavelet (experimental)":            "À trous wavelet — PyTorch",
+        "À trous wavelet — PyTorch (experimental)":  "À trous wavelet — PyTorch",
     }
     _BACKEND_VALUE_TO_LABEL = {v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()}
 
