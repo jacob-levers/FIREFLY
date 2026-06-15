@@ -2297,6 +2297,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         "Torch — Apple MPS":   "torch-mps",
         "Torch — NVIDIA CUDA": "torch-cuda",
         "Torch — CPU":         "torch-cpu",
+        "À trous wavelet (experimental)": "atrous",
     }
     # Stale dropdown labels → current label, applied on settings restore.  The
     # old "Torch (auto)" was the shipped default and FORCED the Torch backend.

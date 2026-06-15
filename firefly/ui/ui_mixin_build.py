@@ -1056,7 +1056,13 @@ class BuildMixin:
             "                              macOS/M-chip combinations may hit memory-\n"
             "                              allocator issues at very low minmass.\n"
             "• Torch — NVIDIA CUDA       — force NVIDIA GPU.\n"
-            "• Torch — CPU               — force PyTorch on CPU (for benchmarking).")
+            "• Torch — CPU               — force PyTorch on CPU (for benchmarking).\n"
+            "• À trous wavelet (experimental) — multi-scale wavelet detector\n"
+            "                              (PyTorch/GPU); can find faint spots in\n"
+            "                              low-SNR / structured background. Shares\n"
+            "                              refinement with Torch, so mass/minmass\n"
+            "                              match. Detection sensitivity not yet\n"
+            "                              calibrated — verify counts before relying.")
         gl.addRow(_label_with_info("Detection backend", "detection backend"), self.c_backend)
         self.s_workers = self._spin_int(N_CPUS, 1, N_CPUS,
             tip="Parallel CPU workers for the trackpy backend's multiprocessing\n"
