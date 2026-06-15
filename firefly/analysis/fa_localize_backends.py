@@ -1608,18 +1608,30 @@ class AtrousWaveletBackend(TorchBackend):
     """
     name = "atrous"
 
-    # Number of à trous wavelet planes whose ReLU'd product forms the map.
+    # Number of à trous wavelet planes whose significant parts form the map.
     _ATROUS_N_SCALES = 3
-    # Detection sensitivity: spots are wavelet-product maxima above
-    # ``median + _ATROUS_K_SIGMA · σ_MAD``.  Calibrated later; 3.0 ≈ 3σ floor.
-    _ATROUS_K_SIGMA = 3.0
+    # Detection sensitivity: per wavelet plane, keep coefficients above
+    # ``median + _ATROUS_K_SIGMA · σ`` (σ = 1.4826·MAD of the plane), then
+    # multiply the significant planes.  Calibrated against synthetic ground
+    # truth (scripts/calibrate_atrous.py, 2026-06-15): k=2.0 maximised mean F1
+    # = 0.86 (recall 0.80, precision 0.95) over SNR 2–8 × density 20/60 spots —
+    # markedly more precise than trackpy (F1 0.41) on the same noisy stacks.
+    # Higher k → higher precision, lower recall.  RE-VALIDATE on real data.
+    _ATROUS_K_SIGMA = 2.0
     # B3-spline à trous kernel (1D; applied separably as rows then columns).
     _B3_KERNEL = (1 / 16, 4 / 16, 6 / 16, 4 / 16, 1 / 16)
 
     def _detection_map(self, x, signal, diameter, device, dtype):
-        """Product of the first ``_ATROUS_N_SCALES`` à trous wavelet planes of
-        the bandpassed signal.  Noise (uncorrelated across scales) → near-zero
-        product; spot-sized structure → reinforced positive peaks."""
+        """Product of the first ``_ATROUS_N_SCALES`` à trous wavelet planes,
+        each thresholded at its OWN per-frame noise floor.
+
+        Each wavelet plane ``W_i = A_i − A_{i+1}`` is dense (signed), so a robust
+        per-frame ``σ = 1.4826·MAD(W_i)`` is a well-defined noise estimate — the
+        RAW product's MAD is degenerate (it's mostly exact zeros, so median and
+        MAD are both 0 and the threshold can't depend on k).  Keeping only
+        coefficients above ``k·σ`` per plane, then multiplying, suppresses noise
+        (uncorrelated across scales) and reinforces spot-sized structure;
+        ``_ATROUS_K_SIGMA`` is the detection sensitivity."""
         import torch
         import torch.nn.functional as F
         kvec = torch.tensor(self._B3_KERNEL, device=device, dtype=dtype)
@@ -1637,24 +1649,22 @@ class AtrousWaveletBackend(TorchBackend):
         corr = None
         for level in range(self._ATROUS_N_SCALES):
             a_next = _smooth(a, level)
-            plane = F.relu(a - a_next)      # wavelet plane at this scale
-            corr = plane if corr is None else corr * plane
+            plane = a - a_next                          # wavelet plane (dense, ±)
+            flat = plane.reshape(plane.shape[0], -1)    # per-frame robust stats
+            med = flat.median(dim=1, keepdim=True).values
+            mad = (flat - med).abs().median(dim=1, keepdim=True).values
+            thr = (med + self._ATROUS_K_SIGMA * (1.4826 * mad)).view(-1, 1, 1, 1)
+            sig = F.relu(plane - thr)                   # significant positive part
+            corr = sig if corr is None else corr * sig
             a = a_next
         return corr
 
     def _detection_threshold(self, dmap, percentile):
-        """Robust noise-floor threshold for the SPARSE wavelet-product map:
-        ``median + k·σ`` with ``σ = 1.4826·MAD``.  The ``percentile`` arg is
-        ignored — a percentile threshold collapses to ~0 on the mostly-zero
-        product, so à trous uses the standard MAD noise floor instead."""
-        import torch
-        flat = dmap.reshape(-1)
-        if flat.numel() > 5_000_000:
-            step = max(1, int(flat.numel() // 5_000_000))
-            flat = flat[::step][:5_000_000]
-        med = torch.median(flat)
-        mad = torch.median(torch.abs(flat - med))
-        return med + self._ATROUS_K_SIGMA * (1.4826 * mad)
+        """The wavelet planes are already significance-thresholded per scale in
+        ``_detection_map`` (that is where ``_ATROUS_K_SIGMA`` acts), so any
+        positive product pixel is a candidate and the shared max-pool picks the
+        local maxima.  ``percentile`` is unused for this backend."""
+        return dmap.new_tensor(0.0)
 
     def localise(self, stack, **kwargs):
         """TorchBackend.localise with a coincident-duplicate guard.
