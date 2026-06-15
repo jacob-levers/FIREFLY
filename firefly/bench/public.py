@@ -70,21 +70,41 @@ def load_gt_dataset(tif_path, gt_csv_path, *, pixel_size_um=None,
     x = gt[canon["x"]].to_numpy(float)
     y = gt[canon["y"]].to_numpy(float)
     in_nm = _is_nm(canon["x"])
+    inferred_px = False
     if pixel_size_um is None:
-        if in_nm:                                  # infer nm/px from field extent
+        if in_nm:
+            # Infer nm/px from the field extent — UNRELIABLE: simulators often
+            # place emitters slightly OUTSIDE the camera FOV, so the extent
+            # OVERESTIMATES the pixel size and silently misaligns the GT (the
+            # exact failure on the SPT-Simulator set: 106.7 inferred vs the true
+            # 100).  Always prefer passing the dataset's real pixel_size_um.
             pixel_size_um = max(np.nanmax(x) / W, np.nanmax(y) / H) / 1000.0
+            inferred_px = True
         else:
             pixel_size_um = 0.106                   # already px; size only scales RMSE-nm
     px_nm = pixel_size_um * 1000.0
     if in_nm:
         x = x / px_nm
         y = y / px_nm
+    if inferred_px:
+        print(f"  WARNING: pixel size INFERRED from the GT field extent as "
+              f"{px_nm:.1f} nm/px — this is unreliable (ground truth often extends "
+              f"beyond the camera FOV).  Pass pixel_size_um / --pixel-size with the "
+              f"dataset's true value to avoid a coordinate MISALIGNMENT.")
 
     photons = (gt[canon["intensity"]].to_numpy(float) if "intensity" in canon
                else np.ones(len(gt)))
     gt_locs = pd.DataFrame({"frame": frame, "x": x, "y": y, "photons": photons})
-    gt_locs = gt_locs[(gt_locs["frame"] >= 0)
-                      & (gt_locs["frame"] < T)].reset_index(drop=True)
+    n0 = len(gt_locs)
+    # Keep only GT inside the frame range AND the image FOV — emitters the
+    # simulator placed outside the camera bounds are not detectable, so counting
+    # them as missed detections would unfairly depress recall.
+    gt_locs = gt_locs[(gt_locs["frame"] >= 0) & (gt_locs["frame"] < T)
+                      & (gt_locs["x"] >= 0) & (gt_locs["x"] < W)
+                      & (gt_locs["y"] >= 0) & (gt_locs["y"] < H)].reset_index(drop=True)
+    if n0 - len(gt_locs):
+        print(f"  Dropped {n0 - len(gt_locs):,} ground-truth localisation(s) "
+              f"outside the {W}x{H} FOV / frame range (not detectable).")
 
     sigma_nm = (float(gt[canon["sigma"]].median()) if "sigma" in canon
                 else 0.21 * 660.0 / 1.4)            # ~Gaussian-PSF default
