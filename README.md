@@ -515,7 +515,7 @@ available RAM minus the user-reserve.
 **Run feels slow even with GPU set**
 → Check the resource monitor on the Analysis tab. If GPU% sits at 0,
 the backend fell back to CPU — look at the log for the resolver's
-verdict. On macOS, `Torch — Apple MPS` requires PyTorch ≥ 2.0 and a
+verdict. On macOS, `Crocker–Grier — PyTorch (Apple MPS)` requires PyTorch ≥ 2.0 and a
 recent macOS; on older systems the resolver auto-falls back to trackpy.
 
 **Compare panels show "no data" placeholders**

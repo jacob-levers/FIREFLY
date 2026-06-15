@@ -1960,7 +1960,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                         widget.setCurrentText(v_str)
                     # Migration: old saved backend values were stored as
                     # internal strings ("torch-mps") but the combo now
-                    # shows labels ("Torch — Apple MPS").  Translate if
+                    # shows labels ("Crocker–Grier — PyTorch (Apple MPS)").  Translate if
                     # this widget is the backend combo and the saved
                     # value is a recognised internal value.
                     elif widget is getattr(self, "c_backend", None):
@@ -2291,22 +2291,32 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
     # GUI shows them as proper grammar so users don't see lowercase
     # snake-case-y identifiers in their face.
     _BACKEND_LABEL_TO_VALUE = {
-        "Auto":                "auto",
-        "Trackpy (CPU)":       "trackpy",
-        "Torch — GPU (auto device)": "torch",
-        "Torch — Apple MPS":   "torch-mps",
-        "Torch — NVIDIA CUDA": "torch-cuda",
-        "Torch — CPU":         "torch-cpu",
-        "À trous wavelet (experimental)": "atrous",
+        "Auto":                                     "auto",
+        "Crocker–Grier — Trackpy (CPU)":            "trackpy",
+        "Crocker–Grier — PyTorch (GPU, auto)":      "torch",
+        "Crocker–Grier — PyTorch (NVIDIA CUDA)":    "torch-cuda",
+        "Crocker–Grier — PyTorch (Apple MPS)":      "torch-mps",
+        "Crocker–Grier — PyTorch (CPU)":            "torch-cpu",
+        "À trous wavelet — PyTorch (experimental)": "atrous",
     }
-    # Stale dropdown labels → current label, applied on settings restore.  The
-    # old "Torch (auto)" was the shipped default and FORCED the Torch backend.
-    # Migrate it to "Auto", which picks a GPU when healthy and the parallel
-    # multi-core Torch-CPU path when there's no GPU (Auto never falls back to
-    # Trackpy — that's a manual choice).  Users who want a pinned device can
-    # re-pick "Torch — GPU (auto device)" or "Torch — CPU".
+    # Stale dropdown labels → current label, applied on settings restore so a
+    # saved preference still resolves after a label rename.  The old "Torch
+    # (auto)" was the shipped default and FORCED the Torch backend; migrate it to
+    # "Auto" (picks a GPU when healthy, else the parallel Torch-CPU path; Auto
+    # never falls back to Trackpy — that's a manual choice).  The "Torch — …"
+    # labels were renamed to "Crocker–Grier — PyTorch …" so the detection
+    # ALGORITHM is explicit (trackpy + every PyTorch backend run Crocker–Grier;
+    # only à trous is a different, wavelet detector).  Backend VALUES are
+    # unchanged, so settings that stored the VALUE migrate automatically via
+    # _BACKEND_VALUE_TO_LABEL; this map covers settings that stored the old LABEL.
     _BACKEND_LABEL_MIGRATION = {
-        "Torch (auto)": "Auto",
+        "Torch (auto)":                   "Auto",
+        "Trackpy (CPU)":                  "Crocker–Grier — Trackpy (CPU)",
+        "Torch — GPU (auto device)":      "Crocker–Grier — PyTorch (GPU, auto)",
+        "Torch — NVIDIA CUDA":            "Crocker–Grier — PyTorch (NVIDIA CUDA)",
+        "Torch — Apple MPS":              "Crocker–Grier — PyTorch (Apple MPS)",
+        "Torch — CPU":                    "Crocker–Grier — PyTorch (CPU)",
+        "À trous wavelet (experimental)": "À trous wavelet — PyTorch (experimental)",
     }
     _BACKEND_VALUE_TO_LABEL = {v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()}
 
@@ -2386,7 +2396,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                         self, "MPS backend unavailable",
                         "You picked the Apple MPS backend, but this system "
                         "doesn't have MPS available (needs Apple Silicon + "
-                        "macOS 12+).  Switch to Auto or Torch — CPU.")
+                        "macOS 12+).  Switch to Auto or "
+                        "'Crocker–Grier — PyTorch (CPU)'.")
                     return False
         except Exception:
             # If torch import itself fails, let the worker emit its own

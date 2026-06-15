@@ -613,16 +613,19 @@ def test_hf_downscale_preview():
 
 def test_quiet_combo_does_not_size_to_widest_item():
     """The sidebar combos must NOT demand their widest item's width, or a long
-    entry (e.g. 'Torch — GPU (auto device)') pushes the form past the viewport
-    and the sidebar scrolls sideways."""
+    entry (e.g. 'Crocker–Grier — PyTorch (NVIDIA CUDA)') pushes the form past the
+    viewport and the sidebar scrolls sideways."""
     pytest.importorskip("PySide6")
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6 import QtWidgets
     QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     from firefly.ui.ui_widgets import _QuietComboBox
-    items = ["Auto", "Trackpy (CPU)", "Torch — GPU (auto device)",
-             "Torch — Apple MPS", "Torch — NVIDIA CUDA", "Torch — CPU"]
+    items = ["Auto", "Crocker–Grier — Trackpy (CPU)",
+             "Crocker–Grier — PyTorch (GPU, auto)",
+             "Crocker–Grier — PyTorch (Apple MPS)",
+             "Crocker–Grier — PyTorch (NVIDIA CUDA)",
+             "Crocker–Grier — PyTorch (CPU)"]
     quiet = _QuietComboBox(); quiet.addItems(items)
     plain = QtWidgets.QComboBox(); plain.addItems(items)
     assert quiet.sizeHint().width() < plain.sizeHint().width()

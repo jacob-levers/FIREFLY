@@ -791,7 +791,8 @@ def _resolve_backend(name: str | None):
                     "Fix: on Windows, click the 'Set up GPU acceleration…' "
                     "button in the Analysis sidebar to install the CUDA "
                     "wheel — or change the Detection backend dropdown to "
-                    "'Auto' or 'Torch — CPU' to continue without GPU.")
+                    "'Auto' or 'Crocker–Grier — PyTorch (CPU)' to continue "
+                    "without GPU.")
             if short == "mps":
                 has_mps = (hasattr(_torch.backends, "mps")
                            and _torch.backends.mps.is_available())
@@ -801,7 +802,7 @@ def _resolve_backend(name: str | None):
                         "system doesn't have MPS available "
                         "(MPS requires Apple Silicon + macOS 12+).\n\n"
                         "Change the Detection backend dropdown to 'Auto' "
-                        "or 'Torch — CPU' to continue.")
+                        "or 'Crocker–Grier — PyTorch (CPU)' to continue.")
         except RuntimeError:
             raise
         except Exception:
@@ -819,7 +820,7 @@ def _resolve_backend(name: str | None):
                           f"present but this PyTorch build has no usable kernels "
                           f"for it (likely an unsupported GPU architecture — e.g. "
                           f"a Pascal card under a CUDA-13 build). Falling back to "
-                          f"Torch — CPU.")
+                          f"PyTorch CPU.")
                     forced = "cpu"
             except Exception:
                 pass
