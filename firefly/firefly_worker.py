@@ -72,6 +72,9 @@ _POSTPROC_LINK_DEFAULTS = {
     "max_track_len": None,
     "max_lagtime":   20,
     "n_fit":         5,
+    "linker":        "trackpy",   # reproduce the original run's linker on re-ROI
+    "link_params":   {},          # …and its per-linker knobs (full_lap / sa / …)
+    "auto_search_range": False,   # resolved to a fixed search_range during the run
 }
 
 
@@ -1652,6 +1655,22 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                  f"Consider raising minmass to reduce false positives.")
         _prog(50, f"Linking {len(locs):,} localisations…")
 
+        # Opt-in auto search-range: estimate it from the motion before linking,
+        # then RESOLVE it into the request (so a re-ROI reproduces the same value
+        # instead of re-estimating on different locs).  Best-effort — any failure
+        # falls back to the fixed value.
+        if p.get("auto_search_range"):
+            try:
+                from firefly.analysis.fa_linking_auto import estimate_link_params
+                _sr_auto, _ = estimate_link_params(
+                    locs, memory=int(p["memory"]),
+                    min_len=int(p["min_track_len"]), log_cb=_log)
+                p["search_range"] = int(round(_sr_auto))
+            except Exception as _e:
+                _log(f"  Auto search-range failed ({type(_e).__name__}: {_e}); "
+                     f"using fixed {p.get('search_range')}px.")
+            p["auto_search_range"] = False        # resolved (or fell back)
+
         # Map linker [0, 1] progress onto the overall progress bar's 50–65%
         # range so the user sees genuine per-frame motion instead of a
         # multi-minute black box.
@@ -1667,6 +1686,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             min_len=int(p["min_track_len"]),
             max_len=p.get("max_track_len"),
             linker=str(p.get("linker", "trackpy")),
+            link_params=p.get("link_params") or {},
             progress_cb=_link_progress,
             stop_event=cancel_event)
     n_tracks_found = tracks['particle'].nunique() if len(tracks) else 0
@@ -2181,11 +2201,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 # entry point reads — see _postproc_linking_params.
                 "diameter":         int(p.get("diameter", _POSTPROC_LINK_DEFAULTS["diameter"])),
                 "search_range":     int(p.get("search_range", _POSTPROC_LINK_DEFAULTS["search_range"])),
+                "auto_search_range": bool(p.get("auto_search_range", False)),
                 "memory":           int(p.get("memory", _POSTPROC_LINK_DEFAULTS["memory"])),
                 "min_track_len":    int(p.get("min_track_len", _POSTPROC_LINK_DEFAULTS["min_track_len"])),
                 "max_track_len":    (int(p["max_track_len"]) if p.get("max_track_len") else None),
                 "max_lagtime":      int(p.get("max_lagtime", _POSTPROC_LINK_DEFAULTS["max_lagtime"])),
                 "n_fit":            int(p.get("n_fit", _POSTPROC_LINK_DEFAULTS["n_fit"])),
+                "linker":           str(p.get("linker", _POSTPROC_LINK_DEFAULTS["linker"])),
+                "link_params":      (p.get("link_params") or _POSTPROC_LINK_DEFAULTS["link_params"]),
                 "n_localisations":  int(len(locs)),
                 "n_tracks":         int(diff_df.shape[0]) if diff_df is not None else 0,
                 "n_frames":         int(n_frames),

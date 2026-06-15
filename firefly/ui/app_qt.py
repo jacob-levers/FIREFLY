@@ -1793,10 +1793,13 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
 
             # ── Linking ───────────────────────────────────────────────────
             ("analysis/search_range",    self.s_search_range,    "spin",  int),
+            ("analysis/auto_search_range", self.c_auto_search_range, "check"),
             ("analysis/memory",          self.s_memory,          "spin",  int),
             ("analysis/min_track_len",   self.s_min_track_len,   "spin",  int),
             ("analysis/max_track_len",   self.s_max_track_len,   "spin",  int),
             ("analysis/linker",          self.c_linker,          "combo"),
+            ("analysis/allow_merging",   self.c_allow_merging,   "check"),
+            ("analysis/allow_splitting", self.c_allow_splitting, "check"),
 
             # ── Diffusion & motion ────────────────────────────────────────
             ("analysis/max_lagtime",     self.s_max_lagtime,     "spin",  int),
@@ -2290,14 +2293,16 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
     # (auto / trackpy / torch / torch-mps / torch-cuda / torch-cpu); the
     # GUI shows them as proper grammar so users don't see lowercase
     # snake-case-y identifiers in their face.
+    # One GPU option per algorithm.  "torch" / "atrous" auto-select this
+    # machine's GPU — CUDA on Windows/Linux, Apple MPS on macOS (and fall back to
+    # CPU when there's no GPU) — so a single "(GPU)" entry covers every OS; the
+    # explicit per-device pins (torch-cuda / torch-mps / torch-cpu) remain valid
+    # programmatically but are no longer surfaced in the dropdown.
     _BACKEND_LABEL_TO_VALUE = {
         "Auto":                                     "auto",
         "Crocker–Grier — Trackpy (CPU)":            "trackpy",
-        "Crocker–Grier — PyTorch (GPU, auto)":      "torch",
-        "Crocker–Grier — PyTorch (NVIDIA CUDA)":    "torch-cuda",
-        "Crocker–Grier — PyTorch (Apple MPS)":      "torch-mps",
-        "Crocker–Grier — PyTorch (CPU)":            "torch-cpu",
-        "À trous wavelet — PyTorch":                "atrous",
+        "Crocker–Grier — PyTorch (GPU)":            "torch",
+        "À trous wavelet — PyTorch (GPU)":          "atrous",
     }
     # Stale dropdown labels → current label, applied on settings restore so a
     # saved preference still resolves after a label rename.  The old "Torch
@@ -2312,14 +2317,29 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
     _BACKEND_LABEL_MIGRATION = {
         "Torch (auto)":                   "Auto",
         "Trackpy (CPU)":                  "Crocker–Grier — Trackpy (CPU)",
-        "Torch — GPU (auto device)":      "Crocker–Grier — PyTorch (GPU, auto)",
-        "Torch — NVIDIA CUDA":            "Crocker–Grier — PyTorch (NVIDIA CUDA)",
-        "Torch — Apple MPS":              "Crocker–Grier — PyTorch (Apple MPS)",
-        "Torch — CPU":                    "Crocker–Grier — PyTorch (CPU)",
-        "À trous wavelet (experimental)":            "À trous wavelet — PyTorch",
-        "À trous wavelet — PyTorch (experimental)":  "À trous wavelet — PyTorch",
+        # The four PyTorch CG device variants collapse to one OS-GPU option.
+        "Torch — GPU (auto device)":             "Crocker–Grier — PyTorch (GPU)",
+        "Crocker–Grier — PyTorch (GPU, auto)":   "Crocker–Grier — PyTorch (GPU)",
+        "Torch — NVIDIA CUDA":                   "Crocker–Grier — PyTorch (GPU)",
+        "Crocker–Grier — PyTorch (NVIDIA CUDA)": "Crocker–Grier — PyTorch (GPU)",
+        "Torch — Apple MPS":                     "Crocker–Grier — PyTorch (GPU)",
+        "Crocker–Grier — PyTorch (Apple MPS)":   "Crocker–Grier — PyTorch (GPU)",
+        # Force-CPU PyTorch retired from the dropdown → the multicore Trackpy CPU.
+        "Torch — CPU":                           "Crocker–Grier — Trackpy (CPU)",
+        "Crocker–Grier — PyTorch (CPU)":         "Crocker–Grier — Trackpy (CPU)",
+        "À trous wavelet (experimental)":            "À trous wavelet — PyTorch (GPU)",
+        "À trous wavelet — PyTorch (experimental)":  "À trous wavelet — PyTorch (GPU)",
+        "À trous wavelet — PyTorch":                 "À trous wavelet — PyTorch (GPU)",
     }
-    _BACKEND_VALUE_TO_LABEL = {v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()}
+    # Invert the label→value map, then add the retired device-pin VALUES so a
+    # settings file that stored an internal value (torch-cuda / torch-mps /
+    # torch-cpu) still restores to the collapsed dropdown entry.
+    _BACKEND_VALUE_TO_LABEL = {
+        **{v: k for k, v in _BACKEND_LABEL_TO_VALUE.items()},
+        "torch-cuda": "Crocker–Grier — PyTorch (GPU)",
+        "torch-mps":  "Crocker–Grier — PyTorch (GPU)",
+        "torch-cpu":  "Crocker–Grier — Trackpy (CPU)",
+    }
 
     def _available_backends(self) -> list[str]:
         """Return the static list of selectable backend LABELS (display

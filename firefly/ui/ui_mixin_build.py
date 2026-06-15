@@ -727,6 +727,10 @@ class BuildMixin:
         self.c_linker = QtWidgets.QComboBox()
         self.c_linker.addItem("Kalman (default)", "kalman")
         self.c_linker.addItem("Trackpy", "trackpy")
+        self.c_linker.addItem("Simple LAP — Jaqaman (TrackMate)", "simple_lap")
+        self.c_linker.addItem("Full LAP — TrackMate (merge/split)", "full_lap")
+        self.c_linker.addItem("Nearest-neighbour", "nn")
+        self.c_linker.addItem("Simulated annealing (palmTRACER-style)", "sa")
         self.c_linker.setToolTip(
             "Trajectory linker.\n"
             "Kalman (default): constant-velocity prediction (TrackMate-style\n"
@@ -734,8 +738,35 @@ class BuildMixin:
             "  and directed / fast transport where nearest-neighbour linking\n"
             "  swaps tracks; matches trackpy on pure diffusion. Slightly slower.\n"
             "Trackpy: Crocker-Grier recursive subnet nearest-neighbour — the\n"
-            "  long-standing linker, fast and well-tested for Brownian motion.")
+            "  long-standing linker, fast and well-tested for Brownian motion.\n"
+            "Simple LAP: Jaqaman two-step global assignment (frame-to-frame +\n"
+            "  gap-closing) — TrackMate's Simple LAP tracker.\n"
+            "Full LAP: Simple LAP plus optional merge/split events (below) —\n"
+            "  TrackMate's full LAP tracker.\n"
+            "Nearest-neighbour: greedy per-frame linking — TrackMate's simplest.\n"
+            "Simulated annealing: global multi-target optimisation (palmTRACER's\n"
+            "  documented method); slower, seeds from nearest-neighbour.")
         gl.addRow(_label_with_info("Linker", "linker"), self.c_linker)
+        # Full-LAP-only event toggles (merge/split).  OFF by default (single
+        # fluorophores don't physically coalesce); enabled only when Full LAP is
+        # selected so they don't mislead for the other linkers.
+        self.c_allow_merging = QtWidgets.QCheckBox("Allow merging (Full LAP)")
+        self.c_allow_merging.setToolTip(
+            "Full LAP only: allow a track END to merge into an ongoing track\n"
+            "(under-segmentation events).  Off by default.")
+        self.c_allow_splitting = QtWidgets.QCheckBox("Allow splitting (Full LAP)")
+        self.c_allow_splitting.setToolTip(
+            "Full LAP only: allow an ongoing track to SPLIT into a new track\n"
+            "(over-segmentation events).  Off by default.")
+        gl.addRow("", self.c_allow_merging)
+        gl.addRow("", self.c_allow_splitting)
+
+        def _sync_lap_toggles():
+            is_full = (self.c_linker.currentData() == "full_lap")
+            self.c_allow_merging.setEnabled(is_full)
+            self.c_allow_splitting.setEnabled(is_full)
+        self.c_linker.currentIndexChanged.connect(lambda _i: _sync_lap_toggles())
+        _sync_lap_toggles()
         self.s_search_range = self._spin_int(5, 1, 30,
             tip="Maximum distance (px) a particle can move between consecutive\n"
                 "frames and still be linked as the same molecule — this is\n"
@@ -744,7 +775,24 @@ class BuildMixin:
                 "        ~3 px for transmembrane proteins (e.g. Syntaxin).\n"
                 "Bigger tolerates faster motion but increases the linker's\n"
                 "subnetwork-explosion risk.")
-        gl.addRow(_label_with_info("Search range (px)", "search range"), self.s_search_range)
+        # Opt-in per-file auto search-range (off by default → no behaviour change
+        # unless ticked).  When on, the worker estimates the range from the motion
+        # (estimate_link_params) and the fixed spin value is ignored.
+        self.c_auto_search_range = QtWidgets.QCheckBox("Auto")
+        self.c_auto_search_range.setToolTip(
+            "Auto-pick the search range per file from the motion: sweeps candidate\n"
+            "ranges and takes the smallest at which tracks stop fragmenting,\n"
+            "capped below the inter-spot spacing.  Biggest accuracy win on fast\n"
+            "motion, where a fixed default is usually too small.  Off = use the\n"
+            "fixed value at left.")
+        _sr_row = QtWidgets.QHBoxLayout()
+        _sr_row.setContentsMargins(0, 0, 0, 0)
+        _sr_row.addWidget(self.s_search_range, 1)
+        _sr_row.addWidget(self.c_auto_search_range, 0)
+        _sr_w = QtWidgets.QWidget(); _sr_w.setLayout(_sr_row)
+        self.c_auto_search_range.toggled.connect(
+            lambda on: self.s_search_range.setEnabled(not on))
+        gl.addRow(_label_with_info("Search range (px)", "search range"), _sr_w)
         self.s_memory = self._spin_int(3, 0, 10,
             tip="Number of frames a track can disappear and still be re-linked.\n"
                 "0 = strict (no gaps). 3 is typical for blinking PALM probes.")
@@ -1049,17 +1097,14 @@ class BuildMixin:
             "    multi-core PyTorch-CPU path.  (Never auto-selects Trackpy.)\n"
             "• Crocker–Grier — Trackpy (CPU) — the reference CPU implementation\n"
             "    (battle-tested, uses all cores).  Manual selection only.\n"
-            "• Crocker–Grier — PyTorch (GPU, auto) — auto-selects CUDA / MPS, falls\n"
-            "    back to CPU if no GPU (single-process — slow on CPU-only machines).\n"
-            "• Crocker–Grier — PyTorch (NVIDIA CUDA) — force NVIDIA GPU.\n"
-            "• Crocker–Grier — PyTorch (Apple MPS) — force Apple GPU; on some\n"
-            "    M-chips may hit MPS allocator issues at very low minmass.\n"
-            "• Crocker–Grier — PyTorch (CPU) — force PyTorch on CPU (benchmarking).\n"
-            "• À trous wavelet — PyTorch — a DIFFERENT, multi-scale wavelet\n"
-            "    detector; can find faint spots in low-SNR / structured background.\n"
-            "    Shares refinement with the Crocker–Grier PyTorch path, so mass /\n"
-            "    minmass match.  Detection sensitivity is calibrated for count\n"
-            "    parity with trackpy.")
+            "• Crocker–Grier — PyTorch (GPU) — runs on THIS machine's GPU:\n"
+            "    NVIDIA CUDA on Windows/Linux, Apple MPS on macOS (picked\n"
+            "    automatically; falls back to CPU if no GPU is present).\n"
+            "• À trous wavelet — PyTorch (GPU) — a DIFFERENT, multi-scale wavelet\n"
+            "    detector on the same GPU; can find faint spots in low-SNR /\n"
+            "    structured background.  Shares refinement with the Crocker–Grier\n"
+            "    PyTorch path, so mass / minmass match.  Detection sensitivity is\n"
+            "    calibrated for count parity with trackpy.")
         gl.addRow(_label_with_info("Detection backend", "detection backend"), self.c_backend)
         self.s_workers = self._spin_int(N_CPUS, 1, N_CPUS,
             tip="Parallel CPU workers for the trackpy backend's multiprocessing\n"
@@ -3654,6 +3699,7 @@ class BuildMixin:
                 (self.s_minmass_false_rate.value() / 100.0)
                 if self.s_minmass_false_rate.value() > 0 else None),
             "search_range":      int(self.s_search_range.value()),
+            "auto_search_range": bool(self.c_auto_search_range.isChecked()),
             "memory":            int(self.s_memory.value()),
             "min_track_len":     int(self.s_min_track_len.value()),
             "max_track_len":     max_tl if max_tl > 0 else None,
@@ -3697,10 +3743,15 @@ class BuildMixin:
                                     self.c_backend.currentText()),
             "workers":           int(self.s_workers.value()),
             "chunk_size":        int(self.s_chunk_size.value()),
-            # Trajectory linker: kalman (default) / trackpy.  Carried to the
-            # worker and recorded in the run manifest.  ("lap" remains valid
-            # programmatically but is no longer surfaced — it's never optimal.)
+            # Trajectory linker (kalman default / trackpy / simple_lap /
+            # full_lap / nn / sa) + per-linker knobs, carried to the worker and
+            # recorded in the run manifest.  link_params currently exposes the
+            # Full-LAP merge/split toggles; other linkers ignore them.
             "linker":            str(self.c_linker.currentData() or "kalman"),
+            "link_params":       {
+                "allow_merging":   bool(self.c_allow_merging.isChecked()),
+                "allow_splitting": bool(self.c_allow_splitting.isChecked()),
+            },
             # ── Figures-tab knobs (single-sample figure output) ───────────
             "fig_theme":         self.c_fig_theme.currentText(),
             "fig_proj_cmap":     self.c_fig_proj_cmap.currentText(),

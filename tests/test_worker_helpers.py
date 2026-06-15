@@ -106,6 +106,9 @@ def test_postproc_linking_params_recovers_persisted_values():
         "max_track_len": 200,
         "max_lagtime":   30,
         "n_fit":         7,
+        "linker":        "kalman",
+        "link_params":   {"allow_merging": True},
+        "auto_search_range": True,
     }
     recovered = _postproc_linking_params(orig)
     assert recovered == orig
