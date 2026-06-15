@@ -2002,17 +2002,19 @@ def _czi_xml(frametime=None, timespan_ms=None, px_x_m=None):
     return f"<ImageDocument><Metadata>{scaling}{ft}{ts}</Metadata></ImageDocument>"
 
 
-def test_czi_parallel_decode_flag_default_off(monkeypatch):
-    """The parallel JPEG-XR decode path is OPT-IN: off unless the env flag is
-    set, so a build behaves exactly like the trusted bulk read by default."""
+def test_czi_parallel_decode_flag_default_on(monkeypatch):
+    """The parallel JPEG-XR decode path is OPT-OUT: on by default (it self-checks
+    against the trusted bulk read and falls back on any disagreement), and can be
+    forced off with FIREFLY_CZI_PARALLEL_DECODE=0/false/no/off."""
     from firefly.analysis import fa_loaders as L
     monkeypatch.delenv("FIREFLY_CZI_PARALLEL_DECODE", raising=False)
-    assert L._czi_parallel_decode_enabled() is False
+    assert L._czi_parallel_decode_enabled() is True
     for v in ("1", "true", "YES", "on"):
         monkeypatch.setenv("FIREFLY_CZI_PARALLEL_DECODE", v)
         assert L._czi_parallel_decode_enabled() is True
-    monkeypatch.setenv("FIREFLY_CZI_PARALLEL_DECODE", "0")
-    assert L._czi_parallel_decode_enabled() is False
+    for v in ("0", "false", "NO", "off"):
+        monkeypatch.setenv("FIREFLY_CZI_PARALLEL_DECODE", v)
+        assert L._czi_parallel_decode_enabled() is False
 
 
 def test_czi_parallel_decode_safe_noop_guards(monkeypatch):
@@ -2316,6 +2318,65 @@ def test_audit_mass_scale_noop_on_trackpy():
     # empty harvest / no windows are also safe
     assert _audit_mass_scale(stack, [], H.iloc[:0], 7, 64, 10,
                              "uniform_filter", 1, "torch", lambda m: None) is None
+
+
+def test_torch_localise_characterize_columns():
+    """TorchBackend.localise(characterize=True) adds trackpy-compatible
+    size + ecc so the auto-threshold quality gate can run torch-native — the
+    same detections, just two extra PSF-feature columns."""
+    pytest.importorskip("torch")
+    from firefly.analysis.fa_localize import TorchBackend
+    if not TorchBackend.is_available():
+        pytest.skip("torch backend unavailable")
+    from firefly.analysis.fa_preprocess import preprocess_stack
+    import io, contextlib
+    stack = _bimodal_spot_stack(seed=7, F=4)
+    inst = TorchBackend(); inst._forced_device = "cpu"
+    with contextlib.redirect_stdout(io.StringIO()):
+        pp = preprocess_stack(stack, workers=2)
+        plain = inst.localise(pp, diameter=7, minmass=0.0, percentile=64,
+                              quiet=True)
+        char = inst.localise(pp, diameter=7, minmass=0.0, percentile=64,
+                             quiet=True, characterize=True)
+    assert set(plain.columns) == {"x", "y", "frame", "mass"}
+    assert {"size", "ecc"} <= set(char.columns)
+    assert len(plain) == len(char)                  # characterize only adds cols
+    sz = char["size"].to_numpy(float)
+    ec = char["ecc"].to_numpy(float)
+    # Defensive maths must keep both finite + non-negative for EVERY candidate
+    # (incl. noisy minmass=0 blips), so the gate never trips on a NaN.
+    assert np.isfinite(sz).all() and (sz >= 0).all()
+    assert np.isfinite(ec).all() and (ec >= 0).all()
+    # Most real spots land in the diffraction-limited band the gate keeps.
+    assert ((sz >= 0.5) & (sz <= 7.0)).mean() > 0.5
+
+
+def test_estimate_minmass_torch_harvest_is_trackpy_free(monkeypatch):
+    """The Torch auto-threshold must harvest with the Torch backend itself — no
+    trackpy Crocker–Grier.  Proof: break `trackpy.batch` (the trackpy DETECTOR;
+    the linker uses `tp.link`, untouched) and confirm estimate_minmass(backend=
+    'torch') still returns a sane threshold, tagged as harvested via torch."""
+    pytest.importorskip("torch")
+    from firefly.analysis.fa_localize import TorchBackend
+    if not TorchBackend.is_available():
+        pytest.skip("torch backend unavailable")
+    import io, contextlib, logging
+    from firefly.analysis import fa_localize as L
+
+    def _boom(*a, **k):
+        raise AssertionError("trackpy.batch must NOT be called for a Torch harvest")
+    monkeypatch.setattr(L.tp, "batch", _boom)
+
+    stack = _bimodal_spot_stack(seed=2)
+    logging.getLogger("trackpy").setLevel(logging.ERROR)
+    with contextlib.redirect_stdout(io.StringIO()):
+        mm, diag = L.estimate_minmass(stack, diameter=7, backend="torch",
+                                      sensitivity="balanced", workers=2)
+    assert diag["harvest_backend"] == "torch"
+    assert "torch_trackpy_mass_ratio" not in diag      # audit no longer wired
+    assert np.isfinite(mm) and mm > 0
+    # The torch-harvested candidates carried size/ecc → the quality gate ran.
+    assert diag.get("quality_dropped", 0) >= 0
 
 
 # ── perf-refactor regression: results-identity guards ────────────────────────

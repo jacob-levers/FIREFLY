@@ -973,28 +973,35 @@ def _harvest_locate_one(args):
 
 
 def _harvest_windows(stack, windows, diameter, percentile,
-                     bg_radius, bg_method, workers):
-    """Detect every candidate at minmass=0 inside each contiguous window via
-    trackpy with `characterize=True` — this yields size / ecc / signal / ep for
-    the PSF-quality gate as well as mass / position for linking.  Trackpy and
-    the Torch backend are mass-calibrated to agree (`_TP_MASS_SCALE`), so a
-    threshold chosen here transfers to a Torch run.  `frame` is kept LOCAL to
-    each window (0..win_len) and tagged with `window_id`, so per-window linking
-    never bridges the gap between windows.  Returns `(H, pp0)` where H is a
-    DataFrame with columns x, y, frame, mass, window_id (+ size, ecc, ep, signal
-    when available) and `pp0` is window 0's preprocessed frames (or None) — the
-    Torch↔Trackpy mass-scale audit reuses these to skip re-preprocessing the
-    same frames (preprocessing is per-frame independent, so `pp0[:k]` is
-    bit-identical to preprocessing the first k frames).
+                     bg_radius, bg_method, workers, backend_impl=None):
+    """Detect every candidate at minmass=0 inside each contiguous window, with
+    the PSF features (size / ecc) the quality gate needs plus mass / position
+    for linking.  The harvest runs through the SAME backend the production run
+    will use (`backend_impl`), so the chosen threshold is in that backend's
+    native mass units — no cross-backend `_TP_MASS_SCALE` transfer:
 
-    The minmass=0 + characterize-everything locate is the auto-threshold tall
-    pole.  Windows are independent, so the per-window locate calls fan out across
-    a process pool (the analysis worker is non-daemon → nested pools are allowed;
-    threads wouldn't help because trackpy's numba locate holds the GIL).  Each
-    worker runs the identical single-process `tp.batch`, so the harvested
-    candidates are byte-identical to the serial path — proven by a regression
-    test.  Falls back to serial for a single window, when FIREFLY_HARVEST_PARALLEL
-    is off, or if the pool can't start."""
+      • trackpy (Crocker–Grier CPU, the default when `backend_impl` is None or
+        names trackpy) → `tp.batch(..., characterize=True)`, fanned across a
+        process pool (windows are independent; the analysis worker is non-daemon
+        so nested pools are allowed; threads wouldn't help — numba locate holds
+        the GIL).  Each worker runs the identical single-process `tp.batch`, so
+        the harvested candidates are byte-identical to the serial path (proven
+        by a regression test).  Falls back to serial for a single window, when
+        FIREFLY_HARVEST_PARALLEL is off, or if the pool can't start.
+
+      • torch family (Crocker–Grier PyTorch, à trous wavelet) → the backend's
+        own `localise(..., minmass=0, characterize=True)` per window, which
+        supplies torch-native size / ecc (trackpy-only `ep` / `signal` are
+        simply absent — the gate skips a missing column).  The backend manages
+        its own device / parallelism, so the windows are harvested serially.
+
+    `frame` is kept LOCAL to each window (0..win_len) and tagged with
+    `window_id`, so per-window linking never bridges the gap between windows.
+    Returns `(H, pp0)` where H is a DataFrame with columns x, y, frame, mass,
+    window_id (+ size, ecc, and trackpy's ep / signal when available) and `pp0`
+    is window 0's preprocessed frames (retained for backward-compatibility with
+    callers; preprocessing is per-frame independent, so `pp0[:k]` is identical
+    to preprocessing the first k frames)."""
     cols = ["x", "y", "frame", "mass", "size", "ecc", "ep", "signal",
             "window_id"]
     # Preprocess every window up front in the main process (thread-parallel and
@@ -1014,6 +1021,32 @@ def _harvest_windows(stack, windows, diameter, percentile,
     if not prepped:
         return pd.DataFrame(columns=cols), pp0
 
+    # ── Torch-family self-harvest (Crocker–Grier PyTorch / à trous) ──────────
+    # Harvest with the run's OWN backend so the chosen minmass is in that
+    # backend's native mass units — no trackpy harvest, no `_TP_MASS_SCALE`
+    # cross-scale transfer.  The backend supplies torch-native size / ecc for
+    # the quality gate (ep / signal stay trackpy-only; the gate skips them).
+    if backend_impl is not None and getattr(backend_impl, "name", "") != "trackpy":
+        parts = []
+        for wid, pp in prepped:
+            try:
+                f = backend_impl.localise(
+                    pp, diameter=diameter, minmass=0.0, percentile=percentile,
+                    workers=workers, chunk_size=len(pp), quiet=True,
+                    characterize=True)
+            except Exception:
+                f = None
+            if f is None or len(f) == 0:
+                continue
+            f = f.copy()
+            f["window_id"] = wid
+            parts.append(f)
+        if not parts:
+            return pd.DataFrame(columns=cols), pp0
+        H = pd.concat(parts, ignore_index=True)
+        return H[[c for c in cols if c in H.columns]], pp0
+
+    # ── Trackpy harvest (Crocker–Grier CPU): parallel tp.batch ───────────────
     args = [(pp, diameter, percentile) for _wid, pp in prepped]
     frames = None
     _parallel = os.environ.get("FIREFLY_HARVEST_PARALLEL", "1").strip().lower() \
@@ -1175,6 +1208,14 @@ def _sweep_pool_one(t):
 # amortise pool startup (Windows spawn ≈ 0.5–1 s); below this the serial path
 # is faster.  Same grid, same linker → identical results either way.
 _SWEEP_PARALLEL_MIN_CANDIDATES = 8000
+
+# Auto-threshold harvest cap: max candidates kept per frame (brightest by mass)
+# for the torch family ONLY, whose minmass=0 detection over-detects noise.  An
+# absolute per-frame count, not an FOV density — empirically the auto-threshold's
+# signal/noise separation stayed reliable at ~40 candidates/frame across
+# 64²/160²/256² stacks (it is the linker's combinatorics + noise fraction that
+# break it, not areal density).  See the cap site in `estimate_minmass`.
+_HARVEST_MAX_PER_FRAME = 40
 
 
 def _sweep_thresholds(H, grid, search_range, memory, link_min_len):
@@ -1352,16 +1393,17 @@ def _audit_mass_scale(stack, windows, H, diameter, percentile,
                       pp0=None):
     """Self-audit the trackpy↔Torch mass calibration.
 
-    The auto-threshold harvest always runs through trackpy, so the chosen
-    minmass is in *trackpy*-mass units.  A Torch/CUDA production run rescales
-    its own mass column by the fixed `TorchBackend._TP_MASS_SCALE` constant so
-    that the same threshold applies — but that's a single hard-coded calibration
-    that could drift for a different camera/PSF.  When the run will use Torch,
-    re-localise a few frames of the first window with the Torch backend and
-    report the empirical Torch/Trackpy median-mass ratio (target ≈ 1.0) so a
-    drifted calibration is visible in the log instead of silently
-    mis-thresholding.  Best-effort: returns the ratio (float) or None, and never
-    raises except on cancellation.  No-op on the trackpy backend.
+    LEGACY / no longer wired into `estimate_minmass`: the auto-threshold harvest
+    now runs through the run's OWN backend (see `_harvest_windows`), so the
+    chosen minmass is already in that backend's native mass units and there is
+    no trackpy→Torch `_TP_MASS_SCALE` transfer left to audit.  Retained (and
+    still unit-tested) for its defensive no-op behaviour and in case a
+    cross-backend transfer is ever reintroduced.
+
+    Re-localises a few frames of the first window with the Torch backend and
+    reports the empirical Torch/Trackpy bright-tail mass ratio (target ≈ 1.0).
+    Best-effort: returns the ratio (float) or None, and never raises except on
+    cancellation.  No-op on the trackpy backend.
     """
     _log = log_cb or print
     try:
@@ -1462,13 +1504,60 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         windows = _contiguous_windows(n)
         diag["windows"] = [[int(s), int(e)] for s, e in windows]
         diag["frame_sample"] = int(sum(e - s for s, e in windows))
+        # Harvest through the SAME backend the run will use, so the chosen
+        # minmass is in that backend's native mass units (the torch family no
+        # longer borrows trackpy's threshold via `_TP_MASS_SCALE`).
+        _impl = _resolve_backend(backend)
+        _harvest_name = getattr(_impl, "name", "?")
+        diag["harvest_backend"] = _harvest_name
         _t_harvest = time.perf_counter()
         _log(f"  Auto-threshold: harvesting candidate spots over "
-             f"{len(windows)} window(s) ({diag['frame_sample']} frames)…")
+             f"{len(windows)} window(s) ({diag['frame_sample']} frames) "
+             f"via {_harvest_name}…")
         H, _pp0 = _harvest_windows(stack, windows, diameter, percentile,
-                                   bg_radius, bg_method, workers)
+                                   bg_radius, bg_method, workers,
+                                   backend_impl=_impl)
         _log(f"  Auto-threshold: harvested {len(H):,} candidates in "
              f"{time.perf_counter() - _t_harvest:.1f}s")
+
+        # ── Harvest density cap (torch family only) ──────────────────────────
+        # The auto-threshold's signal/noise separation — the linkability sweep
+        # AND the static GMM/knee — both break down once the per-frame candidate
+        # count is high: dense points link by chance into long "tracks" (so the
+        # spurious metric collapses and the picker is fooled to the floor) and
+        # the noise so dominates the mass histogram that the GMM can't resolve
+        # the signal mode.  Crocker–Grier on the Torch backend detects EVERY
+        # positive bandpass maximum at minmass=0 (its clipped, mostly-zero
+        # bandpass makes the percentile threshold ≈ 0), so on noisy data it
+        # harvests ~10–70× more candidates than trackpy and trips exactly this
+        # failure — whereas trackpy's stricter detection and à trous's wavelet
+        # significance gate stay well under the cap on their own.  So cap ONLY
+        # the torch-family harvest, keeping the brightest `_HARVEST_MAX_PER_FRAME`
+        # by mass per frame: real (bright) emitters always survive, only the
+        # faint noise excess is trimmed.  The cap is an absolute per-frame count
+        # (not an FOV-scaled density): validated to recover the right threshold
+        # across 64²/160²/256² stacks, where the separable regime held at
+        # ~40/frame regardless of field size (it is the linker's combinatorics +
+        # noise fraction that bite, not areal density).  Genuinely high-density
+        # data (>~40 real emitters/frame) is the known limitation — there the
+        # auto-estimate may sit slightly high and the user should set minmass
+        # manually (auto-thresholding is unreliable at that density anyway).
+        if (_harvest_name != "trackpy" and len(H) and "window_id" in H.columns
+                and diag["frame_sample"] > 0):
+            cap = _HARVEST_MAX_PER_FRAME
+            per_frame = len(H) / float(diag["frame_sample"])
+            if per_frame > cap:
+                n_before = len(H)
+                H = (H.sort_values("mass", ascending=False, kind="mergesort")
+                     .groupby(["window_id", "frame"], sort=False).head(cap)
+                     .reset_index(drop=True))
+                diag["harvest_density_cap"] = int(cap)
+                _log(f"  Auto-threshold: {_harvest_name} harvested "
+                     f"{per_frame:.0f} candidates/frame (over-detection at "
+                     f"minmass=0) — kept the brightest {cap}/frame "
+                     f"({n_before:,} → {len(H):,}) so the signal/noise "
+                     f"separation stays reliable.")
+
         masses = (np.asarray(H["mass"].values, dtype=float)
                   if len(H) else np.array([], dtype=float))
         masses = masses[np.isfinite(masses) & (masses > 0)]
@@ -1568,19 +1657,11 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         diag["minmass"] = mm
         _log(f"  Auto-threshold [{diag['method']}, {str(sensitivity).lower()}]: "
              f"minmass = {mm:.4g}  (from {diag['n_candidates']} candidates over "
-             f"{diag['frame_sample']} frames in {len(windows)} window(s))")
-        # Self-audit the trackpy↔Torch mass calibration (no-op unless the run
-        # will use the Torch backend) so a drifted _TP_MASS_SCALE is visible.
-        try:
-            _ratio = _audit_mass_scale(stack, windows, H, diameter, percentile,
-                                       bg_radius, bg_method, workers, backend,
-                                       log_cb, pp0=_pp0)
-            if _ratio is not None:
-                diag["torch_trackpy_mass_ratio"] = _ratio
-        except _Cancelled:
-            raise
-        except Exception:
-            pass
+             f"{diag['frame_sample']} frames in {len(windows)} window(s), "
+             f"harvested via {_harvest_name})")
+        # No trackpy↔Torch mass-scale audit needed: the harvest above already
+        # ran through the run's own backend, so the threshold is natively in its
+        # mass units (the `_TP_MASS_SCALE` cross-scale transfer is gone).
         return mm, diag
 
     except _Cancelled:

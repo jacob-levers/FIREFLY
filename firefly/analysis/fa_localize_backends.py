@@ -916,7 +916,8 @@ class TorchBackend(LocaliserBackend):
     @staticmethod
     def _iterative_centroid_refine(signal, t_ix, y_ix, x_ix, diameter,
                                      device, dtype,
-                                     max_iters=None, shift_thresh=None):
+                                     max_iters=None, shift_thresh=None,
+                                     characterize=False):
         """Vectorised iterative centroid-of-mass refinement — Torch
         port of `trackpy.refine.refine`.
 
@@ -945,6 +946,12 @@ class TorchBackend(LocaliserBackend):
         mass : (N,) float — sum of masked signal at the final centre,
                             same definition trackpy uses for its `mass`
                             column.
+        char : dict or None — when `characterize=True`, ``{"size", "ecc"}``
+                            (N,) tensors: trackpy-compatible radius of
+                            gyration and eccentricity from the final patch,
+                            so a torch-native auto-threshold harvest can drive
+                            the same PSF-quality gate that trackpy's
+                            ``characterize=True`` feeds.  None otherwise.
         """
         import torch
         if max_iters is None:
@@ -1028,11 +1035,51 @@ class TorchBackend(LocaliserBackend):
         # derivation and why this is multiplicative (not additive).
         final_mass = final_mass * float(TorchBackend._TP_MASS_SCALE)
 
-        return dy_sub, dx_sub, cur_y, cur_x, final_mass
+        char = None
+        if characterize:
+            char = TorchBackend._characterize_patches(
+                final_patches, dy_grid, dx_grid, r)
+
+        return dy_sub, dx_sub, cur_y, cur_x, final_mass, char
+
+    @staticmethod
+    def _characterize_patches(patches, dy_grid, dx_grid, r):
+        """Trackpy-compatible ``size`` (radius of gyration) and ``ecc``
+        (eccentricity) from the disk-masked patches at the converged centre.
+
+        Mirrors ``trackpy.refine.center_of_mass`` so the values land on the
+        same scale the PSF-quality gate's bands were tuned against (``size`` in
+        the diffraction-limited 0.5–``diameter`` px band; ``ecc`` flagged above
+        0.9).  ``patches`` are the SAME disk-masked bandpassed neighbourhoods
+        the ``mass`` column is summed over, so a torch-native harvest gates on a
+        self-consistent characterisation — no trackpy ``characterize=True`` call.
+
+        ``size`` = sqrt(Σ r²·I / Σ I);  ``ecc`` = |Σ I·e^{2iθ}| / (Σ I − I₀),
+        with r/θ the patch-centre-relative radius/angle and I₀ the centre pixel.
+        """
+        import torch
+        px = patches                                   # (N, k, k), masked
+        psum = px.sum(dim=(1, 2)).clamp(min=1e-6)      # (N,)
+        r2 = (dy_grid * dy_grid + dx_grid * dx_grid)   # (k, k)
+        # The bandpassed patch is signed, so a noise candidate's outer ring can
+        # drive the second moment negative; clamp the radicand so `size` stays a
+        # finite, non-negative radius of gyration (trackpy works on the
+        # non-negative raw image and never hits this).
+        size = torch.sqrt(((px * r2[None]).sum(dim=(1, 2)) / psum).clamp(min=0.0))
+        theta = torch.atan2(dy_grid, dx_grid)          # (k, k)
+        cos2 = torch.cos(2.0 * theta)[None]
+        sin2 = torch.sin(2.0 * theta)[None]
+        ecc_num = torch.sqrt((px * cos2).sum(dim=(1, 2)) ** 2 +
+                             (px * sin2).sum(dim=(1, 2)) ** 2)
+        ri = int(r)                                    # centre pixel index
+        px_center = px[:, ri, ri]
+        ecc = ecc_num / (psum - px_center).clamp(min=1e-6)
+        return {"size": size, "ecc": ecc}
 
     def localise(self, stack, *, diameter=7, minmass=0.1, percentile=64,
                  workers=None, chunk_size=500, preview_cb=None,
-                 device=None, quiet=False, _cpu_threads=None, **_):
+                 device=None, quiet=False, _cpu_threads=None,
+                 characterize=False, **_):
         # `_cpu_threads` overrides the CPU intra-op thread budget.  It's set by
         # `_torch_localise_block_mp` so each multi-process worker uses a small
         # slice of the cores (N_workers × threads ≈ N_CPUS) instead of every
@@ -1122,6 +1169,7 @@ class TorchBackend(LocaliserBackend):
         # detections exactly.  Disable with FIREFLY_TORCH_CPU_MP=0.
         _use_cpu_mp = (
             dev_str == "cpu" and not quiet and _cpu_threads is None
+            and not characterize        # characterize path is serial-only
             and n_chunks > 16
             and os.environ.get("FIREFLY_TORCH_CPU_MP", "1").strip().lower()
             not in ("0", "false", "no", "off"))
@@ -1274,10 +1322,10 @@ class TorchBackend(LocaliserBackend):
             # The refinement also returns `mass` summed over the disk
             # mask AT THE CONVERGED CENTRE — same definition trackpy
             # uses for its `mass` column.
-            dy_off, dx_off, y_final, x_final, mass = (
+            dy_off, dx_off, y_final, x_final, mass, char = (
                 self._iterative_centroid_refine(
                     signal, t_ix, y_ix, x_ix, diameter,
-                    device=dev, dtype=dtype)
+                    device=dev, dtype=dtype, characterize=characterize)
             )
 
             # Apply the minmass filter AFTER refinement (trackpy filters
@@ -1302,12 +1350,16 @@ class TorchBackend(LocaliserBackend):
             y_sub = y_final.to(dtype) + dy_off
             frame_abs = (t_ix + chunk_start).to(torch.int64)
 
-            all_locs.append({
+            loc = {
                 "x":     x_sub.detach().cpu().numpy(),
                 "y":     y_sub.detach().cpu().numpy(),
                 "frame": frame_abs.detach().cpu().numpy(),
                 "mass":  mass.detach().cpu().numpy(),
-            })
+            }
+            if char is not None:                        # torch-native harvest
+                loc["size"] = char["size"][keep].detach().cpu().numpy()
+                loc["ecc"]  = char["ecc"][keep].detach().cpu().numpy()
+            all_locs.append(loc)
 
             # ── Live preview emission ─────────────────────────────────
             # Historically the TorchBackend accepted `preview_cb` but
@@ -1435,13 +1487,15 @@ class TorchBackend(LocaliserBackend):
             except Exception:
                 pass
 
+        out_cols = ("x", "y", "frame", "mass") + (
+            ("size", "ecc") if characterize else ())
         if not all_locs:
             _plog("  Found 0 localisations")
-            return pd.DataFrame(columns=["x", "y", "frame", "mass"])
+            return pd.DataFrame(columns=list(out_cols))
 
         df = pd.DataFrame({
             col: np.concatenate([d[col] for d in all_locs])
-            for col in ("x", "y", "frame", "mass")
+            for col in out_cols
         })
 
         elapsed = time.perf_counter() - t0
