@@ -107,6 +107,7 @@ class Backend(Enum):
     TORCH_CPU = "torch-cpu"
     TORCH_CUDA = "torch-cuda"
     TORCH_MPS = "torch-mps"
+    ATROUS = "atrous"          # à trous wavelet detector (auto-device, like torch)
 
     @classmethod
     def parse(cls, value, *, log=None) -> "Backend":

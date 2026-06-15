@@ -205,7 +205,81 @@ def test_backends_extraction_reexport_identity():
     # facade doesn't re-export it, so check only fa_localize).
     assert L._torch_localise_block_mp is B._torch_localise_block_mp
     # The registry/dispatch still point at the (now-imported) backend classes.
-    assert L._BACKEND_REGISTRY[-1] is B.TorchBackend
+    assert B.TrackpyBackend in L._BACKEND_REGISTRY
+    assert B.TorchBackend in L._BACKEND_REGISTRY
+
+
+# ── à trous wavelet backend ──────────────────────────────────────────────────
+def test_atrous_registered_and_resolvable():
+    """The à trous backend is registered, listed, and resolves by name."""
+    assert "atrous" in s.list_available_backends()
+    from firefly.analysis import fa_localize as L
+    from firefly.analysis.fa_localize_backends import (AtrousWaveletBackend,
+                                                       TorchBackend)
+    impl = L._resolve_backend("atrous")
+    assert isinstance(impl, AtrousWaveletBackend)
+    # à trous subclasses TorchBackend, so the GPU semaphore gating still works.
+    assert isinstance(impl, TorchBackend)
+
+
+def test_backend_atrous_enum():
+    """Backend.parse recognises 'atrous' (no longer downgrades to AUTO)."""
+    from firefly.analysis.fa_enums import Backend
+    assert Backend.parse("atrous") is Backend.ATROUS
+    assert Backend.parse("atrous:0") is Backend.ATROUS     # device-suffix tolerant
+    assert not Backend.ATROUS.is_explicit_gpu               # auto-device, not a pin
+
+
+def test_atrous_finds_known_spots():
+    """à trous detects known spot positions to sub-pixel accuracy."""
+    pytest.importorskip("torch")
+    if "atrous" not in s.list_available_backends():
+        pytest.skip("atrous backend unavailable")
+    truth = [(30.2, 20.5), (45.7, 60.1), (70.0, 75.0)]     # (x, y)
+    frame = _synthetic_spot_frame(truth)
+    stack = np.stack([frame, frame])
+    df = s.localise_particles(stack, diameter=7, minmass=20,
+                              percentile=64, backend="atrous")
+    f0 = df[df.frame == 0]
+    assert len(f0) == len(truth), f"expected {len(truth)} spots, got {len(f0)}"
+    errs = _match_to_truth(f0, truth, tol_px=0.5)
+    assert max(errs) < 0.5
+
+
+def test_atrous_agrees_with_trackpy():
+    """à trous and trackpy agree on count (±1) and position (≤0.5 px) on a clean
+    synthetic frame — refinement/mass are shared, so positions converge to the
+    same sub-pixel centroid."""
+    pytest.importorskip("torch")
+    if "atrous" not in s.list_available_backends():
+        pytest.skip("atrous backend unavailable")
+    truth = [(30.2, 20.5), (45.7, 60.1), (70.0, 75.0), (50.0, 40.0)]
+    frame = _synthetic_spot_frame(truth)
+    stack = np.stack([frame, frame])
+    tp = s.localise_particles(stack, diameter=7, minmass=20,
+                              percentile=64, backend="trackpy")
+    at = s.localise_particles(stack, diameter=7, minmass=20,
+                              percentile=64, backend="atrous")
+    tp0, at0 = tp[tp.frame == 0], at[at.frame == 0]
+    assert abs(len(tp0) - len(at0)) <= 1
+    for _, r in tp0.iterrows():
+        d = np.hypot(at0["x"].to_numpy() - r.x, at0["y"].to_numpy() - r.y)
+        assert d.min() <= 0.5, f"trackpy spot ({r.x:.1f},{r.y:.1f}) unmatched"
+
+
+def test_atrous_batch_stable():
+    """à trous detection is batch-size-stable: the same data localised in
+    different chunk sizes yields the same spot count."""
+    pytest.importorskip("torch")
+    if "atrous" not in s.list_available_backends():
+        pytest.skip("atrous backend unavailable")
+    truth = [(30.2, 20.5), (45.7, 60.1), (70.0, 75.0)]
+    stack = np.stack([_synthetic_spot_frame(truth) for _ in range(6)])
+    n1 = len(s.localise_particles(stack, diameter=7, minmass=20,
+                                  percentile=64, backend="atrous", chunk_size=6))
+    n2 = len(s.localise_particles(stack, diameter=7, minmass=20,
+                                  percentile=64, backend="atrous", chunk_size=2))
+    assert n1 == n2, f"batch-unstable: {n1} vs {n2}"
 
 
 def test_torch_cpu_parallel_matches_serial_shm(monkeypatch):

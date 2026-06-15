@@ -57,8 +57,11 @@ def test_backend_parse_strips_device_suffix():
     logs = []
     assert Backend.parse("jax", log=logs.append) is Backend.AUTO
     assert logs
+    assert Backend.parse("atrous") is Backend.ATROUS
+    assert Backend.ATROUS.is_explicit_gpu is False         # auto-device, not a pin
     assert {m.value for m in Backend} == {
-        "auto", "trackpy", "torch", "torch-cpu", "torch-cuda", "torch-mps"}
+        "auto", "trackpy", "torch", "torch-cpu", "torch-cuda", "torch-mps",
+        "atrous"}
 
 
 def test_msgkind_is_str_and_complete():

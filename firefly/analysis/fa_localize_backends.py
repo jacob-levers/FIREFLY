@@ -869,6 +869,34 @@ class TorchBackend(LocaliserBackend):
         response = smooth - bg
         return torch.clamp(response, min=0.0)
 
+    def _detection_map(self, x, signal, diameter, device, dtype):
+        """The image whose local maxima are the spot candidates.
+
+        TorchBackend detects directly on the bandpassed `signal`; subclasses
+        override this to detect on a different response (e.g. à trous wavelet
+        planes) while refinement and mass still operate on `signal`."""
+        return signal
+
+    def _detection_threshold(self, dmap, percentile):
+        """Detection threshold: the `percentile`-th percentile of the detection
+        map (identical semantics to trackpy's `percentile` arg).
+
+        torch.quantile is exact for small inputs; for big tensors subsample to
+        bound memory.  Use a DETERMINISTIC evenly-spaced stride rather than an
+        unseeded random draw: (a) re-running the same file yields identical
+        detections (the old torch.randint made dense-data spot counts vary
+        run-to-run), and (b) an evenly-spaced sample is a lower-variance,
+        frame-grouping-stable estimator of the background percentile — so the
+        threshold barely moves with the batch size, which is what keeps
+        GPU-batched localisation detection-neutral."""
+        import torch
+        flat = dmap.reshape(-1)
+        if flat.numel() > 5_000_000:
+            step = max(1, int(flat.numel() // 5_000_000))
+            sample = flat[::step][:5_000_000]
+            return torch.quantile(sample, percentile / 100.0)
+        return torch.quantile(flat, percentile / 100.0)
+
     @staticmethod
     def _circular_mask(diameter, device, dtype):
         """Boolean / float disk-mask of side k = diameter, used to integrate
@@ -1189,26 +1217,22 @@ class TorchBackend(LocaliserBackend):
             # different percentile thresholds → different spot counts.
             signal = self._trackpy_bandpass(x, diameter, dev, dtype)
 
-            # ── 2. Percentile threshold per chunk ───────────────────────────
-            # torch.quantile is exact for small inputs; for big tensors subsample
-            # to bound memory.  Use a DETERMINISTIC evenly-spaced stride rather
-            # than an unseeded random draw: (a) re-running the same file now
-            # yields identical detections (the old torch.randint made dense-data
-            # spot counts vary run-to-run), and (b) an evenly-spaced sample is a
-            # lower-variance, frame-grouping-stable estimator of the background
-            # percentile — so the threshold barely moves with the batch size,
-            # which is what keeps GPU-batched localisation detection-neutral.
-            flat = signal.reshape(-1)
-            if flat.numel() > 5_000_000:
-                step = max(1, int(flat.numel() // 5_000_000))
-                sample = flat[::step][:5_000_000]
-                threshold = torch.quantile(sample, percentile / 100.0)
-            else:
-                threshold = torch.quantile(flat, percentile / 100.0)
+            # Detection map: the image whose local maxima are spot candidates.
+            # TorchBackend detects on the bandpassed `signal` itself; subclasses
+            # (à trous) override `_detection_map` to detect on a different
+            # response while refinement and mass still use `signal`.
+            dmap = self._detection_map(x, signal, diameter, dev, dtype)
+
+            # ── 2. Detection threshold per chunk ────────────────────────────
+            # `_detection_threshold` is the percentile-of-bandpass rule for
+            # TorchBackend (deterministic subsample → batch-size-stable, the
+            # invariant GPU batching relies on); subclasses override it (à trous
+            # uses a MAD noise floor on its sparse wavelet-product map).
+            threshold = self._detection_threshold(dmap, percentile)
 
             # ── 3. Local maxima via max-pool == self ────────────────────────
-            maxp   = F.max_pool2d(signal, kernel_size=k, stride=1, padding=radius)
-            is_max = (signal == maxp) & (signal > threshold)
+            maxp   = F.max_pool2d(dmap, kernel_size=k, stride=1, padding=radius)
+            is_max = (dmap == maxp) & (dmap > threshold)
             # nonzero → (N, 4) columns: (t, c, y, x)
             coords = is_max.nonzero(as_tuple=False)
             if coords.numel() == 0:
@@ -1561,3 +1585,101 @@ class TorchBackend(LocaliserBackend):
               f"({n_frames / max(1e-6, elapsed):.0f} frames/s, "
               f"{n_workers}-way CPU)", flush=True)
         return df
+
+
+class AtrousWaveletBackend(TorchBackend):
+    """À trous (undecimated B3-spline) wavelet spot detector.
+
+    A classic low-SNR single-molecule detector (Olivo-Marin et al. 2002):
+    smooth the frame with a B3-spline kernel at successive dilations ("holes"),
+    take successive-smoothing differences as wavelet planes, and detect spots as
+    local maxima of the PRODUCT of the first few planes — which reinforces
+    spot-sized structure while suppressing noise uncorrelated across scales.
+
+    Implemented as a thin override of TorchBackend: ONLY the detection map and
+    its threshold change.  Device handling, chunking, max-pool maxima, sub-pixel
+    centroid refinement and mass all reuse TorchBackend unchanged — refinement
+    and mass run on the bandpassed ``signal``, so the ``mass`` column stays on
+    the trackpy scale and ``minmass`` means the same thing across all backends.
+
+    EXPERIMENTAL: ``_ATROUS_K_SIGMA`` (detection sensitivity) is calibrated for
+    count parity against TrackpyBackend in a separate step; until then it
+    defaults to a conservative ~3σ noise floor.
+    """
+    name = "atrous"
+
+    # Number of à trous wavelet planes whose ReLU'd product forms the map.
+    _ATROUS_N_SCALES = 3
+    # Detection sensitivity: spots are wavelet-product maxima above
+    # ``median + _ATROUS_K_SIGMA · σ_MAD``.  Calibrated later; 3.0 ≈ 3σ floor.
+    _ATROUS_K_SIGMA = 3.0
+    # B3-spline à trous kernel (1D; applied separably as rows then columns).
+    _B3_KERNEL = (1 / 16, 4 / 16, 6 / 16, 4 / 16, 1 / 16)
+
+    def _detection_map(self, x, signal, diameter, device, dtype):
+        """Product of the first ``_ATROUS_N_SCALES`` à trous wavelet planes of
+        the bandpassed signal.  Noise (uncorrelated across scales) → near-zero
+        product; spot-sized structure → reinforced positive peaks."""
+        import torch
+        import torch.nn.functional as F
+        kvec = torch.tensor(self._B3_KERNEL, device=device, dtype=dtype)
+        kx = kvec.view(1, 1, 1, -1)
+        ky = kvec.view(1, 1, -1, 1)
+
+        def _smooth(img, level):
+            d = 2 ** level                  # à trous dilation ("holes")
+            pad = 2 * d                     # kernel radius (2) × dilation
+            img = F.conv2d(img, kx, padding=(0, pad), dilation=(1, d))
+            img = F.conv2d(img, ky, padding=(pad, 0), dilation=(d, 1))
+            return img
+
+        a = signal
+        corr = None
+        for level in range(self._ATROUS_N_SCALES):
+            a_next = _smooth(a, level)
+            plane = F.relu(a - a_next)      # wavelet plane at this scale
+            corr = plane if corr is None else corr * plane
+            a = a_next
+        return corr
+
+    def _detection_threshold(self, dmap, percentile):
+        """Robust noise-floor threshold for the SPARSE wavelet-product map:
+        ``median + k·σ`` with ``σ = 1.4826·MAD``.  The ``percentile`` arg is
+        ignored — a percentile threshold collapses to ~0 on the mostly-zero
+        product, so à trous uses the standard MAD noise floor instead."""
+        import torch
+        flat = dmap.reshape(-1)
+        if flat.numel() > 5_000_000:
+            step = max(1, int(flat.numel() // 5_000_000))
+            flat = flat[::step][:5_000_000]
+        med = torch.median(flat)
+        mad = torch.median(torch.abs(flat - med))
+        return med + self._ATROUS_K_SIGMA * (1.4826 * mad)
+
+    def localise(self, stack, **kwargs):
+        """TorchBackend.localise with a coincident-duplicate guard.
+
+        The wavelet-product map can have a FLAT TOP on a perfectly symmetric
+        spot (e.g. one centred exactly between two pixels), yielding two tied
+        adjacent maxima that both pass ``dmap == maxpool`` and refine to the
+        SAME sub-pixel point — a duplicate localisation.  Drop coincident
+        duplicates per frame (positions rounded to 0.01 px), keeping one.  Real
+        (noisy) spots break the tie, so this only fires on degenerate symmetry;
+        two genuinely distinct spots can never share a 0.01-px position."""
+        df = super().localise(stack, **kwargs)
+        if df is not None and len(df) > 1 and {"frame", "x", "y"} <= set(df.columns):
+            dup = df.assign(
+                _f=df["frame"].astype("int64"),
+                _x=(df["x"] * 100).round().astype("int64"),
+                _y=(df["y"] * 100).round().astype("int64"),
+            ).duplicated(subset=["_f", "_x", "_y"], keep="first")
+            if bool(dup.any()):
+                df = df.loc[~dup].reset_index(drop=True)
+        return df
+
+    def _localise_cpu_parallel(self, *args, **kwargs):
+        # The torch-CPU multi-process worker (`_torch_localise_block_mp`)
+        # hard-codes ``TorchBackend()``, so it would run TORCH detection, not à
+        # trous.  Force the (correct) serial path on CPU until a backend-aware MP
+        # worker exists; the GPU path is single-process and unaffected.
+        return None

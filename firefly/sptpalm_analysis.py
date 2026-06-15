@@ -283,8 +283,8 @@ from firefly.analysis.fa_localize import (
     _fast_preprocess_and_localise, preprocess_and_localise_adaptive,
     preprocess_and_localise_stream, _localise_chunk, _localise_chunk_mp,
     _localise_chunk_mmap_mp, LocaliserBackend, _emit_trackpy_chunk_preview,
-    TrackpyBackend, TorchBackend, list_available_backends, _resolve_backend,
-    localise_particles, _BACKEND_REGISTRY,
+    TrackpyBackend, TorchBackend, AtrousWaveletBackend, list_available_backends,
+    _resolve_backend, localise_particles, _BACKEND_REGISTRY,
 )
 
 

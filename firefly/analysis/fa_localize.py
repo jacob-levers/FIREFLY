@@ -48,7 +48,7 @@ except Exception:
 from firefly.analysis.fa_localize_backends import (  # noqa: F401
     _localise_chunk, _localise_chunk_mp, _localise_chunk_mmap_mp,
     _torch_localise_block_mp, LocaliserBackend, _emit_trackpy_chunk_preview,
-    TrackpyBackend, TorchBackend,
+    TrackpyBackend, TorchBackend, AtrousWaveletBackend,
 )
 
 
@@ -663,7 +663,7 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
 
 
 _BACKEND_REGISTRY: list[type[LocaliserBackend]] = [
-    TrackpyBackend, TorchBackend,
+    TrackpyBackend, TorchBackend, AtrousWaveletBackend,
 ]
 
 
