@@ -50,6 +50,60 @@ def _selfbench(args):
     return 0
 
 
+def _compare(args):
+    from firefly.bench.config import SimConfig, RunConfig, load_sim_config
+    from firefly.bench.simulator import simulate
+    from firefly.bench.runners import compare_engines
+    from firefly.bench.report import build_report_table, render_report_figure
+
+    cfg = load_sim_config(args.config) if args.config else SimConfig()
+    backends = [b.strip() for b in args.backends.split(",") if b.strip()]
+    linkers = [l.strip() for l in args.linkers.split(",") if l.strip()] or ["trackpy"]
+    # Torch / à trous need PyTorch — drop them with a clear note on a torch-less box.
+    if any(b != "trackpy" for b in backends):
+        try:
+            import torch  # noqa: F401
+        except Exception:
+            dropped = [b for b in backends if b != "trackpy"]
+            backends = [b for b in backends if b == "trackpy"]
+            print(f"[bench] PyTorch unavailable — skipping {dropped}; "
+                  f"running {backends or ['(none)']}")
+    if not backends:
+        print("[bench] no runnable backends; nothing to compare.")
+        return 1
+
+    base_rc = (RunConfig(minmass=args.minmass) if args.minmass is not None
+               else RunConfig())
+    print(f"[bench] simulating seed={cfg.seed} {cfg.n_frames}f "
+          f"{cfg.height}x{cfg.width} n_emitters={cfg.n_emitters} ...")
+    sim = simulate(cfg)
+    print(f"[bench] comparing backends={backends} linkers={linkers} on "
+          f"{len(sim.gt_locs):,} GT loc-frames"
+          + (f" (fixed minmass={args.minmass})" if args.minmass is not None
+             else " (each engine auto-thresholds)"))
+    rows = compare_engines(sim, backends=backends, linkers=linkers,
+                           base_run_cfg=base_rc)
+    table = build_report_table(rows)
+
+    os.makedirs(args.out, exist_ok=True)
+    csv_p = os.path.join(args.out, "engine_comparison.csv")
+    png_p = os.path.join(args.out, "engine_comparison.png")
+    table.to_csv(csv_p, index=False)
+    render_report_figure(rows, sim, out_path=png_p)
+    print(table.to_string(index=False))
+    print(f"[bench] wrote {csv_p}\n[bench] wrote {png_p}")
+
+    if args.tiff or args.gt:
+        from firefly.bench import io as bio
+        if args.gt:
+            paths = bio.write_gt_csvs(sim, args.out)
+            print(f"[bench] wrote GT: {paths['locs']}, {paths['tracks']}")
+        if args.tiff:
+            tif = bio.write_tiff(sim.stack, os.path.join(args.out, "sim_stack.tif"))
+            print(f"[bench] wrote {tif}")
+    return 0
+
+
 def _ingest(args):
     import json
     import pandas as pd
@@ -72,6 +126,15 @@ def _ingest(args):
 
 
 def main(argv=None):
+    # Headless on Windows, stdout defaults to cp1252 but the analysis pipeline
+    # prints Unicode (→, µ, …) — force UTF-8 so a bench run doesn't die with a
+    # UnicodeEncodeError mid-pipeline.  (The GUI redirects stdout, so this only
+    # ever bites the CLI.)
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     p = argparse.ArgumentParser(prog="firefly.bench.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -81,6 +144,22 @@ def main(argv=None):
     sb.add_argument("--tiff", action="store_true", help="also write sim_stack.tif")
     sb.add_argument("--gt", action="store_true", help="also write GT CSVs")
     sb.set_defaults(func=_selfbench)
+
+    cm = sub.add_parser("compare",
+                        help="simulate + run MULTIPLE engines + score side-by-side")
+    cm.add_argument("--config", help="SimConfig JSON (default: built-in)")
+    cm.add_argument("--out", default="bench_compare", help="output dir")
+    cm.add_argument("--backends", default="trackpy,torch,atrous",
+                    help="comma list of detection backends "
+                         "(trackpy,torch,atrous; torch/atrous need PyTorch)")
+    cm.add_argument("--linkers", default="trackpy",
+                    help="comma list of linkers (trackpy|lap|kalman)")
+    cm.add_argument("--minmass", type=float, default=None,
+                    help="fixed minmass for ALL engines (apples-to-apples "
+                         "detection); default = each engine's auto-threshold")
+    cm.add_argument("--tiff", action="store_true", help="also write sim_stack.tif")
+    cm.add_argument("--gt", action="store_true", help="also write GT CSVs")
+    cm.set_defaults(func=_compare)
 
     ig = sub.add_parser("ingest", help="score an external tool export vs a saved GT")
     ig.add_argument("--gt-dir", required=True, help="dir with ground_truth_* files")

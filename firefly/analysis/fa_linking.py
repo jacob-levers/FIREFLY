@@ -13,12 +13,14 @@ from firefly.analysis.fa_constants import _Cancelled, _tqdm
 
 def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
                        linker="trackpy", progress_cb=None, stop_event=None):
-    """Link localisations into trajectories using trackpy's linker.
+    """Link localisations into trajectories.
 
-    linker      : kept for call-site compatibility; only "trackpy" is
-        supported.  Trackpy uses its `link_iter` (or `link` fallback)
-        with the recursive subnet linker and produces a `particle`
-        column on the returned DataFrame.
+    linker      : "trackpy" (default) — Crocker-Grier recursive-subnet
+        nearest-neighbour via `link_iter` (or `link` fallback), best for pure
+        Brownian diffusion; "kalman" — constant-velocity Kalman LAP, far better
+        on directed / crossing motion; "lap" — Jaqaman two-step global LAP.
+        The "kalman" / "lap" paths dispatch to `fa_linking_lap`.  All produce a
+        `particle` column on the returned DataFrame.
     progress_cb : callable(fraction) → None
         Optional.  Called periodically with a [0, 1] float so the host
         can update a progress bar.  Updates are throttled to roughly

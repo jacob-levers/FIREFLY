@@ -28,7 +28,8 @@ def _link_and_diffuse(locs, *, pixel_size_um, frame_interval_s, rc, already_link
     from firefly.analysis.fa_linking import link_trajectories
     from firefly.analysis.fa_diffusion import compute_msd_and_fit
     tracks = locs if already_linked else link_trajectories(
-        locs, search_range=rc.search_range, memory=rc.memory, min_len=rc.min_len)
+        locs, search_range=rc.search_range, memory=rc.memory, min_len=rc.min_len,
+        linker=rc.linker)
     if tracks is None or len(tracks) == 0 or "particle" not in tracks.columns:
         return tracks, pd.DataFrame(columns=["particle", "D", "alpha", "motion"])
     _imsd, _emsd, diff = compute_msd_and_fit(
@@ -61,6 +62,35 @@ def run_firefly_in_process(stack, *, pixel_size_um, frame_interval_s,
         locs, pixel_size_um=pixel_size_um, frame_interval_s=frame_interval_s, rc=rc)
     return ToolRunResult("FIREFLY", locs, tracks, diff,
                          {"minmass": float(minmass_used)})
+
+
+def compare_engines(sim, *, backends, linkers=("trackpy",), base_run_cfg=None):
+    """Run the SAME simulated ground truth through each (backend, linker) engine
+    and score it — returns one `evaluate()` row per engine, ready for
+    `build_report_table` / `render_report_figure` (both already N-tool).
+
+    Reuses `run_firefly_in_process` + `evaluate` unchanged; only the engine label
+    (`ToolRunResult.name`, which the report keys on) and the per-engine `minmass`
+    actually used are stamped on.  `base_run_cfg` supplies the shared knobs
+    (diameter / percentile / minmass / search_range …); `backend` and `linker`
+    are overridden per engine.
+    """
+    from dataclasses import replace
+    from firefly.bench.report import evaluate
+    base = base_run_cfg or RunConfig()
+    one_linker = len(tuple(linkers)) == 1
+    rows = []
+    for backend in backends:
+        for linker in linkers:
+            rc = replace(base, backend=backend, linker=linker)
+            res = run_firefly_in_process(
+                sim.stack, pixel_size_um=sim.meta["pixel_size_um"],
+                frame_interval_s=sim.meta["frame_interval_s"], run_cfg=rc)
+            res.name = backend if one_linker else f"{backend}/{linker}"
+            row = evaluate(res, sim)
+            row["minmass"] = res.extra.get("minmass")
+            rows.append(row)
+    return rows
 
 
 def ingest_external_locs(csv_path: str, preset: str, *, pixel_size_um,

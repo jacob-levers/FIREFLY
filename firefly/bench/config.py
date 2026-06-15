@@ -86,7 +86,10 @@ class RunConfig:
     max_lagtime: int = 20
     n_fit: int = 5
     workers: int = 1                       # 1 = deterministic, no spawn cost
-    backend: str = "auto"
+    backend: str = "auto"                  # "trackpy" | "torch" | "atrous" | "auto"
+    linker: str = "trackpy"                # "trackpy" | "lap" | "kalman"
+                                           # (default keeps the historical bench
+                                           # behaviour; the GUI default is Kalman)
 
 
 # ── JSON round-trip ───────────────────────────────────────────────────────────
