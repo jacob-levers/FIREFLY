@@ -186,6 +186,28 @@ def _assert_locs_equivalent(serial, par):
                            rtol=1e-4, atol=1e-3), col
 
 
+def test_backends_extraction_reexport_identity():
+    """The localiser backends were extracted to fa_localize_backends; fa_localize
+    re-imports them so every existing `from ...fa_localize import TorchBackend`
+    call site (and the sptpalm_analysis facade) keeps resolving to the SAME
+    object — guards against the extraction silently shadowing or duplicating a
+    class."""
+    from firefly.analysis import fa_localize as L
+    from firefly.analysis import fa_localize_backends as B
+    # Names re-exported all the way through the sptpalm_analysis facade.
+    facade_names = ("LocaliserBackend", "TrackpyBackend", "TorchBackend",
+                    "_emit_trackpy_chunk_preview", "_localise_chunk",
+                    "_localise_chunk_mp", "_localise_chunk_mmap_mp")
+    for name in facade_names:
+        assert getattr(L, name) is getattr(B, name), name
+        assert getattr(s, name) is getattr(B, name), f"facade {name}"
+    # The torch MP worker moved with the class; fa_localize re-imports it (the
+    # facade doesn't re-export it, so check only fa_localize).
+    assert L._torch_localise_block_mp is B._torch_localise_block_mp
+    # The registry/dispatch still point at the (now-imported) backend classes.
+    assert L._BACKEND_REGISTRY[-1] is B.TorchBackend
+
+
 def test_torch_cpu_parallel_matches_serial_shm(monkeypatch):
     """The Torch-CPU multi-process path (in-RAM ndarray → shared_memory) must
     reproduce the serial detections exactly (chunk-aligned blocks)."""
