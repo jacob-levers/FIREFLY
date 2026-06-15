@@ -167,6 +167,30 @@ def _parse_pt_native_d(path):
     return df
 
 
+def _native_d_overrides(diff_df, native_d):
+    """Overlay palmTRACER's native per-track D / MSD0 / MSE / logD onto a
+    FIREFLY-derived ``diff_df`` (matched on ``particle``) so the D / MSD / LogD /
+    AUC graphs reproduce palmTRACER's numbers — while KEEPING FIREFLY's own
+    alpha / motion / loc_sigma_nm / Rg / mean-radial, which palmTRACER does not
+    provide but FIREFLY derives from the same trajectories.
+
+    This replaces the old behaviour where ``use_native`` took ``_parse_pt_native_d``
+    wholesale and so left every track ``alpha=NaN`` / ``motion="Unclassified"``
+    (which made the Compare tab's Motion-Class panel read ~100% unclassified for
+    palmTRACER folders).  Tracks absent from the native -D file keep FIREFLY's
+    re-derived D."""
+    if native_d is None or diff_df is None or "particle" not in native_d.columns:
+        return diff_df
+    out = diff_df.set_index("particle")
+    ndi = native_d.set_index("particle")
+    for c in ("D", "MSD0", "MSE", "logD"):
+        if c in ndi.columns:
+            base = (out[c] if c in out.columns
+                    else pd.Series(index=out.index, dtype=float))
+            out[c] = ndi[c].reindex(out.index).combine_first(base)
+    return out.reset_index()
+
+
 def _parse_pt_native_msd(path, max_lagtime=20):
     """Parse a palmTRACER ``trcPALMTracer-*-MSD`` file (jagged per-track MSD
     curves in µm², ``ROI Trace msd[Δt=1] msd[Δt=2] …``) into ``(imsd_df,
@@ -285,24 +309,30 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True):
         "mass":     trc_df["Integrated_Intensity"].astype(float).values,
     }).sort_values(["particle", "frame"]).reset_index(drop=True)
 
-    # ── Re-derive D, alpha, motion via FIREFLY's own pipeline ────────────
-    # This guarantees the Compare tab sees the same column names and
-    # identical statistics it would for a native FIREFLY run.
-    imsd_df = emsd_series = diff_df = None
+    # ── Derive D, alpha, motion via FIREFLY's own pipeline ───────────────
+    # ALWAYS run FIREFLY's MSD fit so alpha / motion-class / loc_sigma / Rg are
+    # populated — palmTRACER doesn't store those, but they are computable from
+    # the same trajectories FIREFLY already parsed (and uses for JDD / dwell /
+    # turning / mobile-fraction).  When `use_native` is set we then overlay
+    # palmTRACER's OWN D / MSD onto the D / MSD / LogD / AUC family so those
+    # graphs reproduce palmTRACER exactly — but the motion CLASSIFICATION stays
+    # FIREFLY's instead of being blanked.  (Previously use_native took the native
+    # -D wholesale, hard-setting alpha=NaN / motion="Unclassified" for every
+    # track, so the Compare Motion-Class panel read ~100% unclassified.)
+    imsd_df, emsd_series, diff_df = compute_msd_and_fit(
+        tracks, pixel_size_um, frame_interval_s, max_lagtime=20, n_fit=5)
     if use_native and d_path and msd_path:
         try:
             _nd = _parse_pt_native_d(d_path)
             _ni, _ne = _parse_pt_native_msd(msd_path, max_lagtime=20)
             if _nd is not None and _ni is not None and len(_nd):
-                diff_df, imsd_df, emsd_series = _nd, _ni, _ne
-                print(f"  Using palmTRACER's native MSD/D "
-                      f"({len(_nd)} tracks); alpha / motion-class unavailable.")
+                diff_df = _native_d_overrides(diff_df, _nd)
+                imsd_df, emsd_series = _ni, _ne
+                print(f"  Using palmTRACER's native MSD/D for {len(_nd)} tracks; "
+                      f"alpha / motion-class re-derived by FIREFLY.")
         except Exception as _exc:
-            print(f"  WARN: native MSD/D parse failed ({_exc}); re-deriving.")
-            diff_df = imsd_df = emsd_series = None
-    if diff_df is None:
-        imsd_df, emsd_series, diff_df = compute_msd_and_fit(
-            tracks, pixel_size_um, frame_interval_s, max_lagtime=20, n_fit=5)
+            print(f"  WARN: native MSD/D parse failed ({_exc}); using FIREFLY's "
+                  f"re-derived D/MSD.")
 
     emsd_df = (emsd_series.to_frame("msd_um2")
                           .reset_index(names="lag_frame"))
@@ -488,6 +518,45 @@ def load_summary_from_folder(folder, use_native=False):
         s["tracks"] = pd.read_csv(tr_path)
     else:
         s["tracks"] = None
+
+    # ── Self-heal a blanked palmTRACER motion cache ──────────────────────
+    # An older `use_native` load took palmTRACER's native -D wholesale, which
+    # left EVERY track alpha=NaN / motion="Unclassified" in the cached summary
+    # (so Compare's Motion-Class panel read ~100% unclassified for palmTRACER
+    # folders).  When the cached trajectories are present we re-derive alpha /
+    # motion / loc_sigma / Rg from them — restricted to exactly the cached track
+    # set — keep the cache's (palmTRACER-native) D, and rewrite the cache once so
+    # it's a permanent one-time repair.  No-op for normal (already-classified)
+    # caches.
+    _diff = s.get("diffusion")
+    if (_diff is not None and len(_diff) and "alpha" in _diff.columns
+            and "motion" in _diff.columns and s.get("tracks") is not None
+            and len(s["tracks"]) and "particle" in s["tracks"].columns):
+        _a = pd.to_numeric(_diff["alpha"], errors="coerce")
+        _all_blank = (_a.notna().sum() == 0
+                      and (_diff["motion"].astype(str) == "Unclassified").all())
+        if _all_blank:
+            try:
+                _px = float(s["params"].get("pixel_size_um", DEFAULT_PIXEL_SIZE_UM)) \
+                    or DEFAULT_PIXEL_SIZE_UM
+                _fi = float(s["params"].get("frame_interval_s", DEFAULT_FRAME_INTERVAL_S)) \
+                    or DEFAULT_FRAME_INTERVAL_S
+                _keep = set(pd.to_numeric(_diff["particle"], errors="coerce")
+                            .dropna().astype(int))
+                _tf = s["tracks"][s["tracks"]["particle"].isin(_keep)]
+                if len(_tf):
+                    _i2, _e2, _new = compute_msd_and_fit(
+                        _tf, _px, _fi, max_lagtime=20, n_fit=5)
+                    s["diffusion"] = _native_d_overrides(_new, _diff)
+                    print(f"  Repaired blanked palmTRACER motion cache: "
+                          f"re-classified {len(s['diffusion'])} tracks for {stem}.")
+                    try:
+                        s["diffusion"].to_csv(diff_path, index=False)
+                    except Exception:
+                        pass
+            except Exception as _exc:
+                print(f"  WARN: could not repair blanked motion cache "
+                      f"for {stem} ({_exc}); leaving it unclassified.")
 
     # JDD
     jdd_path = os.path.join(data_dir, f"{stem}_jdd.json")

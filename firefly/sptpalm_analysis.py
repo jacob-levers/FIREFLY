@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.67.0"
+__version__ = "2.67.1"
+# v2.67.1 — fix: palmTRACER motion classification was blanked when D was taken
+# from palmTRACER's native -D file (use_native); now FIREFLY's alpha/motion are
+# kept (native D only overrides the D/MSD family), and a blanked cache self-heals
+# on load.  No effect on FIREFLY-localised runs.
 # TAG: an annotated `v2.67.0` tag is created on the release-prep commit (the one
 # that adds the CHANGELOG v2.67.0 section).  The in-app updater compares this
 # string against the latest *GitHub* tag, so it will not offer an update until

@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.67.1
+
+### Fixed: palmTRACER comparisons showed nearly everything "Unclassified"
+
+When a palmTRACER folder was loaded with **"use palmTRACER's native D/MSD"**
+(`use_native`), FIREFLY took D from palmTRACER's own `-D` file but **blanked the
+anomalous exponent and motion class** for *every* track — so a Compare's **Motion
+Class Fractions** panel read 80–100% "Unclassified" (and groups whose folders all
+went this way, e.g. an all-palmTRACER Propofol/Pre, showed an empty bar). The
+motion class is computable from the same trajectories FIREFLY already parses (it
+derives JDD / dwell / turning / mobile-fraction from them); there was no reason to
+discard it.
+
+Now the `use_native` path **keeps FIREFLY's alpha / motion / loc-σ / Rg** and lets
+palmTRACER's native values override **only** the D / MSD / LogD / AUC family — so
+the D graphs still reproduce palmTRACER exactly while motion classes are populated.
+Existing **already-cached** palmTRACER summaries that were blanked this way
+**self-heal on load**: the app re-derives motion from the cached trajectories
+(keeping the native D) and rewrites the cache once. FIREFLY-localised runs are
+unaffected.
+
 ## v2.67.0
 
 A large correctness, robustness and honesty pass — the result of a multi-round
