@@ -9,16 +9,20 @@ cross-correlation drift correction, turning-angle and radial-distribution
 analysis, plus a multi-group comparison mode with statistical tests and a
 multi-page PDF report.
 
-FIREFLY specialises in **two detection engines — trackpy and PyTorch** —
-both Crocker-Grier-family centroid localisers, calibrated to agree to
-within the experiment's noise floor. Linking offers a choice of engines —
-a Kalman linear-motion tracker (the default) and trackpy's recursive subnet
-linker. You can also **import and analyse
+FIREFLY offers **three detection engines** — trackpy and PyTorch (both
+Crocker-Grier-family centroid localisers, calibrated to agree to within the
+experiment's noise floor) plus an **à trous wavelet** detector for faint spots
+in low-SNR / structured backgrounds. Linking offers **six trajectory linkers** —
+Kalman (default), trackpy, Simple & Full LAP (TrackMate-style, the latter with
+optional merge/split), nearest-neighbour, and a palmTRACER-style
+simulated-annealing tracker — plus an optional **auto search-range** that picks
+the linking distance from the data. You can also **import and analyse
 localisation tables exported by other tools** (TrackMate, palmTRACER,
 Picasso, ThunderSTORM) — see [Analyse external localisations](#analyse-external-localisations).
 
 Built with Python + PySide6 + napari. Localisation runs on the GPU via
-PyTorch (Apple MPS or NVIDIA CUDA) and falls back to trackpy on CPU.
+PyTorch — NVIDIA CUDA on Windows/Linux, Apple MPS on macOS, picked
+automatically — and falls back to trackpy on CPU.
 
 By Jacob Levers · macOS and Windows
 
@@ -145,19 +149,35 @@ every tab switch.
 
 ### Detection & tracking
 
-- **Two detection engines — trackpy and PyTorch**, auto-selected per
-  platform (Apple MPS, NVIDIA CUDA, or CPU-trackpy). Both are
-  Crocker-Grier-family centroid localisers calibrated to agree to within
-  ~5 nm; the auto-resolver prefers the GPU but drops back cleanly when
-  it's unavailable.
+- **Three detection engines** — **trackpy** (CPU) and **PyTorch (GPU)**, both
+  Crocker-Grier-family centroid localisers calibrated to agree to within ~5 nm,
+  plus an **à trous wavelet** detector that finds faint spots in low-SNR /
+  structured backgrounds (it shares the PyTorch refinement path, so its mass /
+  minmass match). The backend dropdown shows one GPU option that auto-selects
+  this machine's GPU — NVIDIA CUDA on Windows/Linux, Apple MPS on macOS — and
+  **Auto** prefers the GPU but drops back cleanly to CPU when it's unavailable.
 - **Selectable linker** — a **Linker** dropdown (Linking panel) chooses the
-  trajectory linker: **Kalman** (the default — a constant-velocity, TrackMate-
-  style linear-motion tracker that predicts each particle's next position from
-  its velocity, so it holds track identities through crossings and directed /
-  fast transport where nearest-neighbour linking swaps tracks; it matches
-  trackpy on pure diffusion), or **trackpy** (Crocker-Grier recursive subnet —
-  the long-standing, fast linker for Brownian motion). Your choice persists
-  between sessions and is recorded in each run's manifest.
+  trajectory linker:
+  - **Kalman** (default) — a constant-velocity, TrackMate-style linear-motion
+    tracker; holds track identities through crossings and directed / fast
+    transport where nearest-neighbour linking swaps tracks, and matches trackpy
+    on pure diffusion.
+  - **trackpy** — Crocker-Grier recursive subnet; the long-standing, fast
+    linker and the best all-rounder for Brownian motion.
+  - **Simple LAP** — TrackMate's Jaqaman two-step global assignment
+    (frame-to-frame + gap-closing).
+  - **Full LAP** — Simple LAP plus optional **merge / split** events and
+    intensity feature penalties (TrackMate's full tracker).
+  - **Nearest-neighbour** — greedy per-frame linking (TrackMate's simplest).
+  - **Simulated annealing** — a palmTRACER-style global multi-target tracker,
+    an independent reimplementation of the published method.
+
+  Your choice persists between sessions and is recorded in each run's manifest.
+- **Auto search-range** — an opt-in checkbox beside the Search-range field
+  estimates the linking distance per file from the motion: it sweeps candidate
+  ranges and takes the smallest at which tracks stop fragmenting, capped below
+  the inter-spot spacing. Off by default; the biggest accuracy win is on fast
+  motion, where a fixed default is usually too small.
 - **Import external localisations** — analyse localisation tables produced
   by other software (TrackMate, palmTRACER, Picasso, ThunderSTORM) without
   re-detecting. Column conventions are auto-detected. The whole downstream
@@ -515,8 +535,9 @@ available RAM minus the user-reserve.
 **Run feels slow even with GPU set**
 → Check the resource monitor on the Analysis tab. If GPU% sits at 0,
 the backend fell back to CPU — look at the log for the resolver's
-verdict. On macOS, `Crocker–Grier — PyTorch (Apple MPS)` requires PyTorch ≥ 2.0 and a
-recent macOS; on older systems the resolver auto-falls back to trackpy.
+verdict. On macOS the **PyTorch (GPU)** backend uses Apple MPS and requires
+PyTorch ≥ 2.0 and a recent macOS; on older systems the resolver auto-falls
+back to trackpy.
 
 **Compare panels show "no data" placeholders**
 → Older analysis folders (pre-v1.0.55) don't have every per-run JSON /
