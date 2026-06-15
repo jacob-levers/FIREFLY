@@ -12,15 +12,24 @@ from firefly.analysis.fa_constants import _Cancelled, _tqdm
 
 
 def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
-                       linker="trackpy", progress_cb=None, stop_event=None):
+                       linker="trackpy", link_params=None,
+                       progress_cb=None, stop_event=None):
     """Link localisations into trajectories.
 
-    linker      : "trackpy" (default) — Crocker-Grier recursive-subnet
-        nearest-neighbour via `link_iter` (or `link` fallback), best for pure
-        Brownian diffusion; "kalman" — constant-velocity Kalman LAP, far better
-        on directed / crossing motion; "lap" — Jaqaman two-step global LAP.
-        The "kalman" / "lap" paths dispatch to `fa_linking_lap`.  All produce a
-        `particle` column on the returned DataFrame.
+    linker      : one of (see `firefly.analysis.fa_enums.Linker`):
+        "trackpy" (default) — Crocker-Grier recursive-subnet nearest-neighbour,
+        best for pure Brownian diffusion; "kalman" — constant-velocity Kalman
+        LAP (TrackMate "Linear Motion"), better on directed / crossing motion;
+        "simple_lap" (alias "lap") — Jaqaman two-step LAP (frame-to-frame +
+        gap-closing); "full_lap" — Simple LAP + optional merge/split + feature
+        penalties (TrackMate's full LAP); "nn" — greedy nearest-neighbour;
+        "sa" — simulated-annealing multi-target tracker (palmTRACER-style).
+        Dispatch is via the linker registry (`fa_linking_registry`); every
+        linker produces a `particle` column on the returned DataFrame.
+    link_params : dict | None
+        Per-linker knobs (e.g. full_lap's allow_merging/allow_splitting/
+        feature_penalty; sa's seed/cooling/…).  Ignored by linkers that don't
+        use them.
     progress_cb : callable(fraction) → None
         Optional.  Called periodically with a [0, 1] float so the host
         can update a progress bar.  Updates are throttled to roughly
@@ -63,49 +72,23 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
                 _cols = _cols + ["particle"]
             return pd.DataFrame(columns=_cols)
 
-    # Alternative linkers (opt-in).  "lap" = Jaqaman two-step LAP (global
-    # gap-closing); "kalman" = constant-velocity Kalman LAP (TrackMate-style
-    # linear-motion tracker) — far better on directed / crossing motion, where
-    # trackpy's nearest-position linking swaps identities.  Default stays
-    # trackpy (best for pure Brownian diffusion).
-    if linker in ("lap", "kalman"):
-        from firefly.analysis import fa_linking_lap as _lap
-        _fn = (_lap.link_trajectories_kalman if linker == "kalman"
-               else _lap.link_trajectories_lap)
-        print(f"  Linking {len(locs):,} localisations  "
-              f"(linker={linker}, search_range={search_range}px, "
-              f"max_gap={memory}) ...")
-        t0 = time.perf_counter()
-        filtered = _fn(locs, search_range=search_range, max_gap=memory,
-                       min_len=min_len)
-        if max_len is not None and max_len > 0 and len(filtered):
-            lengths = filtered.groupby("particle")["frame"].count()
-            keep = lengths[lengths <= max_len].index
-            filtered = filtered[filtered["particle"].isin(keep)].reset_index(drop=True)
-        n = filtered["particle"].nunique() if len(filtered) else 0
-        print(f"  {n:,} trajectories in {time.perf_counter() - t0:.1f}s")
-        return filtered
-
+    # Dispatch to the selected linker via the registry (mirrors the localiser
+    # backend registry).  Each adapter wraps the existing linker function and
+    # applies the min/max-length filters; trackpy stays the default.
+    from firefly.analysis.fa_linking_registry import _resolve_linker
+    backend = _resolve_linker(linker)
     print(f"  Linking {len(locs):,} localisations  "
-          f"(linker=trackpy, search_range={search_range}px, "
-          f"memory={memory}) ...")
+          f"(linker={backend.name}, search_range={search_range}px, "
+          f"memory/max_gap={memory}) ...")
     t0 = time.perf_counter()
-
-    linked = _link_via_trackpy(
-        locs, search_range=search_range, memory=memory,
+    filtered = backend.link(
+        locs, search_range=search_range, memory=memory, min_len=min_len,
+        max_len=max_len, params=link_params or {},
         progress_cb=progress_cb, stop_event=stop_event)
-
-    # Stub + max-length filters.
-    filtered = tp.filter_stubs(linked, min_len)
-    if max_len is not None and max_len > 0:
-        lengths  = filtered.groupby("particle")["frame"].count()
-        keep     = lengths[lengths <= max_len].index
-        filtered = filtered[filtered["particle"].isin(keep)]
-        print(f"  Max-length filter (<={max_len}): {filtered['particle'].nunique():,} remain")
-    elapsed = time.perf_counter() - t0
-    n       = filtered["particle"].nunique()
+    n = filtered["particle"].nunique() if len(filtered) else 0
     max_str = str(max_len) if max_len else "inf"
-    print(f"  {n:,} trajectories (len {min_len}-{max_str}) in {elapsed:.1f}s")
+    print(f"  {n:,} trajectories (len {min_len}-{max_str}) in "
+          f"{time.perf_counter() - t0:.1f}s")
     return filtered
 
 

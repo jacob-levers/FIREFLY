@@ -131,6 +131,50 @@ class Backend(Enum):
         return self in (Backend.TORCH_CUDA, Backend.TORCH_MPS)
 
 
+class Linker(Enum):
+    """Trajectory-linking algorithm.
+
+    ``trackpy``    — Crocker–Grier recursive-subnet nearest-neighbour (default;
+                     best for pure Brownian diffusion).
+    ``kalman``     — constant-velocity Kalman LAP (TrackMate "Linear Motion";
+                     directed / crossing motion).
+    ``simple_lap`` — Jaqaman two-step LAP: frame-to-frame + gap-closing, no
+                     merge/split (TrackMate "Simple LAP"; legacy token ``lap``).
+    ``full_lap``   — Simple LAP + optional merge/split + feature penalties
+                     (TrackMate's full LAP tracker).
+    ``nn``         — greedy nearest-neighbour (TrackMate "Nearest-neighbour").
+    ``sa``         — simulated-annealing multi-target tracker (palmTRACER-style;
+                     independent reimplementation of Racine & Sibarita 2006).
+    """
+    TRACKPY = "trackpy"
+    KALMAN = "kalman"
+    SIMPLE_LAP = "simple_lap"
+    FULL_LAP = "full_lap"
+    NN = "nn"
+    SA = "sa"
+
+    @classmethod
+    def parse(cls, value, *, log=None) -> "Linker":
+        s = str(value if value is not None else "trackpy").strip().lower()
+        for m in cls:
+            if s == m.value:
+                return m
+        # Accepted spellings / legacy tokens → canonical member.
+        aliases = {
+            "lap": cls.SIMPLE_LAP, "jaqaman": cls.SIMPLE_LAP,
+            "simple-lap": cls.SIMPLE_LAP,
+            "nearest": cls.NN, "nearest_neighbour": cls.NN,
+            "nearest-neighbour": cls.NN, "nearest_neighbor": cls.NN,
+            "nearest-neighbor": cls.NN,
+            "annealing": cls.SA, "simulated_annealing": cls.SA,
+            "palmtracer": cls.SA, "palm-tracer": cls.SA,
+        }
+        if s in aliases:
+            return aliases[s]
+        _warn(log, f"  WARNING: unknown linker {value!r} — using trackpy.")
+        return cls.TRACKPY
+
+
 class MsgKind(StrEnum):
     """Worker→GUI message-queue kinds — one source of truth so a typo can't
     silently drop a message.  StrEnum members compare equal to their plain

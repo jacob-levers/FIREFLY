@@ -41,6 +41,11 @@ _CSV_PRESETS: dict = {
         "mass":      ("Integrated_Intensity", "IntegratedIntensity",
                        "Integrated Intensity", "Mass", "Amp",
                        "Amplitude", "Intensity", "mass"),
+        # When a Track column is present (a PALM-Tracer `trc` trajectory export,
+        # not a `loc` localisation file) ALSO emit a `particle` column so the
+        # trajectories can be analysed / scored directly — mirrors TrackMate's
+        # TRACK_ID handling.  A no-op on loc files (no Track column).
+        "particle":  ("Track", "track", "Trajectory", "trajectory"),
     },
     "ThunderSTORM": {
         "frame":     ("frame", "Frame"),
@@ -1752,11 +1757,30 @@ def load_external_locs(csv_path: str, preset: str = "auto",
         split_rows = [_split(ln) for ln in preview]
         widths = [len(r) for r in split_rows]
         max_w  = max(widths) if widths else 0
+        # Preset-aware header pick: among the candidate rows (max width + look
+        # like a header), prefer the one whose fields match the preset's
+        # frame/x/y column aliases.  This disambiguates files where a METADATA
+        # header and the DATA header have the SAME column count — e.g.
+        # PALM-Tracer `trc` exports (both 8 cols), which a width-only rule picks
+        # wrong.  Falls back to the first candidate when nothing matches (an
+        # unknown/Custom layout), so currently-working files are unaffected.
+        _alias_tokens = set()
+        _scan = ([_CSV_PRESETS[preset]] if preset in _CSV_PRESETS
+                 else list(_CSV_PRESETS.values()))
+        for _p in _scan:
+            for _key in ("frame", "x", "y"):
+                for _al in _p.get(_key, ()):
+                    _alias_tokens.add(str(_al).strip().lower())
+
+        def _alias_hits(row):
+            return sum(1 for f in row if f.strip().lower() in _alias_tokens)
+
+        candidates = [i for i, row in enumerate(split_rows)
+                      if len(row) == max_w and _looks_like_header(row)]
         header_line = 0
-        for i, row in enumerate(split_rows):
-            if len(row) == max_w and _looks_like_header(row):
-                header_line = i
-                break
+        if candidates:
+            best = max(candidates, key=lambda i: (_alias_hits(split_rows[i]), -i))
+            header_line = best if _alias_hits(split_rows[best]) > 0 else candidates[0]
         # Multi-row header skipping — TrackMate exports a 3-row header
         # block (machine names / human names / units like "(micron)"),
         # only the FIRST of which has the column names we recognise.

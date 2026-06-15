@@ -56,10 +56,13 @@ def test_compare_engines_threads_linker():
     """The linker is threaded through: same detector + two linkers → two rows
     with IDENTICAL detection (only tracking can differ)."""
     sim = simulate(_easy_cfg())
+    linkers = ("trackpy", "kalman", "nn", "simple_lap")
     rows = compare_engines(sim, backends=("trackpy",),
-                           linkers=("trackpy", "kalman"),
+                           linkers=linkers,
                            base_run_cfg=RunConfig(minmass=2.0, workers=1))
-    assert [r["tool"] for r in rows] == ["trackpy/trackpy", "trackpy/kalman"]
-    # Same detector → identical detection metrics; only the linker changed.
-    assert abs(rows[0]["f1"] - rows[1]["f1"]) < 1e-9
-    assert abs(rows[0]["recall"] - rows[1]["recall"]) < 1e-9
+    assert [r["tool"] for r in rows] == [f"trackpy/{lk}" for lk in linkers]
+    # Same detector → identical detection metrics across every linker; only the
+    # tracking can differ.
+    for r in rows[1:]:
+        assert abs(rows[0]["f1"] - r["f1"]) < 1e-9
+        assert abs(rows[0]["recall"] - r["recall"]) < 1e-9

@@ -29,7 +29,7 @@ def _link_and_diffuse(locs, *, pixel_size_um, frame_interval_s, rc, already_link
     from firefly.analysis.fa_diffusion import compute_msd_and_fit
     tracks = locs if already_linked else link_trajectories(
         locs, search_range=rc.search_range, memory=rc.memory, min_len=rc.min_len,
-        linker=rc.linker)
+        linker=rc.linker, link_params=getattr(rc, "link_params", None) or {})
     if tracks is None or len(tracks) == 0 or "particle" not in tracks.columns:
         return tracks, pd.DataFrame(columns=["particle", "D", "alpha", "motion"])
     _imsd, _emsd, diff = compute_msd_and_fit(

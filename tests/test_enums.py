@@ -6,7 +6,7 @@ Guards the two properties the refactor relies on:
   2. .value equals the exact wire string for every member (manifest round-trip).
 """
 from firefly.analysis.fa_enums import (
-    ROIMode, MaskMode, FigureTheme, Backend, MsgKind)
+    ROIMode, MaskMode, FigureTheme, Backend, Linker, MsgKind)
 
 
 def test_roi_mode_parse_and_wire_values():
@@ -62,6 +62,22 @@ def test_backend_parse_strips_device_suffix():
     assert {m.value for m in Backend} == {
         "auto", "trackpy", "torch", "torch-cpu", "torch-cuda", "torch-mps",
         "atrous"}
+
+
+def test_linker_parse_and_aliases():
+    for m in Linker:
+        assert Linker.parse(m.value) is m
+        assert Linker.parse(m.value.upper()) is m            # case-insensitive
+    # legacy / alternative spellings
+    assert Linker.parse("lap") is Linker.SIMPLE_LAP
+    assert Linker.parse("jaqaman") is Linker.SIMPLE_LAP
+    assert Linker.parse("nearest-neighbour") is Linker.NN
+    assert Linker.parse("palmtracer") is Linker.SA
+    logs = []
+    assert Linker.parse("graph", log=logs.append) is Linker.TRACKPY
+    assert logs and "unknown linker" in logs[0]              # not silent
+    assert {m.value for m in Linker} == {
+        "trackpy", "kalman", "simple_lap", "full_lap", "nn", "sa"}
 
 
 def test_msgkind_is_str_and_complete():

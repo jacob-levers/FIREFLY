@@ -7,7 +7,7 @@ without any third-party serialiser.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Optional, Tuple
 
 
@@ -87,9 +87,14 @@ class RunConfig:
     n_fit: int = 5
     workers: int = 1                       # 1 = deterministic, no spawn cost
     backend: str = "auto"                  # "trackpy" | "torch" | "atrous" | "auto"
-    linker: str = "trackpy"                # "trackpy" | "lap" | "kalman"
-                                           # (default keeps the historical bench
-                                           # behaviour; the GUI default is Kalman)
+    linker: str = "trackpy"                # "trackpy" | "kalman" | "simple_lap" |
+                                           # "full_lap" | "nn" | "sa" (+ legacy
+                                           # "lap"); default keeps the historical
+                                           # bench behaviour; GUI default is Kalman
+    link_params: dict = field(default_factory=dict)
+                                           # per-linker knobs: full_lap's
+                                           # allow_merging/allow_splitting/
+                                           # feature_penalty; sa's seed/cooling/…
 
 
 # ── JSON round-trip ───────────────────────────────────────────────────────────
