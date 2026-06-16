@@ -49,6 +49,7 @@ from firefly.analysis.fa_localize_backends import (  # noqa: F401
     _localise_chunk, _localise_chunk_mp, _localise_chunk_mmap_mp,
     _torch_localise_block_mp, LocaliserBackend, _emit_trackpy_chunk_preview,
     TrackpyBackend, TorchBackend, AtrousWaveletBackend,
+    GaussianMleBackend, RadialSymmetryBackend,
 )
 
 
@@ -664,6 +665,7 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
 
 _BACKEND_REGISTRY: list[type[LocaliserBackend]] = [
     TrackpyBackend, TorchBackend, AtrousWaveletBackend,
+    GaussianMleBackend, RadialSymmetryBackend,
 ]
 
 
@@ -918,6 +920,56 @@ def _knee_minmass(masses, n=60):
     if diff[k] <= 1e-3:
         return None
     return float(grid[k])
+
+
+def _noise_floor_valley(masses, sep_min=0.5):
+    """Candidate noise/signal valley for the linkability picker's floor, in
+    LINEAR mass.
+
+    Returns ``(valley, sep, w_min)``.  ``valley`` is the Bayes-optimal crossover
+    between a low-mass mode and a higher-mass mode of a 2-component GMM fit to
+    log10(mass), returned whenever the two modes are at least minimally usable
+    (``sep = m_hi − m_lo ≥ sep_min`` dex apart, minor weight ≥2%); else None.
+
+    This function only DETECTS a second mode — it does NOT decide whether to
+    apply it as a floor.  That decision lives in `estimate_minmass`, because
+    whether a low-mass second mode is NOISE (floor it) or real OVERLAPPING signal
+    (keep it) depends on emitter DENSITY, which the caller knows: a strongly
+    separated mode (≥0.85 dex) is unambiguous noise at any density, but a MODEST
+    separation (0.5–0.85) is only trusted as noise on SPARSE data, where isolated
+    real emitters form a tight single mass mode and can't manufacture a low-mass
+    overlap mode.  At high density that low mode is merged/overlapping real spots
+    and must not be cut.
+
+    Why a floor is needed at all: the old count-vs-threshold kneedle returned a
+    value UNCONDITIONALLY, so on a unimodal distribution (a detector that doesn't
+    over-detect noise — trackpy — or dense all-real data) it found a spurious
+    bend inside the single real mode and over-cut, collapsing recall (trackpy/SPT
+    picked ~2.3 vs a true ~0.1; every detector on the dense EPFL set picked ~3–4
+    and detected almost nothing).  Gating on a real second mode fixes that while
+    still suppressing the genuine low-mass flood the PyTorch/à-trous detectors
+    produce.  Validated on 33 cases (EPFL + palmTRACER + simulated density×SNR
+    grid): the apply-gate in estimate_minmass lands the production threshold near
+    the best-achievable F1 in every regime."""
+    lm = np.log10(np.asarray(masses, dtype=float))
+    lm = lm[np.isfinite(lm)]
+    if lm.size < 200:
+        return None, None, None
+    try:
+        from sklearn.mixture import GaussianMixture
+        gm = GaussianMixture(n_components=2, n_init=3,
+                             random_state=0).fit(lm.reshape(-1, 1))
+        means = gm.means_.ravel()
+        sds = np.sqrt(gm.covariances_.ravel())
+        wts = gm.weights_.ravel()
+        order = np.argsort(means)
+        sep = float(means[order][1] - means[order][0])
+        w_min = float(wts.min())
+        if sep >= sep_min and w_min >= 0.02:
+            return float(10.0 ** _gmm_crossover(means, sds, wts)), sep, w_min
+        return None, sep, w_min
+    except Exception:
+        return None, None, None
 
 
 # ── Linkability-optimised auto-threshold ────────────────────────────────────
@@ -1210,12 +1262,16 @@ def _sweep_pool_one(t):
 _SWEEP_PARALLEL_MIN_CANDIDATES = 8000
 
 # Auto-threshold harvest cap: max candidates kept per frame (brightest by mass)
-# for the torch family ONLY, whose minmass=0 detection over-detects noise.  An
-# absolute per-frame count, not an FOV density — empirically the auto-threshold's
-# signal/noise separation stayed reliable at ~40 candidates/frame across
-# 64²/160²/256² stacks (it is the linker's combinatorics + noise fraction that
-# break it, not areal density).  See the cap site in `estimate_minmass`.
-_HARVEST_MAX_PER_FRAME = 40
+# for the torch family ONLY, whose minmass=0 detection over-detects noise.  The
+# cap bounds the linkability sweep's combinatorics, but it MUST stay ABOVE the
+# real per-frame spot density: if it falls below, the brightest-N kept are ALL
+# real spots with no noise tail, so the sweep can't locate the signal/noise
+# boundary and over-thresholds (recall collapses — e.g. on a ~74-spot/frame
+# stack, cap=40 picked minmass≈2.1 and dropped recall 0.78→0.18).  120 keeps the
+# real population PLUS the noise tail on dense stacks while still capping a
+# torch flood (~900/frame); recall recovers to 0.78 at precision 1.0, with margin
+# before precision degrades (~200).  Verified across 64²/160²/256² stacks.
+_HARVEST_MAX_PER_FRAME = 120
 
 
 def _sweep_thresholds(H, grid, search_range, memory, link_min_len):
@@ -1313,12 +1369,24 @@ def _pick_linkability_threshold(sweep, sensitivity, max_false_track_rate,
     step = {"strict": +1, "balanced": 0, "lenient": -1}.get(
         str(sensitivity).lower(), 0)
     idx = int(np.clip(op + step, 0, len(t) - 1))
-    chosen = max(float(t[idx]), nf)
+
+    # Floor the operating point at the shot-noise level.  `noise_floor` is the
+    # bimodality-gated GMM noise/signal valley when a separable noise population
+    # exists, else a no-op low floor (the 2nd mass percentile) — see
+    # estimate_minmass / `_noise_floor_valley`.  So this clamp lifts the pick
+    # ONLY when there is genuinely a low-mass noise flood to suppress (the
+    # PyTorch/à-trous over-detection regime), and never above the real-spot mode
+    # on detectors that don't over-detect (trackpy) or on dense all-real data,
+    # where over-flooring collapsed recall in the old kneedle-always design.
+    t_op = float(t[idx])
+    chosen = max(t_op, nf)
     return chosen, {"rule": "f1_purity_recall", "op_index": int(op),
                     "chosen_index": int(idx),
                     "knee_index": int(knee), "sensitivity": str(sensitivity).lower(),
                     "N_good_at_op": float(Ng[op]),
                     "good_fraction_at_op": float(gf[op]),
+                    "good_fraction_at_chosen": float(gf[idx]),
+                    "noise_floor_applied": bool(nf > t_op),
                     "spurious_at_op": float(sr[op]),
                     "score_at_op": float(score[op])}
 
@@ -1484,10 +1552,20 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
     Returns (minmass: float, diagnostics: dict).
     """
     def _log(msg):
-        if log_cb:
-            log_cb(msg)
-        else:
-            print(msg)
+        # Encoding-safe: a default Windows (cp1252) console can't encode some of
+        # the chars in these log lines (e.g. the '→' arrow, 'σ').  A raw print
+        # would raise UnicodeEncodeError, which the outer handler below would
+        # catch and SILENTLY downgrade the auto-threshold to the legacy heuristic
+        # (a worse minmass) — so never let a log line abort estimation.
+        try:
+            (log_cb or print)(msg)
+        except UnicodeEncodeError:
+            import sys
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            try:
+                (log_cb or print)(msg.encode(enc, "replace").decode(enc))
+            except Exception:
+                pass
 
     if diameter % 2 == 0:
         diameter += 1
@@ -1582,19 +1660,51 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         diag["_log_masses"] = (np.random.default_rng(1).choice(lm, 20000, replace=False)
                                if lm.size > 20000 else lm.copy())
 
-        # Shot-noise floor = the count-vs-threshold knee (the noise/signal
-        # boundary on the candidate-mass survival curve), which is robust when
-        # bright spots dominate the distribution.  median+3·MAD is NOT used here
-        # — with many bright detections it inflates above the real population
-        # and would cut the very spots we need to link.  Falls back to a low
-        # percentile when no knee is resolvable.
+        # Shot-noise floor for the linkability operating point.  We floor at the
+        # GMM noise/signal valley ONLY when a low-mass second mode is genuinely
+        # NOISE; otherwise there is nothing to suppress (a raw kneedle would find
+        # a spurious bend inside the single real mode and over-cut, collapsing
+        # recall — trackpy/SPT, the dense EPFL set) and we floor only at the 2nd
+        # mass percentile (just below the population, never lifting the pick above
+        # real spots).  Whether a detected low-mass mode is NOISE or real
+        # OVERLAPPING signal depends on BOTH its separation AND areal CROWDING
+        # (overlap is an areal phenomenon — emitters per PSF footprint):
+        #   • strong separation (≥0.85 dex) → unambiguous noise at ANY crowding;
+        #   • modest separation (0.5–0.85)  → trusted as noise ONLY on an
+        #     UNCROWDED field, where isolated real emitters form one tight mass
+        #     mode so a second mode must be noise.  On a CROWDED field the low
+        #     mode is merged/overlapping real signal and must NOT be cut — e.g.
+        #     dense PyTorch CG sits at sep≈0.75 with crowding ≈0.28 (real
+        #     overlap), whereas à-trous on sparse low-SNR data sits at sep≈0.79
+        #     with crowding ≈0.11 (genuine noise).
+        # "Uncrowded" = candidate areal density `crowding` (candidates per PSF
+        # footprint, π·(d/2)²/frame-area) below π/16 ≈ 0.2 — the value at which
+        # the mean nearest-neighbour spacing equals one PSF diameter (overlap
+        # onset), DIAMETER-INDEPENDENT since both crowding and spacing scale with
+        # the PSF area.  Crowding (not raw count/frame) is the right scale: dense
+        # data makes the detector UNDER-count merged peaks, so count/frame alone
+        # mis-classifies a small crowded field as sparse.  Validated on 33 cases
+        # (real + simulated density×SNR grid).
+        # The kneedle is still computed for the audit figure's marker.
         _knee_log = _knee_minmass(mstat)
         diag["knee"] = None if _knee_log is None else float(_knee_log)
-        if _knee_log is not None:
-            noise_floor = float(10.0 ** _knee_log)
+        _valley, _sep, _wmin = _noise_floor_valley(mstat)
+        _cand_per_frame = masses.size / float(max(diag["frame_sample"], 1))
+        _psf_area = np.pi * (diameter / 2.0) ** 2
+        _crowding = _cand_per_frame * _psf_area / float(
+            max(int(stack.shape[-2]) * int(stack.shape[-1]), 1))
+        _apply_floor = _valley is not None and (
+            _sep >= 0.85 or _crowding < np.pi / 16.0)
+        if _apply_floor:
+            noise_floor = float(_valley)
+            diag["noise_floor_kind"] = "gmm_valley"
         else:
-            noise_floor = float(np.percentile(mstat, 5))
+            noise_floor = float(np.percentile(mstat, 2))
+            diag["noise_floor_kind"] = "p2_unimodal"
         diag["noise_floor"] = noise_floor
+        diag["mass_bimodality"] = {"sep_dex": _sep, "w_min": _wmin,
+                                   "cand_per_frame": float(_cand_per_frame),
+                                   "crowding": float(_crowding)}
 
         # ── Linkability sweep (primary) ──────────────────────────────────────
         chosen = None

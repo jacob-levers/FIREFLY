@@ -59,9 +59,13 @@ def test_backend_parse_strips_device_suffix():
     assert logs
     assert Backend.parse("atrous") is Backend.ATROUS
     assert Backend.ATROUS.is_explicit_gpu is False         # auto-device, not a pin
+    assert Backend.parse("gaussian-mle") is Backend.GAUSSIAN_MLE
+    assert Backend.parse("radial-symmetry") is Backend.RADIAL_SYMMETRY
+    assert Backend.GAUSSIAN_MLE.is_explicit_gpu is False    # auto-device, not a pin
+    assert Backend.RADIAL_SYMMETRY.is_explicit_gpu is False
     assert {m.value for m in Backend} == {
         "auto", "trackpy", "torch", "torch-cpu", "torch-cuda", "torch-mps",
-        "atrous"}
+        "atrous", "gaussian-mle", "radial-symmetry"}
 
 
 def test_linker_parse_and_aliases():

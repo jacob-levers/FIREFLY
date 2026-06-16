@@ -59,6 +59,154 @@ os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 
+# ── Deterministic execution mode (opt-in: FIREFLY_DETERMINISTIC=1) ───────────
+# For bit-reproducible runs (a methods-paper requirement).  Every RNG in FIREFLY
+# is already constant-seeded; the ONLY residual non-determinism is GPU
+# floating-point atomics (max-pool / conv / einsum / linalg.solve).  cuBLAS
+# determinism requires CUBLAS_WORKSPACE_CONFIG to be set BEFORE the first CUDA
+# context is created, so it must happen here in the pre-torch block; the
+# torch-side switch is applied later in `_apply_determinism()` (torch import is
+# lazy/scattered).  ':4096:8' over ':16:8' avoids a large-GEMM perf cliff.
+def _determinism_requested() -> bool:
+    return os.environ.get("FIREFLY_DETERMINISTIC", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+if _determinism_requested():
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+_DET_APPLIED = False
+
+
+def _apply_determinism(log_cb=None) -> dict:
+    """Apply torch deterministic algorithms when FIREFLY_DETERMINISTIC is set.
+
+    Idempotent.  `warn_only=True` is deliberate: a few torch CUDA kernels (some
+    pooling/scatter) have no deterministic implementation, and strict mode would
+    RAISE mid-analysis on exactly the GPU path users care about.  This pipeline
+    is forward/inference only, so the missing-kernel set is small; warn_only uses
+    the deterministic kernel where one exists and warns-but-runs otherwise.  The
+    run manifest records the LIVE torch state, so any residual non-determinism is
+    disclosed rather than hidden behind a crash.  Returns a small state dict."""
+    global _DET_APPLIED
+    if not _determinism_requested():
+        return {"requested": False}
+    if _DET_APPLIED:
+        return {"requested": True, "applied": True}
+    try:
+        import torch
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        try:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        except Exception:
+            pass
+        _DET_APPLIED = True
+        if log_cb:
+            log_cb("  Deterministic mode ON (torch deterministic algorithms, "
+                   "warn_only) — requesting a bit-reproducible run.")
+        return {"requested": True, "applied": True}
+    except Exception as e:
+        if log_cb:
+            log_cb(f"  Deterministic mode requested but not applied: {e}")
+        return {"requested": True, "applied": False, "error": str(e)}
+
+
+# ── Per-localisation precision (loc_sigma_x_nm / loc_sigma_y_nm) ─────────────
+def _pos_float(v):
+    """Parse an optional positive float param; return None for missing/≤0/bad."""
+    try:
+        f = float(v)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _crlb_sigma_nm_vec(photons, bg_photons, psf_sigma_px, pixel_size_um):
+    """Vectorised Mortensen-2010 Eq. 54 Gaussian-PSF lateral CRLB (nm).  Mirrors
+    firefly.bench.metrics.crlb_sigma_nm (production must not import the dev/bench
+    package); kept in lock-step with it.  NaN where photons ≤ 0."""
+    import numpy as _np
+    s = float(psf_sigma_px)
+    sa2 = s * s + 1.0 / 12.0                       # finite-pixel-corrected var (px²)
+    ph = _np.asarray(photons, dtype=float)
+    phc = _np.clip(ph, 1e-9, None)
+    tau = 2.0 * _np.pi * sa2 * max(float(bg_photons), 1e-9) / phc
+    var_px = (sa2 / phc) * (1.0 + 4.0 * tau
+                            + _np.sqrt(_np.clip(2.0 * tau / (1.0 + 4.0 * tau), 0.0, None)))
+    out = _np.sqrt(var_px) * float(pixel_size_um) * 1000.0
+    out[ph <= 0] = _np.nan
+    return out
+
+
+def _attach_loc_sigma(locs, *, p, px, backend, external=False, log_cb=None):
+    """Guarantee per-localisation precision columns ``loc_sigma_x_nm`` /
+    ``loc_sigma_y_nm`` on the localisations table (NaN where unavailable),
+    converting each backend's native estimate to nm.  Sources, by priority:
+
+      1. Gaussian-MLE Fisher-info CRLB (``loc_sigma_*_px`` from the fit) — the
+         rigorous source.  The fit runs on raw ADU, so its Poisson CRLB assumes
+         gain≈1; when ``camera_gain`` is supplied we rescale by √(qe/gain) to put
+         it on a photon footing.
+      2. trackpy ``ep`` (empirical, isotropic) — the Crocker–Grier CPU engine.
+      3. Mortensen CRLB from camera calibration (mass→photons) — best-effort for
+         the torch-CG / à trous / radial engines.  Weaker than (1)/(2): ``mass``
+         is post-preprocessing integrated intensity and the per-spot background is
+         approximated, so this is a reference estimate, not a calibrated absolute.
+      4. else NaN, with a one-time NOTE.
+
+    Distinct from the existing per-track ``loc_sigma_nm`` (MSD-offset estimate)
+    and ``loc_precision_nm`` (trackpy ep) — three independent precision estimates
+    that should agree (a cross-check)."""
+    import numpy as _np
+    if locs is None or "x" not in getattr(locs, "columns", []):
+        return locs
+    n = len(locs)
+    nm = float(px) * 1000.0
+    gain = _pos_float(p.get("camera_gain"))
+    qe = _pos_float(p.get("camera_qe")) or 1.0
+    bg_ph = _pos_float(p.get("camera_bg_photons")) or 0.0
+    diam = int(p.get("diameter", 7) or 7)
+    psf_sigma_px = max(0.75, 0.25 * diam)         # matches the MLE σ seed
+
+    locs = locs.copy()
+    if {"loc_sigma_x_px", "loc_sigma_y_px"} <= set(locs.columns):
+        sx = locs.pop("loc_sigma_x_px").to_numpy(float) * nm
+        sy = locs.pop("loc_sigma_y_px").to_numpy(float) * nm
+        if gain:
+            corr = float(_np.sqrt(qe / gain))     # ADU-CRLB → photon-CRLB
+            sx *= corr; sy *= corr
+            src = "Gaussian-MLE Fisher info (gain-corrected)"
+        else:
+            src = "Gaussian-MLE Fisher info (gain≈1 assumed)"
+    elif "ep" in locs.columns:
+        # trackpy's empirical error; ≤0 / non-finite means "no estimate" (e.g. a
+        # noiseless frame) → NaN, never a bogus 0-nm precision.
+        ep = locs["ep"].to_numpy(float)
+        ep_nm = _np.where(_np.isfinite(ep) & (ep > 0), ep, _np.nan) * nm
+        sx = ep_nm.copy(); sy = ep_nm.copy()
+        src = "trackpy ep (empirical)"
+    elif gain and not external and "mass" in locs.columns:
+        photons = locs["mass"].to_numpy(float) * gain / qe
+        s_arr = _crlb_sigma_nm_vec(photons, bg_ph, psf_sigma_px, px)
+        sx = s_arr.copy(); sy = s_arr.copy()
+        src = "Mortensen CRLB from camera calibration (approximate)"
+    else:
+        sx = _np.full(n, _np.nan); sy = _np.full(n, _np.nan)
+        src = None
+        if log_cb is not None and not external:
+            log_cb(f"  NOTE: per-localisation precision unavailable for "
+                   f"backend={backend!r} — use the Gaussian-MLE engine, or set "
+                   f"camera_gain to enable a CRLB estimate.")
+
+    locs["loc_sigma_x_nm"] = sx
+    locs["loc_sigma_y_nm"] = sy
+    if log_cb is not None and src is not None and _np.isfinite(sx).any():
+        log_cb(f"  Per-localisation precision: {src}; "
+               f"median σ ≈ {float(_np.nanmedian(_np.hypot(sx, sy) / _np.sqrt(2.0))):.1f} nm.")
+    return locs
+
+
 # Linking / MSD knobs a post-process re-ROI must reproduce from the original
 # run.  Single source of truth shared by the params.json writer (the safety-net
 # fallback when `p` is somehow missing a key) and the Post-process reader
@@ -244,6 +392,34 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
         except Exception:
             return ""
 
+    def _determinism_info() -> dict:
+        """Record whether deterministic mode was requested AND actually took
+        effect (live torch state, not just the env flag), plus the library
+        versions needed to reproduce the numerics."""
+        info = {
+            "requested": _determinism_requested(),
+            "cublas_workspace_config": os.environ.get(
+                "CUBLAS_WORKSPACE_CONFIG", ""),
+        }
+        try:
+            import torch
+            info["torch_version"] = str(torch.__version__)
+            info["cuda_available"] = bool(torch.cuda.is_available())
+            info["cuda_version"] = str(getattr(torch.version, "cuda", "") or "")
+            info["deterministic_algorithms_enabled"] = bool(
+                torch.are_deterministic_algorithms_enabled())
+            info["cudnn_deterministic"] = bool(
+                getattr(torch.backends.cudnn, "deterministic", False))
+        except Exception:
+            info["torch_version"] = ""
+            info["cuda_available"] = None
+        try:
+            import numpy as _np
+            info["numpy_version"] = str(_np.__version__)
+        except Exception:
+            info["numpy_version"] = ""
+        return info
+
     # Strip non-JSON-serialisable bits out of the params dict (roi_polygon
     # is a list-of-tuples, widget_state is a flat str/num/bool dict — both
     # are fine).  `json.dumps` raises on numpy arrays / etc., so we coerce.
@@ -267,7 +443,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
                      if k != "widget_state"}
 
     manifest = {
-        "schema_version":   1,
+        "schema_version":   2,
         "firefly_version":  _firefly_version(),
         "git_sha":          _git_sha(),
         "created_at":       _dt.datetime.now().isoformat(timespec="seconds"),
@@ -276,6 +452,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
             "platform": platform.platform(),
             "python":   platform.python_version(),
         },
+        "determinism":      _determinism_info(),
         "input": {
             "path":   fpath,
             "sha256": _file_sha256(fpath),
@@ -882,6 +1059,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
 
     # ── Localisation ──────────────────────────────────────────────────────
     _log(f"\n── Localisation ──────────────────")
+    # Apply deterministic-execution mode (no-op unless FIREFLY_DETERMINISTIC is
+    # set) BEFORE any GPU detection work, so the run is bit-reproducible and the
+    # manifest can record the live torch state.
+    _apply_determinism(_log)
     if external_csv:
         _prog(45, "Localisations loaded from CSV")
     else:
@@ -1146,6 +1327,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     if not external_csv:
         del stack
     _log(f"  → {len(locs):,} localisations")
+    # Per-localisation precision (loc_sigma_x_nm / loc_sigma_y_nm) — guaranteed
+    # present for every engine (NaN where unavailable), propagated through linking
+    # and export downstream.
+    locs = _attach_loc_sigma(locs, p=p, px=px, backend=p.get("backend", ""),
+                             external=external_csv, log_cb=_log)
     _check_stop()
 
     # ── ROI mask (optional) ───────────────────────────────────────────────

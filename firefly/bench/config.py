@@ -86,7 +86,8 @@ class RunConfig:
     max_lagtime: int = 20
     n_fit: int = 5
     workers: int = 1                       # 1 = deterministic, no spawn cost
-    backend: str = "auto"                  # "trackpy" | "torch" | "atrous" | "auto"
+    backend: str = "auto"                  # "trackpy" | "torch" | "atrous" |
+                                           # "gaussian-mle" | "radial-symmetry" | "auto"
     linker: str = "trackpy"                # "trackpy" | "kalman" | "simple_lap" |
                                            # "full_lap" | "nn" | "sa" (+ legacy
                                            # "lap"); default keeps the historical

@@ -16,3 +16,11 @@ tools/compare_to_palmtracer.py
 
 # Local agent / session data
 .claude/
+
+# Benchmark datasets + outputs — large external data / developer tooling, kept
+# local (not shipped with the program).  The EPFL/SPT challenge stacks are
+# hundreds of MB; benchmark_report holds generated figures + analysis scripts.
+_epfl/
+challenge/
+challenge_data/
+benchmark_report/

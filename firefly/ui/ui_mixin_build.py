@@ -556,6 +556,31 @@ class BuildMixin:
         gl.addRow(_label_with_info("Background radius (px)", "background radius"), self.s_bg_radius)
         layout.addWidget(sec)
 
+        # ── Camera calibration (optional) ─────────────────────────────────
+        # Only used to report per-localisation precision (loc_sigma_x_nm /
+        # loc_sigma_y_nm).  Gain converts detected mass → photons for a Mortensen
+        # CRLB on the Crocker–Grier / à trous / radial engines and gain-corrects
+        # the Gaussian-MLE Fisher-info precision.  0 = "not set": the Gaussian-MLE
+        # engine still reports precision (gain≈1 assumed); the other engines
+        # report NaN.  Does NOT affect detection — precision metadata only.
+        sec, gl = self._make_form_section("Camera calibration (optional)")
+        gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.s_camera_gain = self._spin_dbl(0.0, 0.0, 1000.0, 0.1, decimals=3,
+            tip="Camera conversion gain in electrons per ADU (e⁻/ADU).\n"
+                "Leave 0 if unknown.  Enables a CRLB per-localisation precision\n"
+                "estimate for the Crocker–Grier / à trous / radial engines and\n"
+                "gain-corrects the Gaussian-MLE precision.")
+        gl.addRow(_label_with_info("Gain (e⁻/ADU)", "camera gain"), self.s_camera_gain)
+        self.s_camera_qe = self._spin_dbl(0.0, 0.0, 1.0, 0.05, decimals=2,
+            tip="Quantum efficiency (0–1).  Leave 0 to assume 1.0.")
+        gl.addRow(_label_with_info("Quantum efficiency", "camera QE"), self.s_camera_qe)
+        self.s_camera_bg = self._spin_dbl(0.0, 0.0, 1e6, 1.0, decimals=1,
+            tip="Background level in photons/pixel (optional).  Refines the CRLB\n"
+                "estimate for the non-MLE engines; leave 0 for the shot-noise floor.")
+        gl.addRow(_label_with_info("Background (photons/px)", "camera background"),
+                  self.s_camera_bg)
+        layout.addWidget(sec)
+
         # ── Detection ─────────────────────────────────────────────────────
         sec, gl = self._make_form_section("Detection")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -725,27 +750,31 @@ class BuildMixin:
         sec, gl = self._make_form_section("Linking")
         gl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self.c_linker = QtWidgets.QComboBox()
-        self.c_linker.addItem("Kalman (default)", "kalman")
-        self.c_linker.addItem("Trackpy", "trackpy")
-        self.c_linker.addItem("Simple LAP — Jaqaman (TrackMate)", "simple_lap")
-        self.c_linker.addItem("Full LAP — TrackMate (merge/split)", "full_lap")
-        self.c_linker.addItem("Nearest-neighbour", "nn")
-        self.c_linker.addItem("Simulated annealing (palmTRACER-style)", "sa")
+        # Labels follow the detection-engine style "Algorithm — Software".  The
+        # stored DATA values (kalman/trackpy/simple_lap/full_lap/nn/sa) are frozen;
+        # only the display strings change.  Kalman is first → the default.  Renamed
+        # labels are migrated on settings restore via _LINKER_LABEL_MIGRATION.
+        self.c_linker.addItem("Kalman filter — TrackMate (Linear Motion)", "kalman")
+        self.c_linker.addItem("Crocker–Grier — Trackpy", "trackpy")
+        self.c_linker.addItem("Jaqaman LAP — TrackMate", "simple_lap")
+        self.c_linker.addItem("Jaqaman LAP — TrackMate (merge/split)", "full_lap")
+        self.c_linker.addItem("Nearest-neighbour — greedy", "nn")
+        self.c_linker.addItem("Simulated annealing — palmTRACER (inspired)", "sa")
         self.c_linker.setToolTip(
             "Trajectory linker.\n"
-            "Kalman (default): constant-velocity prediction (TrackMate-style\n"
-            "  linear-motion tracker) — holds track identities through crossings\n"
-            "  and directed / fast transport where nearest-neighbour linking\n"
-            "  swaps tracks; matches trackpy on pure diffusion. Slightly slower.\n"
-            "Trackpy: Crocker-Grier recursive subnet nearest-neighbour — the\n"
+            "Kalman filter — TrackMate (default): constant-velocity prediction\n"
+            "  (TrackMate's Linear Motion tracker) — holds track identities through\n"
+            "  crossings and directed / fast transport where nearest-neighbour\n"
+            "  linking swaps tracks; matches trackpy on pure diffusion. Slightly slower.\n"
+            "Crocker–Grier — Trackpy: recursive subnet nearest-neighbour — the\n"
             "  long-standing linker, fast and well-tested for Brownian motion.\n"
-            "Simple LAP: Jaqaman two-step global assignment (frame-to-frame +\n"
+            "Jaqaman LAP — TrackMate: two-step global assignment (frame-to-frame +\n"
             "  gap-closing) — TrackMate's Simple LAP tracker.\n"
-            "Full LAP: Simple LAP plus optional merge/split events (below) —\n"
-            "  TrackMate's full LAP tracker.\n"
-            "Nearest-neighbour: greedy per-frame linking — TrackMate's simplest.\n"
-            "Simulated annealing: global multi-target optimisation (palmTRACER's\n"
-            "  documented method); slower, seeds from nearest-neighbour.")
+            "Jaqaman LAP — TrackMate (merge/split): Simple LAP plus optional\n"
+            "  merge/split events (below) — TrackMate's full LAP tracker.\n"
+            "Nearest-neighbour — greedy: greedy per-frame linking — TrackMate's simplest.\n"
+            "Simulated annealing — palmTRACER (inspired): global multi-target\n"
+            "  optimisation (palmTRACER's documented method); slower, seeds from NN.")
         gl.addRow(_label_with_info("Linker", "linker"), self.c_linker)
         # Full-LAP-only event toggles (merge/split).  OFF by default (single
         # fluorophores don't physically coalesce); enabled only when Full LAP is
@@ -3690,6 +3719,10 @@ class BuildMixin:
                                     self.c_bg_method.currentText(),
                                     "uniform_filter"),
             "bg_radius":         int(self.s_bg_radius.value()),
+            # Camera calibration (optional) for per-localisation precision; 0 → unset.
+            "camera_gain":       float(self.s_camera_gain.value()),
+            "camera_qe":         float(self.s_camera_qe.value()),
+            "camera_bg_photons": float(self.s_camera_bg.value()),
             "diameter":          int(self.s_diameter.value()),
             "auto_minmass":      bool(self.c_auto_minmass.isChecked()),
             "minmass":           float(self.s_minmass.value()),

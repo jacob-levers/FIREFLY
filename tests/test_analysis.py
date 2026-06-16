@@ -282,6 +282,27 @@ def test_atrous_batch_stable():
     assert n1 == n2, f"batch-unstable: {n1} vs {n2}"
 
 
+def test_estimate_minmass_logging_encoding_safe():
+    """A log sink that raises UnicodeEncodeError (mimics a default Windows
+    cp1252 console choking on the '→' in the auto-threshold logs) must NOT abort
+    estimation into the legacy heuristic fallback — the chosen minmass must be
+    identical to a clean run.  Regression for the silent Windows minmass
+    degradation found in the benchmark audit."""
+    pytest.importorskip("trackpy")
+    from firefly.analysis.fa_localize import estimate_minmass
+    truth = [(30.2, 20.5), (45.7, 60.1), (70.0, 75.0)]
+    stack = np.stack([_synthetic_spot_frame(truth) for _ in range(12)])
+
+    def angry_log(msg):
+        raise UnicodeEncodeError("charmap", str(msg), 0, 1, "cp1252 cannot encode")
+
+    mm_clean, d_clean = estimate_minmass(stack, diameter=7, backend="trackpy")
+    mm_angry, d_angry = estimate_minmass(stack, diameter=7, backend="trackpy",
+                                         log_cb=angry_log)
+    assert abs(mm_clean - mm_angry) < 1e-9      # crashing logger must not change the result
+    assert d_clean["method"] == d_angry["method"]
+
+
 def test_torch_cpu_parallel_matches_serial_shm(monkeypatch):
     """The Torch-CPU multi-process path (in-RAM ndarray → shared_memory) must
     reproduce the serial detections exactly (chunk-aligned blocks)."""
@@ -2275,6 +2296,36 @@ def test_auto_threshold_knee_floor_is_noop_on_clean_bimodal_data():
                                 link_min_len=999)
     assert "gmm" in (diag.get("static_method") or diag["method"])
     assert not diag.get("knee_floor_applied")
+
+
+def test_noise_floor_valley_detects_second_mode():
+    """`_noise_floor_valley` DETECTS a low-mass second mode (returning its GMM
+    Bayes crossover) whenever one exists ≥0.5 dex from the signal mode, and
+    returns None on a unimodal distribution.  Whether a detected modest-separation
+    mode is actually NOISE (→ floor) or real overlapping signal (→ keep) is
+    decided by estimate_minmass from candidate density, NOT here — so this checks
+    detection + that the crossover sits between the modes.  (The old kneedle
+    floored UNCONDITIONALLY and so over-cut the single real mode on unimodal data,
+    collapsing recall — trackpy/SPT, the dense EPFL set.)"""
+    from firefly.analysis.fa_localize import _noise_floor_valley
+    rng = np.random.default_rng(0)
+    # Unimodal: one tight log-normal population → no usable second mode.
+    uni = 10.0 ** rng.normal(0.0, 0.18, 6000)
+    valley, sep, _ = _noise_floor_valley(uni)
+    assert valley is None and (sep is None or sep < 0.5)
+    # Strongly bimodal (~1.5 dex apart) → valley between the two modes.
+    noise = 10.0 ** rng.normal(-0.5, 0.18, 4000)
+    sig = 10.0 ** rng.normal(1.0, 0.20, 4000)
+    valley, sep, wmin = _noise_floor_valley(np.concatenate([noise, sig]))
+    assert valley is not None and sep >= 0.85 and wmin >= 0.02
+    assert 10 ** -0.5 < valley < 10 ** 1.0
+    # Modestly separated (~0.65 dex) → now DETECTED (sep_min=0.5), so the
+    # density-aware caller can floor it on sparse data (the à-trous low-SNR fix).
+    n2 = 10.0 ** rng.normal(0.0, 0.15, 3000)
+    s2 = 10.0 ** rng.normal(0.65, 0.15, 5000)
+    v2, sep2, _ = _noise_floor_valley(np.concatenate([n2, s2]))
+    assert v2 is not None and 0.5 <= sep2 < 0.85
+    assert 10 ** 0.0 < v2 < 10 ** 0.65
 
 
 def test_mss_computes_for_short_tracks():

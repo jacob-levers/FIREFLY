@@ -46,11 +46,18 @@ except Exception:
     pass
 
 def _localise_chunk(chunk, diameter, minmass, percentile, frame_offset):
-    """Localise one chunk and apply global frame offset."""
+    """Localise one chunk and apply global frame offset.
+
+    ``characterize=True`` so trackpy also returns ``ep`` — its empirical per-spot
+    localisation-error estimate — which the worker maps to the per-localisation
+    precision columns (loc_sigma_*_nm).  The other characterise extras
+    (size/ecc/signal/raw_mass) are dropped so the production output shape stays
+    ``x, y, frame, mass [, ep]`` (downstream linking/MSD only need those)."""
     locs = tp.batch(chunk, diameter=diameter, minmass=minmass,
-                    percentile=percentile, processes=1)
+                    percentile=percentile, processes=1, characterize=True)
     if len(locs) > 0:
-        locs = locs.copy()
+        keep = [c for c in ("x", "y", "frame", "mass", "ep") if c in locs.columns]
+        locs = locs[keep].copy()
         locs["frame"] += frame_offset
     return locs
 
@@ -914,6 +921,63 @@ class TorchBackend(LocaliserBackend):
         return (Y * Y + X * X) <= (rad * rad)
 
     @staticmethod
+    def _drop_coincident_duplicates(df):
+        """Drop coincident duplicate localisations (same frame, position rounded
+        to 0.01 px), keeping one.
+
+        A spot centred exactly between two pixels gives a FLAT-TOP detection map,
+        so two tied adjacent maxima both pass ``dmap == maxpool`` and refine to the
+        SAME sub-pixel point — one molecule counted twice.  Real (noisy) spots
+        break the tie, so this only fires on degenerate symmetry; two genuinely
+        distinct spots can never share a 0.01-px position.  Used by the refinement
+        backends (à trous / Gaussian-MLE / radial symmetry); plain TorchBackend
+        keeps its long-calibrated raw behaviour."""
+        if df is not None and len(df) > 1 and {"frame", "x", "y"} <= set(df.columns):
+            dup = df.assign(
+                _f=df["frame"].astype("int64"),
+                _x=(df["x"] * 100).round().astype("int64"),
+                _y=(df["y"] * 100).round().astype("int64"),
+            ).duplicated(subset=["_f", "_x", "_y"], keep="first")
+            if bool(dup.any()):
+                df = df.loc[~dup].reset_index(drop=True)
+        return df
+
+    def _refine_peaks(self, signal, t_ix, y_ix, x_ix, diameter, *,
+                      device, dtype, raw=None, characterize=False):
+        """Sub-pixel refinement HOOK — swap the refiner without touching the
+        ~400-line ``localise`` loop.
+
+        Given the integer spot centres ``(y_ix, x_ix)`` at frames ``t_ix``, the
+        bandpassed ``signal`` (T, 1, Y, X) and the matching ``raw`` (un-bandpassed)
+        chunk, return the refined positions and mass.  TorchBackend's default IS
+        the trackpy-compatible iterative centroid-of-mass refiner (on ``signal``);
+        subclasses (GaussianMle / RadialSymmetry) override this to swap ONLY the
+        sub-pixel step while reusing detection, chunking, the minmass filter, the
+        disk-mask geometry and the preview emission unchanged — exactly how
+        ``AtrousWaveletBackend`` overrides only ``_detection_map`` /
+        ``_detection_threshold``.
+
+        ``raw`` is supplied so a fit-based refiner can work on the un-bandpassed
+        image under the correct (Poisson) noise model — the bandpass is a matched
+        filter that makes centroid-of-mass near-optimal but distorts the spot
+        profile, so a Gaussian MLE only out-performs centroid when it fits the
+        RAW pixels.  Refiners that don't need it (centroid, radial symmetry)
+        ignore ``raw``.
+
+        Contract (every override MUST honour it):
+          * returns the 6-tuple ``(dy, dx, y_final, x_final, mass, char)`` with
+            the SAME shapes/dtypes ``_iterative_centroid_refine`` produces;
+          * ``mass`` is ALREADY on the trackpy scale (× ``_TP_MASS_SCALE``), so
+            ``minmass`` (in ``localise``) and the auto-threshold harvest in
+            ``estimate_minmass`` keep meaning the same thing across backends;
+          * ``char`` is ``None`` or ``{"size", "ecc"}`` (N,) tensors when
+            ``characterize`` — the PSF-quality gate the harvest feeds.
+        """
+        return self._iterative_centroid_refine(
+            signal, t_ix, y_ix, x_ix, diameter,
+            device=device, dtype=dtype, characterize=characterize)
+
+    @staticmethod
     def _iterative_centroid_refine(signal, t_ix, y_ix, x_ix, diameter,
                                      device, dtype,
                                      max_iters=None, shift_thresh=None,
@@ -1322,11 +1386,13 @@ class TorchBackend(LocaliserBackend):
             # The refinement also returns `mass` summed over the disk
             # mask AT THE CONVERGED CENTRE — same definition trackpy
             # uses for its `mass` column.
-            dy_off, dx_off, y_final, x_final, mass, char = (
-                self._iterative_centroid_refine(
-                    signal, t_ix, y_ix, x_ix, diameter,
-                    device=dev, dtype=dtype, characterize=characterize)
-            )
+            # `_refine_peaks` is the swappable refinement HOOK: TorchBackend's
+            # default is the centroid-of-mass refiner above; GaussianMle /
+            # RadialSymmetry subclasses override it to sharpen the sub-pixel
+            # position while keeping `mass` on the same trackpy scale.
+            dy_off, dx_off, y_final, x_final, mass, char = self._refine_peaks(
+                signal, t_ix, y_ix, x_ix, diameter,
+                device=dev, dtype=dtype, raw=x, characterize=characterize)
 
             # Apply the minmass filter AFTER refinement (trackpy filters
             # on the refined mass, not the pre-refinement patch sum).
@@ -1357,8 +1423,14 @@ class TorchBackend(LocaliserBackend):
                 "mass":  mass.detach().cpu().numpy(),
             }
             if char is not None:                        # torch-native harvest
-                loc["size"] = char["size"][keep].detach().cpu().numpy()
-                loc["ecc"]  = char["ecc"][keep].detach().cpu().numpy()
+                if "size" in char:
+                    loc["size"] = char["size"][keep].detach().cpu().numpy()
+                    loc["ecc"]  = char["ecc"][keep].detach().cpu().numpy()
+                if "loc_sigma_x_px" in char:            # MLE Fisher-info CRLB (px)
+                    loc["loc_sigma_x_px"] = (
+                        char["loc_sigma_x_px"][keep].detach().cpu().numpy())
+                    loc["loc_sigma_y_px"] = (
+                        char["loc_sigma_y_px"][keep].detach().cpu().numpy())
             all_locs.append(loc)
 
             # ── Live preview emission ─────────────────────────────────
@@ -1487,11 +1559,16 @@ class TorchBackend(LocaliserBackend):
             except Exception:
                 pass
 
-        out_cols = ("x", "y", "frame", "mass") + (
-            ("size", "ecc") if characterize else ())
+        out_cols = ["x", "y", "frame", "mass"]
+        if characterize:
+            out_cols += ["size", "ecc"]
         if not all_locs:
             _plog("  Found 0 localisations")
-            return pd.DataFrame(columns=list(out_cols))
+            return pd.DataFrame(columns=out_cols)
+        # Per-spot precision columns (px) flow through only when a refiner emits
+        # them (GaussianMleBackend's Fisher-info CRLB); the worker converts → nm.
+        if "loc_sigma_x_px" in all_locs[0]:
+            out_cols += ["loc_sigma_x_px", "loc_sigma_y_px"]
 
         df = pd.DataFrame({
             col: np.concatenate([d[col] for d in all_locs])
@@ -1721,29 +1798,284 @@ class AtrousWaveletBackend(TorchBackend):
         return dmap.new_tensor(0.0)
 
     def localise(self, stack, **kwargs):
-        """TorchBackend.localise with a coincident-duplicate guard.
-
-        The wavelet-product map can have a FLAT TOP on a perfectly symmetric
-        spot (e.g. one centred exactly between two pixels), yielding two tied
-        adjacent maxima that both pass ``dmap == maxpool`` and refine to the
-        SAME sub-pixel point — a duplicate localisation.  Drop coincident
-        duplicates per frame (positions rounded to 0.01 px), keeping one.  Real
-        (noisy) spots break the tie, so this only fires on degenerate symmetry;
-        two genuinely distinct spots can never share a 0.01-px position."""
-        df = super().localise(stack, **kwargs)
-        if df is not None and len(df) > 1 and {"frame", "x", "y"} <= set(df.columns):
-            dup = df.assign(
-                _f=df["frame"].astype("int64"),
-                _x=(df["x"] * 100).round().astype("int64"),
-                _y=(df["y"] * 100).round().astype("int64"),
-            ).duplicated(subset=["_f", "_x", "_y"], keep="first")
-            if bool(dup.any()):
-                df = df.loc[~dup].reset_index(drop=True)
-        return df
+        """TorchBackend.localise with the shared coincident-duplicate guard — the
+        wavelet-product map flat-tops on perfectly symmetric spots, so two tied
+        maxima can refine to the same point (see
+        ``_drop_coincident_duplicates``)."""
+        return self._drop_coincident_duplicates(super().localise(stack, **kwargs))
 
     def _localise_cpu_parallel(self, *args, **kwargs):
         # The torch-CPU multi-process worker (`_torch_localise_block_mp`)
         # hard-codes ``TorchBackend()``, so it would run TORCH detection, not à
         # trous.  Force the (correct) serial path on CPU until a backend-aware MP
         # worker exists; the GPU path is single-process and unaffected.
+        return None
+
+
+class GaussianMleBackend(TorchBackend):
+    """Crocker–Grier detection with a 2-D **Gaussian maximum-likelihood**
+    sub-pixel refiner instead of centroid-of-mass.
+
+    Detection is byte-for-byte ``TorchBackend`` (trackpy-compatible bandpass →
+    percentile threshold → max-pool maxima).  Only the sub-pixel step changes:
+    each detected spot is polished by a few Newton–Raphson iterations of a
+    symmetric 2-D Gaussian fit under a Poisson noise model (the
+    Cramér–Rao-optimal estimator for shot-noise-limited spots; Smith et al.,
+    *Nat. Methods* 2010), seeded from the centroid result and falling back to it
+    whenever a fit fails to converge — so it is never worse than centroid.
+
+    The fit runs on the **raw** (un-bandpassed) pixels: the bandpass is a matched
+    filter that already makes centroid-of-mass near-optimal but distorts the spot
+    profile, so a Gaussian MLE only out-performs centroid when it fits the raw,
+    ~Poisson image.  Be honest about the size of that win: on FIREFLY's typical
+    sparse, well-bandpassed spots centroid-of-mass is already close to the CRLB,
+    so the gain is modest — benchmarked WITHIN ~2 % of centroid RMSE on the real
+    EPFL/SPT datasets, exact on noiseless synthetic spots, marginally better at low
+    SNR, and occasionally marginally WORSE on dense / overlapping fields (the
+    single-Gaussian model is pulled by a neighbour; a divergent or out-of-patch fit
+    still falls back to the centroid seed).  The big MLE advantage in the
+    literature needs high background or non-Gaussian PSFs, not isolated spots.
+    ``mass`` is still the centroid-of-mass mass on the trackpy scale, so
+    ``minmass`` and the auto-threshold harvest mean exactly what they do for the
+    other backends — switching engine sharpens positions on clean spots without
+    shifting which spots survive a given threshold.
+
+    Implemented as a thin ``TorchBackend`` subclass overriding ONLY
+    ``_refine_peaks`` (+ the CPU-MP guard), enabled by the ``_refine_peaks`` hook.
+    """
+    name = "gaussian-mle"
+
+    # Newton–Raphson refiner knobs.  Converges in a handful of steps on real
+    # spots; the per-step position clamp + per-spot centroid fallback bound the
+    # worst case.  σ is FITTED per spot (a 5-parameter fit x0,y0,A,b,σ) so the
+    # model self-calibrates to the PSF width — a wrong fixed σ biases the position
+    # estimate — clamped to a physical band; ``_MLE_SIGMA_FRAC·diameter`` only
+    # seeds it.  Set ``_MLE_FIT_SIGMA = False`` to hold σ fixed (4-param).
+    _MLE_MAX_ITERS  = 8
+    _MLE_STEP_CLAMP = 1.0     # px — max |Δposition| per Newton step (damping)
+    _MLE_CONV_TOL   = 1e-3    # px — stop when the position step falls below this
+    _MLE_FIT_SIGMA  = True    # fit σ too (self-calibrate to the PSF width)
+    _MLE_SIGMA_FRAC = 0.25    # σ seed = _MLE_SIGMA_FRAC · diameter
+
+    def localise(self, stack, **kwargs):
+        """TorchBackend.localise + the shared coincident-duplicate guard: a
+        half-pixel-centred spot detects twice (flat-top maxima) and both refine to
+        the same point — drop the duplicate (see ``_drop_coincident_duplicates``)."""
+        return self._drop_coincident_duplicates(super().localise(stack, **kwargs))
+
+    def _refine_peaks(self, signal, t_ix, y_ix, x_ix, diameter, *,
+                      device, dtype, raw=None, characterize=False):
+        import torch
+        # 1. Seed from the centroid refiner (on the bandpassed signal): the
+        #    converged integer centre (cy,cx), the sub-pixel seed (dy0,dx0), the
+        #    trackpy-scaled mass and the size/ecc characterisation are ALL reused.
+        dy0, dx0, cy, cx, mass, char = self._iterative_centroid_refine(
+            signal, t_ix, y_ix, x_ix, diameter,
+            device=device, dtype=dtype, characterize=characterize)
+        if cy.numel() == 0:
+            return dy0, dx0, cy, cx, mass, char
+
+        # Fit the RAW pixels (the bandpass distorts the profile and inflates the
+        # fit's bias); fall back to the bandpassed signal if no raw was threaded.
+        src = raw if raw is not None else signal
+
+        k = int(diameter)
+        r = k // 2
+        eps = 1e-6
+        dy_grid, dx_grid = torch.meshgrid(
+            torch.arange(-r, r + 1, device=device, dtype=dtype),
+            torch.arange(-r, r + 1, device=device, dtype=dtype),
+            indexing="ij")                               # (k, k)
+        mask = TorchBackend._circular_mask(diameter, device, dtype).to(dtype)
+        _, _, H, W = src.shape
+        ys = (cy[:, None, None] + dy_grid.long()[None]).clamp_(0, H - 1)
+        xs = (cx[:, None, None] + dx_grid.long()[None]).clamp_(0, W - 1)
+        ts = t_ix[:, None, None].expand_as(ys)
+        n = (src[ts, 0, ys, xs] * mask).clamp(min=0.0)        # (N, k, k) raw counts
+
+        # 2. Newton–Raphson on the Poisson NLL with the Fisher (Gauss–Newton)
+        #    Hessian — PSD by construction (no negative-curvature blow-ups),
+        #    first-derivatives only, gives the CRLB covariance as H⁻¹ for free.
+        #    Params: x0, y0, A, b (+ σ when _MLE_FIT_SIGMA).
+        fit_sigma = bool(self._MLE_FIT_SIGMA)
+        npar = 5 if fit_sigma else 4
+        x0 = dx0.clone()
+        y0 = dy0.clone()
+        N = x0.shape[0]
+        b = n.amin(dim=(1, 2))
+        A = (n.amax(dim=(1, 2)) - b).clamp(min=1e-3)
+        s = torch.full((N,), max(0.75, float(self._MLE_SIGMA_FRAC) * diameter),
+                       device=device, dtype=dtype)
+        s_lo, s_hi = 0.5, max(1.0, diameter / 2.0)
+        eyep = torch.eye(npar, device=device, dtype=dtype)
+        for _ in range(int(self._MLE_MAX_ITERS)):
+            s2 = (s * s)[:, None, None]
+            ddx = dx_grid[None] - x0[:, None, None]           # (N, k, k)
+            ddy = dy_grid[None] - y0[:, None, None]
+            rr = ddx * ddx + ddy * ddy
+            E = torch.exp(-rr / (2.0 * s2))
+            mu = (A[:, None, None] * E + b[:, None, None]).clamp(min=eps)
+            rw = (1.0 - n / mu) * mask                         # ∂NLL/∂mu, masked
+            w = mask / mu                                      # Fisher weight
+            AE = A[:, None, None] * E
+            # ∂mu/∂x0 = A·E·(xi−x0)/σ² ; ∂mu/∂A = E ; ∂mu/∂b = 1
+            cols = [AE * ddx / s2, AE * ddy / s2, E, torch.ones_like(E)]
+            if fit_sigma:                                      # ∂mu/∂σ = A·E·r²/σ³
+                cols.append(AE * rr / (s2 * s[:, None, None]))
+            J = torch.stack(cols, dim=-1)                      # (N, k, k, npar)
+            g = (rw[..., None] * J).sum(dim=(1, 2))            # (N, npar)
+            Hm = torch.einsum('nyxp,nyxq->npq', w[..., None] * J, J)
+            ridge = 1e-6 * torch.diagonal(Hm, dim1=1, dim2=2).mean(dim=1)
+            Hm = Hm + ridge.view(-1, 1, 1) * eyep
+            try:
+                step = torch.linalg.solve(Hm, g.unsqueeze(-1)).squeeze(-1)
+            except (NotImplementedError, RuntimeError):
+                step = torch.linalg.solve(
+                    Hm.cpu(), g.unsqueeze(-1).cpu()).squeeze(-1).to(device)
+            sxy = step[:, :2].clamp(-self._MLE_STEP_CLAMP, self._MLE_STEP_CLAMP)
+            x0 = x0 - sxy[:, 0]
+            y0 = y0 - sxy[:, 1]
+            A = (A - step[:, 2]).clamp(min=1e-3)
+            b = b - step[:, 3]
+            if fit_sigma:
+                s = (s - step[:, 4].clamp(-0.5, 0.5)).clamp(s_lo, s_hi)
+            if float(sxy.abs().amax()) < self._MLE_CONV_TOL:
+                break
+
+        # 3. Per-spot accept/fallback: a non-finite or out-of-patch fit reverts
+        #    to the centroid seed, so the MLE is never worse than centroid.
+        ok = (torch.isfinite(x0) & torch.isfinite(y0)
+              & (x0.abs() <= r) & (y0.abs() <= r))
+        dx_off = torch.where(ok, x0, dx0)
+        dy_off = torch.where(ok, y0, dy0)
+
+        # 4. Per-spot localisation precision = CRLB from the Fisher (Gauss–Newton)
+        #    Hessian at the optimum: Cov = H⁻¹, σ_x = √Cov[x0,x0], σ_y = √Cov[y0,y0]
+        #    in PIXELS — essentially free, Hm was already built/factorised each
+        #    Newton step.  CAVEAT: the Poisson Fisher info assumes the patch is in
+        #    PHOTONS, but the fit runs on raw ADU, so this σ is a CRLB under a
+        #    gain≈1 assumption; the worker rescales by 1/√gain when camera
+        #    calibration is supplied and converts px→nm.  Rejected fits (centroid
+        #    fallback) and non-PSD/degenerate Hessians get NaN, never a bogus CRLB.
+        try:
+            cov = torch.linalg.inv(Hm)
+        except (NotImplementedError, RuntimeError):
+            cov = torch.linalg.inv(Hm.cpu()).to(device)
+        var_x = cov[:, 0, 0]
+        var_y = cov[:, 1, 1]
+        nan = torch.full((), float("nan"), device=device, dtype=dtype)
+        bad = ((~ok) | ~torch.isfinite(var_x) | ~torch.isfinite(var_y)
+               | (var_x <= 0) | (var_y <= 0))
+        sx = torch.where(bad, nan, torch.sqrt(var_x.clamp(min=0.0)))
+        sy = torch.where(bad, nan, torch.sqrt(var_y.clamp(min=0.0)))
+        if char is None:
+            char = {}
+        char["loc_sigma_x_px"] = sx
+        char["loc_sigma_y_px"] = sy
+        return dy_off, dx_off, cy, cx, mass, char
+
+    def _localise_cpu_parallel(self, *args, **kwargs):
+        # The CPU multi-process worker hard-codes ``TorchBackend()`` (centroid
+        # refinement), so it would silently bypass the MLE refiner.  Force the
+        # serial CPU path — same guard à trous uses; GPU is single-process.
+        return None
+
+
+class RadialSymmetryBackend(TorchBackend):
+    """Crocker–Grier detection with a **radial-symmetry** sub-pixel refiner
+    (Parthasarathy, *Nat. Methods* 2012).
+
+    A closed-form, non-iterative estimator: the spot centre is the point of
+    maximal radial symmetry of the local intensity gradients — found by solving
+    one small weighted linear system per spot.  ~95 % of CRLB precision but very
+    robust to noise and to nearby spots, and fit-free (no convergence risk).
+
+    Same contract as :class:`GaussianMleBackend`: detection identical to
+    ``TorchBackend``, the estimator runs on the bandpassed ``signal``, ``mass``
+    stays the centroid-of-mass mass on the trackpy scale, and a degenerate spot
+    falls back to the centroid seed.  Overrides only ``_refine_peaks`` (+ the
+    CPU-MP guard).
+    """
+    name = "radial-symmetry"
+
+    def localise(self, stack, **kwargs):
+        """TorchBackend.localise + the shared coincident-duplicate guard (see
+        ``_drop_coincident_duplicates``)."""
+        return self._drop_coincident_duplicates(super().localise(stack, **kwargs))
+
+    def _refine_peaks(self, signal, t_ix, y_ix, x_ix, diameter, *,
+                      device, dtype, raw=None, characterize=False):
+        import torch
+        import torch.nn.functional as F
+        # Gradient-based, so it runs on the bandpassed ``signal`` (background-
+        # invariant, and the bandpass suppresses real-data background); ``raw`` is
+        # accepted for the hook contract but unused.
+        # Seed (integer centre + centroid offsets + trackpy-scaled mass + char).
+        dy0, dx0, cy, cx, mass, char = self._iterative_centroid_refine(
+            signal, t_ix, y_ix, x_ix, diameter,
+            device=device, dtype=dtype, characterize=characterize)
+        if cy.numel() == 0:
+            return dy0, dx0, cy, cx, mass, char
+
+        k = int(diameter)
+        r = k // 2
+        eps = 1e-6
+        dy_grid, dx_grid = torch.meshgrid(
+            torch.arange(-r, r + 1, device=device, dtype=dtype),
+            torch.arange(-r, r + 1, device=device, dtype=dtype),
+            indexing="ij")
+        mask = TorchBackend._circular_mask(diameter, device, dtype).to(dtype)
+        _, _, H, W = signal.shape
+        ys = (cy[:, None, None] + dy_grid.long()[None]).clamp_(0, H - 1)
+        xs = (cx[:, None, None] + dx_grid.long()[None]).clamp_(0, W - 1)
+        ts = t_ix[:, None, None].expand_as(ys)
+        n = (signal[ts, 0, ys, xs] * mask)                       # (N, k, k)
+
+        # Parthasarathy 2012: gradients along the two 45°-rotated diagonals at
+        # the (k-1)×(k-1) midpoint grid, smoothed 3×3; each gradient defines a
+        # line through the centre, and the weighted least-squares intersection
+        # of all the lines is the symmetry centre.
+        dIdu = n[:, :-1, 1:] - n[:, 1:, :-1]                     # (N, k-1, k-1)
+        dIdv = n[:, :-1, :-1] - n[:, 1:, 1:]
+        h = torch.ones(1, 1, 3, 3, device=device, dtype=dtype) / 9.0
+        fdu = F.conv2d(dIdu[:, None], h, padding=1)[:, 0]
+        fdv = F.conv2d(dIdv[:, None], h, padding=1)[:, 0]
+        dImag2 = fdu * fdu + fdv * fdv                           # gradient power
+
+        denom = (fdu - fdv)
+        m = -(fdv + fdu) / torch.where(denom.abs() < eps,
+                                       torch.full_like(denom, eps), denom)
+        m = torch.nan_to_num(m, nan=0.0, posinf=1e6, neginf=-1e6)  # (N, k-1, k-1)
+
+        mids = torch.arange(k - 1, device=device, dtype=dtype) - (k - 2) / 2.0
+        ym, xm = torch.meshgrid(mids, mids, indexing="ij")       # centred at 0
+        ym = ym[None]
+        xm = xm[None]
+        b_line = ym - m * xm
+
+        sdI2 = dImag2.sum(dim=(1, 2), keepdim=True).clamp(min=eps)
+        xcent = (dImag2 * xm).sum(dim=(1, 2), keepdim=True) / sdI2
+        ycent = (dImag2 * ym).sum(dim=(1, 2), keepdim=True) / sdI2
+        # Down-weight gradients far from the gradient-power centroid (paper's
+        # robustness weight), then solve the 2×2 weighted-least-squares system.
+        wgt = dImag2 / torch.sqrt((xm - xcent) ** 2 + (ym - ycent) ** 2 + eps)
+        wm2p1 = wgt / (m * m + 1.0)
+        sw = wm2p1.sum(dim=(1, 2))
+        smmw = (m * m * wm2p1).sum(dim=(1, 2))
+        smw = (m * wm2p1).sum(dim=(1, 2))
+        smbw = (m * b_line * wm2p1).sum(dim=(1, 2))
+        sbw = (b_line * wm2p1).sum(dim=(1, 2))
+        det = smmw * sw - smw * smw
+        det = torch.where(det.abs() < eps, torch.full_like(det, eps), det)
+        xc = (smw * sbw - smbw * sw) / det
+        yc = (smmw * sbw - smw * smbw) / det
+
+        ok = (torch.isfinite(xc) & torch.isfinite(yc)
+              & (xc.abs() <= r) & (yc.abs() <= r))
+        dx_off = torch.where(ok, xc, dx0)
+        dy_off = torch.where(ok, yc, dy0)
+        return dy_off, dx_off, cy, cx, mass, char
+
+    def _localise_cpu_parallel(self, *args, **kwargs):
+        # See GaussianMleBackend: force the serial CPU path so the refiner runs.
         return None

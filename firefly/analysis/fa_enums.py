@@ -108,6 +108,8 @@ class Backend(Enum):
     TORCH_CUDA = "torch-cuda"
     TORCH_MPS = "torch-mps"
     ATROUS = "atrous"          # à trous wavelet detector (auto-device, like torch)
+    GAUSSIAN_MLE = "gaussian-mle"      # Crocker–Grier + Gaussian-MLE refiner (auto-device)
+    RADIAL_SYMMETRY = "radial-symmetry"  # Crocker–Grier + radial-symmetry refiner (auto-device)
 
     @classmethod
     def parse(cls, value, *, log=None) -> "Backend":

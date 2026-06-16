@@ -28,7 +28,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"   # 3.13 supported since the numpy-2 / napari-0.6 bump
+          # MUST match the shipped stack in requirements.txt: numpy 1.x + napari
+          # 0.4 + torch 2.5 on Python 3.12.  3.13 breaks the build — numpy 1.26
+          # has no cp313 wheels, so pip builds it from source into an experimental
+          # MinGW numpy that segfaults inside PyInstaller's collect_submodules
+          # (exit 0xC0000005).  Bump to 3.13 only with the numpy-2 / napari-0.6
+          # migration (see requirements.txt).
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -143,7 +149,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          # Pin 3.12 to match requirements.txt's shipped stack — 3.13 has no
+          # numpy-1.26 wheel and pip's source build produces an experimental
+          # MinGW numpy that segfaults in PyInstaller (see the macOS job).
+          python-version: "3.12"
 
       - name: Install dependencies
         # The bundled Windows .exe ships CPU-only torch.

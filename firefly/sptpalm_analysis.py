@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.68.0"
+__version__ = "2.69.0"
 # v2.68.0 — TrackMate & palmTRACER linkers (NN, Simple/Full LAP, simulated
 #   annealing) via a linker registry; opt-in auto search-range; simplified
 #   GPU backend dropdown; Torch CG auto-threshold decoupled from trackpy.

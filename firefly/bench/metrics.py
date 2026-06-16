@@ -188,8 +188,14 @@ def tracking_isbi(est_tracks: pd.DataFrame, gt_tracks: pd.DataFrame,
             fn_pts += len(G[g]) - nm
             fp_pts += len(E[e]) - nm
             ssd += s
-            pairs.append((g, e))
-            paired_est.add(c)
+            # Track-level TP only when the two tracks actually share ≥1 gated
+            # point.  A zero-overlap real↔real assignment can be optimal (its cost
+            # ties the dummy cost), but it is NOT a true track association — count
+            # it as a missed GT track + a spurious EST track for JSCθ.  α/β/JSC
+            # already charge every unmatched point above, so they are unaffected.
+            if nm > 0:
+                pairs.append((g, e))
+                paired_est.add(c)
         elif r < ng and c >= ne:                    # GT → dummy (missed track)
             d_gt += gt_dummy[r]
             fn_pts += len(G[gids[r]])

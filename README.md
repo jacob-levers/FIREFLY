@@ -9,12 +9,16 @@ cross-correlation drift correction, turning-angle and radial-distribution
 analysis, plus a multi-group comparison mode with statistical tests and a
 multi-page PDF report.
 
-FIREFLY offers **three detection engines** — trackpy and PyTorch (both
+FIREFLY offers **five detection engines** — trackpy and PyTorch (both
 Crocker-Grier-family centroid localisers, calibrated to agree to within the
-experiment's noise floor) plus an **à trous wavelet** detector for faint spots
-in low-SNR / structured backgrounds. Linking offers **six trajectory linkers** —
-Kalman (default), trackpy, Simple & Full LAP (TrackMate-style, the latter with
-optional merge/split), nearest-neighbour, and a palmTRACER-style
+experiment's noise floor), an **à trous wavelet** detector for faint spots in
+low-SNR / structured backgrounds, and two alternative GPU sub-pixel refiners,
+**Gaussian MLE** (maximum-likelihood 2-D Gaussian fit) and **radial symmetry**
+(Parthasarathy 2012, closed-form) — which re-fit each spot's centre and match the
+centroid localisers closely on isolated spots, with small gains at low SNR.
+Linking offers **six trajectory linkers** — Kalman filter (TrackMate Linear
+Motion, default), Crocker–Grier (Trackpy), Jaqaman LAP (TrackMate, with an
+optional merge/split variant), nearest-neighbour, and a palmTRACER-inspired
 simulated-annealing tracker — plus an optional **auto search-range** that picks
 the linking distance from the data. You can also **import and analyse
 localisation tables exported by other tools** (TrackMate, palmTRACER,
@@ -149,28 +153,35 @@ every tab switch.
 
 ### Detection & tracking
 
-- **Three detection engines** — **trackpy** (CPU) and **PyTorch (GPU)**, both
-  Crocker-Grier-family centroid localisers calibrated to agree to within ~5 nm,
-  plus an **à trous wavelet** detector that finds faint spots in low-SNR /
-  structured backgrounds (it shares the PyTorch refinement path, so its mass /
-  minmass match). The backend dropdown shows one GPU option that auto-selects
-  this machine's GPU — NVIDIA CUDA on Windows/Linux, Apple MPS on macOS — and
-  **Auto** prefers the GPU but drops back cleanly to CPU when it's unavailable.
+- **Five detection engines** — **trackpy** (CPU) and **PyTorch (GPU)**, both
+  Crocker-Grier-family centroid localisers calibrated to agree to within ~5 nm;
+  an **à trous wavelet** detector that finds faint spots in low-SNR / structured
+  backgrounds; and two alternative GPU sub-pixel refiners that share the same
+  Crocker-Grier detection but re-fit each spot's centre — **Gaussian MLE** (a
+  maximum-likelihood 2-D Gaussian fit on the raw pixels; Smith et al. 2010) and
+  **radial symmetry** (Parthasarathy 2012, closed-form / fit-free). All four GPU
+  engines share the refinement-mass scale, so `mass` / `minmass` match across
+  them. On isolated, well-bandpassed spots the refiners track centroid-of-mass
+  closely (within ~2 % localisation RMSE on the bundled real datasets), with
+  small gains at low SNR — they are alternative refiners, not a guaranteed
+  precision upgrade. The backend dropdown shows one GPU option per engine that
+  auto-selects this machine's GPU — NVIDIA CUDA on Windows/Linux, Apple MPS on
+  macOS — and **Auto** prefers the GPU but drops back cleanly to CPU.
 - **Selectable linker** — a **Linker** dropdown (Linking panel) chooses the
-  trajectory linker:
-  - **Kalman** (default) — a constant-velocity, TrackMate-style linear-motion
-    tracker; holds track identities through crossings and directed / fast
-    transport where nearest-neighbour linking swaps tracks, and matches trackpy
-    on pure diffusion.
-  - **trackpy** — Crocker-Grier recursive subnet; the long-standing, fast
-    linker and the best all-rounder for Brownian motion.
-  - **Simple LAP** — TrackMate's Jaqaman two-step global assignment
+  trajectory linker (labelled *Algorithm — Software*):
+  - **Kalman filter — TrackMate (Linear Motion)** (default) — a constant-velocity
+    linear-motion tracker; holds track identities through crossings and directed /
+    fast transport where nearest-neighbour linking swaps tracks, and matches
+    trackpy on pure diffusion.
+  - **Crocker–Grier — Trackpy** — recursive subnet nearest-neighbour; the
+    long-standing, fast linker and the best all-rounder for Brownian motion.
+  - **Jaqaman LAP — TrackMate** — TrackMate's two-step global assignment
     (frame-to-frame + gap-closing).
-  - **Full LAP** — Simple LAP plus optional **merge / split** events and
-    intensity feature penalties (TrackMate's full tracker).
-  - **Nearest-neighbour** — greedy per-frame linking (TrackMate's simplest).
-  - **Simulated annealing** — a palmTRACER-style global multi-target tracker,
-    an independent reimplementation of the published method.
+  - **Jaqaman LAP — TrackMate (merge/split)** — the above plus optional
+    **merge / split** events and intensity feature penalties (TrackMate's full tracker).
+  - **Nearest-neighbour — greedy** — greedy per-frame linking (TrackMate's simplest).
+  - **Simulated annealing — palmTRACER (inspired)** — a global multi-target
+    tracker, an independent reimplementation of palmTRACER's published method.
 
   Your choice persists between sessions and is recorded in each run's manifest.
 - **Auto search-range** — an opt-in checkbox beside the Search-range field

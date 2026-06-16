@@ -1,5 +1,62 @@
 # Changelog
 
+## v2.69.0
+
+Two new GPU sub-pixel refinement engines, per-localisation precision, a reworked
+auto-threshold, deterministic runs, and a consistent linker naming scheme.
+
+### Added
+
+- **Per-localisation precision.** Every localisation now carries `loc_sigma_x_nm`
+  / `loc_sigma_y_nm` (per-axis lateral precision), propagated through linking into
+  the trajectory table and written to the exported CSVs. The **Gaussian MLE**
+  engine derives a rigorous CRLB from its fit's Fisher information; **trackpy**
+  reports its empirical `ep`; and an optional **camera calibration** (gain / QE /
+  background, in the Detection panel) enables a Mortensen-2010 CRLB for the
+  PyTorch Crocker–Grier / à trous / radial engines. The diffusion summary adds a
+  per-track `loc_sigma_meas_nm` alongside the existing MSD-offset estimate — three
+  independent precision estimates that should agree.
+- **Deterministic execution mode.** Set `FIREFLY_DETERMINISTIC=1` for a
+  bit-reproducible run (GPU floating-point determinism + cuBLAS workspace pinned);
+  the run manifest records the determinism state and torch / CUDA / numpy versions.
+
+- **Two new detection engines — Gaussian MLE and radial symmetry.** Both share
+  the PyTorch Crocker–Grier detection (bandpass → percentile → max-pool maxima)
+  and swap only the sub-pixel refiner, via a new swappable `_refine_peaks` hook on
+  the Torch backend:
+  - **Gaussian MLE — PyTorch (GPU)** — a maximum-likelihood 2-D Gaussian fit
+    (Newton–Raphson with the Fisher/Gauss–Newton Hessian, σ self-fitted) on the
+    **raw** pixels, seeded from the centroid result and falling back to it on a
+    divergent fit (Smith et al., *Nat. Methods* 2010).
+  - **Radial symmetry — PyTorch (GPU)** — the closed-form, fit-free radial-symmetry
+    centre estimator (Parthasarathy, *Nat. Methods* 2012).
+
+  Both keep `mass` on the trackpy scale, so `minmass` and the auto-threshold behave
+  identically to the other backends, and both inherit the à trous coincident-duplicate
+  guard (now a shared helper). **Honest scope:** on isolated, well-bandpassed spots
+  centroid-of-mass is already near the CRLB, so these refiners track it closely —
+  within ~2 % localisation RMSE on the bundled EPFL/SPT datasets, exact on noiseless
+  synthetic spots, with small gains at low SNR and the occasional small loss on dense
+  / overlapping fields. They are alternative refiners, not a guaranteed precision
+  upgrade.
+
+### Changed
+
+- **Auto-threshold noise floor reworked** for robustness across detectors and
+  emitter densities. The detection threshold (minmass) is now floored at a GMM
+  noise/signal valley **only when a genuinely separable noise population exists** —
+  gated on the mode separation *and* areal crowding. The previous unconditional
+  count-knee floor over-thresholded and collapsed recall on detectors that don't
+  over-detect at minmass=0 (trackpy) and on dense/low-SNR data. Validated across 33
+  engine × dataset × density × SNR cases (real EPFL/SPT + a simulated grid).
+
+- **Linkers renamed to the detection-engine style "Algorithm — Software"** for a
+  consistent menu: *Kalman filter — TrackMate (Linear Motion)*, *Crocker–Grier —
+  Trackpy*, *Jaqaman LAP — TrackMate* (+ a *(merge/split)* variant), *Nearest-neighbour
+  — greedy*, and *Simulated annealing — palmTRACER (inspired)*. The stored linker
+  values are unchanged; saved preferences for the old labels migrate automatically on
+  settings restore.
+
 ## v2.68.0
 
 New trajectory linkers and an auto search-range, a simplified GPU-backend

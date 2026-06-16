@@ -45,6 +45,23 @@ def test_tracking_perfect():
     assert t["rmse_nm"] < 1e-6
 
 
+def test_tracking_jsc_theta_excludes_zero_overlap_pairs():
+    """A real GT↔EST track assignment with ZERO points within the gate is
+    optimal for the padded cost matrix (its cost ties the dummy cost) but is NOT
+    a true track association — JSCθ must not count it as a track-level TP.
+    Regression for the bug where tp_tracks=len(pairs) counted such pairs,
+    inflating the LAP/NN-family JSCθ column.  α/β/JSC already charge the points,
+    so they stay 0 here."""
+    gt = _tracks([1, 2], n=3)
+    est = gt.copy()
+    est["x"] += 2.0                       # shift every point 2 px > the 1 px gate
+    t = tracking_isbi(est, gt, gate_px=1.0, pixel_size_um=0.1)
+    assert t["alpha"] == 0.0              # no points matched
+    assert t["jsc"] == 0.0
+    assert t["jsc_theta"] == 0.0          # was 1.0 before the fix (2 zero-overlap pairs)
+    assert t["n_paired"] == 0
+
+
 def test_tracking_missed_track_lowers_jsc_theta():
     gt = _tracks([1, 2, 3])
     t = tracking_isbi(_tracks([1, 2]), gt, gate_px=2.0, pixel_size_um=0.1)

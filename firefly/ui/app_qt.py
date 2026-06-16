@@ -1784,6 +1784,11 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             ("analysis/bg_method",       self.c_bg_method,       "combo"),
             ("analysis/bg_radius",       self.s_bg_radius,       "spin",  int),
 
+            # ── Camera calibration (optional) ─────────────────────────────
+            ("analysis/camera_gain",     self.s_camera_gain,     "spin",  float),
+            ("analysis/camera_qe",       self.s_camera_qe,       "spin",  float),
+            ("analysis/camera_bg_photons", self.s_camera_bg,     "spin",  float),
+
             # ── Detection ─────────────────────────────────────────────────
             ("analysis/diameter",        self.s_diameter,        "spin",  int),
             ("analysis/auto_minmass",    self.c_auto_minmass,    "check", _bool_cast),
@@ -1957,6 +1962,13 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                         # A renamed/retired label (e.g. the old forced-Torch
                         # "Torch (auto)" default) → its current replacement.
                         lbl = self._BACKEND_LABEL_MIGRATION[v_str]
+                        if lbl in items:
+                            widget.setCurrentText(lbl)
+                    elif widget is getattr(self, "c_linker", None) \
+                            and v_str in self._LINKER_LABEL_MIGRATION:
+                        # A renamed linker label (e.g. the old "Trackpy") → its
+                        # current "Algorithm — Software" replacement.
+                        lbl = self._LINKER_LABEL_MIGRATION[v_str]
                         if lbl in items:
                             widget.setCurrentText(lbl)
                     elif v_str in items:
@@ -2303,6 +2315,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         "Crocker–Grier — Trackpy (CPU)":            "trackpy",
         "Crocker–Grier — PyTorch (GPU)":            "torch",
         "À trous wavelet — PyTorch (GPU)":          "atrous",
+        "Gaussian MLE — PyTorch (GPU)":             "gaussian-mle",
+        "Radial symmetry — PyTorch (GPU)":          "radial-symmetry",
     }
     # Stale dropdown labels → current label, applied on settings restore so a
     # saved preference still resolves after a label rename.  The old "Torch
@@ -2339,6 +2353,19 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         "torch-cuda": "Crocker–Grier — PyTorch (GPU)",
         "torch-mps":  "Crocker–Grier — PyTorch (GPU)",
         "torch-cpu":  "Crocker–Grier — Trackpy (CPU)",
+    }
+    # The linker combo SAVES/RESTORES by LABEL (currentText), so renaming the
+    # combo display strings to the "Algorithm — Software" style would silently
+    # reset every saved `analysis/linker` preference unless old labels migrate to
+    # their new equivalents.  Stored DATA values are unchanged.  Mirrors
+    # _BACKEND_LABEL_MIGRATION; applied on settings restore.
+    _LINKER_LABEL_MIGRATION = {
+        "Kalman (default)":                        "Kalman filter — TrackMate (Linear Motion)",
+        "Trackpy":                                 "Crocker–Grier — Trackpy",
+        "Simple LAP — Jaqaman (TrackMate)":        "Jaqaman LAP — TrackMate",
+        "Full LAP — TrackMate (merge/split)":      "Jaqaman LAP — TrackMate (merge/split)",
+        "Nearest-neighbour":                       "Nearest-neighbour — greedy",
+        "Simulated annealing (palmTRACER-style)":  "Simulated annealing — palmTRACER (inspired)",
     }
 
     def _available_backends(self) -> list[str]:
@@ -2556,6 +2583,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 # tracks local background tightly without smearing the spots.
                 "analysis/bg_method":       "Uniform Filter",
                 "analysis/bg_radius":       15,
+                # Camera calibration (optional; 0 = unset)
+                "analysis/camera_gain":     0.0,
+                "analysis/camera_qe":       0.0,
+                "analysis/camera_bg_photons": 0.0,
                 # Detection — typical PALM PSF after preprocessing
                 "analysis/diameter":        7,
                 "analysis/auto_minmass":    True,
@@ -2608,6 +2639,10 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                 # neuron background (larger radii leave diffuse haze).
                 "analysis/bg_method":       "Uniform Filter",
                 "analysis/bg_radius":       15,
+                # Camera calibration (optional; 0 = unset)
+                "analysis/camera_gain":     0.0,
+                "analysis/camera_qe":       0.0,
+                "analysis/camera_bg_photons": 0.0,
                 # Detection — auto-tuned on lab fly-neuron sptPALM data:
                 # diameter 9 is the smallest with flat pixel-bias while spots
                 # stay round; minmass 2.0 keeps discrete blinks without

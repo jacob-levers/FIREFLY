@@ -52,6 +52,26 @@ def test_compare_engines_multi_backend():
     assert set(build_report_table(rows)["tool"]) == {"trackpy", "atrous"}
 
 
+def test_compare_engines_refiner_backends():
+    """The Gaussian-MLE and radial-symmetry refinement engines run through the
+    same driver, find the bright spots, and are distinguishable by name.  They
+    share torch's detection, so detection metrics should be comparable to it."""
+    pytest.importorskip("torch")
+    from firefly.analysis.fa_localize import list_available_backends
+    want = [b for b in ("gaussian-mle", "radial-symmetry")
+            if b in list_available_backends()]
+    if not want:
+        pytest.skip("refiner backends unavailable")
+    sim = simulate(_easy_cfg())
+    rows = compare_engines(sim, backends=tuple(want),
+                           base_run_cfg=RunConfig(minmass=2.0, workers=1))
+    assert [r["tool"] for r in rows] == want
+    for r in rows:
+        for k in ("f1", "jsc", "recall", "precision"):
+            assert 0.0 <= r[k] <= 1.0
+        assert r["recall"] >= 0.7, f"{r['tool']} recall too low: {r['recall']}"
+
+
 def test_compare_engines_threads_linker():
     """The linker is threaded through: same detector + two linkers → two rows
     with IDENTICAL detection (only tracking can differ)."""

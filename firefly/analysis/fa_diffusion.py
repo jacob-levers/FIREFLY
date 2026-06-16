@@ -345,6 +345,18 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
                  ).rename("loc_precision_nm").reset_index()
         diff_df = diff_df.merge(ep_nm, on="particle", how="left")
 
+    # Merge per-track mean MEASURED per-localisation precision: the per-spot
+    # loc_sigma_x_nm/_y_nm from detection (Gaussian-MLE Fisher info / trackpy ep /
+    # camera-CRLB), reduced to a 1D-equivalent (hypot/√2) so it is directly
+    # comparable to the MSD-offset `loc_sigma_nm`.  Three independent precision
+    # estimates that should agree — a useful cross-check (kept distinct columns).
+    if {"loc_sigma_x_nm", "loc_sigma_y_nm"} <= set(tracks.columns):
+        _sm = np.hypot(tracks["loc_sigma_x_nm"], tracks["loc_sigma_y_nm"]) / np.sqrt(2.0)
+        meas = (tracks.assign(_loc_sigma_meas=_sm)
+                .groupby("particle")["_loc_sigma_meas"].mean()
+                .rename("loc_sigma_meas_nm").reset_index())
+        diff_df = diff_df.merge(meas, on="particle", how="left")
+
     return imsd_df, emsd_series, diff_df
 
 

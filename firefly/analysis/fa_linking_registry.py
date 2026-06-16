@@ -49,7 +49,7 @@ class LinkerBackend:
 
 class TrackpyLinker(LinkerBackend):
     name = "trackpy"
-    label = "Trackpy (Crocker–Grier)"
+    label = "Crocker–Grier — Trackpy"
 
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):
@@ -64,7 +64,7 @@ class TrackpyLinker(LinkerBackend):
 
 class KalmanLinker(LinkerBackend):
     name = "kalman"
-    label = "Kalman — constant velocity (TrackMate Linear Motion)"
+    label = "Kalman filter — TrackMate (Linear Motion)"
 
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):
@@ -76,7 +76,7 @@ class KalmanLinker(LinkerBackend):
 
 class SimpleLapLinker(LinkerBackend):
     name = "simple_lap"
-    label = "Simple LAP — Jaqaman (TrackMate)"
+    label = "Jaqaman LAP — TrackMate"
 
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):
@@ -88,7 +88,7 @@ class SimpleLapLinker(LinkerBackend):
 
 class FullLapLinker(LinkerBackend):
     name = "full_lap"
-    label = "Full LAP — TrackMate (merge/split)"
+    label = "Jaqaman LAP — TrackMate (merge/split)"
 
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):
@@ -107,7 +107,7 @@ class FullLapLinker(LinkerBackend):
 
 class NearestNeighbourLinker(LinkerBackend):
     name = "nn"
-    label = "Nearest-neighbour (greedy)"
+    label = "Nearest-neighbour — greedy"
 
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):
@@ -119,7 +119,7 @@ class NearestNeighbourLinker(LinkerBackend):
 
 class SaLinker(LinkerBackend):
     name = "sa"
-    label = "Simulated annealing (palmTRACER-style)"
+    label = "Simulated annealing — palmTRACER (inspired)"
 
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):
