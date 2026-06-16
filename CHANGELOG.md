@@ -1,5 +1,58 @@
 # Changelog
 
+## v2.68.0
+
+New trajectory linkers and an auto search-range, a simplified GPU-backend
+picker, and an internal decoupling of the PyTorch detector's auto-threshold
+from trackpy.
+
+### Added
+
+- **Six trajectory linkers** via a new linker registry. Alongside the existing
+  **Kalman** (default) and **trackpy** linkers: **Simple LAP** (TrackMate's
+  Jaqaman two-step global assignment), **Full LAP** (Simple LAP plus optional
+  merge/split events and intensity feature penalties — TrackMate's full tracker),
+  **Nearest-neighbour** (greedy per-frame), and a **palmTRACER-style
+  simulated-annealing** tracker — an independent reimplementation of the published
+  Racine & Sibarita method (palmTRACER itself is closed-source). The **Linker**
+  dropdown lists all six; the choice persists between sessions and is recorded in
+  each run's manifest.
+- **Auto search-range** — an opt-in **Auto** checkbox beside the Search-range
+  field estimates the linking distance per file from the motion: it sweeps
+  candidate ranges and takes the smallest at which tracks stop fragmenting, capped
+  below the inter-spot spacing. Off by default; the biggest accuracy win is on
+  fast motion, where a fixed default is usually too small.
+
+### Changed
+
+- **Detection-backend dropdown simplified.** The four PyTorch Crocker–Grier device
+  options (GPU-auto / CUDA / MPS / CPU) collapse to one **"PyTorch (GPU)"** that
+  auto-selects this machine's GPU — NVIDIA CUDA on Windows/Linux, Apple MPS on
+  macOS — and à trous is labelled **"À trous wavelet — PyTorch (GPU)"**. The
+  explicit per-device pins remain valid programmatically; saved preferences for
+  them migrate automatically on settings restore.
+
+### ⚠ Results that can change on identical data (reproducibility)
+
+- **PyTorch / Auto detection backend with the auto-threshold.** The
+  auto-threshold's candidate harvest now runs through the run's **own** backend
+  instead of always trackpy, so the chosen minmass is in that backend's native
+  mass units (no fixed trackpy→Torch mass-scale transfer). A torch / à trous run
+  using the auto-threshold can pick a slightly different minmass than v2.67.x —
+  generally **more** reliable on noisy data, where a new per-frame harvest density
+  cap keeps the signal/noise split robust despite Torch's permissive `minmass=0`
+  detection. Trackpy-backend runs and runs with a manual minmass are unchanged.
+
+### Fixed
+
+- **palmTRACER `.trc` trajectory files now load** for analysis / scoring — header
+  detection is preset-aware (a palmTRACER `trc`'s metadata header and data header
+  have the same column count, which the old width-only rule picked wrong), and a
+  `Track → particle` mapping was added so the trajectories import directly.
+- A **re-ROI** (post-process) now also reproduces the original run's **linker and
+  its parameters** — previously it silently reverted to trackpy — completing the
+  post-process parameter-persistence fix from v2.67.0.
+
 ## v2.67.1
 
 ### Fixed: palmTRACER comparisons showed nearly everything "Unclassified"

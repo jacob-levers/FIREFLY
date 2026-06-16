@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.67.1"
+__version__ = "2.68.0"
+# v2.68.0 — TrackMate & palmTRACER linkers (NN, Simple/Full LAP, simulated
+#   annealing) via a linker registry; opt-in auto search-range; simplified
+#   GPU backend dropdown; Torch CG auto-threshold decoupled from trackpy.
 # v2.67.1 — fix: palmTRACER motion classification was blanked when D was taken
 # from palmTRACER's native -D file (use_native); now FIREFLY's alpha/motion are
 # kept (native D only overrides the D/MSD family), and a blanked cache self-heals
