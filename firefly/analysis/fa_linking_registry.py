@@ -76,7 +76,7 @@ class KalmanLinker(LinkerBackend):
 
 class SimpleLapLinker(LinkerBackend):
     name = "simple_lap"
-    label = "Jaqaman LAP — TrackMate"
+    label = "Jaqaman LAP — TrackMate (simple)"
 
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):

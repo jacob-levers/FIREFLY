@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.69.1
+
+Disambiguated the two LAP linker names in the Linker dropdown.
+
+### Changed
+
+- The Simple LAP linker is now labelled **"Jaqaman LAP — TrackMate (simple)"**
+  (was "Jaqaman LAP — TrackMate") so it reads as clearly distinct from
+  **"Jaqaman LAP — TrackMate (merge/split)"** rather than sharing the identical
+  name. The stored linker value (`simple_lap`) is unchanged, and a
+  settings-migration entry remaps the old label on restore so existing saved
+  linker preferences are not silently reset.
+
 ## v2.69.0
 
 Two new GPU sub-pixel refinement engines, per-localisation precision, a reworked

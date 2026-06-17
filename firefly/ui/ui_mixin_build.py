@@ -756,7 +756,7 @@ class BuildMixin:
         # labels are migrated on settings restore via _LINKER_LABEL_MIGRATION.
         self.c_linker.addItem("Kalman filter — TrackMate (Linear Motion)", "kalman")
         self.c_linker.addItem("Crocker–Grier — Trackpy", "trackpy")
-        self.c_linker.addItem("Jaqaman LAP — TrackMate", "simple_lap")
+        self.c_linker.addItem("Jaqaman LAP — TrackMate (simple)", "simple_lap")
         self.c_linker.addItem("Jaqaman LAP — TrackMate (merge/split)", "full_lap")
         self.c_linker.addItem("Nearest-neighbour — greedy", "nn")
         self.c_linker.addItem("Simulated annealing — palmTRACER (inspired)", "sa")
@@ -768,8 +768,8 @@ class BuildMixin:
             "  linking swaps tracks; matches trackpy on pure diffusion. Slightly slower.\n"
             "Crocker–Grier — Trackpy: recursive subnet nearest-neighbour — the\n"
             "  long-standing linker, fast and well-tested for Brownian motion.\n"
-            "Jaqaman LAP — TrackMate: two-step global assignment (frame-to-frame +\n"
-            "  gap-closing) — TrackMate's Simple LAP tracker.\n"
+            "Jaqaman LAP — TrackMate (simple): two-step global assignment\n"
+            "  (frame-to-frame + gap-closing) — TrackMate's Simple LAP tracker.\n"
             "Jaqaman LAP — TrackMate (merge/split): Simple LAP plus optional\n"
             "  merge/split events (below) — TrackMate's full LAP tracker.\n"
             "Nearest-neighbour — greedy: greedy per-frame linking — TrackMate's simplest.\n"

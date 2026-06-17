@@ -2362,7 +2362,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
     _LINKER_LABEL_MIGRATION = {
         "Kalman (default)":                        "Kalman filter — TrackMate (Linear Motion)",
         "Trackpy":                                 "Crocker–Grier — Trackpy",
-        "Simple LAP — Jaqaman (TrackMate)":        "Jaqaman LAP — TrackMate",
+        "Simple LAP — Jaqaman (TrackMate)":        "Jaqaman LAP — TrackMate (simple)",
+        "Jaqaman LAP — TrackMate":                 "Jaqaman LAP — TrackMate (simple)",
         "Full LAP — TrackMate (merge/split)":      "Jaqaman LAP — TrackMate (merge/split)",
         "Nearest-neighbour":                       "Nearest-neighbour — greedy",
         "Simulated annealing (palmTRACER-style)":  "Simulated annealing — palmTRACER (inspired)",
