@@ -1013,6 +1013,39 @@ class TorchBackend(LocaliserBackend):
             signal, t_ix, y_ix, x_ix, diameter,
             device=device, dtype=dtype, characterize=characterize)
 
+    def _refine_off_mps(self, impl, signal, t_ix, y_ix, x_ix, diameter, *,
+                        device, dtype, raw=None, characterize=False):
+        """Run a sub-pixel refiner ``impl`` on CPU when ``device`` is MPS, moving
+        the inputs to CPU and the results back to ``device``.
+
+        Apple's MPS backend intermittently returns SILENTLY WRONG results for the
+        linear-algebra / small-kernel ops the Gaussian-MLE (``linalg.solve`` /
+        ``linalg.inv`` / ``einsum``) and radial-symmetry (``conv2d`` on tiny
+        patches) refiners use — the "kernel returns garbage with no exception"
+        failure class ``_device_sanity_check`` warns about, which the refiners'
+        own ``try/except`` CPU fallbacks can't catch because nothing is raised.
+        It surfaced as the gaussian-mle / radial-symmetry engines occasionally
+        mis-localising (wrong spot count / position) on Apple GPUs while passing
+        on CPU.  Detection (bandpass conv + max-pool over full frames) is reliable
+        on MPS and stays GPU-accelerated; only the cheap per-spot refinement
+        (small kxk patches) is forced onto CPU, so the cost is negligible.  CUDA
+        is reliable for these ops, so it runs ``impl`` on-device unchanged."""
+        import torch
+        if getattr(device, "type", str(device)) != "mps":
+            return impl(signal, t_ix, y_ix, x_ix, diameter,
+                        device=device, dtype=dtype, raw=raw,
+                        characterize=characterize)
+        cpu = torch.device("cpu")
+        dy, dx, cy, cx, mass, char = impl(
+            signal.to(cpu), t_ix.to(cpu), y_ix.to(cpu), x_ix.to(cpu), diameter,
+            device=cpu, dtype=dtype,
+            raw=(raw.to(cpu) if raw is not None else None),
+            characterize=characterize)
+        _back = lambda v: v.to(device) if torch.is_tensor(v) else v
+        if char is not None:
+            char = {k: _back(v) for k, v in char.items()}
+        return (_back(dy), _back(dx), _back(cy), _back(cx), _back(mass), char)
+
     @staticmethod
     def _iterative_centroid_refine(signal, t_ix, y_ix, x_ix, diameter,
                                      device, dtype,
@@ -1912,6 +1945,15 @@ class GaussianMleBackend(TorchBackend):
 
     def _refine_peaks(self, signal, t_ix, y_ix, x_ix, diameter, *,
                       device, dtype, raw=None, characterize=False):
+        # Run the Newton/Fisher fit (linalg.solve / linalg.inv / einsum) on CPU
+        # when on MPS — those ops are silently unreliable there; see
+        # TorchBackend._refine_off_mps.
+        return self._refine_off_mps(
+            self._refine_peaks_impl, signal, t_ix, y_ix, x_ix, diameter,
+            device=device, dtype=dtype, raw=raw, characterize=characterize)
+
+    def _refine_peaks_impl(self, signal, t_ix, y_ix, x_ix, diameter, *,
+                           device, dtype, raw=None, characterize=False):
         import torch
         # 1. Seed from the centroid refiner (on the bandpassed signal): the
         #    converged integer centre (cy,cx), the sub-pixel seed (dy0,dx0), the
@@ -2053,6 +2095,15 @@ class RadialSymmetryBackend(TorchBackend):
 
     def _refine_peaks(self, signal, t_ix, y_ix, x_ix, diameter, *,
                       device, dtype, raw=None, characterize=False):
+        # Run the gradient/conv2d radial-symmetry solve on CPU when on MPS —
+        # conv2d on tiny patches is silently unreliable there; see
+        # TorchBackend._refine_off_mps.
+        return self._refine_off_mps(
+            self._refine_peaks_impl, signal, t_ix, y_ix, x_ix, diameter,
+            device=device, dtype=dtype, raw=raw, characterize=characterize)
+
+    def _refine_peaks_impl(self, signal, t_ix, y_ix, x_ix, diameter, *,
+                           device, dtype, raw=None, characterize=False):
         import torch
         import torch.nn.functional as F
         # Gradient-based, so it runs on the bandpassed ``signal`` (background-

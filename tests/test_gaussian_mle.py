@@ -293,3 +293,87 @@ def test_non_mle_engine_has_no_loc_sigma_px():
     with contextlib.redirect_stdout(io.StringIO()):
         df = inst.localise(stack, diameter=7, minmass=20, percentile=64, quiet=True)
     assert "loc_sigma_x_px" not in df.columns
+
+
+# ── MPS-safety: refiner numerics run on CPU on Apple GPUs ─────────────────────
+# MPS intermittently returns silently-wrong results for the linalg/conv ops the
+# Gaussian-MLE and radial-symmetry refiners use, mis-localising spots on Apple
+# GPUs while passing on CPU.  TorchBackend._refine_off_mps forces just the
+# (cheap) refinement onto CPU on MPS; detection stays GPU-accelerated.
+def test_refine_off_mps_passthrough_for_non_mps():
+    """The wrapper is a no-op for CPU/CUDA: it invokes the impl on the given
+    device and returns its 6-tuple unchanged (only MPS pays the CPU round-trip)."""
+    torch = pytest.importorskip("torch")
+    from firefly.analysis import fa_localize as L
+    inst = L._resolve_backend("gaussian-mle")
+    seen = {}
+
+    def fake_impl(signal, t_ix, y_ix, x_ix, diameter, *, device, dtype, raw,
+                  characterize):
+        seen["device"] = device
+        z = torch.zeros(2)
+        return z, z, z, z, z, {"size": z}
+
+    cpu = torch.device("cpu")
+    out = inst._refine_off_mps(
+        fake_impl, torch.zeros(1, 1, 4, 4),
+        torch.zeros(2, dtype=torch.long), torch.zeros(2, dtype=torch.long),
+        torch.zeros(2, dtype=torch.long), 7,
+        device=cpu, dtype=torch.float32, raw=None, characterize=True)
+    assert seen["device"] == cpu           # ran on the given device, no redirect
+    assert len(out) == 6                    # 6-tuple contract preserved
+
+
+@pytest.mark.parametrize("name", ENGINES)
+def test_refiner_runs_on_cpu_under_mps(name, monkeypatch):
+    """On MPS the refiner impl must be invoked with a CPU device (the fix); the
+    results are then moved back to the GPU device for the caller."""
+    torch = pytest.importorskip("torch")
+    if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        pytest.skip("MPS not available")
+    if not _have(name):
+        pytest.skip(f"{name} unavailable")
+    import contextlib, io
+    from firefly.analysis import fa_localize as L
+    inst = L._resolve_backend(name)
+    inst._forced_device = "mps"; inst._validated_device = "mps"
+    seen = []
+    orig = inst._refine_peaks_impl
+
+    def spy(*a, **k):
+        seen.append(getattr(k.get("device"), "type", str(k.get("device"))))
+        return orig(*a, **k)
+
+    monkeypatch.setattr(inst, "_refine_peaks_impl", spy)
+    stack = np.stack([_spot_frame([(30.2, 20.5), (45.7, 60.1)])])
+    with contextlib.redirect_stdout(io.StringIO()):
+        inst.localise(stack, diameter=7, minmass=20, percentile=64, quiet=True)
+    assert seen and all(d == "cpu" for d in seen), seen
+
+
+@pytest.mark.parametrize("name", ENGINES)
+def test_engine_mps_matches_cpu(name):
+    """End-to-end guard: on MPS the engine's localisations match the pure-CPU
+    result (because refinement runs on CPU in both)."""
+    torch = pytest.importorskip("torch")
+    if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        pytest.skip("MPS not available")
+    if not _have(name):
+        pytest.skip(f"{name} unavailable")
+    import contextlib, io
+    from firefly.analysis import fa_localize as L
+    truth = [(30.27, 20.53), (45.71, 60.14), (70.0, 75.0)]
+    stack = np.stack([_spot_frame(truth), _spot_frame(truth)])
+
+    def run(dev):
+        inst = L._resolve_backend(name)
+        inst._forced_device = dev; inst._validated_device = dev
+        with contextlib.redirect_stdout(io.StringIO()):
+            df = inst.localise(stack, diameter=7, minmass=20, percentile=64,
+                               quiet=True)
+        return df[df.frame == 0].sort_values("x").reset_index(drop=True)
+
+    cpu, mps = run("cpu"), run("mps")
+    assert len(cpu) == len(mps) == len(truth)
+    assert np.abs(cpu["x"].to_numpy() - mps["x"].to_numpy()).max() < 1e-3
+    assert np.abs(cpu["y"].to_numpy() - mps["y"].to_numpy()).max() < 1e-3

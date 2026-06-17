@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.69.3
+
+Fixes the Gaussian-MLE and radial-symmetry detection engines on Apple-Silicon
+(MPS) GPUs, where they intermittently mis-localised spots.
+
+### Fixed
+
+- **`gaussian-mle` and `radial-symmetry` engines on MPS.** Apple's Metal backend
+  intermittently returns silently-wrong results for the linear-algebra /
+  small-kernel ops these refiners use (Gaussian-MLE: `linalg.solve` / `linalg.inv`
+  / `einsum`; radial-symmetry: `conv2d` on tiny patches) — the
+  "kernel returns garbage with no exception" failure class, which the refiners'
+  own `try/except` CPU fallbacks can't catch because nothing is raised. The
+  result was occasional wrong spot counts / positions on Apple GPUs while CPU
+  stayed correct. The per-spot refinement now runs on **CPU when the device is
+  MPS** (via `TorchBackend._refine_off_mps`); detection (bandpass + max-pool over
+  full frames) stays GPU-accelerated, and CUDA is unaffected. The refinement is
+  cheap (small `k×k` patches), so the cost is negligible. Verified: the MPS path
+  now matches the pure-CPU localisation exactly.
+
 ## v2.69.2
 
 Linker-dispatch correctness fixes from a full audit of the six linkers and five
