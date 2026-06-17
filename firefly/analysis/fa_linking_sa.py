@@ -23,10 +23,12 @@ search_range²) a link is energetically favourable exactly when it is closer tha
 the search radius — so the global optimum is the low-displacement,
 few-tracks configuration, found by annealing rather than a single LAP.
 
-Qt-free (numpy/scipy/pandas).  Deterministic for a fixed ``seed`` (seeded RNG,
-no set/dict iteration in the hot loop) and returns the best configuration seen
-(so the result's energy never exceeds the greedy seed's).  Same contract as
-``link_trajectories``: the input frame with an added integer ``particle`` column.
+Qt-free (numpy/scipy/pandas).  Deterministic for a fixed ``seed`` (seeded RNG;
+any dict iteration in the hot loop — e.g. ``list(cand[i].keys())`` — is over
+insertion-ordered, deterministically-built dicts, so candidate order is
+reproducible) and returns the best configuration seen (so the result's energy
+never exceeds the greedy seed's).  Same contract as ``link_trajectories``: the
+input frame with an added integer ``particle`` column.
 """
 from __future__ import annotations
 

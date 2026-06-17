@@ -177,6 +177,14 @@ class Linker(Enum):
         return cls.TRACKPY
 
 
+# Single source of truth for the FORWARD default linker (a fresh run that does
+# not specify one) — must match the GUI's first-listed combo entry and the
+# README.  This is intentionally distinct from the re-ROI / pre-linker-manifest
+# REPLAY default (`firefly_worker._POSTPROC_LINK_DEFAULTS["linker"]`), which
+# stays "trackpy" so an old run with no recorded linker replays faithfully.
+DEFAULT_LINKER = Linker.KALMAN.value   # "kalman"
+
+
 class MsgKind(StrEnum):
     """Worker→GUI message-queue kinds — one source of truth so a typo can't
     silently drop a message.  StrEnum members compare equal to their plain

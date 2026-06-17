@@ -112,8 +112,13 @@ class NearestNeighbourLinker(LinkerBackend):
     def link(self, locs, *, search_range, memory, min_len, max_len,
              params, progress_cb=None, stop_event=None):
         from firefly.analysis import fa_linking_lap as _lap
+        # Canonical TrackMate "Nearest-neighbour" is strictly frame-to-frame with
+        # NO gap bridging, so this linker deliberately IGNORES the pipeline-wide
+        # `memory` and pins max_gap=1 (a track may only link into the immediately
+        # following frame; max_gap=0 would expire every track before it could
+        # link).  Use the LAP/Kalman linkers if you want gap-closing.
         out = _lap.link_trajectories_nn(
-            locs, search_range=search_range, max_gap=memory, min_len=min_len)
+            locs, search_range=search_range, max_gap=1, min_len=min_len)
         return _apply_max_len(out, max_len)
 
 
@@ -125,11 +130,16 @@ class SaLinker(LinkerBackend):
              params, progress_cb=None, stop_event=None):
         from firefly.analysis import fa_linking_sa as _sa
         kw = dict(search_range=search_range, max_gap=memory, min_len=min_len)
-        # Pass through only the SA knobs the caller actually set.
+        # Pass through only the SA knobs `link_trajectories_sa` actually accepts.
+        # NB: do NOT include the Full-LAP merge/split knobs (allow_merging /
+        # allow_splitting / C_merge / C_split) here — the SA function has no such
+        # parameters and no **kwargs, and the GUI injects allow_merging/
+        # allow_splitting=False into link_params for EVERY linker, so forwarding
+        # them would raise `TypeError: ... unexpected keyword argument
+        # 'allow_merging'` and abort linking the moment SA is selected.
         for k in ("seed", "T0", "cooling", "moves_per_temp", "T_min",
                   "w_disp", "w_feat", "sigma_px", "C_birth", "C_death",
-                  "C_gap0", "kappa", "allow_merging", "allow_splitting",
-                  "C_merge", "C_split"):
+                  "C_gap0", "kappa"):
             if k in params and params[k] is not None:
                 kw[k] = params[k]
         out = _sa.link_trajectories_sa(
@@ -155,8 +165,11 @@ def list_linkers() -> list[str]:
 
 
 def _resolve_linker(name) -> LinkerBackend:
-    """Return the adapter for ``name`` (via :meth:`Linker.parse`), defaulting to
-    trackpy on an unknown token."""
+    """Return the adapter for ``name``.  The unknown-token fallback lives in
+    :meth:`Linker.parse` (it maps any unknown value to ``trackpy`` with a logged
+    warning), so ``key`` is always a canonical member value and therefore always
+    a registry key; the ``or _LINKER_REGISTRY["trackpy"]`` below is a defensive
+    belt-and-braces guard for that invariant, not the primary fallback."""
     key = Linker.parse(name).value
     cls = _LINKER_REGISTRY.get(key) or _LINKER_REGISTRY["trackpy"]
     if not cls.is_available():

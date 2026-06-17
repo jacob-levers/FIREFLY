@@ -483,28 +483,42 @@ class TrackpyBackend(LocaliserBackend):
 class TorchBackend(LocaliserBackend):
     """PyTorch-based localiser, calibrated to reproduce TrackpyBackend.
 
-    Since v2.6.13 every algorithmic stage mirrors trackpy's documented
-    pipeline so the Torch backend can be used as a GPU-accelerated
-    drop-in replacement for `tp.batch` without changing the scientific
-    interpretation of the output:
+    Since v2.6.13 every algorithmic stage FOLLOWS trackpy's documented
+    pipeline and the backend is CALIBRATED to agree with `tp.batch`
+    end-to-end (~0.05 px median / count_ratio ≈ 1.0 per the calibration
+    sweep; agreement is exercised by the suite, e.g.
+    `tests/test_atrous_agrees_with_trackpy` and `tests/test_gaussian_mle.py`),
+    so it is a GPU-accelerated near-drop-in replacement.  The agreement is
+    empirical/aggregate, NOT
+    step-identical — a few steps differ slightly from trackpy and are
+    absorbed by the `_TP_MASS_SCALE` / `percentile` calibration (per-step
+    notes inline below):
 
-      1.  Bandpass — `gaussian(image, σ = noise_size = 1)` minus
+      1.  Bandpass — `gaussian(image, σ = noise_size ≈ 0.97)` minus
           `uniform_filter(image, smoothing_size = diameter + 1)`,
-          clamped ≥ 0.  Matches `trackpy.preprocessing.bandpass`.
+          clamped ≥ 0.  Follows `trackpy.preprocessing.bandpass`.
       2.  Threshold — the `percentile`-th percentile of the bandpassed
-          image (identical semantics to trackpy's `percentile` arg).
+          image.  NOTE: taken over ALL pixels (incl. the bandpass-clamped
+          zeros); trackpy takes it over nonzero pixels only
+          (`image[np.nonzero(image)]`), so the same `percentile` gives a
+          slightly different absolute cut (compensated by calibration).
       3.  Local maxima — pixels where the bandpassed signal equals
           its `diameter`-window max-pool output AND exceeds the
-          threshold.
+          threshold.  (trackpy excludes maxima within
+          `separation = diameter + 1`; this `diameter`-window max-pool is
+          a slightly tighter footprint.)
       4.  Sub-pixel refinement — iterative centroid-of-mass with a
           circular disk mask of radius `diameter/2`.  Each iteration
           shifts the integer centre by ±1 px when the centroid offset
-          exceeds `shift_thresh = 0.6 px`; loop terminates after at
-          most `max_iters = 10` iterations.  Identical to
-          `trackpy.refine.refine`.
+          exceeds `shift_thresh` (≈0.61 px); loop terminates after at
+          most `max_iters = 10` iterations.  Follows
+          `trackpy.refine.refine`, except the disk mask uses radius
+          `diameter/2` (r² ≤ (d/2)²) vs trackpy's integer `diameter//2`
+          (r² ≤ (d//2)²) — a few extra corner pixels.
       5.  Mass — sum of bandpassed signal under the disk mask at the
-          converged centre.  Same definition trackpy uses for its
-          `mass` column.
+          converged centre, then × `_TP_MASS_SCALE` to land on trackpy's
+          `mass` scale (same definition as trackpy's `mass`, rescaled by
+          the calibration constant).
 
     Calibration provenance
     ----------------------
@@ -521,8 +535,11 @@ class TorchBackend(LocaliserBackend):
         artifact.
 
     Constants live in the `_TP_*` class attributes below.  Change with
-    care — the calibration is validated by `tests/test_localiser_agreement.py`,
-    which asserts median ≤ 0.20 px and recall ≥ 0.95.
+    care — the calibration target is median ≤ 0.20 px and recall ≥ 0.95 vs
+    trackpy (re-derive with `tools/calibrate_torch_vs_trackpy.py`); the
+    cross-backend agreement is exercised by the localiser tests in the suite
+    (e.g. `tests/test_atrous_agrees_with_trackpy`, `tests/test_gaussian_mle.py`,
+    `tests/test_loc_sigma_propagation.py`).
 
     Returns a DataFrame with the standard columns `x, y, frame, mass`.
 
@@ -873,8 +890,25 @@ class TorchBackend(LocaliserBackend):
         pad = (smoothing_size - 1) // 2
         bg = F.avg_pool2d(x, kernel_size=smoothing_size,
                           stride=1, padding=pad)
-        response = smooth - bg
-        return torch.clamp(response, min=0.0)
+        response = (smooth - bg).clamp(min=0.0)
+        # Snap sub-noise-floor residuals to EXACT zero.  In flat background the
+        # high-pass `smooth - bg` should land at 0; CPU/CUDA float32 round it
+        # there, but MPS leaves tiny positive residuals (~1e-6).  Detection is
+        # `(signal == maxpool) & (signal > threshold)`, and when the percentile
+        # threshold is ~0 (a mostly-empty bandpass — e.g. a sparse frame) those
+        # residuals slip past `signal > 0` AND tie their max-pool neighbours,
+        # flooding detection with hundreds of phantom maxima on Apple Silicon
+        # (some survive `minmass` as spurious low-mass spots — see
+        # tests/test_gaussian_mle.py).  A floor at 32·eps·max(response) sits
+        # orders of magnitude above the subtraction's rounding noise yet far
+        # below any real spot, so it erases the MPS phantoms while leaving
+        # CPU/CUDA detection byte-for-byte unchanged (verified: 0 candidate
+        # changes on real noisy frames).  Device-agnostic by design — one path,
+        # no per-device branch to drift — so the latent phantom also can't
+        # reappear in the plain TorchBackend on MPS.
+        floor = 32.0 * torch.finfo(dtype).eps * response.amax()
+        return torch.where(response > floor, response,
+                           torch.zeros((), device=device, dtype=dtype))
 
     def _detection_map(self, x, signal, diameter, device, dtype):
         """The image whose local maxima are the spot candidates.
@@ -886,7 +920,8 @@ class TorchBackend(LocaliserBackend):
 
     def _detection_threshold(self, dmap, percentile):
         """Detection threshold: the `percentile`-th percentile of the detection
-        map (identical semantics to trackpy's `percentile` arg).
+        map.  (Taken over ALL pixels incl. the bandpass-clamped zeros; trackpy
+        uses nonzero pixels only — calibrated to agree, not step-identical.)
 
         torch.quantile is exact for small inputs; for big tensors subsample to
         bound memory.  Use a DETERMINISTIC evenly-spaced stride rather than an
@@ -908,9 +943,10 @@ class TorchBackend(LocaliserBackend):
     def _circular_mask(diameter, device, dtype):
         """Boolean / float disk-mask of side k = diameter, used to integrate
         signal over a spot's footprint.  Pixels inside radius `diameter/2`
-        of the patch centre are 1; outside are 0.  Matches the geometry
-        used by `tp.refine.refine` for both centroid-of-mass and mass
-        calculation."""
+        of the patch centre are 1; outside are 0.  Close to (not identical to)
+        the geometry `tp.refine.refine` uses: radius is `diameter/2` here vs
+        trackpy's integer `diameter//2`, so a few corner pixels differ — the
+        difference is absorbed by the `_TP_MASS_SCALE` calibration."""
         import torch
         k = int(diameter)
         r = (k - 1) / 2.0
@@ -983,7 +1019,8 @@ class TorchBackend(LocaliserBackend):
                                      max_iters=None, shift_thresh=None,
                                      characterize=False):
         """Vectorised iterative centroid-of-mass refinement — Torch
-        port of `trackpy.refine.refine`.
+        reimplementation calibrated to agree with `trackpy.refine.refine`
+        (the disk-mask radius differs slightly; see `_circular_mask`).
 
         Per spot:
             1. Extract a (k × k) patch from `signal` centred at integer
@@ -1733,6 +1770,13 @@ class AtrousWaveletBackend(TorchBackend):
     and mass run on the bandpassed ``signal``, so the ``mass`` column stays on
     the trackpy scale and ``minmass`` means the same thing across all backends.
 
+    NOTE (deviation from canonical Olivo-Marin): the wavelet transform here runs
+    on the already-bandpassed ``signal`` (the raw frame ``x`` is available but
+    intentionally unused), not the raw image.  This double-filters slightly, but
+    keeps detection on the same bandpassed image the refiner/mass use so the
+    cross-backend mass-scale parity above holds; ``_ATROUS_K_SIGMA`` was
+    calibrated in exactly this configuration.
+
     ``_ATROUS_K_SIGMA`` (detection sensitivity) is calibrated for count parity
     against the Crocker–Grier detectors on synthetic ground truth — see the
     constant's provenance comment below.
@@ -1822,7 +1866,10 @@ class GaussianMleBackend(TorchBackend):
     symmetric 2-D Gaussian fit under a Poisson noise model (the
     Cramér–Rao-optimal estimator for shot-noise-limited spots; Smith et al.,
     *Nat. Methods* 2010), seeded from the centroid result and falling back to it
-    whenever a fit fails to converge — so it is never worse than centroid.
+    whenever a fit is non-finite or lands outside the patch.  (It does NOT
+    compare the fitted likelihood/position against the centroid seed, so an
+    in-patch-but-worse fit is still accepted — "never worse than centroid" holds
+    only for the divergent/out-of-patch cases the fallback guards.)
 
     The fit runs on the **raw** (un-bandpassed) pixels: the bandpass is a matched
     filter that already makes centroid-of-mass near-optimal but distorts the spot
@@ -1943,7 +1990,8 @@ class GaussianMleBackend(TorchBackend):
                 break
 
         # 3. Per-spot accept/fallback: a non-finite or out-of-patch fit reverts
-        #    to the centroid seed, so the MLE is never worse than centroid.
+        #    to the centroid seed (guards divergence only — an accepted in-patch
+        #    fit is NOT compared against the centroid seed).
         ok = (torch.isfinite(x0) & torch.isfinite(y0)
               & (x0.abs() <= r) & (y0.abs() <= r))
         dx_off = torch.where(ok, x0, dx0)

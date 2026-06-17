@@ -1462,8 +1462,10 @@ def _count_tracks(stack, mm, diameter=7, search_range=5, memory=1, L=4):
         pp = preprocess_stack(stack, workers=2)
         locs = Lz.localise_particles(pp, diameter=diameter, minmass=mm,
                                      percentile=64, backend="trackpy", workers=2)
+        # Pin the trackpy linker so this mirrors the trackpy-based auto-threshold
+        # linkability sweep (independent of the pipeline's forward default).
         linked = link_trajectories(locs, search_range=search_range,
-                                   memory=memory, min_len=1)
+                                   memory=memory, min_len=1, linker="trackpy")
     lens = linked.groupby("particle")["frame"].count()
     return int((lens >= L).sum()), int((lens <= 2).sum())
 

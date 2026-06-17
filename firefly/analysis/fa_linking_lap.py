@@ -8,7 +8,7 @@ Methods 2008, "u-track"):
            consecutive frames (with birth/death) → gap-free track *segments*.
   Step 2 — segment gap-closing: a second global assignment links segment ENDS to
            later segment STARTS across blink gaps (within a time window + a
-           diffusion-scaled spatial gate) → reconnected trajectories.
+           fixed search-radius spatial gate) → reconnected trajectories.
 
 Where trackpy resolves links greedily across its `memory` window (and mis-links
 under density), both steps here are solved globally with the Hungarian/Jonker-
@@ -61,10 +61,17 @@ def _solve_birth_death(link_cost: np.ndarray, alt: float) -> np.ndarray:
 
 
 def _feature_penalty(fi, fj, weight):
-    """TrackMate/Jaqaman feature-penalty multiplier ``P >= 1`` so the link cost
-    becomes ``(D·P)²``.  ``fi`` (n,F), ``fj`` (m,F) → (n,m).  Per feature,
-    ``P += weight·|fi−fj|/(fi+fj)`` (ratio-based ⇒ scale-free); a spot pair with
-    very different intensity/quality is penalised toward the no-link cost."""
+    """Feature-penalty multiplier ``P >= 1`` so the link cost becomes ``(D·P)²``
+    (the TrackMate/Jaqaman cost FORM).  ``fi`` (n,F), ``fj`` (m,F) → (n,m).  Per
+    feature, ``P += weight·|fi−fj|/(fi+fj)`` (ratio-based ⇒ scale-free); a spot
+    pair with very different intensity/quality is penalised toward the no-link
+    cost.
+
+    NOTE: ``penalty_weight`` is a FIREFLY-specific knob, NOT directly comparable
+    to TrackMate's same-named weight: TrackMate's per-feature penalty carries an
+    extra factor of 3 (``p = 3·W·|f1−f2|/(f1+f2)``), so for the same numeric
+    weight FIREFLY's penalty deviation from 1 is ~⅓ of TrackMate's.  (Off by
+    default; the feature penalty is opt-in.)"""
     if fi is None or fj is None or weight == 0:
         return None
     n, F = fi.shape
@@ -177,8 +184,9 @@ def _gap_close(seg: np.ndarray, frame: np.ndarray, x: np.ndarray, y: np.ndarray,
      end_f, end_x, end_y, _end_i, end_feat) = _segment_ends(
         seg, frame, x, y, feats)
 
-    # cost(end a -> start b): gated by gap window and a diffusion-scaled radius
-    # (Brownian spread grows ~sqrt(gap)); cost = squared distance.
+    # cost(end a -> start b): gated by the gap window and a FIXED search radius
+    # (TrackMate-style; intentionally does NOT grow with the gap — see below);
+    # cost = squared distance.
     sr2 = float(search_range) ** 2
     gap = sta_f[None, :] - end_f[:, None]            # (S_end a, S_start b)
     d2 = ((end_x[:, None] - sta_x[None, :]) ** 2 +
@@ -542,8 +550,10 @@ def link_trajectories_nn(locs: pd.DataFrame, search_range: float = 5.0,
     tracker and a useful fast baseline.  Deterministic: candidate pairs are
     sorted by (distance, detection index, track index), so the result never
     depends on dict/iteration order.  `max_gap` is the trackpy-`memory`
-    analogue.  Returns `locs` with an integer `particle` column; tracks shorter
-    than `min_len` points are dropped."""
+    analogue; the registry's `nn` adapter pins it to 1 (strictly frame-to-frame,
+    canonical TrackMate NN — no gap bridging), but the function accepts any
+    `max_gap` for callers that want coasting.  Returns `locs` with an integer
+    `particle` column; tracks shorter than `min_len` points are dropped."""
     if locs is None or len(locs) == 0:
         cols = list(locs.columns) if locs is not None else ["x", "y", "frame"]
         if "particle" not in cols:
