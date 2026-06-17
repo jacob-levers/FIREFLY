@@ -11,7 +11,15 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.69.3"
+__version__ = "2.70.0"
+# v2.70.0 — review remediation: CRITICAL drift-correction sign fix (RCC was
+#   DOUBLING drift, not removing it; now locked by a synthetic-drift sign test);
+#   JDD now subtracts the MSD localisation-error offset so D_JDD agrees with the
+#   offset-corrected MSD D; dwell-time τ uses a right-censored exponential MLE;
+#   turning-angle & MSS now use frame-contiguous steps (no gap mis-counting);
+#   Prism CSV honours underpowered-blanking + configured α; two-way ANOVA no
+#   longer drops metrics on cross-group cell-name collisions; SA-linker cycle
+#   guard; bounded gap-closing matrix; uint16 preprocess underflow guard.
 # v2.69.3 — gaussian-mle / radial-symmetry refiners run their numerics on CPU
 #   when the device is MPS (Apple GPUs silently mis-compute the linalg/conv ops,
 #   intermittently mis-localising spots); detection stays GPU-accelerated.

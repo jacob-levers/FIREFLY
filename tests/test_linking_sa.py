@@ -60,3 +60,21 @@ def test_sa_determinism():
 def test_sa_empty_input_safe():
     assert "particle" in link_trajectories_sa(
         pd.DataFrame(columns=["x", "y", "frame"])).columns
+
+
+def test_sa_dense_cluster_completes_and_is_valid():
+    """A dense cluster drives many SWAP moves.  The linker must terminate and
+    return a VALID partition — no frame repeated within a track.  A cycle
+    introduced by a bad swap would either hang the chain trace or surface as a
+    repeated node; the swap guard + visited-set trace prevent both."""
+    rng = np.random.default_rng(0)
+    rows = []
+    for f in range(12):
+        for _ in range(8):                       # 8 tightly-packed points/frame
+            rows.append((f, float(rng.uniform(20, 26)), float(rng.uniform(20, 26))))
+    df = pd.DataFrame(rows, columns=["frame", "x", "y"])
+    out = link_trajectories_sa(df, search_range=5, max_gap=2, min_len=2, seed=0)
+    assert "particle" in out.columns
+    for pid, g in out.groupby("particle"):
+        fr = g["frame"].to_numpy()
+        assert len(np.unique(fr)) == len(fr), f"track {pid} repeats a frame (cycle?)"

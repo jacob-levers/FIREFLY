@@ -256,8 +256,10 @@ Four modes:
   distribution, mobile fraction, motion-class fractions, track-length
   CDF, JDD overlay, dwell-time CDF, turning-angle distribution, radial
   distribution, MSD-AUC bar chart) with automatic statistical-test
-  selection (Welch's t / Mann-Whitney U / one-way ANOVA / Kruskal-Wallis)
-  and Bonferroni correction.
+  selection (Welch's t / Mann-Whitney U / Welch-ANOVA / Kruskal-Wallis)
+  and configurable multiple-comparison correction (Holm by default,
+  applied within each metric; across-metric correction is available but
+  off by default, so the metric family size is reported in the log).
 - Theme picker (**Dark / Light / Publication**) and projection-colormap
   picker (Inferno / Hot / Viridis / Plasma / Greys), with a side-by-side
   live preview that renders synthetic sample / comparison figures at

@@ -187,12 +187,22 @@ def compute_twoway_anova(df, metrics=None, stats_config=None):
     for m in metrics:
         if m not in df.columns:
             continue
-        sub = df[["group", "timepoint", "cell", m]].dropna()
+        sub = df[["group", "timepoint", "cell", m]].dropna().copy()
         if sub[m].nunique() < 2 or len(sub) < 4:
             continue
+        # pingouin's mixed_anova requires subject IDs that are unique ACROSS the
+        # between-groups factor ("Subject IDs cannot overlap between groups").
+        # Two cells sharing a base name in different groups (a common folder
+        # naming pattern) collide and raise ValueError — which was caught below
+        # and SILENTLY dropped the whole metric from the ANOVA.  Namespace the
+        # subject by group so identical cell names in different groups stay
+        # distinct; the between factor is still `group`, so the model is
+        # unchanged (within-group cell identities are preserved).
+        sub["_subject"] = (sub["group"].astype(str) + "::"
+                           + sub["cell"].astype(str))
         try:
             aov = _pg.mixed_anova(data=sub, dv=m, within="timepoint",
-                                  subject="cell", between="group",
+                                  subject="_subject", between="group",
                                   correction=True)
         except Exception as e:
             rows.append({"metric": m, "section": "anova", "effect": "ERROR",
@@ -217,7 +227,7 @@ def compute_twoway_anova(df, metrics=None, stats_config=None):
         # Simple effects (group within time point, time within group), Holm-corrected.
         try:
             pw = _pg.pairwise_tests(data=sub, dv=m, within="timepoint",
-                                    subject="cell", between="group",
+                                    subject="_subject", between="group",
                                     padjust=_padjust)
             for _, r in pw.iterrows():
                 # For the interaction ('timepoint * group') rows, pingouin puts

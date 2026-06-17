@@ -228,6 +228,14 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     """
     Single parallel pass that computes both MSD and diffusion fits.
     Replaces tp.imsd + tp.emsd + separate fit loop — all in one go.
+
+    Caveat: the per-track fit is an UNWEIGHTED least-squares over the first
+    `n_fit` lags.  MSD points are heteroscedastic (longer lags average over
+    fewer pairs → higher variance) and strongly correlated, so this gives equal
+    weight to noisier long lags.  This is the standard simple estimator and is
+    fine as a default, but an optimally-weighted fit (cf. Michalet & Berglund
+    2012) would be more efficient; the ensemble MSD is likewise an equal-weight
+    mean across tracks regardless of track length.
     """
     # Fail loudly on nonsensical calibration: a zero/negative/NaN pixel size or
     # frame interval would silently collapse every displacement (or invert the
@@ -360,14 +368,26 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     return imsd_df, emsd_series, diff_df
 
 
-def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
+def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
+                loc_offset_um2=0.0):
     """
     Jump Distance Distribution (JDD) analysis.
 
     Extracts single-frame displacements from all tracks, then fits the
-    empirical CDF to a mixture of 2D Brownian populations:
+    empirical CDF to a mixture of 2D Brownian populations WITH a shared
+    static localisation-error offset:
 
-        CDF(r) = 1 - Σᵢ fᵢ · exp(–r² / 4Dᵢ Δt)
+        CDF(r) = 1 - Σᵢ fᵢ · exp(–r² / (4·Dᵢ·Δt + loc_offset_um2))
+
+    where ``loc_offset_um2 = 4σ²`` is the SAME static localisation-error offset
+    the MSD fit subtracts jointly (``msd_anomalous``'s ``offset`` / ``MSD0``).
+    It is supplied by the caller (NOT fit): from single-lag jumps alone D and σ
+    are mathematically degenerate (the Rayleigh scale is only ``4DΔt + 4σ²``), so
+    σ cannot be separated here — it must come from the multi-lag MSD.  Passing the
+    MSD's offset removes the σ²/Δt inflation that otherwise made the JDD D's
+    systematically LARGER than the offset-corrected MSD D, so the two estimators
+    now agree.  ``loc_offset_um2 = 0`` (the default) reproduces the legacy
+    uncorrected fit.
 
     Fitting the CDF (rather than histogram) avoids binning artefacts and
     gives robust estimates even with short tracks — ideal for sptPALM where
@@ -375,7 +395,9 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
 
     Parameters
     ----------
-    n_components : 1, 2, or 3
+    n_components   : 1, 2, or 3
+    loc_offset_um2 : static localisation-error offset 4σ² (µm²) to subtract,
+                     typically the MSD fit's median ``MSD0``.  0 → no correction.
 
     Returns
     -------
@@ -384,8 +406,11 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
     _require_positive_finite("pixel_size_um", pixel_size_um)
     _require_positive_finite("frame_interval_s", frame_interval_s)
     print(f"  JDD analysis      : {n_components} component(s)  "
-          f"|  {tracks['particle'].nunique():,} tracks")
+          f"|  {tracks['particle'].nunique():,} tracks"
+          + (f"  |  loc offset {loc_offset_um2:.2g} µm²"
+             if loc_offset_um2 else ""))
     dt = frame_interval_s
+    loc_offset_um2 = float(max(0.0, loc_offset_um2))
 
     # Vectorised across all tracks at once.  Old per-track Python loop
     # was O(n_tracks × Python-step) → seconds on 100k tracks.  We:
@@ -422,19 +447,25 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
     cdf_emp  = np.arange(1, len(r_sorted) + 1) / len(r_sorted)
 
     # ── CDF model definitions ─────────────────────────────────────────────────
+    # `loc_offset_um2` (= 4σ², µm²) is a FIXED static localisation-error offset
+    # (closure constant, NOT fit — see the docstring on why σ is unidentifiable
+    # from single-lag jumps).  With offset=0 these are byte-identical to the
+    # legacy models, so the parameter layout / indices are unchanged.
+    _ofs = loc_offset_um2
+
     def _cdf1(r, D1):
-        return 1.0 - np.exp(-r ** 2 / (4 * D1 * dt))
+        return 1.0 - np.exp(-r ** 2 / (4 * D1 * dt + _ofs))
 
     def _cdf2(r, D1, D2, f1):
         f2 = 1.0 - f1
-        return 1.0 - f1 * np.exp(-r**2 / (4*D1*dt)) \
-                   - f2 * np.exp(-r**2 / (4*D2*dt))
+        return 1.0 - f1 * np.exp(-r**2 / (4*D1*dt + _ofs)) \
+                   - f2 * np.exp(-r**2 / (4*D2*dt + _ofs))
 
     def _cdf3(r, D1, D2, D3, f1, f2):
         f3 = 1.0 - f1 - f2
-        return (1.0 - f1 * np.exp(-r**2 / (4*D1*dt))
-                    - f2 * np.exp(-r**2 / (4*D2*dt))
-                    - f3 * np.exp(-r**2 / (4*D3*dt)))
+        return (1.0 - f1 * np.exp(-r**2 / (4*D1*dt + _ofs))
+                    - f2 * np.exp(-r**2 / (4*D2*dt + _ofs))
+                    - f3 * np.exp(-r**2 / (4*D3*dt + _ofs)))
 
     configs = {
         1: (_cdf1, [0.05],                   ([1e-6],        [100.0])),
@@ -469,7 +500,7 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
             print(f"  WARN: 3-component JDD gave a negative population fraction "
                   f"(f3 = {f3:.3f}); falling back to a 2-component fit.")
             return compute_jdd(tracks, pixel_size_um, frame_interval_s,
-                               n_components=2)
+                               n_components=2, loc_offset_um2=loc_offset_um2)
         # Tiny negative from optimiser noise → clamp + renormalise to a valid
         # simplex (fractions in [0,1] summing to 1).
         f3 = max(f3, 0.0)
@@ -481,12 +512,20 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
     D_values  = [p[0] for p in pairs]
     fractions = [p[1] for p in pairs]
 
+    # The static localisation-error offset is the (known, fixed) `loc_offset_um2`
+    # = 4σ², so σ = √(offset/4) is the 1-D precision the JDD D's are corrected
+    # for (NOT a fitted quantity — see the docstring).
+    s2_fit = float(loc_offset_um2)
+    sigma_loc_um = float(np.sqrt(max(s2_fit, 0.0) / 4.0))
+
     # ── PDF for plotting ──────────────────────────────────────────────────────
-    # Rayleigh-like: f_i(r) = r/(2DᵢΔt) · exp(–r²/4DᵢΔt)
+    # Rayleigh-like with the static-error offset: the derivative of the component
+    # CDF 1 − exp(−r²/(4DᵢΔt + offset)) is  (2r/denom)·exp(−r²/denom).
     r_range = np.linspace(0, np.percentile(jumps, 99.5), 500)
 
     def _pdf_component(r, D):
-        return (r / (2 * D * dt)) * np.exp(-r**2 / (4 * D * dt))
+        denom = 4.0 * D * dt + s2_fit
+        return (2.0 * r / denom) * np.exp(-r**2 / denom)
 
     pdfs = [frac * _pdf_component(r_range, D)
             for D, frac in zip(D_values, fractions)]
@@ -527,6 +566,8 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2):
         "aic":           aic,
         "bic":           bic,
         "n_params":      k,
+        "sigma_loc_um":  sigma_loc_um,    # 1-D localisation precision √(s2/4)
+        "s2_um2":        s2_fit,          # fitted static offset 4σ² (µm²)
     }
 
 
@@ -699,20 +740,27 @@ def compute_turning_angles(tracks):
                .reset_index(drop=True)
                .sort_values(["particle", "frame"], kind="stable"))
         pid_arr = srt["particle"].to_numpy()
+        frame_arr = srt["frame"].to_numpy()
         xy_arr  = srt[["x", "y"]].to_numpy()
-        # Step vectors v[i] = xy[i+1] - xy[i].  same_track_step[i] is True
-        # iff rows i and i+1 belong to the same particle.
+        # Step vectors v[i] = xy[i+1] - xy[i].  A step is a real single-frame
+        # displacement only when rows i and i+1 are the SAME particle AND
+        # exactly one frame apart — a memory-bridged gap (e.g. frame 5 → 8) is
+        # NOT a single step and must not enter a turning angle, which compares
+        # two consecutive single-frame steps over equal time intervals.  This
+        # mirrors the frame-contiguity mask in compute_jdd / compute_van_hove /
+        # compute_vacf; turning angles previously masked only on the particle
+        # boundary, so gap-spanning steps leaked in and biased the distribution.
         steps = np.diff(xy_arr, axis=0)                       # (n-1, 2)
-        same_step  = (pid_arr[1:] == pid_arr[:-1])            # (n-1,)
+        unit_step = ((pid_arr[1:] == pid_arr[:-1])
+                     & (np.diff(frame_arr) == 1))             # (n-1,)
         if len(steps) < 2:
             result = np.array([], dtype=float)
         else:
             v1 = steps[:-1]
             v2 = steps[1:]
-            # A turn at position i requires three consecutive same-track
-            # rows: (i, i+1, i+2).  Equivalently both steps must be
-            # within-track AND the middle row must be the same in both.
-            both_in_track = same_step[:-1] & same_step[1:]
+            # A turn at position i needs two consecutive single-frame steps:
+            # rows (i, i+1, i+2) all same-particle at frames f, f+1, f+2.
+            both_in_track = unit_step[:-1] & unit_step[1:]
             cross = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
             dot   = np.sum(v1 * v2, axis=1)
             norm1 = np.linalg.norm(v1, axis=1)
@@ -783,7 +831,11 @@ def compute_mobile_fraction_over_time(tracks, diff_df, frame_interval,
     return pd.DataFrame(rows)
 
 
-def compute_dwell_times(tracks, diff_df, frame_interval):
+_DWELL_COLS = ["particle", "dwell_time_s", "dwell_time_total_s",
+               "dwell_time_observed_s", "n_observations", "censored"]
+
+
+def compute_dwell_times(tracks, diff_df, frame_interval, n_frames=None):
     """Per-track dwell times for confined / immobile tracks.
 
     Returns a DataFrame with three durations per track:
@@ -791,44 +843,62 @@ def compute_dwell_times(tracks, diff_df, frame_interval):
       dwell_time_total_s     (last_frame − first_frame + 1) × Δt   ← canonical
       dwell_time_observed_s  n_observations × Δt                   ← fewer if gaps
       dwell_time_s           alias for dwell_time_total_s          ← back-compat
+      censored               True if the track is still present at the LAST movie
+                             frame (right-censored — see below)
 
-    The exponential τ is fit to dwell_time_total_s (residence-time semantics).
+    Residence-time τ is the maximum-likelihood estimate of an exponential dwell
+    distribution UNDER RIGHT-CENSORING: a track that is still present at the
+    final frame (`f_max >= n_frames-1`) has not been observed to end, so its
+    true dwell is only a lower bound.  Fitting a plain (uncensored) exponential
+    to such truncated durations systematically UNDER-estimates τ.  The censored
+    MLE is closed-form:  τ̂ = Σ(all durations) / (#uncensored events).  When
+    `n_frames` is None the last observed frame across all tracks is used as the
+    movie end (best effort).  (Photobleaching also truncates dwells; correcting
+    that needs a bleaching model and is out of scope — only movie-end censoring
+    is handled here.)
     """
-    confined_pids = diff_df[diff_df["motion"].isin(["Confined", "Immobile"])]["particle"]
+    confined_pids = diff_df[diff_df["motion"].isin(
+        ["Confined", "Immobile"])]["particle"].astype(int)
     print(f"  Dwell times       : {len(confined_pids):,} confined/immobile tracks")
-    rows = []
-    # Group once by particle for speed
-    grouped = tracks.groupby("particle")["frame"]
-    for pid in confined_pids:
-        if pid not in grouped.groups:
-            continue
-        frames = grouped.get_group(pid).values
-        n_obs = len(frames)
-        if n_obs == 0:
-            continue
-        f_min = int(frames.min())
-        f_max = int(frames.max())
-        dur_total = (f_max - f_min + 1) * frame_interval
-        dur_obs   = n_obs * frame_interval
-        rows.append({
-            "particle":              int(pid),
-            "dwell_time_s":          dur_total,   # back-compat alias
-            "dwell_time_total_s":    dur_total,   # full duration including gaps
-            "dwell_time_observed_s": dur_obs,     # observed frames × Δt
-            "n_observations":        int(n_obs),
-        })
-    dwell_df = pd.DataFrame(rows)
+    if len(confined_pids) == 0 or len(tracks) == 0:
+        return pd.DataFrame(columns=_DWELL_COLS), np.nan
+
+    # Vectorised: one groupby pass for first/last frame + observation count
+    # (replaces the per-pid get_group loop).
+    agg = tracks.groupby("particle")["frame"].agg(["min", "max", "count"])
+    agg = agg[agg.index.isin(set(confined_pids))]
+    if len(agg) == 0:
+        return pd.DataFrame(columns=_DWELL_COLS), np.nan
+
+    f_min = agg["min"].to_numpy(dtype=float)
+    f_max = agg["max"].to_numpy(dtype=float)
+    n_obs = agg["count"].to_numpy(dtype=float)
+    last_frame = (int(n_frames) - 1 if n_frames
+                  else int(tracks["frame"].max()))
+    dur_total = (f_max - f_min + 1.0) * frame_interval
+    dur_obs   = n_obs * frame_interval
+    censored  = f_max >= last_frame            # still present at the movie end
+
+    dwell_df = pd.DataFrame({
+        "particle":              agg.index.to_numpy().astype(int),
+        "dwell_time_s":          dur_total,    # back-compat alias
+        "dwell_time_total_s":    dur_total,    # full duration including gaps
+        "dwell_time_observed_s": dur_obs,      # observed frames × Δt
+        "n_observations":        n_obs.astype(int),
+        "censored":              censored,
+    })
+
+    # Right-censored exponential MLE: τ̂ = total observed time / #events.
     tau = np.nan
     if len(dwell_df) >= 10:
-        try:
-            dt = np.sort(dwell_df["dwell_time_total_s"].values)
-            cdf = np.arange(1, len(dt) + 1) / len(dt)
-            popt, _ = curve_fit(lambda t, tau: 1 - np.exp(-t / tau),
-                                dt, cdf, p0=[dt.mean()], bounds=(1e-6, np.inf),
-                                maxfev=2000)
-            tau = float(popt[0])
-        except Exception:
-            pass
+        durs = dwell_df["dwell_time_total_s"].to_numpy(dtype=float)
+        n_events = int((~dwell_df["censored"].to_numpy()).sum())
+        if n_events > 0:
+            tau = float(durs.sum() / n_events)
+        n_cens = int(dwell_df["censored"].sum())
+        if n_cens:
+            print(f"  Dwell τ (censored MLE): {tau:.3g}s  "
+                  f"({n_cens}/{len(dwell_df)} tracks right-censored at movie end)")
     return dwell_df, tau
 
 
@@ -860,6 +930,7 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
                            .sort_values(["particle", "frame"], kind="stable")
                            .groupby("particle", sort=False)):
         xy = grp[["x", "y"]].values * pixel_size_um
+        fr = grp["frame"].to_numpy()
         n = len(xy)
         if n < 6:
             continue
@@ -873,18 +944,33 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
         lag_arr = list(range(1, min(max_lagtime + 1, n // 2)))
         if len(lag_arr) < 4:
             continue
-        # log-time axis is the same for all four moments → centre it once.
-        log_t   = np.log(np.array(lag_arr, dtype=float) * frame_interval)
+        # Frame-aware pairing: at each lag use only position pairs whose ACTUAL
+        # frame separation equals the lag — a memory-bridged gap must not be
+        # treated as a `lag`-frame displacement (it spans more time).  The old
+        # code used row-index lags (xy[lag:] - xy[:-lag]), which over-counts the
+        # interval on gapped tracks and biases the MSS scaling exponent;
+        # this matches _msd_and_fit_one's masked path.  For a gapless track
+        # every pair is valid, so the result is numerically identical to before.
+        # r depends only on the lag, NOT on q — compute it once per lag and
+        # raise to each power.  Lags with no valid pair (gapped tracks) are
+        # dropped; a stable moment fit still needs >=4 usable lags.
+        good_lags, moment_cols = [], []
+        for lag in lag_arr:
+            valid = (fr[lag:] - fr[:-lag]) == lag
+            if not valid.any():
+                continue
+            d = xy[lag:][valid] - xy[:-lag][valid]
+            r = np.sqrt(d[:, 0] ** 2 + d[:, 1] ** 2)
+            good_lags.append(lag)
+            moment_cols.append([np.mean(r ** q) for q in q_values])
+        if len(good_lags) < 4:
+            continue
+        # log-time axis (same for all four moments) — centre once over the
+        # lags that actually contributed.
+        log_t   = np.log(np.array(good_lags, dtype=float) * frame_interval)
         t_ctr   = log_t - log_t.mean()
         t_denom = float(np.dot(t_ctr, t_ctr))
-        # r depends only on the lag, NOT on q — compute it once per lag and
-        # raise to each power (was recomputed 4× per lag before).
-        moments = np.empty((4, len(lag_arr)))
-        for li, lag in enumerate(lag_arr):
-            d = xy[lag:] - xy[:-lag]
-            r = np.sqrt(d[:, 0] ** 2 + d[:, 1] ** 2)
-            for qi in range(4):
-                moments[qi, li] = np.mean(r ** q_values[qi])
+        moments = np.array(moment_cols, dtype=float).T        # (4, n_good_lags)
         gammas = np.empty(4)
         for qi in range(4):
             gammas[qi] = _ols_slope(t_ctr, t_denom,

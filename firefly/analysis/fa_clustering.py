@@ -1,6 +1,17 @@
 """DBSCAN clustering of localisations.
 
 Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
+
+Caveats on the per-cluster statistics (the worker logs these per run):
+  * SUBSAMPLING: DBSCAN is density-based, so above `max_locs` (250k) the
+    localisations are randomly sub-sampled.  Lowering the point density lowers
+    realised neighbour counts, so `n_locs`, `area_um2` and especially
+    `density_locs_per_um2` are NOT comparable between a sub-sampled run and a
+    full one — `df.attrs["subsampled"]` flags when this happened.
+  * HULL-DENSITY BIAS: `area_um2` is the convex-hull area, which grows with the
+    number of points even at constant true density, so `density = n / hull_area`
+    is a hull-fill density, not an unbiased spatial density, and is not directly
+    comparable across clusters of very different size.
 """
 from __future__ import annotations
 

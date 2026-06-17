@@ -1825,10 +1825,16 @@ def compare_groups(groups,
         for k, pw in enumerate(pairs):
             if pw.get("self_corrected"):
                 pw["p_within"] = pw.get("p")
-                pw["stars_within"] = stars_for(pw.get("p"), _alpha)
+                # Preserve the underpowered / blank-star convention: if the raw
+                # comparison was blanked (n<3, not interpretable), the corrected
+                # star stays blank too — otherwise correction would manufacture a
+                # star for a comparison the engine declared uninterpretable.
+                pw["stars_within"] = (stars_for(pw.get("p"), _alpha)
+                                      if pw.get("stars") else "")
             else:
                 pw["p_within"] = wmap[k]
-                pw["stars_within"] = stars_for(wmap[k], _alpha)
+                pw["stars_within"] = (stars_for(wmap[k], _alpha)
+                                      if pw.get("stars") else "")
             pw.setdefault("p_across", np.nan)
             pw.setdefault("stars_across", "")
             # Across-metric family = ordinary pairwise only; exclude
@@ -1843,6 +1849,15 @@ def compare_groups(groups,
         for pw, ap in zip(across_pw, acorr):
             pw["p_across"] = ap
             pw["stars_across"] = stars_for(ap, _alpha)
+    elif family_size > 1:
+        # Across-metric correction is OFF by default; make the multiplicity the
+        # reader is exposed to explicit rather than silent.  With N scalar-metric
+        # comparisons in the family, the chance of ≥1 false positive at α is
+        # ~1−(1−α)^N — surface N so the user can judge / enable correction.
+        print(f"  Stats: across-metric correction OFF — {family_size} scalar-"
+              f"metric comparisons in the family (family-wise error not "
+              f"controlled across metrics; enable across-metric correction to "
+              f"control it).")
 
     stats_rows = []
     for metric, rec in stats_records.items():
@@ -2312,6 +2327,29 @@ def _prism_sig(p):
     return "Yes" if (p is not None and np.isfinite(p) and p < 0.05) else "No"
 
 
+def _prism_summary_row(stars, note=None):
+    """Prism 'P value summary' that RESPECTS the stats engine's own
+    `stars`/`stars_corrected` column instead of re-deriving from the raw
+    p-value.  The engine value is already gated on the configured α and
+    blanked for underpowered (n<3) comparisons; recomputing from the raw p
+    ignored both and could print '****'/'significant' for a comparison the
+    engine flagged uninterpretable.  `stars` is stars_for() output: ''
+    (underpowered/uninterpretable), 'ns', '*', '**', '***'."""
+    s = ("" if stars is None else str(stars)).strip()
+    if not s:
+        return "underpowered (n<3)" if note else "n/a"
+    return s
+
+
+def _prism_sig_row(stars, note=None):
+    """'Yes'/'No'/'n/a' significance gated on the CONFIGURED α via the engine
+    `stars` (any star ⇒ p<α; 'ns' ⇒ not significant; '' ⇒ underpowered)."""
+    s = ("" if stars is None else str(stars)).strip()
+    if not s:
+        return "n/a"
+    return "No" if s == "ns" else "Yes"
+
+
 def _fnum(v, fmt="{:.5g}"):
     return fmt.format(v) if (v is not None and np.isfinite(v)) else ""
 
@@ -2335,6 +2373,7 @@ def _write_prism_ttests(path, stats_df, stats_config=None):
         normalize_stats_config, config_summary_rows, correction_display)
     cfg = normalize_stats_config(stats_config)
     corr_disp = correction_display(cfg["correction"])
+    _alpha = float(cfg["alpha"])
     with open(path, "w", newline="") as fh:
         w = _csv.writer(fh)
         w.writerow(["Group comparisons  (per metric)"])
@@ -2356,7 +2395,10 @@ def _write_prism_ttests(path, stats_df, stats_config=None):
                 r = omn.iloc[0]
                 w.writerow(["Omnibus test", r.get("test", "")])
                 w.writerow(["    P value", _prism_p(_f(r.get("p_value")))])
-                w.writerow(["    P value summary", _prism_summary(_f(r.get("p_value")))])
+                w.writerow(["    P value summary",
+                            _prism_summary_row(r.get("stars"), r.get("note"))])
+                if r.get("note"):
+                    w.writerow(["    Note", str(r.get("note"))])
             w.writerow([])
             for _, r in pairs.iterrows():
                 la, lb = r.get("label_a", "A"), r.get("label_b", "B")
@@ -2366,8 +2408,12 @@ def _write_prism_ttests(path, stats_df, stats_config=None):
                 w.writerow([f"{la}  vs  {lb}"])
                 w.writerow(["    " + str(r.get("test", "t test")), ""])
                 w.writerow(["    P value (raw)", _prism_p(p)])
-                w.writerow(["    P value summary", _prism_summary(p)])
-                w.writerow(["    Significantly different (P<0.05)?", _prism_sig(p)])
+                w.writerow(["    P value summary",
+                            _prism_summary_row(r.get("stars"), r.get("note"))])
+                w.writerow([f"    Significantly different (P<{_alpha:g})?",
+                            _prism_sig_row(r.get("stars"), r.get("note"))])
+                if r.get("note"):
+                    w.writerow(["    Note", str(r.get("note"))])
                 # Self-correcting post-hocs (Games-Howell / Tukey / Dunnett)
                 # carry their own family-wise label; everyone else gets the
                 # chosen within-metric correction.
@@ -2375,7 +2421,8 @@ def _write_prism_ttests(path, stats_df, stats_config=None):
                 _adj_lbl = (f"    Adjusted P value ({cm})" if "family-wise" in cm
                             else f"    Adjusted P value ({corr_disp}, within metric)")
                 w.writerow([_adj_lbl, _prism_p(padj)])
-                w.writerow(["    Adjusted summary", _prism_summary(padj)])
+                w.writerow(["    Adjusted summary",
+                            _prism_summary_row(r.get("stars_corrected"), r.get("note"))])
                 if cfg["across_metric_correction"] and pax is not None:
                     w.writerow([f"    Adjusted P value ({corr_disp}, across metrics)",
                                 _prism_p(pax)])

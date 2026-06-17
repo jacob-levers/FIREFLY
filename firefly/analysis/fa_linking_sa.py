@@ -249,7 +249,13 @@ def link_trajectories_sa(locs: pd.DataFrame, search_range: float = 2.0,
                 else:                                        # SWAP two links
                     a = int(rng.integers(0, n)); b = succ[a]
                     c = int(rng.integers(0, n)); d = succ[c]
-                    if b < 0 or d < 0 or a == c or b == d:
+                    # Reject degenerate swaps that would create a self-link
+                    # (and hence a cycle): b == c makes succ[c] = c, and
+                    # d == a makes succ[a] = a.  The chain-trace below also has a
+                    # hard visited-set guard, but rejecting here keeps the energy
+                    # bookkeeping (cur_E) consistent with the real configuration.
+                    if (b < 0 or d < 0 or a == c or b == d
+                            or b == c or d == a):
                         continue
                     cad = _cost(a, d); ccb = _cost(c, b)
                     if cad is None or ccb is None:
@@ -278,13 +284,21 @@ def link_trajectories_sa(locs: pd.DataFrame, search_range: float = 2.0,
         if succ[i] >= 0:
             pred[succ[i]] = i
     labels = np.full(n, -1, dtype=np.int64)
+    visited = np.zeros(n, dtype=bool)
     pid = 0
     for i in range(n):
-        if pred[i] < 0:                       # a track start
+        if pred[i] < 0 and not visited[i]:    # a track start
             chain = []
             k = i
-            while k >= 0:
-                chain.append(k); k = succ[k]
+            # `not visited[k]` is a hard cycle guard: a malformed succ chain
+            # (e.g. a self-link or loop a SWAP move could introduce) can never
+            # spin forever — we stop the instant we revisit a node.  On a valid
+            # acyclic configuration each node is visited exactly once, so this is
+            # behaviour-identical to the unguarded walk.
+            while k >= 0 and not visited[k]:
+                visited[k] = True
+                chain.append(k)
+                k = succ[k]
             if len(chain) >= int(min_len):
                 for k in chain:
                     labels[k] = pid

@@ -1,5 +1,66 @@
 # Changelog
 
+## v2.70.0
+
+Scientific review remediation: a **critical** drift-correction sign fix plus a
+set of methodological, statistical, and robustness corrections. Several changes
+alter reported numbers (drift-corrected positions, JDD `D`, dwell-time τ) — see
+`docs/methods_guide_errata.md` for the corresponding methods-doc updates.
+
+### Fixed
+
+- **CRITICAL — drift correction was doubling drift, not removing it.** The
+  redundant-cross-correlation solver used `IFFT(F_i·conj(F_j))`, whose peak is
+  `(driftᵢ − driftⱼ)`, so the solved per-segment drift came out negated and
+  `locs − drift` *added* the motion (≈1.9× on a synthetic ramp). Swapped to
+  `IFFT(F_j·conj(F_i))` so the recovered drift is the true sample drift and is
+  removed. The previous unit test only checked the recovered range (`max−min`),
+  which a sign inversion also satisfies; a new regression test asserts both the
+  sign (correlation with the injected ramp) and that the per-frame position
+  trend is removed.
+- **Two-way mixed ANOVA silently dropped metrics on cross-group cell-name
+  collisions.** pingouin rejects subject IDs shared across the between-groups
+  factor; cells with the same base name in different groups raised a caught
+  `ValueError` and the metric vanished from the report. The subject ID is now
+  namespaced by group.
+- **Group-comparison Prism CSV over-stated significance.** The headline "P value
+  summary" / "significant?" columns were re-derived from the raw p-value,
+  ignoring the engine's underpowered (n<3) blanking and the configured α — so an
+  uninterpretable comparison could print `****`/"Yes". The CSV now carries the
+  engine's α-gated, underpowered-aware stars and labels the α actually used.
+- **uint16 background-subtraction underflow.** `_preprocess_fast` /
+  `_preprocess_rolling` now cast to float32 first, so a raw integer frame can no
+  longer wrap `frame − background` into a bright phantom (the loaders already
+  cast, so the hot path is unchanged).
+- **Simulated-annealing linker could hang / corrupt tracks.** A swap move could
+  create a self-link (`succ[k]==k`) or cycle; the swap is now rejected and the
+  chain trace has a hard visited-set cycle guard.
+
+### Changed
+
+- **JDD is now localisation-error-corrected.** The jump-distance CDF subtracts
+  the same static offset `4σ²` the MSD fit removes (`4DΔt + 4σ²`, σ taken from
+  the MSD median `MSD₀` — it is *not* fit, being degenerate from single-lag
+  jumps), so `D_JDD` no longer carries the `σ²/Δt` inflation and now agrees with
+  the offset-corrected MSD `D`. Reported as `sigma_loc_um`.
+- **Dwell-time τ uses a right-censored exponential MLE.** Tracks still present at
+  the final frame are right-censored (flagged via a new `censored` column);
+  τ̂ = Σdurations / #completed-events instead of an uncensored CDF fit, which
+  under-estimated residence times.
+- **Turning angles & MSS now use frame-contiguous steps.** Both previously
+  treated a memory-bridged gap as a single step (inconsistent with JDD / van
+  Hove / VACF); a gap-spanning step no longer enters a turning angle, and MSS
+  pairs positions by true frame separation.
+- **Gap-closing memory guard.** The LAP gap-close matrix is now bounded for very
+  large segment counts via a KD-tree-gated active subset (provably identical to
+  the full dense solve), preventing an OOM on pathologically dense detections.
+- **Drift solver hardening.** Segments with no surviving cross-correlation pair
+  are interpolated from neighbours instead of being pinned to a spurious zero.
+- ROI membership now rounds to the nearest pixel (was truncating, a half-pixel
+  boundary bias). Per-cluster `area`/`density` and the DBSCAN sub-sample / hull
+  caveats are documented. Stale default-linker docstring and the README stats
+  wording corrected to match the code.
+
 ## v2.69.3
 
 Fixes the Gaussian-MLE and radial-symmetry detection engines on Apple-Silicon

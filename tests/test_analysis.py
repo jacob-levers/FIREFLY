@@ -3230,3 +3230,206 @@ def test_params_needing_calibration_decision_matrix(tmp_path, monkeypatch):
     assert L.params_needing_calibration(
         [{"file": csv, "source": "external_csv",
           "pixel_size": None, "frame_interval": None}]) == []
+
+
+# ── review-remediation regression tests ──────────────────────────────────────
+def test_correct_drift_recovers_sign_and_reduces_trend():
+    """Lock the drift-correction SIGN.  The existing test only checks the
+    recovered range (max-min), which a sign inversion would ALSO satisfy while
+    silently DOUBLING the motion.  Inject a known monotonic ramp and assert
+    (a) the recovered per-frame drift is POSITIVELY correlated with the injected
+    ramp, and (b) the linear TREND of the per-frame mean position is removed
+    (not doubled) after correction.  The trend isolates the drift from the
+    helper's white per-frame sampling noise."""
+    from firefly.analysis.fa_drift import correct_drift
+    n = 2000
+    gx = np.linspace(0.0, 8.0, n)            # +x ramp
+    gy = np.linspace(0.0, -5.0, n)           # -y ramp
+    locs = _drift_localisations(n, gx, gy, seed=1)
+    corrected, drift = correct_drift(locs)
+
+    # (a) sign: recovered drift tracks the injected ramp, NOT its negative.
+    cx = np.corrcoef(drift["dx"].to_numpy(), gx)[0, 1]
+    cy = np.corrcoef(drift["dy"].to_numpy(), gy)[0, 1]
+    assert cx > 0.9, f"dx anti-correlated with injected ramp (sign inverted?): r={cx:.3f}"
+    assert cy > 0.9, f"dy anti-correlated with injected ramp (sign inverted?): r={cy:.3f}"
+
+    # (b) end-to-end: the linear trend of the per-frame mean position is removed.
+    def _trend(df, col):
+        fm = df.groupby("frame")[col].mean()
+        return float(np.polyfit(fm.index.to_numpy(float), fm.to_numpy(), 1)[0])
+    bx, ax = _trend(locs, "x"), _trend(corrected, "x")
+    by, ay = _trend(locs, "y"), _trend(corrected, "y")
+    assert bx > 0 and by < 0                          # injected trends
+    assert abs(ax) < 0.25 * abs(bx), (bx, ax)         # removed, not doubled/inverted
+    assert abs(ay) < 0.25 * abs(by), (by, ay)
+
+
+def test_turning_angles_skip_memory_gaps():
+    """A memory-bridged gap is NOT a single-frame step, so it must not enter a
+    turning angle.  A track at frames 0,1,4,5 has no three consecutive
+    single-frame steps → zero turning angles; the gapless control yields two."""
+    gapped = pd.DataFrame({"particle": [0, 0, 0, 0], "frame": [0, 1, 4, 5],
+                           "x": [0.0, 1.0, 5.0, 6.0], "y": [0.0, 0.5, 0.5, 1.0]})
+    assert s.compute_turning_angles(gapped).size == 0
+    gapless = pd.DataFrame({"particle": [0, 0, 0, 0], "frame": [0, 1, 2, 3],
+                            "x": [0.0, 1.0, 2.0, 2.0], "y": [0.0, 0.5, 0.5, 1.5]})
+    assert s.compute_turning_angles(gapless).size == 2
+
+
+def test_per_track_mean_angle_skips_memory_gaps():
+    """compute_per_track_mean_angle must also exclude gap-spanning steps."""
+    gapped = pd.DataFrame({"particle": [0, 0, 0, 0], "frame": [0, 1, 4, 5],
+                           "x": [0.0, 1.0, 5.0, 6.0], "y": [0.0, 0.5, 0.5, 1.0]})
+    assert fc.compute_per_track_mean_angle(gapped) == []
+    gapless = pd.DataFrame({"particle": [0, 0, 0, 0], "frame": [0, 1, 2, 3],
+                            "x": [0.0, 1.0, 2.0, 2.0], "y": [0.0, 0.5, 0.5, 1.5]})
+    out = fc.compute_per_track_mean_angle(gapless)
+    assert len(out) == 1 and out[0][0] == 0
+
+
+def test_mss_uses_frame_aware_lags():
+    """MSS pairs positions by true frame separation, not row index.  A track
+    whose rows are all 3 frames apart has no pairs at the small integer lags MSS
+    needs, so it yields no slope; the gapless control (same positions) does."""
+    rng = np.random.default_rng(0)
+    nn = 20
+    xs = np.cumsum(rng.normal(0, 1.5, nn)); ys = np.cumsum(rng.normal(0, 1.5, nn))
+    gapless = pd.DataFrame({"particle": 0, "frame": np.arange(nn), "x": xs, "y": ys})
+    gappy   = pd.DataFrame({"particle": 0, "frame": np.arange(nn) * 3, "x": xs, "y": ys})
+    mss_ok  = s.compute_mss(gapless, 0.1, 0.05, max_lagtime=10)
+    mss_gap = s.compute_mss(gappy,   0.1, 0.05, max_lagtime=10)
+    assert mss_ok is not None and len(mss_ok) == 1
+    assert mss_gap is None or len(mss_gap) == 0
+
+
+def test_twoway_anova_handles_cross_group_cell_name_collision():
+    """Two cells sharing a base name in DIFFERENT groups must not crash / be
+    silently dropped by pingouin's 'subject IDs cannot overlap between groups'."""
+    pytest.importorskip("pingouin")
+    from firefly.analysis.fa_twoway import compute_twoway_anova
+    rng = np.random.default_rng(0)
+    rows = []
+    for grp, base in [("DMSO", 5.0), ("Drug", 7.0)]:
+        for cell in ("cell1", "cell2", "cell3", "cell4"):   # SAME names in both groups
+            for tp in ("Pre", "Post"):
+                rows.append({"group": grp, "timepoint": tp, "cell": cell,
+                             "median_D": base + (0.5 if tp == "Post" else 0.0)
+                                         + float(rng.normal(0, 0.1))})
+    df = pd.DataFrame(rows)
+    res, _msg = compute_twoway_anova(df, metrics=["median_D"])
+    assert res is not None
+    assert not (res["effect"] == "ERROR").any(), res.to_dict("records")
+    assert (res["effect"] == "Interaction").any()
+
+
+def test_prism_csv_respects_underpowered_and_alpha(tmp_path):
+    """The Prism CSV must use the engine's α-gated, underpowered-blanked stars,
+    not re-derive significance from the raw p (which printed '****'/'significant'
+    for n<3 comparisons the engine flagged uninterpretable)."""
+    from firefly.analysis.fa_compare import _write_prism_ttests
+    note = "n<3 replicates - underpowered, not interpretable"
+    stats_df = pd.DataFrame([{
+        "metric": "median_D", "comparison": "A vs B", "test": "Welch t",
+        "p_value": 1e-9, "stars": "", "p_value_corrected": 1e-9,
+        "stars_corrected": "", "p_value_across_metric": "",
+        "label_a": "A", "label_b": "B", "mean_a": 1.0, "mean_b": 2.0,
+        "sem_a": 0.1, "sem_b": 0.1, "cohens_d": 1.0, "hedges_g": 1.0,
+        "note": note, "correction_method": "Holm",
+    }])
+    out = tmp_path / "prism.csv"
+    _write_prism_ttests(str(out), stats_df)
+    txt = out.read_text()
+    assert "****" not in txt                 # raw p is 1e-9 but the comparison is underpowered
+    assert "underpowered" in txt
+    assert "Significantly different" in txt
+
+
+def test_preprocess_no_uint16_underflow():
+    """Background subtraction on a raw uint16 frame must not wrap around: the
+    brightest output pixel is the real spot, not a 65k phantom in background
+    (uint16 `frame - bg` would underflow before the clip)."""
+    from firefly.analysis.fa_preprocess import _preprocess_fast
+    H = W = 64
+    frame = np.full((H, W), 200, dtype=np.uint16)    # uniform background
+    frame[32, 32] = 4000                             # one real bright spot
+    pp = _preprocess_fast(frame, bg_radius=8)
+    assert np.isfinite(pp).all()
+    assert int(pp.argmax()) == 32 * W + 32, "brightest pixel is not the spot (uint16 wrap?)"
+
+
+def test_gap_close_large_S_bounded_and_correct():
+    """Above the dense-matrix threshold, _gap_close uses a KD-tree-gated active
+    subset to bound memory.  Verify it still closes a planted gap among
+    thousands of otherwise-isolated segments (identical to the dense solve)."""
+    from firefly.analysis.fa_linking_lap import _gap_close
+    rng = np.random.default_rng(0)
+    seg, frame, xs, ys = [], [], [], []
+    sid = 0
+    for _ in range(3200):                            # > _DENSE_S → active path
+        seg.append(sid); frame.append(int(rng.integers(0, 5)))
+        xs.append(float(rng.uniform(200, 5000)))     # far from the planted pair
+        ys.append(float(rng.uniform(200, 5000)))
+        sid += 1
+    A, B = sid, sid + 1                              # one closable gap (gap=2, d≈0.7)
+    for f, xx, yy in [(0, 10.0, 10.0), (1, 10.0, 10.0)]:
+        seg.append(A); frame.append(f); xs.append(xx); ys.append(yy)
+    for f, xx, yy in [(3, 10.5, 10.5), (4, 10.5, 10.5)]:
+        seg.append(B); frame.append(f); xs.append(xx); ys.append(yy)
+    out = _gap_close(np.array(seg), np.array(frame),
+                     np.array(xs), np.array(ys), search_range=5.0, max_gap=3)
+    assert set(out[np.array(seg) == A]) == set(out[np.array(seg) == B]), \
+        "planted gap not closed via the bounded active path"
+
+
+def test_jdd_localisation_error_offset_corrects_D():
+    """Passing the static localisation-error offset (4σ²) removes the σ²/Δt
+    inflation in the JDD D: the corrected D matches the true D, while the legacy
+    (offset = 0) fit is inflated.  σ is NOT fit (degenerate from single-lag
+    jumps) — it is supplied from the MSD offset."""
+    rng = np.random.default_rng(0)
+    px, dt = 0.1, 0.05
+    sig_px = 1.0                                  # Brownian step (px)
+    D_true = (sig_px * px) ** 2 / (2 * dt)        # 2DΔt = (sig·px)² → D = 0.1
+    sigma_um = 0.05                               # 1-D loc precision = 50 nm
+    loc_px = sigma_um / px
+    offset = 4.0 * sigma_um ** 2                  # 4σ² (µm²)
+    rows = []
+    for pid in range(400):
+        x = np.cumsum(rng.normal(0, sig_px, 40)) + rng.normal(0, loc_px, 40)
+        y = np.cumsum(rng.normal(0, sig_px, 40)) + rng.normal(0, loc_px, 40)
+        for f in range(40):
+            rows.append((pid, f, x[f], y[f]))
+    tracks = pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+    D_naive = s.compute_jdd(tracks, px, dt, n_components=1)["D_values"][0]
+    res_c   = s.compute_jdd(tracks, px, dt, n_components=1, loc_offset_um2=offset)
+    D_corr  = res_c["D_values"][0]
+    assert D_naive > 1.3 * D_true, (D_naive, D_true)          # legacy: inflated
+    assert 0.7 * D_true <= D_corr <= 1.3 * D_true, (D_corr, D_true)
+    assert abs(res_c["sigma_loc_um"] - sigma_um) < 1e-9       # reports σ it removed
+
+
+def test_dwell_time_censoring_recovers_tau():
+    """The right-censored exponential MLE recovers the true residence time even
+    when many tracks are still present at the movie end; the naive mean of the
+    (truncated) durations under-estimates it."""
+    rng = np.random.default_rng(0)
+    dt = 0.05
+    n_frames = 200
+    tau_true_s = 4.0                              # mean residence time (s)
+    tau_frames = tau_true_s / dt                  # 80 frames
+    rows, diff_rows = [], []
+    for pid in range(400):
+        start = int(rng.integers(0, n_frames))
+        dur = int(rng.exponential(tau_frames)) + 1
+        end = min(start + dur - 1, n_frames - 1)  # truncate at movie end → censoring
+        for f in range(start, end + 1):
+            rows.append((pid, f, 0.0, 0.0))       # immobile
+        diff_rows.append({"particle": pid, "motion": "Immobile"})
+    tracks = pd.DataFrame(rows, columns=["particle", "frame", "x", "y"])
+    diff_df = pd.DataFrame(diff_rows)
+    dw, tau_cens = s.compute_dwell_times(tracks, diff_df, dt, n_frames=n_frames)
+    naive = float(dw["dwell_time_total_s"].mean())            # ≈ old uncensored estimate
+    assert dw["censored"].any()                               # censoring really occurs
+    assert naive < 0.85 * tau_true_s                          # naive is biased low
+    assert 0.65 * tau_true_s <= tau_cens <= 1.5 * tau_true_s, tau_cens

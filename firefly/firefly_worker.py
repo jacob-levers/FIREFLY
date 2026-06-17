@@ -1930,8 +1930,18 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # ── Secondary analyses ────────────────────────────────────────────────
     _log(f"\n── Secondary analyses ────────────")
     _prog(80, "Secondary analyses…")
+    # Subtract the SAME static localisation-error offset (4σ² = median MSD0) the
+    # MSD fit removed, so the JDD D's are localisation-error-corrected and agree
+    # with the MSD D instead of being inflated by σ²/Δt.
+    _loc_offset = 0.0
+    if "MSD0" in diff_df.columns:
+        _m = diff_df["MSD0"]
+        _m = _m[_m.notna() & (_m > 0)]
+        if len(_m):
+            _loc_offset = float(_m.median())
     jdd = compute_jdd(tracks, px, fi,
-                      n_components=int(p.get("jdd_components", 2)))
+                      n_components=int(p.get("jdd_components", 2)),
+                      loc_offset_um2=_loc_offset)
     ta  = compute_turning_angles(tracks)
     try:
         van_hove = compute_van_hove(tracks, px, lag_frames=1)
@@ -1965,7 +1975,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
              f"{cluster_subsampled_n:,} of "
              f"{int(_cl_attrs.get('n_input_locs', 0)):,} localisations "
              f"(250k cap) — cluster counts/areas reflect the subsample.")
-    dwell_df, dwell_tau = compute_dwell_times(tracks, diff_df, fi)
+    # Pass n_frames so dwell τ uses the right-censored MLE (tracks still present
+    # at the final frame are right-censored, not completed events).
+    dwell_df, dwell_tau = compute_dwell_times(tracks, diff_df, fi,
+                                              n_frames=int(n_frames))
     # MSS slope per track — merged into diff_df so the figure's MSS
     # panel and downstream CSVs see it.  Skipped silently when there
     # are no tracks long enough (compute_mss returns an empty frame).

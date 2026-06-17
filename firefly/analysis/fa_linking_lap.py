@@ -184,13 +184,52 @@ def _gap_close(seg: np.ndarray, frame: np.ndarray, x: np.ndarray, y: np.ndarray,
      end_f, end_x, end_y, _end_i, end_feat) = _segment_ends(
         seg, frame, x, y, feats)
 
+    sr2 = float(search_range) ** 2
+
+    # ── Memory guard for large segment counts ─────────────────────────────────
+    # The dense cost matrix is S×S and `_solve_birth_death` augments it to
+    # (2S)×(2S); for tens of thousands of segments (e.g. dense over-detection)
+    # that is tens of GB and OOMs.  A segment with NO candidate end→start link
+    # inside the (search_range, max_gap) gate can only ever be a birth/death in
+    # the full solve, so restricting the assignment to the segments that DO have
+    # a candidate yields an IDENTICAL union-find while bounding the matrix to
+    # |active|².  Below `_DENSE_S` we keep the original full-S dense path
+    # verbatim (active = all segments), so the common case is byte-identical.
+    _DENSE_S, _ACTIVE_CAP = 3000, 5000
+    if S <= _DENSE_S:
+        active = np.arange(S)
+    else:
+        # cKDTree candidate ends→starts within the spatial gate (d ≤ sr); the
+        # temporal gate (gap ∈ [1, max_gap]) is applied per neighbour.
+        tree = cKDTree(np.column_stack([sta_x, sta_y]))
+        neigh = tree.query_ball_point(np.column_stack([end_x, end_y]),
+                                      r=float(search_range))
+        touched = np.zeros(S, dtype=bool)
+        for a, starts in enumerate(neigh):
+            for b in starts:
+                g = sta_f[b] - end_f[a]
+                if 1 <= g <= max_gap:
+                    touched[a] = True
+                    touched[b] = True
+        active = np.where(touched)[0]
+        if active.size == 0:
+            return seg                                # no closable gaps
+        if active.size > _ACTIVE_CAP:
+            print(f"  WARN: gap-closing limited — {active.size} of {S} segments "
+                  f"have candidate links, exceeding the dense-matrix safety cap "
+                  f"({_ACTIVE_CAP}); some gaps left unclosed to bound memory.")
+            return seg
+
     # cost(end a -> start b): gated by the gap window and a FIXED search radius
     # (TrackMate-style; intentionally does NOT grow with the gap — see below);
-    # cost = squared distance.
-    sr2 = float(search_range) ** 2
-    gap = sta_f[None, :] - end_f[:, None]            # (S_end a, S_start b)
-    d2 = ((end_x[:, None] - sta_x[None, :]) ** 2 +
-          (end_y[:, None] - sta_y[None, :]) ** 2)
+    # cost = squared distance.  Arrays are restricted to `active` segments.
+    ax, ay, af = end_x[active], end_y[active], end_f[active]
+    bx, by, bf = sta_x[active], sta_y[active], sta_f[active]
+    afeat = end_feat[active] if end_feat is not None else None
+    bfeat = sta_feat[active] if sta_feat is not None else None
+    gap = bf[None, :] - af[:, None]                  # (active end a, active start b)
+    d2 = ((ax[:, None] - bx[None, :]) ** 2 +
+          (ay[:, None] - by[None, :]) ** 2)
     # FIXED spatial gate, like trackpy's `memory`: the re-link radius must NOT
     # blow up with the gap.  The per-frame diffusion step is << search_range, so
     # a search_range disc already covers many-frame reconnections; a radius that
@@ -199,7 +238,7 @@ def _gap_close(seg: np.ndarray, frame: np.ndarray, x: np.ndarray, y: np.ndarray,
     gate2 = sr2
     ok = (gap >= 1) & (gap <= max_gap) & (d2 <= gate2)
     if feats is not None:
-        P = _feature_penalty(end_feat, sta_feat, penalty_weight)
+        P = _feature_penalty(afeat, bfeat, penalty_weight)
         cost = d2 * (P * P) if P is not None else d2
         link = np.where(ok, cost, _BIG)
         alt = _alt_cost(link, sr2)
@@ -208,15 +247,16 @@ def _gap_close(seg: np.ndarray, frame: np.ndarray, x: np.ndarray, y: np.ndarray,
         alt = sr2                                    # only close within search_range
     assign = _solve_birth_death(link, alt=alt)
 
-    # union-find over segment indices for the chosen end→start links
+    # union-find over segment indices for the chosen end→start links.  `assign`
+    # is indexed in `active`-local positions, so map back to segment indices.
     parent = list(range(S))
     def find(a):
         while parent[a] != a:
             parent[a] = parent[parent[a]]; a = parent[a]
         return a
-    for a, b in enumerate(assign):
-        if b >= 0:
-            parent[find(a)] = find(int(b))
+    for a_local, b_local in enumerate(assign):
+        if b_local >= 0:
+            parent[find(int(active[a_local]))] = find(int(active[b_local]))
 
     root_of_segidx = np.array([find(i) for i in range(S)])
     out = np.empty_like(seg)

@@ -386,8 +386,12 @@ def apply_roi_mask(locs, mask):
     -------
     Filtered DataFrame
     """
-    xi = np.clip(locs["x"].values.astype(int), 0, mask.shape[-1] - 1)
-    yi = np.clip(locs["y"].values.astype(int), 0, mask.shape[-2] - 1)
+    # Round to the NEAREST pixel (pixel-centre convention) rather than
+    # truncating toward zero: `astype(int)` mapped x=100.4 and x=100.6 both to
+    # column 100, a systematic half-pixel inclusion/exclusion bias at the ROI
+    # boundary.  np.floor(v + 0.5) matches how polygon2mask rasterises the mask.
+    xi = np.clip(np.floor(locs["x"].values + 0.5).astype(int), 0, mask.shape[-1] - 1)
+    yi = np.clip(np.floor(locs["y"].values + 0.5).astype(int), 0, mask.shape[-2] - 1)
 
     if mask.ndim == 2:
         # Static ROI — the same mask for every localisation (the mask's

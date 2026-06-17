@@ -136,10 +136,12 @@ class Backend(Enum):
 class Linker(Enum):
     """Trajectory-linking algorithm.
 
-    ``trackpy``    — Crocker–Grier recursive-subnet nearest-neighbour (default;
-                     best for pure Brownian diffusion).
+    ``trackpy``    — Crocker–Grier recursive-subnet nearest-neighbour (best for
+                     pure Brownian diffusion; also the parse / pre-linker-manifest
+                     REPLAY fallback — see `parse` and `DEFAULT_LINKER` below).
     ``kalman``     — constant-velocity Kalman LAP (TrackMate "Linear Motion";
-                     directed / crossing motion).
+                     directed / crossing motion).  **Forward default** for a
+                     fresh run (`DEFAULT_LINKER`).
     ``simple_lap`` — Jaqaman two-step LAP: frame-to-frame + gap-closing, no
                      merge/split (TrackMate "Simple LAP"; legacy token ``lap``).
     ``full_lap``   — Simple LAP + optional merge/split + feature penalties

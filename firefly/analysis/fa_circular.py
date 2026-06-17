@@ -806,13 +806,18 @@ def compute_per_track_mean_angle(tracks):
     srt = (tracks.reset_index(drop=True)
                  .sort_values(["particle", "frame"], kind="stable"))
     pid_arr = srt["particle"].to_numpy()
+    frame_arr = srt["frame"].to_numpy()
     xy_arr  = srt[["x", "y"]].to_numpy()
     steps = np.diff(xy_arr, axis=0)
-    same_step = (pid_arr[1:] == pid_arr[:-1])
+    # A step is real only when same-particle AND exactly one frame apart, so a
+    # memory-bridged gap never enters a turning angle — matches
+    # fa_diffusion.compute_turning_angles (this previously masked only on the
+    # particle boundary, letting gap-spanning steps bias the per-track mean).
+    unit_step = (pid_arr[1:] == pid_arr[:-1]) & (np.diff(frame_arr) == 1)
     if len(steps) < 2:
         return []
     v1 = steps[:-1]; v2 = steps[1:]
-    both_in_track = same_step[:-1] & same_step[1:]
+    both_in_track = unit_step[:-1] & unit_step[1:]
     cross = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
     dot   = np.sum(v1 * v2, axis=1)
     norm1 = np.linalg.norm(v1, axis=1)
@@ -823,17 +828,16 @@ def compute_per_track_mean_angle(tracks):
     angles = np.arctan2(cross[valid], dot[valid])    # radians
     # The middle row of each (i, i+1, i+2) triple is pid_arr[i+1].
     pid_at_turn = pid_arr[1:-1][valid]
-    # Bucket angles by particle and compute the circular mean.
-    out = []
-    for pid in np.unique(pid_at_turn):
-        sel = (pid_at_turn == pid)
-        rad = angles[sel]
-        if rad.size == 0:
-            continue
-        mu = np.degrees(np.arctan2(np.sin(rad).mean(),
-                                   np.cos(rad).mean()))
-        out.append((int(pid), float(mu)))
-    return out
+    # Vectorised per-particle circular mean: accumulate Σsin / Σcos per particle
+    # via np.add.at on a dense group index, then arctan2 of the grouped sums.
+    # arctan2 is scale-invariant, so Σ and mean give the identical angle — this
+    # replaces the per-particle Python loop (O(n_particles · n_angles)).
+    uniq, inv = np.unique(pid_at_turn, return_inverse=True)
+    sin_sum = np.zeros(uniq.size); cos_sum = np.zeros(uniq.size)
+    np.add.at(sin_sum, inv, np.sin(angles))
+    np.add.at(cos_sum, inv, np.cos(angles))
+    mu = np.degrees(np.arctan2(sin_sum, cos_sum))
+    return [(int(p), float(m)) for p, m in zip(uniq, mu)]
 
 
 def _watson_williams_mu_per_replicate(mu_lists_per_group):

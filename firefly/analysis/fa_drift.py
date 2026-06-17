@@ -10,7 +10,6 @@ from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from firefly.analysis.fa_constants import N_CPUS
 
 import numpy as np
-from scipy.signal import correlate as _correlate2d
 from scipy.interpolate import interp1d
 
 
@@ -149,8 +148,19 @@ def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5,
                    & (np.abs(_lag1) <= _R_x)[None, :])
 
     def _pair_shift(i, j):
-        # Cross-correlation r[τ] = Σ a[k+τ] b[k]  via  IFFT(F_a · conj(F_b))
-        cross = _irfft2(fft_maps[i] * np.conj(fft_maps[j]),
+        # Cross-correlation r[τ] = Σ map_j[k+τ]·map_i[k]  via  IFFT(F_j · conj(F_i)).
+        # The peak τ is the shift of the LATER segment j's density relative to the
+        # EARLIER segment i — i.e. (drift_j − drift_i).  Combined with the row
+        # encoding `drift[j] − drift[i] = τ` and the gauge `drift[0]=0`, the solved
+        # `drift_cum` is then the TRUE sample drift, so `locs_out = x − drift`
+        # REMOVES the motion.
+        #
+        # SIGN BUG (fixed): the previous `IFFT(F_i · conj(F_j))` peaks at
+        # (drift_i − drift_j) = −τ, so the solver returned −(true drift) and the
+        # subtraction DOUBLED the drift instead of removing it.  The old test only
+        # checked the recovered range (max−min), which a sign flip also satisfies,
+        # so it slipped through — now locked by test_correct_drift_recovers_sign.
+        cross = _irfft2(fft_maps[j] * np.conj(fft_maps[i]),
                         s=(pad_H, pad_W))
         # Search only the plausible-shift window; everything else is masked to
         # −∞ so it can never win the argmax.
@@ -210,6 +220,27 @@ def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5,
     if n_rejected:
         print(f"  Drift: rejected {n_rejected} inconsistent segment pair(s) "
               f"(robust RCC)")
+
+    # ── Unconstrained-segment guard ───────────────────────────────────────────
+    # A segment that appears in NO surviving pair (too sparse to enter
+    # pair_indices, or all its pairs were rejected above) has an all-zero column
+    # in the design matrix, so lstsq leaves its drift at the min-norm 0.  The
+    # smoothing + interpolation below would then spread that as a spurious
+    # "drift snaps back to zero" spike around that segment's time.  Interpolate
+    # such segments from their nearest constrained neighbours instead (segment 0
+    # is the fixed gauge anchor, so it counts as constrained at 0).
+    constrained = np.zeros(n_segments, dtype=bool)
+    for (i, j, _dx, _dy) in pairs:
+        constrained[i] = True
+        constrained[j] = True
+    constrained[0] = True
+    if constrained.any() and not constrained.all():
+        seg_idx = np.arange(n_segments)
+        ci = seg_idx[constrained]
+        dx_cum = np.interp(seg_idx, ci, dx_cum[constrained])
+        dy_cum = np.interp(seg_idx, ci, dy_cum[constrained])
+        print(f"  Drift: interpolated {int((~constrained).sum())} "
+              f"unconstrained segment(s) from neighbours")
 
     # Smooth then convert to localization pixels
     dx_sm = gaussian_filter1d(dx_cum, sigma=smooth_sigma) / upsampling

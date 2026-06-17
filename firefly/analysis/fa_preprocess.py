@@ -18,7 +18,20 @@ def _preprocess_fast(frame, bg_radius=50, sigma=1.0):
     """
     Fast background subtraction using uniform_filter.
     ~1700x faster than rolling_ball with comparable results for PALM data.
+
+    Note: the per-frame min–max normalisation below sets the intensity scale
+    from a single frame, so a hot/stuck pixel that survives background
+    subtraction becomes the frame max and compresses real spots — and 'mass' is
+    therefore file-relative.  Hot/defective-pixel correction is the caller's
+    responsibility; it is not done here.
     """
+    # Cast to float32 FIRST.  Integer detector frames (uint16) would compute
+    # `frame - bg` in unsigned arithmetic: wherever the local box-mean exceeds
+    # the pixel (i.e. background near any bright spot), the subtraction WRAPS to
+    # ~65535 and np.clip(...,0,None) can't undo an already-positive wrap → a
+    # bright phantom blob in pure background.  The loaders already pass float32,
+    # so this is a no-op on the hot path and a guard for any raw-dtype caller.
+    frame     = np.asarray(frame, dtype=np.float32)
     bg        = uniform_filter(frame, size=int(bg_radius * 2 + 1))
     corrected = np.clip(frame - bg, 0, None)
     smoothed  = filters.gaussian(corrected, sigma=sigma, preserve_range=True)
@@ -33,8 +46,14 @@ def _preprocess_fast(frame, bg_radius=50, sigma=1.0):
 
 
 def _preprocess_rolling(frame, bg_radius=50, sigma=1.0):
-    """Legacy rolling-ball background subtraction (slow but thorough)."""
+    """Legacy rolling-ball background subtraction (slow but thorough).
+
+    See `_preprocess_fast` re: the per-frame min–max normalisation hot-pixel
+    caveat.
+    """
     from skimage.restoration import rolling_ball
+    # float32 first — see _preprocess_fast: avoids uint16 subtraction wrap-around.
+    frame     = np.asarray(frame, dtype=np.float32)
     bg        = rolling_ball(frame, radius=bg_radius)
     corrected = np.clip(frame - bg, 0, None)
     smoothed  = filters.gaussian(corrected, sigma=sigma, preserve_range=True)
