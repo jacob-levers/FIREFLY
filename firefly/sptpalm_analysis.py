@@ -11,7 +11,12 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.69.1"
+__version__ = "2.69.2"
+# v2.69.2 — linker-dispatch audit fixes: SA linker no longer crashes from the GUI
+#   (merge/split kwargs leaked into link_trajectories_sa); nn is canonical
+#   frame-to-frame (max_gap=1); unified DEFAULT_LINKER="kalman" forward default;
+#   feature-penalty relabelled FIREFLY-specific; MPS bandpass phantom fix;
+#   doc-vs-code cleanups; tests/test_linker_dispatch.py.
 # v2.69.1 — disambiguate the Simple LAP linker label → "Jaqaman LAP — TrackMate
 #   (simple)" (vs "(merge/split)"); settings-migration keeps saved prefs.
 # v2.68.0 — TrackMate & palmTRACER linkers (NN, Simple/Full LAP, simulated

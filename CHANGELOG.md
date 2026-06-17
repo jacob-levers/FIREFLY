@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.69.2
+
+Linker-dispatch correctness fixes from a full audit of the six linkers and five
+detection engines, plus an MPS phantom-detection fix and doc-vs-code cleanups.
+
+### Fixed
+
+- **The Simulated-annealing linker crashed when selected from the GUI.** The SA
+  adapter forwarded the GUI's always-present `allow_merging` / `allow_splitting`
+  booleans into `link_trajectories_sa()`, which has no such parameters, raising
+  `TypeError: ... unexpected keyword argument 'allow_merging'` and aborting
+  linking for the whole file. The SA passthrough now only forwards the knobs the
+  SA tracker actually accepts.
+- MPS bandpass phantom detections — sub-noise-floor bandpass residuals on the
+  Apple-GPU path are snapped to zero so they no longer surface as spurious spots.
+
+### Changed
+
+- **Nearest-neighbour is now canonical TrackMate NN** — strictly frame-to-frame
+  (`max_gap=1`). It no longer inherits the pipeline-wide `memory` and silently
+  bridges 1–3 frame gaps; use the LAP / Kalman linkers for gap-closing.
+- **Unified the default linker.** A single `DEFAULT_LINKER = "kalman"` constant
+  (`firefly.analysis.fa_enums`) is the forward default for `link_trajectories()`,
+  matching the GUI's first-listed entry and the README. The re-ROI /
+  pre-linker-manifest replay path still falls back to `trackpy` for replay
+  fidelity.
+- Feature-penalty docstring corrected: `penalty_weight` is a FIREFLY-specific
+  knob (~3× weaker than TrackMate's same-named weight), not the canonical
+  TrackMate multiplier.
+- Documentation-accuracy pass: the Torch detector is described as *calibrated to
+  agree* with trackpy (not step-identical — the percentile population, disk-mask
+  radius and max-pool footprint differ slightly and are absorbed by the
+  calibration); the LAP gap-close gate is documented as fixed (not
+  "diffusion-scaled"); and the à trous / SA / MLE / registry docstrings were
+  corrected to match the code.
+
+### Added
+
+- `tests/test_linker_dispatch.py` — regression tests: every linker runs with the
+  GUI's default `link_params`; `nn` does not bridge a one-frame gap (while
+  `simple_lap` does); the forward default resolves to `kalman`; the
+  feature-penalty multiplier `P` is pinned.
+
 ## v2.69.1
 
 Disambiguated the two LAP linker names in the Linker dropdown.
