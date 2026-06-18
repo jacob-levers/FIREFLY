@@ -14,6 +14,12 @@ import sys
 from PySide6 import QtWidgets
 from PySide6.QtCore import QUrl
 from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtQuickControls2 import QQuickStyle
+
+# The Basic style is the customisable one — our components restyle Controls
+# (TextField/ComboBox/…) via the design tokens, which the native style forbids.
+# Must be set before any Quick item is created, so do it at import time.
+QQuickStyle.setStyle("Basic")
 
 from firefly.ui.controllers.theme_controller import ThemeController
 from firefly.ui.controllers.app_controller import AppController

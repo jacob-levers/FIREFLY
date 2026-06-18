@@ -165,14 +165,9 @@ Item {
                 }
                 Item { Layout.fillWidth: true }
             }
-            Rectangle {
-                Layout.fillWidth: true; Layout.fillHeight: true
-                color: pal.BG
-                Text {
-                    anchors.centerIn: parent
-                    text: App.tabs[App.currentTab] + " — coming soon"
-                    color: pal.TXT_MUTED; font.pixelSize: sc.textLg
-                }
+            StyleGuide {                 // Phase-1 preview; real tab content lands in Phase 2+
+                Layout.fillWidth: true
+                Layout.fillHeight: true
             }
         }
     }
