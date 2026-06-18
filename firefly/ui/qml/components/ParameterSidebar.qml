@@ -25,6 +25,24 @@ ColumnLayout {
         }
     }
 
+    // ── preset strip ──────────────────────────────────────────────────────
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: sc.sp2
+        Select {
+            Layout.fillWidth: true
+            Layout.preferredWidth: 0
+            model: Preset.names
+            currentIndex: Math.max(0, Preset.names.indexOf(Preset.active))
+            onPicked: (t) => Preset.load(t)
+        }
+        Badge { visible: Preset.modified; text: "• modified"; tone: pal.WARN
+                Layout.alignment: Qt.AlignVCenter }
+        IconButton { icon: "plus"; tip: "Save preset…"; onClicked: Preset.saveAs() }
+        IconButton { icon: "x"; tip: "Delete preset"; danger: true
+                     onClicked: Preset.confirmRemove(Preset.active) }
+    }
+
     Repeater {
         model: Sidebar.sections
         delegate: CollapsibleSection {

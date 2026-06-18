@@ -28,6 +28,15 @@ class SettingsController(QObject):
     def sync(self):
         self._s.sync()
 
+    # ── QML-callable typed accessors ─────────────────────────────────────
+    @Slot(str, bool, result=bool)
+    def getBool(self, key, default=False):
+        return self.get_bool(key, default)
+
+    @Slot(str, str, result=str)
+    def getStr(self, key, default=""):
+        return self.get_str(key, default)
+
     # ── typed helpers for Python callers ─────────────────────────────────
     def get_str(self, key, default=""):
         v = self._s.value(key, default)

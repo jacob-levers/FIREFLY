@@ -8,7 +8,7 @@ re-evaluates — the **live theme switching** the QSS app couldn't do.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
 
 from firefly.ui.ui_theme import _THEMES, _pick_startup_theme
 
@@ -42,7 +42,12 @@ class ThemeController(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._name = _pick_startup_theme()
-        self._reduced_motion = False
+        # reduce-motion lives in the primary store (jacoblevers/FIREFLY).
+        try:
+            self._reduced_motion = QSettings("jacoblevers", "FIREFLY").value(
+                "ui/reduce_motion", False, type=bool)
+        except Exception:
+            self._reduced_motion = False
 
     # ── active palette (the 14 semantic colour tokens) ───────────────────
     @Property("QVariantMap", notify=changed)
@@ -71,10 +76,20 @@ class ThemeController(QObject):
     def reducedMotion(self, v: bool):
         if bool(v) != self._reduced_motion:
             self._reduced_motion = bool(v)
+            try:
+                QSettings("jacoblevers", "FIREFLY").setValue(
+                    "ui/reduce_motion", self._reduced_motion)
+            except Exception:
+                pass
             self.reducedMotionChanged.emit()
 
     @Slot(str)
     def setTheme(self, name: str):
         if name in _THEMES and name != self._name:
             self._name = name
+            # persist to the SAME key the Widgets Figures-tab dropdown writes.
+            try:
+                QSettings("FIREFLY", "sptPALM").setValue("ui/app_theme", name)
+            except Exception:
+                pass
             self.changed.emit()

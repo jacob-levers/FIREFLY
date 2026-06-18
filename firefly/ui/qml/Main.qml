@@ -52,11 +52,14 @@ Item {
                         Layout.leftMargin: sc.sp2
                     }
                     Item { Layout.fillWidth: true }
+                    IconButton { icon: "settings"; tip: "Preferences (⌘,)"; size: 28
+                                 onClicked: prefs.open() }
                     // Home affordance (only in the main UI)
                     Text {
                         visible: App.page === "main"
                         text: "‹ Home"; color: pal.TXT_MUTED
                         font.pixelSize: sc.textSm
+                        Layout.leftMargin: sc.sp2
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: App.goLanding()
@@ -80,6 +83,10 @@ Item {
         active: Roi.editing
         sourceComponent: Component { RoiOverlay {} }
     }
+
+    // Preferences modal + ⌘, shortcut.
+    PreferencesDialog { id: prefs }
+    Shortcut { sequence: StandardKey.Preferences; onActivated: prefs.open() }
 
     // ── landing page ─────────────────────────────────────────────────
     Component {

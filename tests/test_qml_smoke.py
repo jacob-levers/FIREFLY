@@ -127,7 +127,8 @@ def test_visualise_tab_qml_loads_without_errors():
     win, qw = build_main_window(_app)
     for rel in (("tabs", "VisualiseTab.qml"), ("tabs", "ResultsTab.qml"),
                 ("tabs", "CompareTab.qml"), ("HudOverlay.qml",),
-                ("RoiOverlay.qml",), ("components", "ParameterSidebar.qml")):
+                ("RoiOverlay.qml",), ("components", "ParameterSidebar.qml"),
+                ("PreferencesDialog.qml",)):
         comp = QQmlComponent(qw.engine(),
                              QUrl.fromLocalFile(_os.path.join(_QML_DIR, *rel)))
         obj = comp.create(qw.rootContext())

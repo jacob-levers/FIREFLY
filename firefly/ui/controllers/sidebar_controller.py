@@ -69,30 +69,46 @@ class SidebarController(QObject):
             return self._s.get_float(key, default)
         return self._s.get_str(key, default)        # combo
 
-    @Slot(str, "QVariant")
-    def setValue(self, key, v):
+    def _write(self, key, v) -> bool:
+        """Coerce + clamp + persist one key; no signal. Returns True on write."""
         f = S.BY_KEY.get(key)
         if f is None:
-            return
+            return False
         kind = f["kind"]
         if kind == "bool":
             cv = bool(v)
         elif kind == "int":
             try:    cv = int(round(float(v)))
-            except (TypeError, ValueError): return
+            except (TypeError, ValueError): return False
         elif kind == "double":
             try:    cv = float(v)
-            except (TypeError, ValueError): return
+            except (TypeError, ValueError): return False
         else:
             cv = str(v)
-        # clamp numerics to the field range
         if kind in ("int", "double"):
             if f["min"] is not None:
                 cv = max(f["min"], cv)
             if f["max"] is not None:
                 cv = min(f["max"], cv)
         self._s.set(key, cv)
-        self._bump(key)
+        return True
+
+    @Slot(str, "QVariant")
+    def setValue(self, key, v):
+        if self._write(key, v):
+            self._bump(key)
+
+    @Slot(result="QVariantMap")
+    def snapshot(self):
+        """All schema keys → current values (the preset/widget-state dict)."""
+        return {f["key"]: self.get(f["key"]) for f in S.FIELDS}
+
+    @Slot("QVariantMap")
+    def applyState(self, state):
+        """Write a whole preset/state dict (known keys only) + one refresh."""
+        for k, v in dict(state or {}).items():
+            self._write(k, v)
+        self._bump("")
 
     @Slot(str, result=bool)
     def isEnabled(self, key):
