@@ -141,13 +141,18 @@ Flickable {
             }
         }
 
-        // ── start (wired in Phase 3) ─────────────────────────────────
+        // ── start ────────────────────────────────────────────────────
         RowLayout {
             Layout.topMargin: sc.sp4
             spacing: sc.sp4
-            Button { variant: "primary"; text: "Start analysis"; icon: "play"; enabled: Import.hasFile }
+            Button {
+                variant: "primary"; text: "Start analysis"; icon: "play"
+                enabled: Import.hasFile && !Analysis.running
+                onClicked: { App.setTab(1); Analysis.start(); }
+            }
             Text {
-                text: "Running is wired in Phase 3."
+                text: Import.hasFile ? "Runs on the Analysis tab."
+                                     : "Pick an input file to begin."
                 color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                 Layout.alignment: Qt.AlignVCenter
             }

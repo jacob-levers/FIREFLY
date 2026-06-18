@@ -169,13 +169,16 @@ Item {
             Loader {                     // per-tab content
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                sourceComponent: App.currentTab === 0 ? importTab : comingSoon
+                sourceComponent: App.currentTab === 0 ? importTab
+                               : App.currentTab === 1 ? analysisTab
+                               : comingSoon
             }
         }
     }
 
     // ── tab content components ───────────────────────────────────────
     Component { id: importTab; ImportTab {} }
+    Component { id: analysisTab; AnalysisTab {} }
     Component {
         id: comingSoon
         Item {

@@ -8,8 +8,18 @@ the UI itself is authored in QML and surfaced via `QQuickWidget`.
 """
 from __future__ import annotations
 
+import multiprocessing
 import os
 import sys
+
+# macOS + multiprocessing: spawn is the only safe context for the analysis
+# worker (clean interpreter for MPS/CUDA, no Qt/Metal claim) — same rationale as
+# the Widgets app.  The Widgets entry sets this when `app_qt` is imported; the
+# QML path doesn't import `app_qt`, so set it here before any run is spawned.
+try:
+    multiprocessing.set_start_method("spawn", force=True)
+except RuntimeError:
+    pass  # already set
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import QUrl
@@ -25,7 +35,9 @@ from firefly.ui.controllers.theme_controller import ThemeController
 from firefly.ui.controllers.app_controller import AppController
 from firefly.ui.controllers.settings_controller import SettingsController
 from firefly.ui.controllers.import_controller import ImportController
+from firefly.ui.controllers.analysis_controller import AnalysisController
 from firefly.ui.controllers.icon_provider import IconImageProvider
+from firefly.ui.controllers.live_frame_provider import LiveFrameProvider
 from firefly.sptpalm_analysis import __version__
 
 _QML_DIR = os.path.join(os.path.dirname(__file__), "qml")
@@ -39,17 +51,20 @@ def build_main_window(app: QtWidgets.QApplication):
     appc = AppController()
     settings = SettingsController()
     importc = ImportController(settings)
+    analysis = AnalysisController(settings, importc)
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle("FIREFLY")
 
     qw = QQuickWidget()
     qw.engine().addImageProvider("icon", IconImageProvider(_ICONS_DIR))
+    qw.engine().addImageProvider("liveframe", LiveFrameProvider(analysis))
     ctx = qw.rootContext()
     ctx.setContextProperty("Theme", theme)
     ctx.setContextProperty("App", appc)
     ctx.setContextProperty("Settings", settings)
     ctx.setContextProperty("Import", importc)
+    ctx.setContextProperty("Analysis", analysis)
     ctx.setContextProperty("appVersion", __version__)
     qw.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     qw.setSource(QUrl.fromLocalFile(os.path.join(_QML_DIR, "Main.qml")))
@@ -62,7 +77,7 @@ def build_main_window(app: QtWidgets.QApplication):
     win.resize(1100, 760)
     # Keep controllers + the quick widget referenced on the window so Python
     # doesn't GC them while QML still binds to them.
-    win._firefly_ctx = (theme, appc, settings, importc, qw)
+    win._firefly_ctx = (theme, appc, settings, importc, analysis, qw)
     return win, qw
 
 

@@ -103,6 +103,22 @@ def test_import_controller_probe_and_calibration(tmp_path):
     assert ic.isCsv and ic.fileFormat == "localisations"
 
 
+def test_analysis_tab_qml_loads_without_errors():
+    # The Analysis cockpit only instantiates when routed to tab 1, so load it
+    # directly through the configured engine to surface any QML binding errors.
+    import os as _os
+    from PySide6.QtCore import QUrl
+    from PySide6.QtQml import QQmlComponent
+    from firefly.ui.app_qml import build_main_window, _QML_DIR
+    win, qw = build_main_window(_app)
+    comp = QQmlComponent(
+        qw.engine(),
+        QUrl.fromLocalFile(_os.path.join(_QML_DIR, "tabs", "AnalysisTab.qml")))
+    obj = comp.create(qw.rootContext())
+    assert comp.errors() == [], comp.errorString()
+    assert obj is not None
+
+
 def test_app_controller_navigation():
     from firefly.ui.controllers.app_controller import AppController
     a = AppController()
