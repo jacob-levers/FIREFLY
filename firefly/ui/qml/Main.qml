@@ -142,46 +142,83 @@ Item {
         }
     }
 
-    // ── main page (tab bar + placeholder content) ────────────────────
+    // ── main page (left parameter dock + tab bar + content) ──────────
     Component {
         id: mainPage
-        ColumnLayout {
+        RowLayout {
             spacing: 0
-            RowLayout {                 // tab pills
-                Layout.fillWidth: true
-                Layout.margins: sc.sp4
-                spacing: sc.sp2
-                Repeater {
-                    model: App.tabs
-                    delegate: Rectangle {
-                        required property int index
-                        required property string modelData
-                        readonly property bool active: App.currentTab === index
-                        implicitWidth: lbl.implicitWidth + sc.sp8 * 2
-                        implicitHeight: 30
-                        radius: sc.radiusLg
-                        color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : "transparent"
-                        border.width: 1
-                        border.color: active ? pal.ACC : pal.BORDER
-                        Text {
-                            id: lbl; anchors.centerIn: parent; text: modelData
-                            color: active ? pal.ACC : pal.TXT_MUTED
-                            font.pixelSize: sc.textSm
-                        }
-                        TapHandler { onTapped: App.setTab(index) }
+
+            // ── persistent analysis-parameter dock (Import + Analysis) ───
+            Rectangle {
+                id: dock
+                readonly property bool shown: App.currentTab === 0 || App.currentTab === 1
+                Layout.preferredWidth: shown ? 312 : 0
+                Layout.fillHeight: true
+                visible: Layout.preferredWidth > 0
+                clip: true
+                color: pal.PANEL
+                Behavior on Layout.preferredWidth {
+                    NumberAnimation { duration: Theme.reducedMotion ? 0 : 160; easing.type: Easing.OutCubic }
+                }
+                Rectangle {     // right hairline
+                    anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+                    width: 1; color: pal.BORDER
+                }
+                Flickable {
+                    anchors.fill: parent
+                    anchors.rightMargin: 1
+                    contentWidth: width
+                    contentHeight: paramCol.implicitHeight + sc.sp8
+                    clip: true
+                    ParameterSidebar {
+                        id: paramCol
+                        x: sc.sp4; y: sc.sp5
+                        width: parent.width - sc.sp4 * 2
                     }
                 }
-                Item { Layout.fillWidth: true }
             }
-            Loader {                     // per-tab content
+
+            // ── tab bar + per-tab content ────────────────────────────────
+            ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                sourceComponent: App.currentTab === 0 ? importTab
-                               : App.currentTab === 1 ? analysisTab
-                               : App.currentTab === 2 ? compareTab
-                               : App.currentTab === 3 ? resultsTab
-                               : App.currentTab === 4 ? visualiseTab
-                               : comingSoon
+                spacing: 0
+                RowLayout {                 // tab pills
+                    Layout.fillWidth: true
+                    Layout.margins: sc.sp4
+                    spacing: sc.sp2
+                    Repeater {
+                        model: App.tabs
+                        delegate: Rectangle {
+                            required property int index
+                            required property string modelData
+                            readonly property bool active: App.currentTab === index
+                            implicitWidth: lbl.implicitWidth + sc.sp8 * 2
+                            implicitHeight: 30
+                            radius: sc.radiusLg
+                            color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : "transparent"
+                            border.width: 1
+                            border.color: active ? pal.ACC : pal.BORDER
+                            Text {
+                                id: lbl; anchors.centerIn: parent; text: modelData
+                                color: active ? pal.ACC : pal.TXT_MUTED
+                                font.pixelSize: sc.textSm
+                            }
+                            TapHandler { onTapped: App.setTab(index) }
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                Loader {                     // per-tab content
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    sourceComponent: App.currentTab === 0 ? importTab
+                                   : App.currentTab === 1 ? analysisTab
+                                   : App.currentTab === 2 ? compareTab
+                                   : App.currentTab === 3 ? resultsTab
+                                   : App.currentTab === 4 ? visualiseTab
+                                   : comingSoon
+                }
             }
         }
     }

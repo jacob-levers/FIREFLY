@@ -141,12 +141,6 @@ Flickable {
             }
         }
 
-        // ── analysis parameters (Phase 6 sidebar) ────────────────────
-        ParameterSidebar {
-            Layout.fillWidth: true
-            Layout.topMargin: sc.sp4
-        }
-
         // ── start ────────────────────────────────────────────────────
         RowLayout {
             Layout.topMargin: sc.sp4
