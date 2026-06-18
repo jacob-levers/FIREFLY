@@ -19,7 +19,13 @@ No Qt imports — pure data, unit-testable with a fake settings object.
 """
 from __future__ import annotations
 
+import multiprocessing
 import os
+
+try:
+    _N_CPUS = multiprocessing.cpu_count()
+except Exception:
+    _N_CPUS = 10
 
 # ── combo label → worker-value maps (mirror _build_params_for_file) ──────────
 BG_METHOD_MAP = {
@@ -94,7 +100,7 @@ _DEFAULTS = {
     "cluster_eps_nm":        50.0,
     "cluster_min_samples":   10,
     "backend":               "Auto",
-    "workers":               10,
+    "workers":               _N_CPUS,
     "chunk_size":            500,
     "linker":                "Kalman filter — TrackMate (Linear Motion)",
     "allow_merging":         False,

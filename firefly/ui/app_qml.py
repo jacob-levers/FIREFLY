@@ -41,6 +41,7 @@ from firefly.ui.controllers.roi_controller import RoiController
 from firefly.ui.controllers.embed_controller import EmbedController
 from firefly.ui.controllers.results_controller import ResultsController
 from firefly.ui.controllers.compare_controller import CompareController
+from firefly.ui.controllers.sidebar_controller import SidebarController
 from firefly.ui.controllers.icon_provider import IconImageProvider
 from firefly.ui.controllers.live_frame_provider import LiveFrameProvider
 from firefly.ui.controllers.figure_image_provider import FigureImageProvider
@@ -78,6 +79,7 @@ def build_main_window(app: QtWidgets.QApplication):
     embed = EmbedController()
     results = ResultsController()
     comparec = CompareController(settings, results=results)
+    sidebar = SidebarController(settings, importc)
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle("FIREFLY")
@@ -106,6 +108,7 @@ def build_main_window(app: QtWidgets.QApplication):
     ctx.setContextProperty("Embed", embed)
     ctx.setContextProperty("Results", results)
     ctx.setContextProperty("Compare", comparec)
+    ctx.setContextProperty("Sidebar", sidebar)
     ctx.setContextProperty("appVersion", __version__)
     qw.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     qw.setSource(QUrl.fromLocalFile(os.path.join(_QML_DIR, "Main.qml")))
@@ -155,7 +158,8 @@ def build_main_window(app: QtWidgets.QApplication):
     # Keep controllers + widgets referenced on the window so Python doesn't GC
     # them while QML still binds to them (and the islands while they're hidden).
     win._firefly_ctx = (theme, appc, settings, importc, analysis, visualise,
-                        roi, embed, results, comparec, qw, hud, viewer_w, resizer)
+                        roi, embed, results, comparec, sidebar, qw, hud,
+                        viewer_w, resizer)
     return win, qw
 
 
