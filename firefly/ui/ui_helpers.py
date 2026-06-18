@@ -37,31 +37,15 @@ _MOTION_CMAP_NAME = "firefly_motion"
 
 
 def _register_motion_colormap() -> str:
-    """Register a discrete 5-stop step colormap matching `_MOTION_PALETTE`
-    in napari's global colormap registry and return its name.
+    """Deprecated no-op kept only for import compatibility.
 
-    Idempotent — re-calling is cheap (dict overwrite).  We return the
-    NAME (not the Colormap instance) because napari's Tracks layer
-    internally hashes its `colormap` argument; passing a Colormap
-    instance raises `TypeError: unhashable type: 'Colormap'` and
-    aborts the layer build (the "filter error: unhashable type:
-    'Colormap'" the user hit).  Passing a registered name dodges
-    that code path entirely.
+    This used to register a discrete motion-class colormap in napari's global
+    registry.  The bespoke Qt viewers colour motion classes directly (per-class
+    pens / RGBA brushes — see firefly.ui.viewer), so there is no napari colormap
+    registry to populate any more.  Retained as a stub so the handful of modules
+    that still import the name don't break; safe to delete once those imports
+    are removed.
     """
-    try:
-        from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
-    except Exception:
-        return "turbo"   # graceful fallback for very old napari
-    rgba = [QtGui.QColor(_MOTION_PALETTE[k]).getRgbF() for k in _MOTION_ORDER]
-    # napari step colormaps need N+1 control points for N colours
-    # (each pair defines a half-open interval).  Five 0.2-wide cells
-    # over [0, 1] ensure motion_int values 0..4 (normalised to
-    # 0.0, 0.25, 0.5, 0.75, 1.0) each land in their own bin.
-    cmap = Colormap(colors=rgba,
-                    controls=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-                    interpolation="zero",
-                    name=_MOTION_CMAP_NAME)
-    AVAILABLE_COLORMAPS[_MOTION_CMAP_NAME] = cmap
     return _MOTION_CMAP_NAME
 
 
