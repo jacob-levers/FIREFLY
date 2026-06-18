@@ -39,8 +39,10 @@ from firefly.ui.controllers.analysis_controller import AnalysisController
 from firefly.ui.controllers.visualise_controller import VisualiseController
 from firefly.ui.controllers.roi_controller import RoiController
 from firefly.ui.controllers.embed_controller import EmbedController
+from firefly.ui.controllers.results_controller import ResultsController
 from firefly.ui.controllers.icon_provider import IconImageProvider
 from firefly.ui.controllers.live_frame_provider import LiveFrameProvider
+from firefly.ui.controllers.figure_image_provider import FigureImageProvider
 from firefly.sptpalm_analysis import __version__
 
 
@@ -73,6 +75,7 @@ def build_main_window(app: QtWidgets.QApplication):
     visualise = VisualiseController(settings, importc)
     roi = RoiController()
     embed = EmbedController()
+    results = ResultsController()
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle("FIREFLY")
@@ -88,6 +91,7 @@ def build_main_window(app: QtWidgets.QApplication):
     qw = QQuickWidget(stage)
     qw.engine().addImageProvider("icon", IconImageProvider(_ICONS_DIR))
     qw.engine().addImageProvider("liveframe", LiveFrameProvider(analysis))
+    qw.engine().addImageProvider("resultfig", FigureImageProvider(results))
     ctx = qw.rootContext()
     ctx.setContextProperty("Theme", theme)
     ctx.setContextProperty("App", appc)
@@ -97,6 +101,7 @@ def build_main_window(app: QtWidgets.QApplication):
     ctx.setContextProperty("Vis", visualise)
     ctx.setContextProperty("Roi", roi)
     ctx.setContextProperty("Embed", embed)
+    ctx.setContextProperty("Results", results)
     ctx.setContextProperty("appVersion", __version__)
     qw.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     qw.setSource(QUrl.fromLocalFile(os.path.join(_QML_DIR, "Main.qml")))
@@ -140,7 +145,7 @@ def build_main_window(app: QtWidgets.QApplication):
     # Keep controllers + widgets referenced on the window so Python doesn't GC
     # them while QML still binds to them (and the islands while they're hidden).
     win._firefly_ctx = (theme, appc, settings, importc, analysis, visualise,
-                        roi, embed, qw, hud, viewer_w, resizer)
+                        roi, embed, results, qw, hud, viewer_w, resizer)
     return win, qw
 
 
