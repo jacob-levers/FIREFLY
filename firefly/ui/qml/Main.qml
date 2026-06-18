@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import "components"
 
 // FIREFLY QML shell (Phase 1 foundation): themed header + landing/main pages.
 // Hosted by a QQuickWidget (root is an Item, the QMainWindow owns the window).
@@ -76,6 +77,8 @@ Item {
     Component {
         id: landingPage
         Item {
+            LandingBackdrop { anchors.fill: parent }      // glow + drifting dots
+
             ColumnLayout {
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -83,11 +86,16 @@ Item {
                 anchors.margins: 40
                 anchors.rightMargin: Math.max(40, parent.width * 0.28)
                 spacing: sc.sp3
-                Text {
-                    text: "FLUORESCENCE INFERENCE & RECONSTRUCTION ENGINE"
-                    color: pal.WARN
-                    font.pixelSize: sc.textXs; font.bold: true
-                    font.letterSpacing: 2.0
+
+                RowLayout {                                // eyebrow + microscope
+                    spacing: sc.sp2
+                    Icon { name: "microscope"; color: pal.WARN; size: 13 }
+                    Text {
+                        text: "FLUORESCENCE INFERENCE & RECONSTRUCTION ENGINE"
+                        color: pal.WARN
+                        font.pixelSize: sc.textXs; font.bold: true
+                        font.letterSpacing: 2.0
+                    }
                 }
                 Text {
                     text: "What would you like to do?"
@@ -107,48 +115,18 @@ Item {
                     rowSpacing: sc.sp6
                     Repeater {
                         model: [
-                            { t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0 },
-                            { t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0 },
-                            { t: "Compare groups",   d: "Overlay 2–6 analysis-output folders into one figure.", tab: 2 },
-                            { t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 4 }
+                            { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0 },
+                            { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0 },
+                            { icon: "git-compare", t: "Compare groups",   d: "Overlay 2–6 analysis-output folders into one figure.", tab: 2 },
+                            { icon: "waypoints",   t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 4 }
                         ]
-                        delegate: Rectangle {
+                        delegate: Tile {
                             required property var modelData
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 96
-                            radius: sc.radius2xl
-                            color: hov.hovered ? pal.PANEL_ALT : pal.PANEL
-                            border.width: 1
-                            border.color: hov.hovered ? pal.ACC : pal.BORDER
-                            Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 140 } }
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: sc.sp6
-                                spacing: sc.sp2
-                                Rectangle {            // icon chip placeholder
-                                    width: 34; height: 34; radius: sc.radius2xl
-                                    color: Qt.rgba(0.345, 0.651, 1.0, 0.10)
-                                    border.color: Qt.rgba(0.345, 0.651, 1.0, 0.22)
-                                    border.width: 1
-                                    Rectangle {
-                                        anchors.centerIn: parent
-                                        width: 12; height: 12; radius: 3
-                                        color: pal.ACC
-                                    }
-                                }
-                                Item { Layout.fillHeight: true }
-                                Text {
-                                    text: modelData.t; color: pal.TXT
-                                    font.pixelSize: sc.textLg; font.bold: true
-                                }
-                                Text {
-                                    text: modelData.d; color: pal.TXT_MUTED
-                                    font.pixelSize: sc.textSm
-                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                }
-                            }
-                            HoverHandler { id: hov }
-                            TapHandler { onTapped: App.enterMain(modelData.tab) }
+                            icon: modelData.icon
+                            title: modelData.t
+                            desc: modelData.d
+                            onClicked: App.enterMain(modelData.tab)
                         }
                     }
                 }

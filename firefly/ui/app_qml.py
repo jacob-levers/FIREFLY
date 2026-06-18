@@ -17,9 +17,11 @@ from PySide6.QtQuickWidgets import QQuickWidget
 
 from firefly.ui.controllers.theme_controller import ThemeController
 from firefly.ui.controllers.app_controller import AppController
+from firefly.ui.controllers.icon_provider import IconImageProvider
 from firefly.sptpalm_analysis import __version__
 
 _QML_DIR = os.path.join(os.path.dirname(__file__), "qml")
+_ICONS_DIR = os.path.join(_QML_DIR, "assets", "icons")
 
 
 def build_main_window(app: QtWidgets.QApplication):
@@ -32,6 +34,7 @@ def build_main_window(app: QtWidgets.QApplication):
     win.setWindowTitle("FIREFLY")
 
     qw = QQuickWidget()
+    qw.engine().addImageProvider("icon", IconImageProvider(_ICONS_DIR))
     ctx = qw.rootContext()
     ctx.setContextProperty("Theme", theme)
     ctx.setContextProperty("App", appc)

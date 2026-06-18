@@ -53,6 +53,20 @@ def _theme_bg(name):
     return _THEMES[name]["BG"]
 
 
+def test_icon_provider_renders_tinted():
+    from PySide6.QtCore import QSize
+    from firefly.ui import app_qml
+    from firefly.ui.controllers.icon_provider import IconImageProvider
+    p = IconImageProvider(app_qml._ICONS_DIR)
+    img = p.requestImage("scan-search/58a6ff", QSize(), QSize(48, 48))
+    assert not img.isNull() and img.width() == 48
+    # the stroke renders (some opaque pixels) and isn't pure black (it's tinted)
+    opaque = [img.pixelColor(x, y) for x in range(0, 48, 3)
+              for y in range(0, 48, 3) if img.pixelColor(x, y).alpha() > 40]
+    assert opaque, "icon rendered empty"
+    assert any(c.blue() > c.red() for c in opaque), "icon not tinted to accent"
+
+
 def test_app_controller_navigation():
     from firefly.ui.controllers.app_controller import AppController
     a = AppController()
