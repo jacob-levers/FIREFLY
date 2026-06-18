@@ -172,8 +172,10 @@ class _SceneView(QtWidgets.QGraphicsView):
 
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
-        self.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing
-                            | QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+        # Antialiasing for the vector overlays, but NO SmoothPixmapTransform so
+        # the image (and any cached pixmaps) blit fast during playback —
+        # nearest-neighbour is also the more honest scaling for raw pixels.
+        self.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing)
         self.setTransformationAnchor(
             QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(
@@ -236,6 +238,7 @@ class FireflyViewer(QtWidgets.QWidget):
 
         self._stack = None
         self._levels = (0.0, 1.0)
+        self._frame_pix_cache: dict[int, QtGui.QPixmap] = {}
         self._track_items: dict[str, QtWidgets.QGraphicsPathItem] = {}
         self._track_pick: dict[str, tuple] = {}
         self._class_visible: dict[str, bool] = {}
@@ -316,6 +319,7 @@ class FireflyViewer(QtWidgets.QWidget):
             raise ValueError(f"stack must be 2-D or 3-D, got {arr.ndim}-D")
         self._stack = arr
         self._levels = _robust_levels(arr[arr.shape[0] // 2])
+        self._frame_pix_cache.clear()
         h, w = arr.shape[1], arr.shape[2]
         self._scene.setSceneRect(0, 0, w, h)
         self._update_time_axis(reset=True)
@@ -375,8 +379,13 @@ class FireflyViewer(QtWidgets.QWidget):
         t = int(max(0, min(max(0, self._n_time - 1), t)))
         if self._stack is not None:
             j = min(t, self._stack_len() - 1)
-            pix = QtGui.QPixmap.fromImage(
-                _gray_qimage(self._stack[j], self._levels))
+            pix = self._frame_pix_cache.get(j)
+            if pix is None:
+                pix = QtGui.QPixmap.fromImage(
+                    _gray_qimage(self._stack[j], self._levels))
+                if len(self._frame_pix_cache) >= 1024:   # bound memory
+                    self._frame_pix_cache.clear()
+                self._frame_pix_cache[j] = pix
             if self._img_item is None:
                 self._img_item = self._scene.addPixmap(pix)
                 self._img_item.setZValue(0)
@@ -570,6 +579,11 @@ class FireflyViewer(QtWidgets.QWidget):
             brushes = [QtGui.QColor(120, 180, 255, 200)] * x.size
         item = _PointsItem(x, y, brushes, size)
         item.setZValue(20)
+        # Cache the (static) cluster scatter so it isn't re-drawn point-by-point
+        # on every playback frame — up to ~200k points otherwise re-paint each
+        # tick when the markers above force a full-field redraw.
+        item.setCacheMode(
+            QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self._scene.addItem(item)
         self._point_item = item
         self._point_xy = np.column_stack([x, y])
