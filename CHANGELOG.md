@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.72.1
+
+- **New FIREFLY app icon** — refreshed glossy firefly mark, regenerated for every
+  platform: the Windows `.exe` icon (`assets/icon.ico`, 16–256 px), the macOS
+  `.app` icon (`assets/icon.icns`), and the runtime window / dock icon
+  (`assets/icon.png`).
+
 ## v2.72.0
 
 Figure-defaults overhaul and per-figure panel selection.
