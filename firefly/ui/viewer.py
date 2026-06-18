@@ -191,12 +191,19 @@ class _TailItem(QtWidgets.QGraphicsItem):
         self._pen.setCosmetic(True)
         self.update()
 
-    def set_window(self, t, tail):
+    def set_width(self, width):
+        self._pen.setWidthF(float(width))
+        self.update()
+
+    def set_window(self, t, tail, head=0):
+        """Show segments with frame in ``(t - tail, t + head]`` — ``tail``
+        frames of history behind the playhead and ``head`` frames ahead."""
+        f = self._frames
         if tail is None or tail <= 0:
-            lo, hi = 0, len(self._lines)
+            lo = 0
         else:
-            lo = int(np.searchsorted(self._frames, t - tail + 1, side="left"))
-            hi = int(np.searchsorted(self._frames, t + 1, side="left"))
+            lo = int(np.searchsorted(f, t - tail + 1, side="left"))
+        hi = int(np.searchsorted(f, t + int(head) + 1, side="left"))
         if (lo, hi) != (self._lo, self._hi):
             self._lo, self._hi = lo, hi
             self.update()
@@ -342,28 +349,62 @@ class FireflyViewer(QtWidgets.QWidget):
         self._fps_spin.setToolTip("Playback frame rate")
         self._fps_spin.valueChanged.connect(self._on_fps_changed)
 
+        # ── track-display controls (width / tail / head) ─────────────────
+        self._width_spin = QtWidgets.QDoubleSpinBox()
+        self._width_spin.setRange(0.5, 12.0)
+        self._width_spin.setSingleStep(0.5)
+        self._width_spin.setValue(1.5)
+        self._width_spin.setPrefix("w ")
+        self._width_spin.setMaximumWidth(80)
+        self._width_spin.setToolTip("Track line width (px).")
+        self._width_spin.valueChanged.connect(self._on_width_changed)
+
         self._tail_spin = QtWidgets.QSpinBox()
         self._tail_spin.setRange(1, 100000)
         self._tail_spin.setValue(30)
         self._tail_spin.setPrefix("tail ")
+        self._tail_spin.setMaximumWidth(96)
         self._tail_spin.setToolTip(
-            "Track tail length: how many frames of trajectory history to show\n"
-            "behind the current frame.  Small = clean, fast playback that follows\n"
-            "the particles; raise it toward the clip length to show whole tracks.")
+            "Tail length: frames of trajectory history shown BEHIND the current\n"
+            "frame.  Small = clean, fast playback; raise it toward the clip\n"
+            "length to approach whole-track view.")
         self._tail_spin.valueChanged.connect(self._on_tail_changed)
+
+        self._head_spin = QtWidgets.QSpinBox()
+        self._head_spin.setRange(0, 100000)
+        self._head_spin.setValue(0)
+        self._head_spin.setPrefix("head ")
+        self._head_spin.setMaximumWidth(96)
+        self._head_spin.setToolTip(
+            "Head length: frames of trajectory shown AHEAD of the current frame\n"
+            "(where each particle is going).  0 = none.")
+        self._head_spin.valueChanged.connect(self._on_tail_changed)
 
         self._play_timer = QtCore.QTimer(self)
         self._play_timer.timeout.connect(self._advance)
 
-        bar = QtWidgets.QHBoxLayout()
-        bar.setContentsMargins(4, 2, 4, 2)
-        bar.addWidget(self._play_btn)
-        bar.addWidget(self._slider, 1)
-        bar.addWidget(self._frame_lbl)
-        bar.addWidget(self._tail_spin)
-        bar.addWidget(self._fps_spin)
+        # Row 1 — playback; Row 2 — track display.
+        row1 = QtWidgets.QHBoxLayout()
+        row1.setContentsMargins(4, 2, 4, 0)
+        row1.addWidget(self._play_btn)
+        row1.addWidget(self._slider, 1)
+        row1.addWidget(self._frame_lbl)
+        row1.addWidget(self._fps_spin)
+        row2 = QtWidgets.QHBoxLayout()
+        row2.setContentsMargins(4, 0, 4, 2)
+        row2.setSpacing(8)
+        row2.addWidget(QtWidgets.QLabel("Tracks:"))
+        row2.addWidget(self._width_spin)
+        row2.addWidget(self._tail_spin)
+        row2.addWidget(self._head_spin)
+        row2.addStretch(1)
+        barv = QtWidgets.QVBoxLayout()
+        barv.setContentsMargins(0, 0, 0, 0)
+        barv.setSpacing(0)
+        barv.addLayout(row1)
+        barv.addLayout(row2)
         self._bar_widget = QtWidgets.QWidget()
-        self._bar_widget.setLayout(bar)
+        self._bar_widget.setLayout(barv)
         self._bar_widget.setVisible(False)
 
         lay = QtWidgets.QVBoxLayout(self)
@@ -465,11 +506,17 @@ class FireflyViewer(QtWidgets.QWidget):
 
     def _apply_tail_windows(self, t: int):
         tail = int(self._tail_spin.value())
+        head = int(self._head_spin.value())
         for item in self._track_items.values():
-            item.set_window(t, tail)
+            item.set_window(t, tail, head)
 
     def _on_tail_changed(self, _v=None):
         self._apply_tail_windows(self.current_frame)
+
+    def _on_width_changed(self, _v=None):
+        w = float(self._width_spin.value())
+        for item in self._track_items.values():
+            item.set_width(w)
 
     def _on_play_toggled(self, on: bool):
         if on and self._n_time > 1:
@@ -563,7 +610,8 @@ class FireflyViewer(QtWidgets.QWidget):
         for cls, trajs in tracks_by_class.items():
             self._add_track_item(
                 cls, [(i, tr, None) for i, tr in enumerate(trajs)],
-                colors.get(cls, colors.get("Unknown", "#888")), width)
+                colors.get(cls, colors.get("Unknown", "#888")),
+                self._width_spin.value())
         self._update_time_axis()
 
     def set_tracks_from_df(self, df, motion_map: dict, colors: dict, *,
@@ -592,7 +640,7 @@ class FireflyViewer(QtWidgets.QWidget):
                 continue
             self._add_track_item(cls, trajs,
                                  colors.get(cls, colors.get("Unknown", "#888")),
-                                 width)
+                                 self._width_spin.value())
             out[cls] = set(int(pid) for pid, _, _ in trajs)
         # Tracks define their own time axis (frame range), so the timeline +
         # playback work even when no raw movie is loaded.
@@ -638,9 +686,10 @@ class FireflyViewer(QtWidgets.QWidget):
             self._head_item.setVisible(False)
         self._update_time_axis()
 
-    def recolor_tracks(self, colors: dict, *, width=1.5):
+    def recolor_tracks(self, colors: dict, *, width=None):
+        w = self._width_spin.value() if width is None else width
         for cls, item in self._track_items.items():
-            item.set_color(colors.get(cls, colors.get("Unknown", "#888")), width)
+            item.set_color(colors.get(cls, colors.get("Unknown", "#888")), w)
 
     # ─────────────────────────────────────────────────────────────────────
     # Points (DBSCAN clusters)

@@ -204,6 +204,33 @@ def test_tail_windows_segments_by_frame():
     assert (item._hi - item._lo) == len(item._frames)
 
 
+def test_head_window_includes_future_segments():
+    v = _viewer()
+    df = _tracks_df(n_particles=6, length=10)            # frames 0..14
+    v.set_tracks_from_df(df, {p: "Brownian" for p in range(6)},
+                         {"Brownian": "#0a0", "Unknown": "#777"})
+    item = v._track_items["Brownian"]
+    v._tail_spin.setValue(2)
+    v._head_spin.setValue(0)
+    v.current_frame = 7
+    base = item._hi - item._lo
+    v._head_spin.setValue(5)                              # 5 frames ahead
+    fr = item._frames
+    # window is now (7-2, 7+5] = [6, 12]
+    assert (item._hi - item._lo) == int(((fr > 5) & (fr <= 12)).sum())
+    assert (item._hi - item._lo) > base
+
+
+def test_width_control_updates_pen():
+    v = _viewer()
+    df = _tracks_df(n_particles=4, length=8)
+    v.set_tracks_from_df(df, {p: "Brownian" for p in range(4)},
+                         {"Brownian": "#0a0", "Unknown": "#777"})
+    item = v._track_items["Brownian"]
+    v._width_spin.setValue(4.0)
+    assert item._pen.widthF() == 4.0
+
+
 def test_axis_is_max_of_stack_and_tracks():
     v = _viewer()
     df = _tracks_df()                                # frames up to 14

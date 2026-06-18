@@ -15,9 +15,11 @@ napari removed — bespoke Qt viewers; numpy 2 / Python 3.13.
     **playback bar** (scrub + play/pause + adjustable fps) on a unified time
     axis driven by the movie *and* the tracks, so the timeline works even when
     only tracks (no raw movie) are loaded; per-motion-class tracks render as a
-    time-windowed **tail** (adjustable length) that follows the playhead with
-    current-frame position markers, the way napari's Tracks layer did — so
-    playback shows the particles moving instead of every full track at once;
+    time-windowed **tail** that follows the playhead with current-frame position
+    markers, the way napari's Tracks layer did — so playback shows the particles
+    moving instead of every full track at once, with live controls for track
+    **width**, **tail** length (frames behind) and **head** length (frames
+    ahead);
     cluster-points overlay; additive super-resolution overlay; click-to-inspect;
     wheel-zoom / drag-pan. (Restores the scrub/play/fps that napari's dims
     slider provided.)
