@@ -901,9 +901,25 @@ def test_make_figure_smoke(tmp_path):
     assert r_sub["combined"].height < r_all["combined"].height
 
 
+def test_panel_grid_helpers_are_single_source_of_truth():
+    """The shared, Qt-free grid helpers encode the one true 'N → R × C' rule
+    used by both renderers (comparison: ncols = 3 if n>4 else 2; single-sample:
+    1 col for a lone panel, else the same rule).  This runs in the Qt-less CI."""
+    from firefly.analysis.fa_compare import comparison_grid
+    from firefly.analysis.fa_figure import reflow_grid
+    for n in (1, 2, 4, 5, 13):
+        c = 3 if n > 4 else 2
+        assert comparison_grid(n) == ((n + c - 1) // c, c)
+    assert reflow_grid(1) == (1, 1)
+    for n in (2, 4, 5, 17):
+        c = 3 if n > 4 else 2
+        assert reflow_grid(n) == ((n + c - 1) // c, c)
+
+
 def test_panel_grid_formulas_match_renderers():
     """The picker's live 'N → R × C grid' count must match the grid the
     renderers actually use, or the count misleads the user."""
+    pytest.importorskip("PySide6")
     from firefly.ui.ui_mixin_build import _single_panel_grid, _cmp_panel_grid
     # comparison: ncols = 3 if n>4 else 2 (mirrors fa_compare.compare_groups)
     for n in (1, 2, 4, 5, 13):
