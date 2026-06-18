@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.71.0
+
+Quick-glance summary stats on the comparison figure.
+
+### Added
+
+- **Per-group summary band at the top of the comparison figure.** Each group now
+  shows its **trajectory count, median D and median α** at a glance (colour-matched
+  to the group), mirroring the individual-analysis stats panel — so condition
+  differences are obvious without opening the stats CSV or reading across panels.
+  D / α are the median of the per-cell medians (the same per-replicate scalars the
+  across-group tests use, so the header agrees with the statistics); the track
+  count is the group total. The band is sized in absolute inches with the figure
+  grown to fit, so the panels keep their size from 2 up to the 12-group maximum.
+
+### Changed
+
+- **Removed the redundant shared bottom legend** from the comparison figure — the
+  new top band already carries the colour ↔ group ↔ n key (plus the stats), so the
+  legend only duplicated it. Dropping it frees vertical space for the panels. When
+  the bar panels use numbered x-tick tokens (>4 groups), the band entries are
+  numbered to match, so the band remains the key for those axes.
+
 ## v2.70.0
 
 Scientific review remediation: a **critical** drift-correction sign fix plus a

@@ -1093,6 +1093,19 @@ def compare_groups(groups,
     ncols = 3 if n_plots > 4 else 2
     nrows = (n_plots + ncols - 1) // ncols
 
+    # Quick-glance summary-band geometry (the band itself is drawn after the
+    # suptitle, below).  Size it in ABSOLUTE inches and grow the figure height to
+    # fit, so the panels keep their size whatever the group / panel count.
+    # One column for a few groups (full detail); two columns beyond that (the
+    # entries are long, so 3 columns collide horizontally on a narrow figure).
+    band_ncol = 1 if n_groups <= 3 else 2
+    band_nrow = (n_groups + band_ncol - 1) // band_ncol
+    band_compact = band_ncol > 1
+    band_fs = 9 if n_groups <= 8 else 8
+    band_row_in = 0.26                       # inches per band row
+    band_h_in = band_nrow * band_row_in + 0.46   # band + gap under the suptitle
+    base_h = nrows * 3.6
+
     pal = _theme_palette(theme)
     plt.rcParams.update({
         "text.color":      pal["TXT"], "axes.labelcolor": pal["TXT"],
@@ -1106,7 +1119,7 @@ def compare_groups(groups,
         "legend.facecolor": pal["PNL"], "legend.edgecolor": pal["GRD"],
     })
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.2, nrows * 3.6),
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.2, base_h + band_h_in),
                              facecolor=pal["BG"])
     axes = np.array(axes).reshape(-1)
     for ax in axes[n_plots:]:
@@ -1712,36 +1725,21 @@ def compare_groups(groups,
                              metric_name="vacf_persistence", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
         ax.set_title("Directional persistence (VACF lag 1)")
 
-    # ── Single shared legend ─────────────────────────────────────────────────
+    # ── Drop per-panel legends (the top band is the shared key) ───────────────
     # Per-panel `loc="best"` legends overlap the data badly once there are many
-    # groups / time points, and they repeat the same key in every panel.  Drop
-    # every per-panel legend and place ONE deterministic legend (group order)
-    # in a reserved bottom strip so nothing covers the plots.  When the bars use
-    # short numeric x-tick tokens, prefix the legend entries with the same
-    # number so the axis ↔ legend mapping is explicit.
-    from matplotlib.lines import Line2D
+    # groups / time points, and they repeat the same key in every panel.  Remove
+    # them all.  The colour ↔ group ↔ n key now lives in the quick-glance summary
+    # band at the TOP of the figure (drawn below), which also carries the track
+    # count / median D / median alpha — so a separate bottom legend would only
+    # duplicate it.  When the bars use short numeric x-tick tokens (>4 groups),
+    # the band entries are numbered to match (see the band loop below).
     for ax in axes[:n_plots]:
         if getattr(ax, "_firefly_keep_legend", False):
             continue  # panel carries its own colour key (e.g. motion classes)
         _lg = ax.get_legend()
         if _lg is not None:
             _lg.remove()
-
-    number_legend = many_groups and not two_factor
-    leg_handles, leg_labels = [], []
-    for i in range(n_groups):
-        leg_handles.append(Line2D([0], [0], color=colors[i], marker="o",
-                                   lw=2.0, ms=5))
-        tag = f"{i + 1}.  " if number_legend else ""
-        leg_labels.append(f"{tag}{labels[i]}  (n={len(all_summaries[i])})")
-
-    legend_rows = 0
-    if leg_handles:
-        ncol = min(len(leg_labels), 4)
-        legend_rows = (len(leg_labels) + ncol - 1) // ncol
-        fig.legend(leg_handles, leg_labels, loc="lower center", ncol=ncol,
-                   frameon=False, fontsize=8, bbox_to_anchor=(0.5, 0.0),
-                   labelcolor=pal["TXT"])
+    legend_rows = 0   # no reserved bottom strip — the band replaces the legend
 
     # ── Suptitle ──────────────────────────────────────────────────────────────
     # "A vs B [vs C]" only stays readable for a few groups; beyond that it
@@ -1755,7 +1753,9 @@ def compare_groups(groups,
                     f"({n_groups} cells)")
     else:
         suptitle = f"Comparison of {n_groups} groups"
-    fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"])
+    fig_h = base_h + band_h_in
+    fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"],
+                 y=1.0 - 0.16 / fig_h)
     for ax in axes[:n_plots]:
         ax.set_facecolor(pal["PNL"])
         # Modern look: drop the top/right spines, thin the rest (polar +
@@ -1763,9 +1763,56 @@ def compare_groups(groups,
         style_axes(ax, pal,
                    kind=("polar" if getattr(ax, "name", "") == "polar"
                          else "cartesian"))
-    # Reserve a bottom strip for the shared legend (grows with its row count).
+
+    # ── Quick-glance per-group summary band (top) ─────────────────────────────
+    # Mirror the individual-analysis stats panel: each group's trajectory count,
+    # median D and median alpha at a glance, so the headline differences are
+    # obvious without opening the stats CSV.  One colour-matched entry per card
+    # (= the shared-legend order).  D / alpha are the MEDIAN of the per-cell
+    # medians — the same per-replicate scalars the across-group tests use below,
+    # so the header agrees with the statistics; track count is the group total.
+    def _card_summary(i):
+        m = (summary_df["group"] == group_factor[i])
+        if two_factor:
+            m = m & (summary_df["timepoint"] == timepoints_per_card[i])
+        sub = summary_df[m]
+        n_cells = int(len(sub))
+        n_trk = int(sub["n_tracks"].sum()) if "n_tracks" in sub else 0
+        med_D = (float(np.nanmedian(sub["median_D"]))
+                 if "median_D" in sub and sub["median_D"].notna().any() else np.nan)
+        med_a = (float(np.nanmedian(sub["median_alpha"]))
+                 if "median_alpha" in sub and sub["median_alpha"].notna().any() else np.nan)
+        return n_cells, n_trk, med_D, med_a
+
+    def _band_entry(label, n_cells, n_trk, d, a, compact):
+        lab = label if len(label) <= 18 else label[:17] + "…"
+        if compact:
+            d_s = f"{d:.3f}" if np.isfinite(d) else "—"
+            a_s = f"{a:.2f}" if np.isfinite(a) else "—"
+            return f"●  {lab} — {n_trk:,} trk · D {d_s} · α {a_s}  (n={n_cells})"
+        d_s = f"{d:.4f} µm²/s" if np.isfinite(d) else "—"
+        a_s = f"{a:.3f}" if np.isfinite(a) else "—"
+        return (f"●  {lab} — {n_trk:,} tracks · med D {d_s} · "
+                f"med α {a_s}   (n={n_cells})")
+
+    band_top = 1.0 - 0.52 / fig_h            # first band row, below the suptitle
+    row_step = band_row_in / fig_h
+    col_xs = [(c + 0.5) / band_ncol for c in range(band_ncol)]
+    for i in range(n_groups):
+        r, c = divmod(i, band_ncol)
+        n_cells, n_trk, med_D, med_a = _card_summary(i)
+        # When the bar panels use numeric x-tick tokens (>4 groups), number the
+        # band entries to match — the band is then the key for those axes.
+        lbl = f"{i + 1}. {labels[i]}" if many_groups else labels[i]
+        fig.text(col_xs[c], band_top - r * row_step,
+                 _band_entry(lbl, n_cells, n_trk, med_D, med_a, band_compact),
+                 color=colors[i], fontsize=band_fs, ha="center", va="top")
+
+    # No bottom strip (the band replaced the shared legend → legend_rows == 0);
+    # reserve only the inch-sized top strip for the summary band.
     bottom = min(0.18, 0.03 + 0.026 * legend_rows) if legend_rows else 0.0
-    fig.tight_layout(rect=[0, bottom, 1, 0.96])
+    top = 1.0 - band_h_in / fig_h
+    fig.tight_layout(rect=[0, bottom, 1, top])
 
     # ── Build statistics dataframe (per metric × pairwise) ────────────────────
     # Bonferroni correction across pairwise comparisons WITHIN each metric:

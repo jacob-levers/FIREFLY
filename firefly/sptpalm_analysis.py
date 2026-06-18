@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.70.0"
+__version__ = "2.71.0"
+# v2.71.0 — Compare figure: quick-glance per-group summary band (trajectory
+#   count, median D, median α) at the top; the redundant bottom legend is
+#   removed (the band is now the colour/number/n key).
 # v2.70.0 — review remediation: CRITICAL drift-correction sign fix (RCC was
 #   DOUBLING drift, not removing it; now locked by a synthetic-drift sign test);
 #   JDD now subtracts the MSD localisation-error offset so D_JDD agrees with the
