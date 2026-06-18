@@ -1,5 +1,43 @@
 # Changelog
 
+## v2.72.0
+
+Figure-defaults overhaul and per-figure panel selection.
+
+### Added
+
+- **Figure-defaults preferences reorganised into sub-tabs** — Single-sample /
+  Batch / Comparison — each with its own live preview. The LogD-distribution
+  style picker moved into the Comparison sub-tab (it's a comparison-figure look
+  choice).
+- **Panel pickers for both figures** with Select-all / Select-none buttons,
+  curated presets (Essential / Diffusion / Dynamics / Spatial / All), and a live
+  "N of M → R × C grid" count that mirrors the renderer's real layout.
+- **The single-sample combined figure is now panel-selectable.** Previously it
+  always drew all 17 panels (A–Q); now the picker chooses which appear and the
+  figure reflows into a fresh grid (the default all-panels layout is unchanged).
+  Panels P (van Hove) and Q (VACF) are now selectable too.
+- **Real-data preview.** The Single-sample preview shows every panel rendered
+  from a real example dataset; deselected panels are shown greyscale so you can
+  see at a glance which panels the figure will include.
+- The Preferences window now opens large enough to show the Figure-defaults page
+  without scroll bars (clamped to the screen).
+
+### Changed
+
+- The "Use palmTRACER's own MSD/D" toggle moved out of figure settings into the
+  Compare tab's input sidebar, where it belongs (it controls how `.PT` inputs are
+  read, not figure styling).
+
+### Fixed
+
+- **Single-sample figure crash on real data.** The combined-figure reflow used a
+  local `_pos` that the van Hove panel also assigns, so any analysis with van
+  Hove data crashed while drawing later panels. Renamed the reflow's local and
+  added a regression test.
+- Comparison interaction-plot test updated for the v2.71.0 legend removal (it
+  still expected the old bottom legend).
+
 ## v2.71.0
 
 Quick-glance summary stats on the comparison figure.

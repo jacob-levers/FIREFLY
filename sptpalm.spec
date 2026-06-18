@@ -194,6 +194,14 @@ datas += [("firefly/cuda_installer.py",   "firefly")]
 if os.path.isfile(os.path.join(SPECPATH, "assets", "icon.png")):
     datas += [(os.path.join(SPECPATH, "assets", "icon.png"), "assets")]
 
+# Bundle the real-data figure-preview panel thumbnails (shown in
+# Preferences -> Figure defaults) so the preview works in the frozen app.
+_preview_panels = os.path.join(SPECPATH, "firefly", "ui", "assets",
+                               "preview_panels")
+if os.path.isdir(_preview_panels):
+    datas += [(_preview_panels,
+               os.path.join("firefly", "ui", "assets", "preview_panels"))]
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
     ["run_firefly.py"],

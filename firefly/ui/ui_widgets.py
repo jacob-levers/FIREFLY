@@ -4367,20 +4367,19 @@ class _PreferencesDialog(QtWidgets.QDialog):
     Settings persist via QSettings — closing the dialog auto-saves.
     """
 
-    # Display-name ↔ stored-value for the Compare-tab LogD distribution style.
-    _LOGD_STYLE_MAP = {
-        "Faceted (per-replicate)": "faceted",
-        "Ridgeline":               "ridgeline",
-        "Overlaid KDEs":           "overlaid",
-        "Violins + points":        "violin",
-    }
-    _LOGD_STYLE_DISP = {v: k for k, v in _LOGD_STYLE_MAP.items()}
-
     def __init__(self, parent: "MainWindow"):
         super().__init__(parent)
         self.setWindowTitle("FIREFLY Preferences")
         self.setModal(True)
-        self.resize(960, 640)
+        # Open large enough that the Figure-defaults page (the widest — settings
+        # column + live preview) shows without scroll bars, but never bigger than
+        # the screen so it can't open off-screen on a small laptop.
+        _scr = QtWidgets.QApplication.primaryScreen()
+        if _scr is not None:
+            _av = _scr.availableGeometry()
+            self.resize(min(1240, _av.width() - 80), min(820, _av.height() - 80))
+        else:
+            self.resize(1240, 820)
         self._main = parent
 
         h = QtWidgets.QHBoxLayout(self)
@@ -4466,47 +4465,8 @@ class _PreferencesDialog(QtWidgets.QDialog):
         fp = QtWidgets.QVBoxLayout(_fig_inner)
         fp.setContentsMargins(0, 0, 0, 0); fp.setSpacing(0)
 
-        # Compare-tab LogD distribution style — lives at the top of the
-        # Figure-defaults page (it's a figure-look choice).
-        _logd_box = QtWidgets.QWidget()
-        _logd_form = QtWidgets.QFormLayout(_logd_box)
-        _logd_form.setContentsMargins(24, 18, 24, 4)
-        _logd_form.setHorizontalSpacing(12); _logd_form.setVerticalSpacing(6)
-        self.c_logd_style = _QuietComboBox()
-        self.c_logd_style.addItems(list(self._LOGD_STYLE_MAP.keys()))
-        self.c_logd_style.setMaximumWidth(220)
-        try:
-            _cur = str(QtCore.QSettings("jacoblevers", "FIREFLY").value(
-                "figures/logd_style", "overlaid") or "overlaid")
-            self.c_logd_style.setCurrentText(
-                self._LOGD_STYLE_DISP.get(_cur, "Overlaid KDEs"))
-        except Exception:
-            pass
-        self.c_logd_style.setToolTip(
-            "How the Compare tab's LogD-distribution panel is drawn:\n"
-            "• Faceted — one panel per group; PRE/POST overlaid + per-cell "
-            "median dots\n"
-            "• Ridgeline — classic stacked filled KDEs\n"
-            "• Overlaid KDEs — every group on one axes\n"
-            "• Violins + points — per-group violins with per-cell medians\n"
-            "Applies to the next comparison you run.")
-        self.c_logd_style.currentTextChanged.connect(self._on_logd_style_changed)
-        _logd_form.addRow("LogD graph style:", self.c_logd_style)
-        # Live preview of the chosen style, plus a "best for" description.
-        self._logd_preview_fig = Figure(figsize=(3.8, 2.5))
-        self._logd_preview_canvas = FigureCanvas(self._logd_preview_fig)
-        self._logd_preview_canvas.setMinimumHeight(200)
-        self._logd_preview_canvas.setMaximumHeight(260)
-        _logd_form.addRow(self._logd_preview_canvas)
-        self._logd_style_desc = QtWidgets.QLabel("")
-        self._logd_style_desc.setWordWrap(True)
-        self._logd_style_desc.setMaximumWidth(560)
-        self._logd_style_desc.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
-        _logd_form.addRow(self._logd_style_desc)
-        _logd_form.addRow(self._restart_hint(
-            "Applies to the next comparison you run."))
-        fp.addWidget(_logd_box)
-
+        # The LogD-style picker now lives inside the figures widget's
+        # Comparison sub-tab (it's a comparison-figure look choice).
         self._fig_widget = parent._figures_widget
         # Re-parent into this dialog — but we restore the parent back to
         # MainWindow in `done()` so the widget survives multiple open
@@ -4520,7 +4480,6 @@ class _PreferencesDialog(QtWidgets.QDialog):
         fig_page.setWidget(_fig_inner)
         self._pages.addWidget(fig_page)
         self._add_rail_entry("Figure defaults")
-        self._refresh_logd_preview()
 
         # ── Page: GPU acceleration (Windows only) ───────────────────────
         # CUDA install/uninstall/relocate lives here now (it used to be a
@@ -4760,35 +4719,6 @@ class _PreferencesDialog(QtWidgets.QDialog):
                     self, "Restart to apply theme",
                     f"App theme set to {name}.  Restart FIREFLY to see "
                     f"the change take effect.")
-        except Exception:
-            pass
-
-    def _on_logd_style_changed(self, name: str) -> None:
-        """Persist the chosen LogD-distribution style to the main settings
-        store (read by _start_compare_run when launching a comparison)."""
-        try:
-            val = self._LOGD_STYLE_MAP.get(name, "overlaid")
-            store = getattr(self._main, "_settings", None)
-            if store is not None:
-                store.setValue("figures/logd_style", val)
-            else:
-                QtCore.QSettings("jacoblevers", "FIREFLY").setValue(
-                    "figures/logd_style", val)
-        except Exception:
-            pass
-        self._refresh_logd_preview()
-
-    def _refresh_logd_preview(self) -> None:
-        """Re-render the small example figure for the currently-selected LogD
-        style and update the 'best for' description."""
-        try:
-            from firefly.analysis.fa_compare import (render_logd_preview,
-                                                     LOGD_STYLE_DESCRIPTIONS)
-            val = self._LOGD_STYLE_MAP.get(
-                self.c_logd_style.currentText(), "overlaid")
-            render_logd_preview(self._logd_preview_fig, val, _ACTIVE_THEME_NAME)
-            self._logd_preview_canvas.draw_idle()
-            self._logd_style_desc.setText(LOGD_STYLE_DESCRIPTIONS.get(val, ""))
         except Exception:
             pass
 

@@ -158,7 +158,13 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 cluster_subsampled_n=None,
                 dwell_df=None, dwell_tau=None, return_pdf_bytes=False,
                 van_hove=None, vacf=None,
-                want_panels=None, traj_background=True):
+                want_panels=None, traj_background=True,
+                combined_panels=None):
+    # combined_panels selects which panels appear IN the combined figure (and
+    # therefore which are available to export).  None / the full set → the
+    # historical 6×3 layout, unchanged.  A subset → the chosen panels are
+    # repacked (canonical A→Q order) into a fresh 3-column grid.
+    #
     # want_panels controls the per-panel PNG export, which is expensive:
     # each panel is produced by a full-figure savefig() cropped to that
     # panel's bbox, so rendering all 15 panels means ~15 full rasterisations
@@ -232,7 +238,59 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     _panels          = []   # (letter, axes) collected for per-panel export
     _letter_artists  = []   # text objects for letter labels (hidden for panel renders)
 
+    # ── Panel layout / selection ──────────────────────────────────────────
+    # Default (combined_panels None / full set): keep the historical 6×3 grid
+    # untouched.  For a subset, repack the chosen panels (canonical A→Q order)
+    # into a fresh 3-column grid and shrink the figure height to match.  Each
+    # panel keeps its original drawing code; `_ax(key)` hands it the right axes
+    # (real, on `fig`, when selected — else a throwaway on a scratch figure that
+    # is discarded), and `sax` ignores scratch axes so only selected panels are
+    # titled / lettered / collected for export.
+    _LAYOUT = [
+        ("A", gs[0, 0], None), ("B", gs[0, 1], None), ("C", gs[0, 2], None),
+        ("D", gs[1, 0], None), ("E", gs[1, 1], None), ("F", gs[1, 2], None),
+        ("G", gs[2, 0], None), ("H", gs[2, 1], None), ("I", gs[2, 2], None),
+        ("J", gs[3, 0], None), ("K", gs[3, 1:], None),
+        ("L", gs[4, 0], None), ("M", gs[4, 1], None), ("N", gs[4, 2], None),
+        ("P", gs[5, 0], None), ("O", gs[5, 1], "polar"), ("Q", gs[5, 2], None),
+    ]
+    _all_keys = [k for k, _, _ in _LAYOUT]
+    _sel = (set(combined_panels) & set(_all_keys)) if combined_panels else set(_all_keys)
+    if not _sel:
+        _sel = set(_all_keys)
+    _proj = {k: pj for k, _, pj in _LAYOUT}
+    _sup_y = 0.97
+    if _sel == set(_all_keys):
+        _cp_pos = {k: sp for k, sp, _ in _LAYOUT}     # original layout, untouched
+    else:
+        _chosen = [k for k in _all_keys if k in _sel]  # canonical A→Q order
+        _n = len(_chosen)
+        _nc = 1 if _n == 1 else (3 if _n > 4 else 2)   # match the compare grid
+        _nr = (_n + _nc - 1) // _nc
+        _H = max(1, _nr) * (38.0 / 6.0)                # ~6.33 inches per row
+        fig.set_size_inches(20.0 * _nc / 3.0, _H)
+        # Headroom for the suptitle scales with the (now shorter) figure so it
+        # never collides with the top panels' titles.
+        _gs2 = GridSpec(_nr, _nc, figure=fig, hspace=0.45, wspace=0.32,
+                        left=0.06, right=0.97,
+                        top=min(0.95, 1.0 - 0.95 / _H),
+                        bottom=max(0.035, 0.5 / _H))
+        _cp_pos = {k: _gs2[i // _nc, i % _nc] for i, k in enumerate(_chosen)}
+        _sup_y = min(0.97, 1.0 - 0.45 / _H)
+    _scratch = plt.figure()    # unselected panels draw here, then get discarded
+
+    def _ax(key, **kw):
+        """Axes for a panel: real (on `fig`) when selected, else a throwaway."""
+        if key in _sel:
+            pj = _proj.get(key)
+            if pj and "projection" not in kw:
+                kw["projection"] = pj
+            return fig.add_subplot(_cp_pos[key], **kw)
+        return _scratch.add_axes([0.0, 0.0, 1.0, 1.0], **kw)
+
     def sax(ax, ltr, ttl, kind="cartesian"):
+        if ax.figure is not fig:
+            return            # an unselected panel drawn on the scratch figure
         ax.set_facecolor(PNL)
         # Modern look: drop top/right spines + thin the rest.  Image/spatial
         # panels (kind="image") and the polar panel keep their full frame.
@@ -263,7 +321,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     mcol = diff_df.set_index("particle")["motion"].to_dict()
 
     # A — max projection
-    ax = fig.add_subplot(gs[0,0])
+    ax = _ax("A")
     ax.imshow(proj_eq, cmap=_pcmap, origin="lower", aspect="equal")
     bp = 5/pixel_size; y0,x0 = proj.shape[0]*.05, proj.shape[1]*.05
     ax.plot([x0,x0+bp],[y0,y0],"-",color="white",lw=3)
@@ -279,7 +337,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax,"A","Max Projection", kind="image")
 
     # B — trajectory map coloured by motion type (subsample if very many tracks)
-    ax = fig.add_subplot(gs[0,1])
+    ax = _ax("B")
     if traj_background:
         ax.imshow(proj_eq,cmap=_traj_bg,origin="lower",aspect="equal",alpha=0.35)
     all_pids  = list(tracks["particle"].unique())
@@ -301,7 +359,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax,"B",f"Trajectories  (n={shown})", kind="image")
 
     # C — trajectories coloured by D value
-    ax = fig.add_subplot(gs[0,2])
+    ax = _ax("C")
     if traj_background:
         ax.imshow(proj_eq, cmap=_traj_bg, origin="lower", aspect="equal", alpha=0.35)
     d_map = diff_df.set_index("particle")["D"].to_dict()
@@ -334,7 +392,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax, "C", "Trajectories by D value", kind="image")
 
     # D — MSD curves
-    ax = fig.add_subplot(gs[1,0])
+    ax = _ax("D")
     lt  = emsd_df.index.values * frame_interval
     rng = np.random.default_rng(42)
     for pid in rng.choice(list(imsd_df.columns), min(200,len(imsd_df.columns)), replace=False):
@@ -361,7 +419,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax,"D","MSD Curves")
 
     # E — D distribution
-    ax = fig.add_subplot(gs[1,1])
+    ax = _ax("E")
     dv = diff_df["D"].dropna()
     dv = dv[(dv>0) & (dv<dv.quantile(0.995))]
     if len(dv) > 5:
@@ -429,7 +487,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     # a fixed 0–100% y-axis so the proportions are read on an absolute scale.
     # Each bar keeps its class colour so it matches the trajectory / distribution
     # panels (Immobile=red, Confined=orange, Brownian=blue, Directed=green).
-    ax = fig.add_subplot(gs[1,2])
+    ax = _ax("F")
     mc_ = diff_df["motion"].value_counts()
     classes = [m for m in MORD if m in mc_]
     counts  = np.array([float(mc_[m]) for m in classes])
@@ -457,7 +515,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax,"F","Motion Classification")
 
     # G — alpha distribution
-    ax = fig.add_subplot(gs[2,0])
+    ax = _ax("G")
     av = diff_df["alpha"].dropna()
     av = av[(av>-1) & (av<4)]
     if len(av) > 5:
@@ -488,7 +546,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax,"G","Anomalous Exponent Alpha Distribution")
 
     # H — Position Density Heatmap
-    ax = fig.add_subplot(gs[2, 1])
+    ax = _ax("H")
     try:
         x_um = tracks["x"].values * pixel_size
         y_um = tracks["y"].values * pixel_size
@@ -517,7 +575,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     # 0° = continued straight; 180° = full reversal; 90° = right-angle
     # deflection; the radial-distribution panel (O) shows the rotational
     # direction (sign) separately.
-    ax = fig.add_subplot(gs[2, 2])
+    ax = _ax("I")
     if turning_angles is None or len(turning_angles) < 10:
         ax.text(0.5, 0.5, "Insufficient data", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=12)
@@ -549,7 +607,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax, "I", "Turning Angle Distribution")
 
     # J — Mobile Fraction Over Time
-    ax = fig.add_subplot(gs[3, 0])
+    ax = _ax("J")
     if mobile_frac_df is None or len(mobile_frac_df) < 2:
         ax.text(0.5, 0.5, "Insufficient data", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=12)
@@ -565,7 +623,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax, "J", "Mobile Fraction Over Time")
 
     # K — Jump Distance Distribution (spans cols 1–2)
-    ax = fig.add_subplot(gs[3, 1:])
+    ax = _ax("K")
     if _has_jdd:
         _jdd_colors = ["#58a6ff", "#f78166", "#3fb950", "#d2a8ff"]
 
@@ -605,7 +663,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         sax(ax, "K", "Jump Distance Distribution")
 
     # L — Cluster Map
-    ax = fig.add_subplot(gs[4, 0])
+    ax = _ax("L")
     if cluster_labels is not None and cluster_locs is not None and len(cluster_locs) > 0:
         xy_um = cluster_locs  # already in µm, subsampled to match labels
         noise = cluster_labels == -1
@@ -636,7 +694,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax, "L", _clu_title, kind="image")
 
     # M — Dwell Time Distribution
-    ax = fig.add_subplot(gs[4, 1])
+    ax = _ax("M")
     if dwell_df is not None and len(dwell_df) >= 5:
         dt_vals = dwell_df["dwell_time_s"].values
         ax.hist(dt_vals, bins=30, color=ACC, alpha=0.75, edgecolor="none", density=True)
@@ -656,7 +714,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     sax(ax, "M", "Dwell Time Distribution")
 
     # N — MSS Slope Distribution
-    ax = fig.add_subplot(gs[4, 2])
+    ax = _ax("N")
     if "mss_slope" in diff_df.columns and diff_df["mss_slope"].notna().sum() >= 5:
         ms = diff_df["mss_slope"].dropna()
         ms = ms[ms.between(-0.5, 1.5)]
@@ -690,7 +748,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     # at ±180° = back-tracking / confinement.
     # Placed at the centre column of row 5 so it sits visually balanced
     # rather than pinned to a corner.
-    ax = fig.add_subplot(gs[5, 1], projection="polar")
+    ax = _ax("O")
     if turning_angles is None or len(turning_angles) < 10:
         ax.text(0.5, 0.5, "Insufficient data", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=11)
@@ -737,7 +795,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     # reference overlaid.  Heavy (non-Gaussian) tails => a heterogeneous
     # population; the non-Gaussian parameter α₂ quantifies the deviation
     # (α₂ ≈ 0 for Brownian, > 0 for mixed mobile/trapped).
-    ax = fig.add_subplot(gs[5, 0])
+    ax = _ax("P")
     if van_hove is None or van_hove.get("pdf") is None:
         ax.text(0.5, 0.5, "Insufficient data", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=11)
@@ -767,7 +825,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     # Normalised ensemble VACF vs lag.  Flat-at-zero => Brownian (no
     # directional memory); positive decay => persistent/directed motion;
     # a negative lag-1 dip => caged / anti-persistent motion.
-    ax = fig.add_subplot(gs[5, 2])
+    ax = _ax("Q")
     if vacf is None or vacf.get("vacf") is None:
         ax.text(0.5, 0.5, "Insufficient data", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=11)
@@ -792,7 +850,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     fig.suptitle(
         f"FIREFLY Analysis  |  {diff_df.shape[0]:,} trajectories  |  "
         f"Median D = {md:.4f} µm²/s  |  Median alpha = {ma:.2f}",
-        fontsize=13,color=TXT,y=0.97,fontweight="bold")
+        fontsize=13,color=TXT,y=_sup_y,fontweight="bold")
 
     import io as _io
     from matplotlib.transforms import Bbox as _Bbox
@@ -858,6 +916,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
             print(f"  WARN: PDF render failed: {_exc}")
 
     plt.close(fig)
+    plt.close(_scratch)        # discard any unselected-panel scratch axes
     print("  Figure rendered.")
     return {
         "combined":     combined_pil,

@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.71.0"
+__version__ = "2.72.0"
+# v2.72.0 — Figure-defaults reorg (sub-tabs), panel pickers for both figures,
+#   single-sample combined figure is now panel-selectable, real-data preview;
+#   FIX: reflow var `_pos` clashed with the van Hove panel → crashed real runs.
 # v2.71.0 — Compare figure: quick-glance per-group summary band (trajectory
 #   count, median D, median α) at the top; the redundant bottom legend is
 #   removed (the band is now the colour/number/n key).

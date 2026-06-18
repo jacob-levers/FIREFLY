@@ -865,6 +865,27 @@ def test_make_figure_smoke(tmp_path):
     make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
                 output_path=str(out_png), want_panels=set())
     assert out_png.exists() and out_png.stat().st_size > 0
+    # combined_panels selects which panels the combined figure draws (and so
+    # which are exported); None / the full set keeps the historical layout.
+    sel = {"A", "D", "F"}
+    r = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                    want_panels=set(), combined_panels=sel)
+    assert set(r["panel_titles"].keys()) == sel
+    r_all = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                        want_panels=set(), combined_panels=None)
+    assert len(r_all["panel_titles"]) == 17          # full A–Q layout
+    r_one = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                        want_panels=set(), combined_panels={"O"})  # polar only
+    assert set(r_one["panel_titles"].keys()) == {"O"}
+    # Regression: a populated van_hove makes panel P run code that assigns a
+    # local `_pos` — it must NOT clobber the panel-layout map the reflow uses
+    # (else panels drawn after P, e.g. Q, crash on a real analysis).
+    bc = np.linspace(-0.5, 0.5, 21)
+    vh = {"bin_centers_um": bc, "pdf": np.exp(-(bc * 6) ** 2),
+          "gaussian_pdf": np.exp(-(bc * 6) ** 2), "non_gaussian_alpha2": 0.12}
+    r_vh = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                       want_panels=set(), combined_panels=None, van_hove=vh)
+    assert len(r_vh["panel_titles"]) == 17
 
 
 def test_load_external_locs_formats(tmp_path):
@@ -2225,11 +2246,11 @@ def test_interaction_plot_per_card_colours_and_gradient_line(tmp_path):
     assert len(scat) >= 4, f"expected ≥4 distinct cell colours, got {len(scat)}"
     assert any(isinstance(c, LineCollection) for c in ax.collections), \
         "expected a gradient connecting line (LineCollection)"
-    # bottom legend names every cell as group / timepoint
-    leg = fig.legends[0]
-    txts = {t.get_text() for t in leg.get_texts()}
-    assert any("DMSO / PRE" in t for t in txts)
-    assert any("DMSO / POST" in t for t in txts)
+    # the top summary band names every cell as group / timepoint (it replaced
+    # the old bottom legend as the figure's colour/group key in v2.71.0)
+    band = " ".join(t.get_text() for t in fig.texts)
+    assert "DMSO / PRE" in band
+    assert "DMSO / POST" in band
 
 
 def test_jdd_and_mss_reject_bad_calibration():

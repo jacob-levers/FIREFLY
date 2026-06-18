@@ -37,6 +37,30 @@ from firefly.ui.ui_widgets import (_UpdateCheckThread, _ModeTile, _ActionTile, _
                         _PipelineDiagram, _NoHScrollArea)
 
 
+# Display-name ↔ stored-value for the Compare-tab LogD distribution style.
+_LOGD_STYLE_MAP = {
+    "Faceted (per-replicate)": "faceted",
+    "Ridgeline":               "ridgeline",
+    "Overlaid KDEs":           "overlaid",
+    "Violins + points":        "violin",
+}
+_LOGD_STYLE_DISP = {v: k for k, v in _LOGD_STYLE_MAP.items()}
+
+
+def _cmp_panel_grid(n):
+    """(rows, cols) the comparison figure uses for n panels — mirrors
+    fa_compare.compare_groups so the picker's live count is truthful."""
+    c = 3 if n > 4 else 2
+    return ((n + c - 1) // c, c)
+
+
+def _single_panel_grid(n):
+    """(rows, cols) the single-sample combined figure uses for n panels —
+    mirrors the subset reflow in fa_figure.make_figure."""
+    c = 1 if n == 1 else (3 if n > 4 else 2)
+    return ((n + c - 1) // c, c)
+
+
 class BuildMixin:
     def _build_ui(self):
         central = QtWidgets.QWidget()
@@ -2166,6 +2190,103 @@ class BuildMixin:
 
         self.tabs.addTab(tab, TAB_ANALYSIS)
 
+    def _make_panel_picker(self, title, items, checkbox_dict, presets,
+                           grid_fn, tips=None, ncols=2):
+        """A panel-selection group box: a checkbox grid plus a header row with
+        Select-all / Select-none buttons, a presets combo, and a live
+        'N of M  →  R × C grid' count.  `checkbox_dict` is populated in place;
+        `grid_fn(n) -> (rows, cols)` must match the renderer that consumes the
+        selection so the count is truthful.  Reused for both figure pickers."""
+        grp = QtWidgets.QGroupBox(title)
+        outer = QtWidgets.QVBoxLayout(grp)
+        outer.setSpacing(6)
+
+        hdr = QtWidgets.QHBoxLayout()
+        b_all = QtWidgets.QPushButton("Select all")
+        b_none = QtWidgets.QPushButton("Select none")
+        preset = _QuietComboBox()
+        preset.addItem("Preset…")
+        for name in presets:
+            preset.addItem(name)
+        preset.setToolTip("Apply a curated subset of panels.")
+        count = QtWidgets.QLabel("")
+        count.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        hdr.addWidget(b_all)
+        hdr.addWidget(b_none)
+        hdr.addWidget(preset)
+        hdr.addStretch(1)
+        hdr.addWidget(count)
+        outer.addLayout(hdr)
+
+        gw = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(gw)
+        grid.setContentsMargins(0, 0, 0, 0)
+        for i, (key, label) in enumerate(items):
+            cb = QtWidgets.QCheckBox(label)
+            cb.setChecked(True)
+            if tips and key in tips:
+                cb.setToolTip(tips[key])
+            checkbox_dict[key] = cb
+            grid.addWidget(cb, i // ncols, i % ncols)
+        outer.addWidget(gw)
+
+        def _update():
+            n = sum(1 for c in checkbox_dict.values() if c.isChecked())
+            if n == 0:
+                count.setText("⚠  none selected")
+            else:
+                r, c = grid_fn(n)
+                count.setText(f"{n} of {len(items)}  →  {r} × {c} grid")
+
+        for cb in checkbox_dict.values():
+            cb.toggled.connect(lambda _=None: _update())
+
+        def _set_all(state):
+            for c in checkbox_dict.values():
+                c.setChecked(state)
+        b_all.clicked.connect(lambda: _set_all(True))
+        b_none.clicked.connect(lambda: _set_all(False))
+
+        def _apply_preset(idx):
+            keys = presets.get(preset.itemText(idx))
+            if keys is not None:
+                ks = set(keys)
+                for k, c in checkbox_dict.items():
+                    c.setChecked(k in ks)
+            preset.setCurrentIndex(0)
+        preset.activated.connect(_apply_preset)
+
+        _update()
+        return grp
+
+    def _on_logd_style_changed(self, name=None):
+        """Persist the chosen Compare LogD-distribution style (read by
+        _start_compare_run) and refresh its little style preview."""
+        try:
+            val = _LOGD_STYLE_MAP.get(self.c_logd_style.currentText(), "overlaid")
+            store = getattr(self, "_settings", None)
+            if store is not None:
+                store.setValue("figures/logd_style", val)
+            else:
+                QtCore.QSettings("jacoblevers", "FIREFLY").setValue(
+                    "figures/logd_style", val)
+        except Exception:
+            pass
+        self._refresh_logd_preview()
+
+    def _refresh_logd_preview(self):
+        """Re-render the small example figure for the selected LogD style."""
+        try:
+            from firefly.analysis.fa_compare import (render_logd_preview,
+                                                     LOGD_STYLE_DESCRIPTIONS)
+            from firefly.ui.ui_theme import _ACTIVE_THEME_NAME
+            val = _LOGD_STYLE_MAP.get(self.c_logd_style.currentText(), "overlaid")
+            render_logd_preview(self._logd_preview_fig, val, _ACTIVE_THEME_NAME)
+            self._logd_preview_canvas.draw_idle()
+            self._logd_style_desc.setText(LOGD_STYLE_DESCRIPTIONS.get(val, ""))
+        except Exception:
+            pass
+
     def _build_figures_widget(self) -> QtWidgets.QWidget:
         """Customisation for figure outputs — single-sample (Run tab) and
         comparison (Compare tab) — plus a live preview that updates as
@@ -2177,30 +2298,69 @@ class BuildMixin:
         figure-render knobs are app-wide defaults, not per-run state.
         """
         tab = QtWidgets.QWidget()
-        outer = QtWidgets.QHBoxLayout(tab)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(12)
-
-        # ── Settings column ──────────────────────────────────────────────
-        settings_col = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(settings_col)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(10)
+        root = QtWidgets.QVBoxLayout(tab)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
         intro = QtWidgets.QLabel(
-            "Style and output format for the figures produced by the "
-            "Analysis and Compare tabs.  Preview on the right updates as "
-            "you change the theme / colormap.")
+            "Style and output for the figures the Analysis and Compare tabs "
+            "produce.  Each section previews on a synthetic dataset; your real "
+            "figures keep these choices.")
         intro.setWordWrap(True)
         intro.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
-        v.addWidget(intro)
+        root.addWidget(intro)
 
-        # App theme (Qt UI) has moved to Preferences → Appearance
-        # (cogwheel button in the header).  This widget is concerned
-        # purely with figure-output styling now.
+        def _make_preview_label() -> QtWidgets.QLabel:
+            lbl = QtWidgets.QLabel("Rendering preview…")
+            lbl.setMinimumSize(400, 240)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Ignored size policy → the label scales to the layout, not to the
+            # pixmap's natural size (avoids a render→resize→render feedback loop).
+            lbl.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                              QtWidgets.QSizePolicy.Policy.Ignored)
+            lbl.setStyleSheet(
+                f"QLabel {{ border: 1px solid {_THEME['BORDER']}; "
+                f"background: {_THEME['PANEL']}; color: {_THEME['TXT_MUTED']}; "
+                "border-radius: 4px; }")
+            return lbl
+
+        self.lbl_fig_preview_single = _make_preview_label()
+        self.lbl_fig_preview_compare = _make_preview_label()
+
+        sub = QtWidgets.QTabWidget()
+        root.addWidget(sub, 1)
+
+        def _tab_with_preview(preview_lbl, caption):
+            """Returns (page, settings_vbox).  Settings on the left, an optional
+            live preview on the right."""
+            page = QtWidgets.QWidget()
+            ph = QtWidgets.QHBoxLayout(page)
+            ph.setContentsMargins(10, 10, 10, 10); ph.setSpacing(12)
+            scol = QtWidgets.QWidget()
+            col = QtWidgets.QVBoxLayout(scol)
+            col.setContentsMargins(0, 0, 0, 0); col.setSpacing(10)
+            ph.addWidget(scol, 1)
+            if preview_lbl is not None:
+                pcol = QtWidgets.QWidget()
+                pvl = QtWidgets.QVBoxLayout(pcol)
+                pvl.setContentsMargins(0, 0, 0, 0); pvl.setSpacing(6)
+                cap = QtWidgets.QLabel(caption)
+                cap.setStyleSheet(f"color: {_THEME['TXT']}; font-weight: 600;")
+                pvl.addWidget(cap)
+                pvl.addWidget(preview_lbl, stretch=1)
+                ph.addWidget(pcol, 1)
+            return page, col
+
+        _ss_page, _ssv = _tab_with_preview(self.lbl_fig_preview_single,
+                                           "Single-sample figure")
+        _batch_page, _batchv = _tab_with_preview(None, "")
+        _cmp_page, _cmpv = _tab_with_preview(self.lbl_fig_preview_compare,
+                                             "Comparison figure")
+
+        v = _ssv   # single-sample sections add here first
 
         # ── Single-sample figure ──────────────────────────────────────────
-        sec, gl = self._make_form_section("Single-sample figure (Analysis tab)")
+        sec, gl = self._make_form_section("Style & output")
         self.c_fig_theme = _QuietComboBox()
         self.c_fig_theme.addItems(["Dark", "Light", "Publication"])
         self.c_fig_theme.setToolTip(
@@ -2245,6 +2405,7 @@ class BuildMixin:
         gl.addRow("", self.c_fig_per_panel)
         v.addWidget(sec)
 
+        v = _batchv
         # ── Batch / HYPER-FLY figure ──────────────────────────────────────
         # A multi-file batch (HYPER-FLY included) renders figures with these
         # settings instead of the single-sample ones above.  Defaults match the
@@ -2272,31 +2433,59 @@ class BuildMixin:
         gl.addRow("", self.c_batch_fig_per_panel)
         v.addWidget(sec)
 
-        # Single-sample panel selector — only affects per-panel PNG exports
-        # (combined figure always contains every panel that has data).
-        single_panels_grp = QtWidgets.QGroupBox(
-            "Single-sample panels to export individually")
-        spg = QtWidgets.QGridLayout(single_panels_grp)
+        # Single-sample panel selector — now drives BOTH which panels appear in
+        # the combined figure AND the per-panel PNG export.  (Routed to the
+        # single-sample column.)
         self._single_panel_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
-        for i, (key, label) in enumerate(self.SINGLE_PANELS):
-            cb = QtWidgets.QCheckBox(f"{key}.  {label}")
-            cb.setChecked(True)
-            cb.setToolTip(
-                f"Include panel {key} ({label}) when 'Also save each panel\n"
-                "as a separate PNG' is on.  The combined figure always shows\n"
-                "every panel that has data.")
-            self._single_panel_checkboxes[key] = cb
-            spg.addWidget(cb, i // 2, i % 2)
-        v.addWidget(single_panels_grp)
+        _single_tips = {
+            k: f"Include panel {k} ({lbl}) in the combined figure (and its "
+               "per-panel export, when that is enabled)."
+            for k, lbl in self.SINGLE_PANELS}
+        _ssv.addWidget(self._make_panel_picker(
+            "Panels to include in the figure",
+            [(k, f"{k}.  {lbl}") for k, lbl in self.SINGLE_PANELS],
+            self._single_panel_checkboxes, self.SINGLE_PANEL_PRESETS,
+            _single_panel_grid, tips=_single_tips))
+        _ssv.addStretch(1)
 
+        v = _cmpv
         # ── Comparison figure (moved from Compare tab) ────────────────────
-        sec, gl = self._make_form_section("Comparison figure (Compare tab)")
+        sec, gl = self._make_form_section("Style & output")
         self.c_cmp_theme = _QuietComboBox()
         self.c_cmp_theme.addItems(["Dark", "Light", "Publication"])
         self.c_cmp_theme.setToolTip(
             "Theme for the multi-group comparison figure.  Independent\n"
             "from the single-sample theme so you can mix and match.")
         gl.addRow("Theme", self.c_cmp_theme)
+        # LogD distribution style (moved here from the Preferences page — it is a
+        # comparison-figure look choice) + a small live style preview.
+        self.c_logd_style = _QuietComboBox()
+        self.c_logd_style.addItems(list(_LOGD_STYLE_MAP.keys()))
+        try:
+            _store = getattr(self, "_settings", None) or QtCore.QSettings(
+                "jacoblevers", "FIREFLY")
+            _cur = str(_store.value("figures/logd_style", "overlaid") or "overlaid")
+            self.c_logd_style.setCurrentText(
+                _LOGD_STYLE_DISP.get(_cur, "Overlaid KDEs"))
+        except Exception:
+            pass
+        self.c_logd_style.setToolTip(
+            "How the Compare tab's LogD-distribution panel is drawn:\n"
+            "• Faceted — one panel per group; PRE/POST overlaid + per-cell medians\n"
+            "• Ridgeline — classic stacked filled KDEs\n"
+            "• Overlaid KDEs — every group on one axes\n"
+            "• Violins + points — per-group violins with per-cell medians")
+        self.c_logd_style.currentTextChanged.connect(self._on_logd_style_changed)
+        gl.addRow("LogD graph style", self.c_logd_style)
+        self._logd_preview_fig = Figure(figsize=(3.8, 2.2))
+        self._logd_preview_canvas = FigureCanvas(self._logd_preview_fig)
+        self._logd_preview_canvas.setMinimumHeight(160)
+        self._logd_preview_canvas.setMaximumHeight(220)
+        gl.addRow(self._logd_preview_canvas)
+        self._logd_style_desc = QtWidgets.QLabel("")
+        self._logd_style_desc.setWordWrap(True)
+        self._logd_style_desc.setStyleSheet(f"color: {_THEME['TXT_MUTED']};")
+        gl.addRow(self._logd_style_desc)
         self.c_cmp_pdf = QtWidgets.QCheckBox(
             "Generate multi-page PDF report (figure + parameters + stats)")
         self.c_cmp_pdf.setToolTip(
@@ -2306,18 +2495,6 @@ class BuildMixin:
             "two-way mixed-ANOVA results) in GraphPad-style tabular form.")
         self.c_cmp_pdf.setChecked(True)
         gl.addRow("", self.c_cmp_pdf)
-
-        self.c_cmp_use_native = QtWidgets.QCheckBox(
-            "Use palmTRACER's own MSD/D (for .PT inputs)")
-        self.c_cmp_use_native.setToolTip(
-            "When a group folder is a palmTRACER .PT folder, draw the MSD / LogD\n"
-            "/ D / AUC graphs from palmTRACER's OWN trcPALMTracer-*-D / -MSD\n"
-            "values instead of re-deriving them in FIREFLY — so those panels\n"
-            "reproduce palmTRACER's numbers exactly.  (alpha / motion-class\n"
-            "aren't in palmTRACER's output, so those panels stay unclassified;\n"
-            "JDD / dwell / turning are re-derived from the palmTRACER tracks.)\n"
-            "Ignored for native FIREFLY analysis folders.")
-        gl.addRow("", self.c_cmp_use_native)
         v.addWidget(sec)
 
         # Comparison panels (which sub-panels to include in the figure).
@@ -2361,81 +2538,23 @@ class BuildMixin:
                    "persistence). ≈ 0 → Brownian, > 0 → directed / persistent,\n"
                    "< 0 → caged / anti-persistent (bounces back).",
         }
-        panels_grp = QtWidgets.QGroupBox("Comparison panels to include")
-        pg = QtWidgets.QGridLayout(panels_grp)
         self._cmp_panel_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
-        for i, (key, label) in enumerate(self.COMPARE_PANELS):
-            cb = QtWidgets.QCheckBox(label)
-            cb.setChecked(True)
-            cb.setToolTip(_cmp_panel_tips.get(
-                key, f"Include the {label} panel in the comparison figure."))
-            self._cmp_panel_checkboxes[key] = cb
-            pg.addWidget(cb, i // 2, i % 2)
-        v.addWidget(panels_grp)
-        v.addStretch(1)
+        _cmpv.addWidget(self._make_panel_picker(
+            "Comparison panels to include",
+            list(self.COMPARE_PANELS), self._cmp_panel_checkboxes,
+            self.COMPARE_PANEL_PRESETS, _cmp_panel_grid, tips=_cmp_panel_tips))
+        _cmpv.addStretch(1)
 
-        # ── Preview column (two stacked previews) ────────────────────────
-        preview_col = QtWidgets.QWidget()
-        pv = QtWidgets.QVBoxLayout(preview_col)
-        pv.setContentsMargins(0, 0, 0, 0)
-        pv.setSpacing(8)
+        # ── Assemble the sub-tabs ────────────────────────────────────────
+        sub.addTab(_ss_page, "Single-sample")
+        sub.addTab(_batch_page, "Batch")
+        sub.addTab(_cmp_page, "Comparison")
 
-        def _make_preview_label(caption: str) -> QtWidgets.QLabel:
-            lbl = QtWidgets.QLabel("Rendering preview…")
-            # Shrunk from 560×320 → 400×240 so the Figures tab can fit
-            # on a narrower screen.  The previous floor was forcing the
-            # whole MainWindow to claim a minimum width that exceeded
-            # 13-inch laptop screens, which made fullscreen-not-zoomed
-            # impossible and stopped the console dock from snapping
-            # to the right side.  The preview labels are rendered to
-            # an Ignored-Ignored size policy below so they still scale
-            # to whatever width the user gives the tab.
-            lbl.setMinimumSize(400, 240)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # Ignored policy in both directions → layout sizes the label
-            # from the stretch / minimum hints only, NOT from the pixmap's
-            # natural size.  Without this, every theme change produces a
-            # slightly different matplotlib output → the label's sizeHint
-            # bumps up → layout reallocates → bigger label → bigger render…
-            lbl.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
-                              QtWidgets.QSizePolicy.Policy.Ignored)
-            lbl.setStyleSheet(
-                f"QLabel {{ border: 1px solid {_THEME['BORDER']}; "
-                f"background: {_THEME['PANEL']}; color: {_THEME['TXT_MUTED']}; "
-                "border-radius: 4px; }")
-            return lbl
-
-        cap_single = QtWidgets.QLabel("Single-sample figure")
-        cap_single.setStyleSheet(
-            f"color: {_THEME['TXT']}; font-weight: 600;")
-        pv.addWidget(cap_single)
-        self.lbl_fig_preview_single = _make_preview_label("single")
-        pv.addWidget(self.lbl_fig_preview_single, stretch=1)
-
-        cap_compare = QtWidgets.QLabel("Comparison figure")
-        cap_compare.setStyleSheet(
-            f"color: {_THEME['TXT']}; font-weight: 600;")
-        pv.addWidget(cap_compare)
-        self.lbl_fig_preview_compare = _make_preview_label("comparison")
-        pv.addWidget(self.lbl_fig_preview_compare, stretch=1)
-
-        # Cache of unscaled preview pixmaps so we can re-fit them when the
-        # labels resize (e.g. on window resize) without re-rendering.
+        # Cache of unscaled preview pixmaps so the resize filter can re-fit them
+        # without re-rendering; install the filter on both preview labels.
         self._fig_preview_pixmaps: dict[QtWidgets.QLabel, QtGui.QPixmap] = {}
-        # Install a resize filter on both labels — re-scales the cached
-        # raw pixmap to fit the new label dimensions.
         for _lbl in (self.lbl_fig_preview_single, self.lbl_fig_preview_compare):
             _lbl.installEventFilter(self)
-
-        hint = QtWidgets.QLabel(
-            "Rendered on a synthetic dataset — actual figures will use "
-            "your data but keep these style choices.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {_THEME['TXT_MUTED']}; font-size: 11px;")
-        pv.addWidget(hint)
-
-        outer.addWidget(settings_col, 1)
-        outer.addWidget(preview_col, 2)
 
         # ── Debounced preview refresh ────────────────────────────────────
         self._figpreview_timer = QTimer(self)
@@ -2445,8 +2564,12 @@ class BuildMixin:
         for w in (self.c_fig_theme, self.c_fig_proj_cmap, self.c_cmp_theme):
             w.currentTextChanged.connect(
                 lambda _=None: self._figpreview_timer.start())
-        # First render after construction settles
+        # Toggling a single-sample panel greys / un-greys it in the preview map.
+        for _cb in self._single_panel_checkboxes.values():
+            _cb.toggled.connect(lambda _=None: self._figpreview_timer.start())
+        # First renders after construction settles.
         QtCore.QTimer.singleShot(80, self._refresh_figures_preview)
+        QtCore.QTimer.singleShot(60, self._refresh_logd_preview)
 
         return tab
 
@@ -2488,6 +2611,22 @@ class BuildMixin:
             "Prefix for the saved files (figure.png, summary.csv, "
             "stats.csv, report.pdf).")
         sg.addWidget(self.e_cmp_stem)
+
+        # palmTRACER native-data toggle — an INPUT-interpretation option (how
+        # .PT folders are read), not a figure-style choice, so it lives here with
+        # the Compare inputs rather than in Preferences → Figure defaults.
+        sg.addSpacing(4)
+        self.c_cmp_use_native = QtWidgets.QCheckBox(
+            "Use palmTRACER's own MSD/D (for .PT inputs)")
+        self.c_cmp_use_native.setToolTip(
+            "When a group folder is a palmTRACER .PT folder, draw the MSD / LogD\n"
+            "/ D / AUC graphs from palmTRACER's OWN trcPALMTracer-*-D / -MSD\n"
+            "values instead of re-deriving them in FIREFLY — so those panels\n"
+            "reproduce palmTRACER's numbers exactly.  (alpha / motion-class\n"
+            "aren't in palmTRACER's output, so those panels stay unclassified;\n"
+            "JDD / dwell / turning are re-derived from the palmTRACER tracks.)\n"
+            "Ignored for native FIREFLY analysis folders.")
+        sg.addWidget(self.c_cmp_use_native)
 
         # Pointer to where style settings now live (Preferences → Figure
         # defaults; the old standalone Figures tab no longer exists).

@@ -697,7 +697,11 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
             proj = cmap_map.get(proj_cmap_name, "inferno")
             rng = np.random.default_rng(0 if kind == "single" else 1)
             buf = io.BytesIO()
-            fig = Figure(figsize=(7, 3.2), facecolor=BG, dpi=110)
+            # Single-sample preview is a tall 6×3 thumbnail of every panel;
+            # the comparison preview stays a short wide mock.
+            figsize = (5.6, 9.2) if kind == "single" else (7, 3.2)
+            save_dpi = 200 if kind == "single" else 440
+            fig = Figure(figsize=figsize, facecolor=BG, dpi=110)
             FigureCanvasAgg(fig)     # attach an off-screen Agg canvas (no Qt, no Gcf)
             try:
                 with matplotlib.rc_context(_rc(theme)):
@@ -707,7 +711,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                     else:
                         self._render_single_sample_preview(
                             fig, np, rng, BG, PNL, TXT, GRD, ACC, proj)
-                    fig.savefig(buf, format="png", facecolor=BG, dpi=440,
+                    fig.savefig(buf, format="png", facecolor=BG, dpi=save_dpi,
                                 bbox_inches="tight")
             except Exception as exc:
                 return None, str(exc)
@@ -756,43 +760,69 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
 
     def _render_single_sample_preview(self, fig, np, rng,
                                        BG, PNL, TXT, GRD, ACC, proj_cmap):
-        """Two-panel mock-up: projection + MSD curves.  Draws onto the passed
-        OO `Figure` (off-screen Agg) — no pyplot."""
-        axes = fig.subplots(1, 2)
-        # Panel A — fake max projection (Gaussian blob + noise)
-        H = W = 48
-        Y, X = np.mgrid[0:H, 0:W]
-        img = (np.exp(-((X - 26)**2 + (Y - 22)**2) / 70) * 0.9
-               + np.exp(-((X - 12)**2 + (Y - 30)**2) / 30) * 0.5
-               + rng.random((H, W)) * 0.08)
-        ax = axes[0]
-        ax.set_facecolor(PNL)
-        ax.imshow(img, cmap=proj_cmap)
-        ax.set_title("  A   Max projection", color=TXT, loc="left",
-                     fontsize=10, fontweight="bold", pad=6)
-        ax.set_xticks([]); ax.set_yticks([])
-        for sp in ax.spines.values(): sp.set_edgecolor(GRD)
-
-        # Panel B — MSD-like curves for three motion classes
-        ax = axes[1]
-        ax.set_facecolor(PNL)
-        t = np.linspace(0.02, 1.0, 25)
-        for alpha, label, col in ((1.0, "Brownian", ACC),
-                                  (0.55, "Confined", "#f78166"),
-                                  (1.45, "Directed", "#56d364")):
-            msd = 0.05 * t**alpha + rng.normal(0, 0.004, t.size)
-            ax.plot(t, msd, marker="o", markersize=3, linewidth=1.4,
-                    color=col, label=label)
-        ax.set_xlabel("τ (s)", fontsize=9)
-        ax.set_ylabel("MSD (μm²)", fontsize=9)
-        ax.set_title("  B   Ensemble MSD", color=TXT, loc="left",
-                     fontsize=10, fontweight="bold", pad=6)
-        ax.tick_params(labelsize=8)
-        ax.grid(True, alpha=0.3)
-        leg = ax.legend(fontsize=8, frameon=False)
-        for txt in leg.get_texts(): txt.set_color(TXT)
-        for sp in ax.spines.values(): sp.set_edgecolor(GRD)
-        fig.tight_layout()
+        """Thumbnail map of EVERY single-sample panel (A–Q) in the real grid
+        layout.  A panel that is currently DESELECTED in the picker is drawn in
+        greyscale, so at a glance you see which panels the combined figure will
+        include.  Draws onto the passed OO `Figure` (off-screen Agg) — no pyplot."""
+        # Map of EVERY single-sample panel (A–Q) using REAL pre-rendered panels
+        # from an example dataset (firefly/ui/assets/preview_panels).  A panel
+        # that is DESELECTED in the picker is shown greyscale so you can see at a
+        # glance which panels the combined figure will include.
+        import os
+        from matplotlib import image as _mpimg
+        cache = getattr(self, "_preview_panel_imgs", None)
+        if cache is None:
+            # Dev: alongside this file.  Frozen (PyInstaller): under _MEIPASS,
+            # mirroring the package path the spec bundles them to.
+            _cands = [
+                os.path.join(os.path.dirname(__file__),
+                             "assets", "preview_panels"),
+                os.path.join(getattr(sys, "_MEIPASS", ""),
+                             "firefly", "ui", "assets", "preview_panels"),
+            ]
+            base = next((d for d in _cands if os.path.isdir(d)), _cands[0])
+            cache = {}
+            for L in "ABCDEFGHIJKLMNOPQ":
+                fp = os.path.join(base, f"{L}.png")
+                if os.path.exists(fp):
+                    try:
+                        cache[L] = _mpimg.imread(fp)
+                    except Exception:
+                        pass
+            self._preview_panel_imgs = cache
+        order = [
+            ("A", 0, 0), ("B", 0, 1), ("C", 0, 2),
+            ("D", 1, 0), ("E", 1, 1), ("F", 1, 2),
+            ("G", 2, 0), ("H", 2, 1), ("I", 2, 2),
+            ("J", 3, 0), ("K", 3, 1),
+            ("L", 4, 0), ("M", 4, 1), ("N", 4, 2),
+            ("P", 5, 0), ("O", 5, 1), ("Q", 5, 2),
+        ]
+        if not cache:
+            ax = fig.add_subplot(111)
+            ax.axis("off")
+            ax.text(0.5, 0.5, "panel preview unavailable", ha="center",
+                    va="center", color=TXT, fontsize=9)
+            return fig
+        checks = getattr(self, "_single_panel_checkboxes", {})
+        gs = fig.add_gridspec(6, 3, hspace=0.1, wspace=0.05,
+                              left=0.004, right=0.996, top=0.996, bottom=0.004)
+        for key, r, c in order:
+            img = cache.get(key)
+            if img is None:
+                continue
+            cb = checks.get(key)
+            on = cb.isChecked() if cb is not None else True
+            ax = fig.add_subplot(gs[r, c])
+            ax.axis("off")
+            if on:
+                ax.imshow(img, aspect="auto")
+            else:
+                rgb = img[..., :3]
+                lum = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1]
+                       + 0.114 * rgb[..., 2])
+                ax.imshow(lum, cmap="gray", vmin=0.0, vmax=1.0, aspect="auto",
+                          alpha=0.85)
         return fig
 
     def _render_comparison_preview(self, fig, np, rng, BG, PNL, TXT, GRD):
@@ -1270,6 +1300,8 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         ("M", "Dwell-time distribution"),
         ("N", "Moment-scaling spectrum"),
         ("O", "Radial distribution"),
+        ("P", "van Hove displacements"),
+        ("Q", "Velocity autocorrelation"),
     ]
     COMPARE_PANELS = [
         ("msd",            "Ensemble MSD"),
@@ -1286,6 +1318,18 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         ("van_hove",       "Population heterogeneity (α₂)"),
         ("vacf",           "Directional persistence (VACF)"),
     ]
+    # Curated one-click presets for the figure panel pickers (the pickers also
+    # offer Select-all / Select-none buttons, so "All"/"None" aren't listed here).
+    COMPARE_PANEL_PRESETS = {
+        "Essential": ("msd", "logd_dist", "motion_classes", "track_count"),
+        "Diffusion": ("msd", "auc", "logd_dist", "jdd", "mob_immob"),
+        "Dynamics":  ("turning_angles", "radial_dist", "van_hove", "vacf", "dwell_cdf"),
+    }
+    SINGLE_PANEL_PRESETS = {
+        "Essential": ("A", "B", "D", "E", "F"),
+        "Diffusion": ("D", "E", "G", "K", "N"),
+        "Spatial":   ("A", "B", "C", "H", "L", "O"),
+    }
     # Raised from 6 to 12: the group × time-point design needs one card per
     # (group, time point) cell, so counts climb fast (e.g. 3 groups × 3 time
     # points = 9).  Cards live in a scrollable container, so the higher cap is

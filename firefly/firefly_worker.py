@@ -775,7 +775,9 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
             proj_cmap=p.get("fig_proj_cmap", "Inferno"),
             jdd=s.get("jdd"), turning_angles=s.get("turning_angles"),
             mobile_frac_df=s.get("mobile_fraction"), dwell_df=s.get("dwell_times"),
-            want_panels=set())
+            want_panels=set(),
+            combined_panels=(set(p.get("fig_single_panels"))
+                             if p.get("fig_single_panels") else None))
         figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
         fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
     except Exception as _fig_exc:
@@ -2020,11 +2022,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # rasterisation per panel).  Only render the panels that will be written:
     # none unless per-panel output is on, and just the selected subset when
     # fig_single_panels narrows it.
+    # Which panels appear in the combined figure (and so are available to export):
+    # an empty / full selection → None = all panels (historical 6×3 layout).
+    _sel_panels = p.get("fig_single_panels")
+    combined_panels = set(_sel_panels) if _sel_panels else None
     if _eff_per_panel:
-        _allowed_panels = p.get("fig_single_panels")
-        want_panels = None if _allowed_panels is None else set(_allowed_panels)
+        want_panels = combined_panels      # export exactly the drawn panels
     else:
-        want_panels = set()
+        want_panels = set()                # combined figure only, no per-panel PNGs
     # The figure is a DERIVED artifact; the CSV tables below are the
     # irreplaceable output.  A render exception must NOT discard a complete,
     # already-computed run — degrade to "figure skipped" and continue to the
@@ -2039,7 +2044,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             dwell_df=dwell_df, dwell_tau=dwell_tau,
             van_hove=van_hove, vacf=vacf,
             return_pdf_bytes=want_pdf, want_panels=want_panels,
-            traj_background=fig_traj_bg)
+            traj_background=fig_traj_bg, combined_panels=combined_panels)
     except _Cancelled:
         raise
     except Exception as _fig_exc:
