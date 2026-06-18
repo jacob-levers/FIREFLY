@@ -141,9 +141,9 @@ def _tracks_df(n_particles=6, length=10):
 
 
 def _head_count(v):
-    if v._head_item is None:
+    if v._head_item is None or not v._head_item.isVisible():
         return 0
-    return sum(poly.count() for _, poly in v._head_item._groups)
+    return v._head_item.count()
 
 
 def test_timeline_comes_from_tracks_when_no_stack():

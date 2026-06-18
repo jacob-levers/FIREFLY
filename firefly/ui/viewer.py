@@ -126,6 +126,45 @@ class _PointsItem(QtWidgets.QGraphicsItem):
             painter.drawPoints(poly)
 
 
+class _HeadItem(QtWidgets.QGraphicsItem):
+    """A reusable single-colour scatter of current-frame position markers,
+    updated IN PLACE each playback tick (one item, never added/removed) so the
+    scene never churns during playback."""
+    def __init__(self, *, color=None, size=7):
+        super().__init__()
+        self._poly = QtGui.QPolygonF()
+        self._rect = QRectF()
+        self._pen = QtGui.QPen(color or QtGui.QColor(255, 255, 255, 235))
+        self._pen.setWidth(int(size))
+        self._pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        self._pen.setCosmetic(True)
+        self.setZValue(15)
+
+    def set_points(self, xs, ys):
+        self.prepareGeometryChange()
+        self._poly = QtGui.QPolygonF(
+            [QPointF(float(x), float(y)) for x, y in zip(xs, ys)])
+        if len(xs):
+            pad = 8.0
+            self._rect = QRectF(float(np.min(xs)) - pad, float(np.min(ys)) - pad,
+                                float(np.ptp(xs)) + 2 * pad,
+                                float(np.ptp(ys)) + 2 * pad)
+        else:
+            self._rect = QRectF()
+        self.update()
+
+    def count(self) -> int:
+        return self._poly.count()
+
+    def boundingRect(self):
+        return self._rect
+
+    def paint(self, painter, option, widget=None):
+        if self._poly.count():
+            painter.setPen(self._pen)
+            painter.drawPoints(self._poly)
+
+
 class _SceneView(QtWidgets.QGraphicsView):
     """QGraphicsView with wheel-zoom (anchored under the cursor), left-drag pan,
     and a click signal (a press+release that didn't drag) in scene coords."""
@@ -206,12 +245,20 @@ class FireflyViewer(QtWidgets.QWidget):
         self._sr_item: _AdditivePixmapItem | None = None
         self._img_item: QtWidgets.QGraphicsPixmapItem | None = None
         self._track_frames: dict[str, np.ndarray] = {}   # per-vertex frame, ⟂ pick
-        self._head_item: _PointsItem | None = None        # current-frame markers
         self._n_time = 0                                   # length of the time axis
         self._max_track_frame = -1
 
         self._scene = QtWidgets.QGraphicsScene(self)
         self._scene.setBackgroundBrush(QtGui.QColor(background))
+        # We pick via numpy (pick_at), not the scene's spatial index, so turn the
+        # index OFF — otherwise it rebuilds on every item add/remove and the
+        # marker churn stutters playback badly.
+        self._scene.setItemIndexMethod(
+            QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
+        # One persistent marker item, updated in place each tick.
+        self._head_item = _HeadItem()
+        self._head_item.setVisible(False)
+        self._scene.addItem(self._head_item)
         self._view = _SceneView(self._scene, self)
         self._view.sceneClicked.connect(self._on_scene_clicked)
 
@@ -356,11 +403,11 @@ class FireflyViewer(QtWidgets.QWidget):
         self._slider.setValue((self._slider.value() + 1) % self._n_time)
 
     def _refresh_heads(self, t: int):
-        """Draw a bright marker at each visible track's position at frame t,
-        so scrubbing / playback animates the particles over the static tracks."""
-        if self._head_item is not None:
-            self._scene.removeItem(self._head_item)
-            self._head_item = None
+        """Move the bright markers to each visible track's position at frame t,
+        so scrubbing / playback animates the particles over the static tracks.
+        Updates the ONE persistent head item in place (no add/remove churn)."""
+        if self._head_item is None:
+            return
         xs, ys = [], []
         for cls, (xy, _pid) in self._track_pick.items():
             if not self._class_visible.get(cls, True):
@@ -372,14 +419,12 @@ class FireflyViewer(QtWidgets.QWidget):
             if m.any():
                 xs.append(xy[m, 0])
                 ys.append(xy[m, 1])
-        if not xs:
-            return
-        X = np.concatenate(xs)
-        Y = np.concatenate(ys)
-        item = _PointsItem(X, Y, [QtGui.QColor(255, 255, 255, 235)] * len(X), 7)
-        item.setZValue(15)
-        self._scene.addItem(item)
-        self._head_item = item
+        if xs:
+            self._head_item.set_points(np.concatenate(xs), np.concatenate(ys))
+            self._head_item.setVisible(True)
+        else:
+            self._head_item.set_points([], [])
+            self._head_item.setVisible(False)
 
     # ─────────────────────────────────────────────────────────────────────
     # Tracks
@@ -412,6 +457,11 @@ class FireflyViewer(QtWidgets.QWidget):
         item.setPen(pen)
         item.setBrush(Qt.BrushStyle.NoBrush)
         item.setZValue(10)
+        # Cache the (static) stroked path as a device pixmap so it isn't
+        # re-stroked every playback frame when the markers above it move —
+        # this is the single biggest playback-smoothness win.
+        item.setCacheMode(
+            QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self._scene.addItem(item)
         self._track_items[cls] = item
         self._class_visible[cls] = True
@@ -493,11 +543,8 @@ class FireflyViewer(QtWidgets.QWidget):
         self._track_frames.clear()
         self._max_track_frame = -1
         if self._head_item is not None:
-            try:
-                self._scene.removeItem(self._head_item)
-            except Exception:
-                pass
-            self._head_item = None
+            self._head_item.set_points([], [])
+            self._head_item.setVisible(False)
         self._update_time_axis()
 
     def recolor_tracks(self, colors: dict, *, width=1.5):
