@@ -67,6 +67,42 @@ def test_icon_provider_renders_tinted():
     assert any(c.blue() > c.red() for c in opaque), "icon not tinted to accent"
 
 
+def test_import_controller_probe_and_calibration(tmp_path):
+    tifffile = pytest.importorskip("tifffile")
+    import numpy as np
+    from firefly.ui.controllers.import_controller import ImportController
+
+    class FakeSettings:           # avoid touching the user's real QSettings
+        def __init__(self): self.d = {}
+        def get_str(self, k, d=""): return str(self.d.get(k, d))
+        def get_float(self, k, d=0.0):
+            try: return float(self.d.get(k, d))
+            except Exception: return d
+        def get_bool(self, k, d=False): return bool(self.d.get(k, d))
+        def set(self, k, v): self.d[k] = v
+
+    fs = FakeSettings()
+    ic = ImportController(fs)
+    assert not ic.hasFile and ic.fileFormat == ""
+
+    p = tmp_path / "m.tif"
+    tifffile.imwrite(str(p), np.zeros((42, 16, 16), dtype=np.uint16))
+    ic.filePath = str(p)
+    assert ic.hasFile and ic.fileFormat == "TIFF" and ic.frameCount == 42
+    assert ic.fileName == "m.tif"
+    assert fs.d["analysis/file"] == str(p)
+
+    ic.overridePx = True
+    ic.pixelSize = 0.108
+    assert fs.d["analysis/override_px"] is True
+    assert fs.d["analysis/pixel_size"] == 0.108
+
+    csv = tmp_path / "locs.csv"
+    csv.write_text("x,y,frame\n1,2,0\n")
+    ic.filePath = str(csv)
+    assert ic.isCsv and ic.fileFormat == "localisations"
+
+
 def test_app_controller_navigation():
     from firefly.ui.controllers.app_controller import AppController
     a = AppController()

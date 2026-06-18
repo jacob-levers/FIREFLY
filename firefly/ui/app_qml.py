@@ -23,6 +23,8 @@ QQuickStyle.setStyle("Basic")
 
 from firefly.ui.controllers.theme_controller import ThemeController
 from firefly.ui.controllers.app_controller import AppController
+from firefly.ui.controllers.settings_controller import SettingsController
+from firefly.ui.controllers.import_controller import ImportController
 from firefly.ui.controllers.icon_provider import IconImageProvider
 from firefly.sptpalm_analysis import __version__
 
@@ -35,6 +37,8 @@ def build_main_window(app: QtWidgets.QApplication):
     where ctx keeps the controllers alive (they must outlive the QML engine)."""
     theme = ThemeController()
     appc = AppController()
+    settings = SettingsController()
+    importc = ImportController(settings)
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle("FIREFLY")
@@ -44,6 +48,8 @@ def build_main_window(app: QtWidgets.QApplication):
     ctx = qw.rootContext()
     ctx.setContextProperty("Theme", theme)
     ctx.setContextProperty("App", appc)
+    ctx.setContextProperty("Settings", settings)
+    ctx.setContextProperty("Import", importc)
     ctx.setContextProperty("appVersion", __version__)
     qw.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     qw.setSource(QUrl.fromLocalFile(os.path.join(_QML_DIR, "Main.qml")))
@@ -56,7 +62,7 @@ def build_main_window(app: QtWidgets.QApplication):
     win.resize(1100, 760)
     # Keep controllers + the quick widget referenced on the window so Python
     # doesn't GC them while QML still binds to them.
-    win._firefly_ctx = (theme, appc, qw)
+    win._firefly_ctx = (theme, appc, settings, importc, qw)
     return win, qw
 
 

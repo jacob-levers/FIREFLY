@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import "components"
+import "tabs"
 
 // FIREFLY QML shell (Phase 1 foundation): themed header + landing/main pages.
 // Hosted by a QQuickWidget (root is an Item, the QMainWindow owns the window).
@@ -165,9 +166,23 @@ Item {
                 }
                 Item { Layout.fillWidth: true }
             }
-            StyleGuide {                 // Phase-1 preview; real tab content lands in Phase 2+
+            Loader {                     // per-tab content
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                sourceComponent: App.currentTab === 0 ? importTab : comingSoon
+            }
+        }
+    }
+
+    // ── tab content components ───────────────────────────────────────
+    Component { id: importTab; ImportTab {} }
+    Component {
+        id: comingSoon
+        Item {
+            Text {
+                anchors.centerIn: parent
+                text: App.tabs[App.currentTab] + " — coming soon"
+                color: pal.TXT_MUTED; font.pixelSize: sc.textLg
             }
         }
     }
