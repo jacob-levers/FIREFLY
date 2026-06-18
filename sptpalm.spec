@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for FIREFLY (PySide6 + napari frontend, v2.0).
+PyInstaller spec for FIREFLY (PySide6 frontend; bespoke Qt viewers, no napari).
 
 Build (from the project root):
   macOS:   pyinstaller sptpalm.spec
@@ -51,17 +51,9 @@ hidden += collect_submodules("certifi")
 hidden += collect_submodules("PySide6")
 hidden += collect_submodules("shiboken6")
 
-# Napari + its plugin discovery + the vispy backend.  napari is loaded
-# lazily by the Workspace tab; if any of these are missed at freeze time
-# the tab quietly degrades to the "not installed" placeholder, which is
-# acceptable — but we'd rather have it work.
-hidden += collect_submodules("napari")
-hidden += collect_submodules("vispy")
-hidden += collect_submodules("magicgui")
-hidden += collect_submodules("npe2")
-hidden += collect_submodules("qtpy")
-hidden += collect_submodules("pydantic")
-hidden += collect_submodules("superqt")
+# napari has been removed — the interactive viewers are bespoke Qt widgets,
+# so there's no napari / vispy / magicgui / npe2 / qtpy / superqt plugin
+# discovery to bundle any more.
 
 # PyTorch — GPU localiser backend.  Only collect if the dep is installed;
 # otherwise we'd inflate the bundle with non-existent stubs.
@@ -129,18 +121,8 @@ datas += collect_data_files("PIL")
 # in the frozen bundle and HTTPS still fails.
 datas += collect_data_files("certifi")
 
-# Napari ships configuration JSON + theme files + plugin manifests as
-# package-data.  Collect them so the embedded viewer starts correctly.
-try:
-    datas += collect_data_files("napari")
-    datas += collect_data_files("vispy")
-    datas += collect_data_files("magicgui")
-    datas += collect_data_files("npe2")
-except Exception:
-    pass
-
 # `.dist-info` metadata for scientific packages.  Without this, pandas's
-# `import_optional_dependency("numpy")` (and similar checks in napari,
+# `import_optional_dependency("numpy")` (and similar checks in
 # scikit-image, scipy, etc.) raises the misleading
 #   "Missing optional dependency 'numpy'"
 # error at runtime in the frozen build — even though the package itself
@@ -148,17 +130,12 @@ except Exception:
 # against the .dist-info directory, which PyInstaller doesn't pick up
 # automatically for collect_submodules.  copy_metadata fixes that.
 for _pkg in ("numpy", "pandas", "scipy", "scikit-image", "scikit-learn",
-             "matplotlib", "napari", "vispy", "magicgui", "npe2",
+             "matplotlib",
              "tifffile", "trackpy", "joblib", "Pillow", "psutil",
-             "dask", "torch",
-             # Qt bindings — napari probes for these via
-             # `importlib.metadata.version("PySide6")` to decide which
-             # Qt backend to use.  Without the .dist-info the probe
-             # raises PackageNotFoundError and napari falls back to
-             # "Cannot show napari window".
-             "PySide6", "shiboken6", "qtpy", "superqt", "pydantic",
-             "imageio", "scikit-image", "cachey", "lazy_loader",
-             "pint", "app-model", "in-n-out", "psygnal",
+             "torch",
+             "PySide6", "shiboken6",
+             # imageio + lazy_loader are real deps (scikit-image uses both).
+             "imageio", "lazy_loader",
              # numba/llvmlite do importlib.metadata version lookups at import.
              "numba", "llvmlite",
              # pingouin (Compare-tab two-way ANOVA) + deps do runtime
@@ -170,15 +147,6 @@ for _pkg in ("numpy", "pandas", "scipy", "scikit-image", "scikit-learn",
     except Exception:
         # Package not installed at freeze time — fine, just skip it.
         pass
-
-# Dask is napari's preferred lazy-load backend.  Pull its submodules
-# in too so napari's image-loading code path doesn't bail with the
-# "Dask array requirements are not installed" prompt.
-try:
-    hidden += collect_submodules("dask")
-    datas   += collect_data_files("dask")
-except Exception:
-    pass
 
 # Ship the source .py for the top-level package modules alongside the bundle.
 # firefly_worker reads __file__ to locate the git SHA; crash_reporter embeds
@@ -305,9 +273,9 @@ else:
                 "NSHighResolutionCapable": True,
                 "LSMinimumSystemVersion": "11.0",
                 "NSAppleEventsUsageDescription": "Required for analysis.",
-                # napari's vispy backend uses Metal — disable the App Sandbox
-                # so the GPU access works without prompting.  The app
-                # doesn't need network or filesystem entitlements beyond
-                # what macOS grants normally.
+                # torch's MPS backend uses Metal — leave the App Sandbox off
+                # so GPU access works without prompting.  The app doesn't need
+                # network or filesystem entitlements beyond what macOS grants
+                # normally.
             },
         )
