@@ -95,11 +95,8 @@ Item {
             LandingBackdrop { anchors.fill: parent }      // glow + drifting dots
 
             ColumnLayout {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 40
-                anchors.rightMargin: Math.max(40, parent.width * 0.28)
+                anchors.centerIn: parent
+                width: Math.min(1040, parent.width - 80)
                 spacing: sc.sp3
 
                 RowLayout {                                // eyebrow + microscope
