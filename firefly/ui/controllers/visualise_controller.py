@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import os
 
-from PySide6 import QtWidgets
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6 import QtGui, QtWidgets
+from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
 from firefly.analysis.fa_constants import motion_class_colors
 from firefly.ui.ui_helpers import _MOTION_ORDER
@@ -46,6 +46,10 @@ class VisualiseController(QObject):
     backgroundChanged = Signal()
     inspectorChanged = Signal()
     nFramesChanged = Signal()
+    clusterChanged = Signal()
+    srChanged = Signal()
+    explorerChanged = Signal()
+    explorerFiltersChanged = Signal()
     # event signals
     statusMessage = Signal(str)
     warn = Signal(str, str)
@@ -69,6 +73,49 @@ class VisualiseController(QObject):
         self._inspector_visible = False
         self._has_run = False
         self._hud_tracks = 0
+
+        # ── clusters ─────────────────────────────────────────────────────
+        self._cl_xy_um = None
+        self._cl_labels = None
+        self._cl_motion = None
+        self._cl_xy_px = None
+        self._cl_px_um = 1.0
+        self._cl_stats_df = None
+        self._cl_extras_dir = None
+        self._cl_stem = None
+        self._cl_present = False
+        self._cl_eps_nm = 50
+        self._cl_min_samples = 8
+        self._cl_point_size = 3
+        self._cl_color_mode = "Motion"
+        self._cl_count = 0
+        self._cl_status = ""
+        # ── super-resolution ─────────────────────────────────────────────
+        self._sr_img = None
+        self._sr_nm = 20
+        self._sr_blur = 20
+        self._sr_status = ""
+        # ── track explorer ───────────────────────────────────────────────
+        self._exp_df = None
+        self._exp_filtered = None
+        self._exp_rows: list = []
+        self._exp_count = ""
+        self._exp_d_min = 0.0
+        self._exp_d_max = 10.0
+        self._exp_a_min = 0.0
+        self._exp_a_max = 2.0
+        self._exp_min_len = 1
+        self._exp_motion = {m: True for m in ("Immobile", "Confined",
+                                              "Brownian", "Directed")}
+        # debounce timers (slider drags); direct slot calls run synchronously
+        self._recluster_timer = QTimer(self)
+        self._recluster_timer.setSingleShot(True)
+        self._recluster_timer.setInterval(300)
+        self._recluster_timer.timeout.connect(self.recluster)
+        self._explorer_timer = QTimer(self)
+        self._explorer_timer.setSingleShot(True)
+        self._explorer_timer.setInterval(250)
+        self._explorer_timer.timeout.connect(self.refreshExplorer)
 
     # ── viewer lifecycle ─────────────────────────────────────────────────
     def ensureViewer(self):
@@ -206,6 +253,7 @@ class VisualiseController(QObject):
             self._tracks_df = df
             self._diff_df = diff_df
             self._apply_motion_filter()
+            self._build_explorer_data()
             self._has_run = True
             self.dataChanged.emit()
             self.statusMessage.emit(
@@ -458,13 +506,41 @@ class VisualiseController(QObject):
 
     def _on_cluster_clicked(self, cid):
         self.clusterPicked.emit(int(cid))
-        cid = int(cid)
-        if cid == -1:
-            self._inspector = {"mode": "cluster", "cluster_id": -1, "note": "Noise point"}
-        else:
-            self._inspector = {"mode": "cluster", "cluster_id": cid}
+        self._inspector = self._cluster_info(int(cid))
         self._inspector_visible = True
         self.inspectorChanged.emit()
+
+    def _cluster_info(self, cid: int) -> dict:
+        if cid == -1:
+            return {"mode": "cluster", "cluster_id": -1,
+                    "note": "Noise point — not assigned to any cluster."}
+        info = {"mode": "cluster", "cluster_id": cid}
+        df = self._cl_stats_df
+        if df is not None and "cluster_id" in getattr(df, "columns", []):
+            try:
+                row = df[df["cluster_id"] == cid]
+                if len(row):
+                    r = row.iloc[0]
+                    for k in ("n_locs", "area_um2", "density_locs_per_um2",
+                              "rg_um", "centroid_x_um", "centroid_y_um"):
+                        if k in r.index:
+                            info[k] = float(r[k])
+            except Exception:
+                pass
+        try:
+            if self._cl_motion is not None and self._cl_labels is not None:
+                import numpy as np
+                from collections import Counter
+                motions = self._cl_motion[self._cl_labels == cid]
+                if motions.size:
+                    counts = Counter(motions.tolist())
+                    total = sum(counts.values())
+                    top, top_n = counts.most_common(1)[0]
+                    info["note"] = (f"Dominant motion: {top} "
+                                    f"({100.0 * top_n / max(1, total):.0f}%)")
+        except Exception:
+            pass
+        return info
 
     def _track_info(self, pid: int):
         df = self._tracks_df
@@ -539,3 +615,516 @@ class VisualiseController(QObject):
         self._inspector = {"mode": "none"}
         self._inspector_visible = False
         self.inspectorChanged.emit()
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Clusters — ported from VisualiseMixin (load / recluster / suggest-eps)
+    # ═════════════════════════════════════════════════════════════════════
+    @Property(bool, notify=clusterChanged)
+    def hasClusters(self):
+        return self._cl_present
+
+    @Property(int, notify=clusterChanged)
+    def clusterCount(self):
+        return self._cl_count
+
+    @Property(str, notify=clusterChanged)
+    def clusterStatus(self):
+        return self._cl_status
+
+    @Property(bool, notify=clusterChanged)
+    def noClustersBanner(self):
+        return self._cl_present and self._cl_count == 0
+
+    @Property(bool, notify=clusterChanged)
+    def clusterMotionAvailable(self):
+        return self._cl_motion is not None
+
+    @Property(int, notify=clusterChanged)
+    def clusterEpsNm(self):
+        return self._cl_eps_nm
+
+    @clusterEpsNm.setter
+    def clusterEpsNm(self, v):
+        v = int(v)
+        if v != self._cl_eps_nm:
+            self._cl_eps_nm = v
+            self.clusterChanged.emit()
+            if self._cl_xy_um is not None:
+                self._recluster_timer.start()
+
+    @Property(int, notify=clusterChanged)
+    def clusterMinSamples(self):
+        return self._cl_min_samples
+
+    @clusterMinSamples.setter
+    def clusterMinSamples(self, v):
+        v = max(2, int(v))
+        if v != self._cl_min_samples:
+            self._cl_min_samples = v
+            self.clusterChanged.emit()
+            if self._cl_xy_um is not None:
+                self._recluster_timer.start()
+
+    @Property(int, notify=clusterChanged)
+    def clusterPointSize(self):
+        return self._cl_point_size
+
+    @clusterPointSize.setter
+    def clusterPointSize(self, v):
+        v = max(1, int(v))
+        if v != self._cl_point_size:
+            self._cl_point_size = v
+            self.clusterChanged.emit()
+            if self._cl_present:
+                self._render_cluster_layer()
+
+    @Property("QStringList", constant=True)
+    def clusterColorModes(self):
+        return ["Motion", "ID"]
+
+    @Property(str, notify=clusterChanged)
+    def clusterColorMode(self):
+        return self._cl_color_mode
+
+    @clusterColorMode.setter
+    def clusterColorMode(self, mode):
+        if mode in ("Motion", "ID") and mode != self._cl_color_mode:
+            self._cl_color_mode = mode
+            self.clusterChanged.emit()
+            if self._cl_present:
+                self._render_cluster_layer()
+
+    @Slot()
+    def loadClusters(self):
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            None, "Open a run with cluster labels",
+            (self._import.outDir if self._import else "") or os.path.expanduser("~"))
+        if path:
+            self.loadClustersFolder(path)
+
+    @Slot(str, result=bool)
+    def loadClustersFolder(self, run_dir: str) -> bool:
+        import json
+        try:
+            import numpy as np
+            import pandas as pd
+            extras = os.path.join(run_dir, "firefly_extras")
+            if not os.path.isdir(extras):
+                raise FileNotFoundError("No firefly_extras/ subfolder")
+            lbl = [f for f in os.listdir(extras) if f.endswith("_cluster_labels.csv")]
+            if not lbl:
+                raise FileNotFoundError("No *_cluster_labels.csv (re-run analysis "
+                                        "to generate per-loc labels)")
+            stem = lbl[0][:-len("_cluster_labels.csv")]
+            labels_df = pd.read_csv(os.path.join(extras, lbl[0]))
+            stats_path = os.path.join(extras, f"{stem}_cluster_stats.csv")
+            stats_df = pd.read_csv(stats_path) if os.path.isfile(stats_path) else None
+            px_um = 1.0
+            params_path = os.path.join(extras, f"{stem}_params.json")
+            if os.path.isfile(params_path):
+                try:
+                    with open(params_path) as fh:
+                        pj = json.load(fh)
+                    px_um = float(pj.get("pixel_size_um", 1.0)) or 1.0
+                    if pj.get("cluster_eps_nm") is not None:
+                        self._cl_eps_nm = int(round(float(pj["cluster_eps_nm"])))
+                    if pj.get("cluster_min_samples") is not None:
+                        self._cl_min_samples = int(pj["cluster_min_samples"])
+                except Exception:
+                    pass
+            self._cl_xy_um = np.column_stack([
+                labels_df["x_um"].to_numpy(dtype=np.float32),
+                labels_df["y_um"].to_numpy(dtype=np.float32)])
+            self._cl_labels = labels_df["cluster_id"].to_numpy(dtype=np.int32)
+            self._cl_motion = (labels_df["motion"].astype(str).to_numpy()
+                               if "motion" in labels_df.columns else None)
+            self._cl_px_um = px_um
+            self._cl_xy_px = np.column_stack([
+                self._cl_xy_um[:, 1] / px_um, self._cl_xy_um[:, 0] / px_um])
+            self._cl_stats_df = stats_df
+            self._cl_extras_dir = extras
+            self._cl_stem = stem
+            if self._cl_motion is None and self._cl_color_mode == "Motion":
+                self._cl_color_mode = "ID"
+            self._render_cluster_layer()
+            self._update_cluster_counts()
+            self.clusterChanged.emit()
+            return True
+        except Exception as exc:
+            self.warn.emit("Couldn't load clusters",
+                           f"{os.path.basename(run_dir)}:\n{exc}")
+            return False
+
+    def _render_cluster_layer(self):
+        if self._cl_xy_px is None:
+            return
+        v = self.ensureViewer()
+        import numpy as np
+        ids = self._cl_labels.astype(np.int32)
+        mode = self._cl_color_mode
+        if mode == "Motion" and self._cl_motion is None:
+            mode = "ID"
+        ys, xs = self._cl_xy_px[:, 0], self._cl_xy_px[:, 1]
+        noise = ids == -1
+        if mode == "Motion":
+            pal = self._palette()
+
+            def rgba(hex_str, a):
+                c = QtGui.QColor(hex_str).getRgbF()
+                return (c[0], c[1], c[2], a)
+            mcol = {cls: rgba(pal.get(cls, pal["Unknown"]), 0.85)
+                    for cls in _MOTION_ORDER}
+            brushes = [mcol.get(str(m), mcol["Unknown"]) for m in self._cl_motion]
+            for i in np.nonzero(noise)[0]:
+                brushes[int(i)] = (0.30, 0.30, 0.30, 0.45)
+        else:
+            import matplotlib
+            cmap = matplotlib.colormaps["turbo"]
+            valid = ids[ids >= 0]
+            lo = float(valid.min()) if valid.size else 0.0
+            span = (float(valid.max()) - lo) if valid.size else 1.0
+            span = span or 1.0
+            brushes = [(0.30, 0.30, 0.30, 0.55) if cid < 0
+                       else tuple(cmap((float(cid) - lo) / span)) for cid in ids]
+        try:
+            v.set_points(ys, xs, ids=ids, brushes=brushes, size=int(self._cl_point_size))
+            self._cl_present = True
+        except Exception as exc:
+            self.warn.emit("Cluster overlay failed", str(exc))
+
+    def _update_cluster_counts(self):
+        import numpy as np
+        lab = self._cl_labels
+        if lab is None or lab.size == 0:
+            self._cl_count = 0
+            self._cl_status = ""
+            return
+        n_clu = int(lab.max() + 1) if (lab >= 0).any() else 0
+        n_noise = int((lab == -1).sum())
+        self._cl_count = n_clu
+        self._cl_status = f"{n_clu:,} clusters · {n_noise:,} noise locs"
+
+    @Slot()
+    def recluster(self):
+        if self._cl_xy_um is None:
+            return
+        import numpy as np
+        import pandas as pd
+        eps_nm = float(self._cl_eps_nm)
+        try:
+            from firefly.sptpalm_analysis import compute_clusters
+            locs = pd.DataFrame({"x": self._cl_xy_um[:, 0], "y": self._cl_xy_um[:, 1],
+                                 "frame": np.zeros(len(self._cl_xy_um), dtype=np.int32)})
+            labels, stats_df, _, _ = compute_clusters(
+                locs, pixel_size_um=1.0, eps_um=eps_nm / 1000.0,
+                min_samples=int(self._cl_min_samples))
+        except Exception as exc:
+            self._cl_status = f"re-cluster failed: {exc}"
+            self.clusterChanged.emit()
+            return
+        if (getattr(stats_df, "attrs", {}) or {}).get("eps_too_large"):
+            self._cl_status = (f"eps = {eps_nm:.0f} nm too large — lower it "
+                               f"(clustering skipped)")
+            self._cl_count = 0
+            self.clusterChanged.emit()
+            return
+        self._cl_labels = np.asarray(labels, dtype=np.int32)
+        self._cl_stats_df = stats_df
+        self._render_cluster_layer()
+        self._update_cluster_counts()
+        self._cl_status += f"  (eps={eps_nm:.0f} nm, min={self._cl_min_samples})"
+        self.clusterChanged.emit()
+
+    @Slot()
+    def suggestEps(self):
+        if self._cl_xy_um is None:
+            return
+        import numpy as np
+        xy = np.asarray(self._cl_xy_um, dtype=float)
+        try:
+            from sklearn.neighbors import NearestNeighbors
+            n = len(xy)
+            k = max(2, min(int(self._cl_min_samples), n - 1))
+            nn = NearestNeighbors(n_neighbors=k).fit(xy)
+            d, _ = nn.kneighbors(xy)
+            kd = np.sort(d[:, -1])
+            m = len(kd)
+            lo, hi = max(0, int(0.02 * m)), min(m - 1, int(0.98 * m))
+            seg = kd[lo:hi + 1]
+            mm = len(seg)
+            if mm < 3:
+                eps_nm = float(np.median(kd)) * 1000.0
+            else:
+                x = np.arange(mm, dtype=float)
+                y0, y1 = seg[0], seg[-1]
+                num = np.abs((y1 - y0) * x - (mm - 1) * seg + (mm - 1) * y0)
+                den = np.hypot(y1 - y0, mm - 1) or 1.0
+                eps_nm = float(seg[int(np.argmax(num / den))]) * 1000.0
+        except Exception as exc:
+            self._cl_status = f"eps estimate failed: {exc}"
+            self.clusterChanged.emit()
+            return
+        v = int(round(max(5, min(2000, eps_nm))))
+        self._cl_status = f"suggested eps ≈ {v} nm (k-distance knee)"
+        self.clusterEpsNm = v          # triggers debounced re-cluster
+
+    @Slot(result=bool)
+    def exportTunedClusters(self) -> bool:
+        if (self._cl_labels is None or self._cl_xy_um is None
+                or self._cl_extras_dir is None):
+            self.warn.emit("No clusters loaded",
+                           "Load a run's cluster map, tune, then export.")
+            return False
+        import numpy as np
+        import pandas as pd
+        stem = self._cl_stem or "clusters"
+        cols = {"loc_index": np.arange(len(self._cl_labels), dtype=np.int64),
+                "x_um": np.asarray(self._cl_xy_um[:, 0], dtype=float),
+                "y_um": np.asarray(self._cl_xy_um[:, 1], dtype=float),
+                "cluster_id": np.asarray(self._cl_labels, dtype=np.int64)}
+        if self._cl_motion is not None and len(self._cl_motion) == len(self._cl_labels):
+            cols["motion"] = self._cl_motion
+        lpath = os.path.join(self._cl_extras_dir, f"{stem}_cluster_labels_tuned.csv")
+        spath = os.path.join(self._cl_extras_dir, f"{stem}_cluster_stats_tuned.csv")
+        try:
+            pd.DataFrame(cols).to_csv(lpath, index=False)
+            if self._cl_stats_df is not None and len(self._cl_stats_df):
+                self._cl_stats_df.to_csv(spath, index=False)
+        except Exception as exc:
+            self.warn.emit("Export failed", str(exc))
+            return False
+        self._cl_status = f"Exported → {os.path.basename(lpath)} (+ stats)"
+        self.clusterChanged.emit()
+        return True
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Super-resolution reconstruction
+    # ═════════════════════════════════════════════════════════════════════
+    @Property(int, notify=srChanged)
+    def srPixelNm(self):
+        return self._sr_nm
+
+    @srPixelNm.setter
+    def srPixelNm(self, v):
+        v = max(2, int(v))
+        if v != self._sr_nm:
+            self._sr_nm = v
+            self.srChanged.emit()
+
+    @Property(int, notify=srChanged)
+    def srBlurNm(self):
+        return self._sr_blur
+
+    @srBlurNm.setter
+    def srBlurNm(self, v):
+        v = max(0, int(v))
+        if v != self._sr_blur:
+            self._sr_blur = v
+            self.srChanged.emit()
+
+    @Property(str, notify=srChanged)
+    def srStatus(self):
+        return self._sr_status
+
+    @Property(bool, notify=srChanged)
+    def hasSuperresRender(self):
+        return self._sr_img is not None
+
+    @Slot()
+    def renderSuperres(self):
+        import numpy as np
+        df = self._tracks_df
+        if df is None or not len(df) or not {"x", "y"} <= set(df.columns):
+            self._sr_status = "Load a run or trajectories first."
+            self.srChanged.emit()
+            return
+        from firefly.analysis.fa_render import render_superres
+        px = float(self._cl_px_um or 1.0)
+        sr_nm = float(self._sr_nm)
+        x, y = df["x"].to_numpy(), df["y"].to_numpy()
+        try:
+            img = render_superres(x, y, px, sr_nm=sr_nm, blur_nm=float(self._sr_blur))
+        except Exception as exc:
+            self._sr_status = f"Render failed: {exc}"
+            self.srChanged.emit()
+            return
+        self._sr_img = img
+        scale = (sr_nm / 1000.0) / px
+        try:
+            self.ensureViewer().set_superres(
+                img, scale=scale, translate=(float(np.nanmin(y)), float(np.nanmin(x))))
+        except Exception as exc:
+            self._sr_status = f"Layer add failed: {exc}"
+            self.srChanged.emit()
+            return
+        self._sr_status = (f"{img.shape[1]}×{img.shape[0]} px @ {int(sr_nm)} nm/px "
+                           f"({len(x):,} locs)")
+        self._after_background_change()
+        self.srChanged.emit()
+
+    @Slot(result=bool)
+    def saveSuperres(self) -> bool:
+        import numpy as np
+        if self._sr_img is None:
+            return False
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            None, "Save super-resolution PNG", "superres.png", "PNG image (*.png)")
+        if not path:
+            return False
+        try:
+            import matplotlib.image as mpimg
+            img = self._sr_img
+            vmax = float(np.percentile(img[img > 0], 99.5)) if (img > 0).any() else 1.0
+            mpimg.imsave(path, img, cmap="inferno", vmin=0.0,
+                         vmax=max(vmax, 1e-9), origin="lower")
+            self._sr_status = f"Saved {os.path.basename(path)}"
+            self.srChanged.emit()
+            return True
+        except Exception as exc:
+            self._sr_status = f"Save failed: {exc}"
+            self.srChanged.emit()
+            return False
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Track explorer
+    # ═════════════════════════════════════════════════════════════════════
+    _EXP_KNOWN_MOTION = ("Immobile", "Confined", "Brownian", "Directed")
+
+    def _build_explorer_data(self):
+        import numpy as np
+        tracks, diff = self._tracks_df, self._diff_df
+        if tracks is None or not len(tracks) or "particle" not in tracks.columns:
+            self._exp_df = None
+            self._exp_rows = []
+            self._exp_count = "Load a run to explore tracks."
+            self.explorerChanged.emit()
+            return
+        df = tracks.groupby("particle").size().rename("length").reset_index()
+        if diff is not None and "particle" in getattr(diff, "columns", []):
+            cols = [c for c in ("particle", "D", "alpha", "motion") if c in diff.columns]
+            df = df.merge(diff[cols], on="particle", how="left")
+        for c in ("D", "alpha"):
+            if c not in df.columns:
+                df[c] = np.nan
+        if "motion" not in df.columns:
+            df["motion"] = "Unclassified"
+        df["motion"] = df["motion"].astype(str)
+        self._exp_df = df
+        self.refreshExplorer()
+
+    @Slot()
+    def refreshExplorer(self):
+        import pandas as pd
+        d = self._exp_df
+        if d is None or not len(d):
+            self._exp_rows = []
+            self._exp_count = "Load a run to explore tracks."
+            self.explorerChanged.emit()
+            return
+        keep = {m for m, on in self._exp_motion.items() if on}
+        known = d["motion"].isin(self._EXP_KNOWN_MOTION)
+        mask = ((d["length"] >= self._exp_min_len)
+                & (d["D"].isna() | d["D"].between(self._exp_d_min, self._exp_d_max))
+                & (d["alpha"].isna() | d["alpha"].between(self._exp_a_min, self._exp_a_max))
+                & ((~known) | d["motion"].isin(keep)))
+        filt = d[mask]
+        self._exp_filtered = filt
+        CAP = 1500
+        rows = []
+        for _, row in filt.head(CAP).iterrows():
+            dv, av = row["D"], row["alpha"]
+            rows.append({
+                "particle": int(row["particle"]),
+                "length": int(row["length"]),
+                "d": float(dv) if pd.notna(dv) else None,
+                "alpha": float(av) if pd.notna(av) else None,
+                "motion": str(row["motion"])})
+        self._exp_rows = rows
+        n = len(filt)
+        self._exp_count = (f"{n:,} of {len(d):,} tracks"
+                           + (f" (showing first {CAP:,})" if n > CAP else ""))
+        self.explorerChanged.emit()
+
+    @Property("QVariantList", notify=explorerChanged)
+    def explorerRows(self):
+        return self._exp_rows
+
+    @Property(str, notify=explorerChanged)
+    def explorerCount(self):
+        return self._exp_count
+
+    def _exp_setter(self, attr, v, cast):
+        v = cast(v)
+        if getattr(self, attr) != v:
+            setattr(self, attr, v)
+            self.explorerFiltersChanged.emit()
+            self._explorer_timer.start()
+
+    @Property(float, notify=explorerFiltersChanged)
+    def expDMin(self):
+        return self._exp_d_min
+
+    @expDMin.setter
+    def expDMin(self, v):
+        self._exp_setter("_exp_d_min", v, float)
+
+    @Property(float, notify=explorerFiltersChanged)
+    def expDMax(self):
+        return self._exp_d_max
+
+    @expDMax.setter
+    def expDMax(self, v):
+        self._exp_setter("_exp_d_max", v, float)
+
+    @Property(float, notify=explorerFiltersChanged)
+    def expAMin(self):
+        return self._exp_a_min
+
+    @expAMin.setter
+    def expAMin(self, v):
+        self._exp_setter("_exp_a_min", v, float)
+
+    @Property(float, notify=explorerFiltersChanged)
+    def expAMax(self):
+        return self._exp_a_max
+
+    @expAMax.setter
+    def expAMax(self, v):
+        self._exp_setter("_exp_a_max", v, float)
+
+    @Property(int, notify=explorerFiltersChanged)
+    def expMinLen(self):
+        return self._exp_min_len
+
+    @expMinLen.setter
+    def expMinLen(self, v):
+        self._exp_setter("_exp_min_len", v, lambda x: max(1, int(x)))
+
+    @Slot(str, bool)
+    def setExpMotion(self, motion: str, on: bool):
+        if motion in self._exp_motion and self._exp_motion[motion] != bool(on):
+            self._exp_motion[motion] = bool(on)
+            self.explorerFiltersChanged.emit()
+            self._explorer_timer.start()
+
+    @Property("QVariantMap", notify=explorerFiltersChanged)
+    def expMotionMask(self):
+        return dict(self._exp_motion)
+
+    @Slot(result=bool)
+    def exportFilteredTracks(self) -> bool:
+        f = self._exp_filtered
+        if f is None or not len(f):
+            return False
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            None, "Export filtered tracks", "filtered_tracks.csv", "CSV (*.csv)")
+        if not path:
+            return False
+        try:
+            f.to_csv(path, index=False)
+            self._exp_count = f"Exported {len(f):,} tracks → {os.path.basename(path)}"
+            self.explorerChanged.emit()
+            return True
+        except Exception as exc:
+            self.warn.emit("Export failed", str(exc))
+            return False

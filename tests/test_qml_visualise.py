@@ -118,7 +118,76 @@ def test_visualise_pick_to_inspector(tmp_path):
     assert insp["motion"] == "Brownian" and "d" in insp and "length" in insp
     assert seen == ["track"]
     c._viewer.clusterClicked.emit(-1)
-    assert c.inspector["mode"] == "cluster" and c.inspector["note"] == "Noise point"
+    assert c.inspector["mode"] == "cluster" and "Noise point" in c.inspector["note"]
+
+
+def _add_cluster_labels(run_dir):
+    """Add a firefly_extras/cell1_cluster_labels.csv to an existing run."""
+    import numpy as np, pandas as pd, os
+    extras = os.path.join(run_dir, "firefly_extras")
+    rng = np.random.default_rng(2)
+    # two tight blobs + scatter (µm coords)
+    a = rng.normal((1.0, 1.0), 0.05, (40, 2))
+    b = rng.normal((3.0, 3.0), 0.05, (40, 2))
+    noise = rng.uniform(0, 4, (20, 2))
+    xy = np.vstack([a, b, noise])
+    pd.DataFrame({"loc_index": np.arange(len(xy)),
+                  "x_um": xy[:, 0], "y_um": xy[:, 1],
+                  "cluster_id": [0] * 40 + [1] * 40 + [-1] * 20,
+                  "motion": ["Brownian"] * 40 + ["Immobile"] * 40 + ["Unknown"] * 20}
+                 ).to_csv(os.path.join(extras, "cell1_cluster_labels.csv"), index=False)
+
+
+def test_visualise_clusters_load_recluster_suggest(tmp_path):
+    pytest.importorskip("sklearn")
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    run = _make_run(tmp_path)
+    _add_cluster_labels(run)
+    c = VisualiseController()
+    assert c.loadClustersFolder(run) is True
+    assert c.hasClusters and c.clusterCount >= 2
+    # cluster pick → inspector with dominant-motion note
+    c._viewer.clusterClicked.emit(0)
+    assert c.inspector["mode"] == "cluster" and c.inspector["cluster_id"] == 0
+    # recluster with a tiny eps shatters the blobs into noise/fewer clusters
+    c.clusterMinSamples = 5
+    c.recluster()
+    assert isinstance(c.clusterCount, int)
+    c.suggestEps()
+    assert 5 <= c.clusterEpsNm <= 2000
+    # export tuned labels
+    assert c.exportTunedClusters() is True
+    import os
+    assert os.path.isfile(os.path.join(run, "firefly_extras",
+                                       "cell1_cluster_labels_tuned.csv"))
+
+
+def test_visualise_superres_render(tmp_path):
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController()
+    c.loadRunFolder(_make_run(tmp_path))
+    c.srPixelNm = 30
+    c.renderSuperres()
+    assert c.hasSuperresRender
+    assert "Super-resolution" in c.backgroundOptions
+
+
+def test_visualise_explorer_filters(tmp_path):
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController()
+    c.loadRunFolder(_make_run(tmp_path))
+    assert len(c.explorerRows) == 8
+    cols = set(c.explorerRows[0].keys())
+    assert {"particle", "length", "d", "alpha", "motion"} <= cols
+    # filter to only Brownian → half the tracks
+    c.setExpMotion("Immobile", False)
+    c.refreshExplorer()
+    assert all(r["motion"] == "Brownian" for r in c.explorerRows)
+    assert len(c.explorerRows) == 4
+    # min-length above the track length → empty
+    c.expMinLen = 999
+    c.refreshExplorer()
+    assert c.explorerRows == []
 
 
 def test_visualise_motion_colour_mode(tmp_path):
