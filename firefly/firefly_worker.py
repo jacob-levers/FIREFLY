@@ -2591,6 +2591,34 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # Best-effort: don't let a stats-computation hiccup break the run
         pass
 
+    # ── Super-resolution reconstruction (deliverable) ────────────────────
+    # Render the full localisation cloud into a high-res image — the canonical
+    # PALM/STORM output.  Derived artifact: a failure must never break the run.
+    try:
+        if locs is not None and len(locs) and {"x", "y"} <= set(locs.columns):
+            from firefly.analysis.fa_render import render_superres
+            import matplotlib.image as _mpimg
+            try:
+                _field = (int(proj_sample.shape[-2]), int(proj_sample.shape[-1]))
+            except Exception:
+                _field = None
+            _sr = render_superres(
+                locs["x"].to_numpy(), locs["y"].to_numpy(), px,
+                sr_nm=float(p.get("superres_nm", 20.0) or 20.0),
+                blur_nm=float(p.get("superres_blur_nm", 20.0) or 20.0),
+                field_px=_field)
+            if _sr.size > 1 and (_sr > 0).any():
+                _vmax = max(float(np.percentile(_sr[_sr > 0], 99.5)), 1e-9)
+                os.makedirs(fig_dir, exist_ok=True)
+                _sr_path = os.path.join(fig_dir, f"{stem}_superres.png")
+                _mpimg.imsave(_sr_path, _sr, cmap="inferno",
+                              vmin=0.0, vmax=_vmax, origin="lower")
+                summary["superres_png"] = os.path.basename(_sr_path)
+                _log(f"  Saved (figures/): super-resolution reconstruction "
+                     f"({_sr.shape[1]}×{_sr.shape[0]} px)")
+    except Exception as _sr_exc:
+        _log(f"  WARN: super-resolution render failed: {_sr_exc}")
+
     # ── Quality-control metrics ──────────────────────────────────────────
     # Cheap to compute from data we already have; surfaced as a QC panel
     # in the GUI so the user can catch dud runs at a glance.
