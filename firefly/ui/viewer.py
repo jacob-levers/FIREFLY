@@ -239,6 +239,7 @@ class FireflyViewer(QtWidgets.QWidget):
         self._stack = None
         self._levels = (0.0, 1.0)
         self._frame_pix_cache: dict[int, QtGui.QPixmap] = {}
+        self._pix_cache_cap = 256                          # frames; sized in set_stack
         self._track_items: dict[str, QtWidgets.QGraphicsPathItem] = {}
         self._track_pick: dict[str, tuple] = {}
         self._class_visible: dict[str, bool] = {}
@@ -321,6 +322,9 @@ class FireflyViewer(QtWidgets.QWidget):
         self._levels = _robust_levels(arr[arr.shape[0] // 2])
         self._frame_pix_cache.clear()
         h, w = arr.shape[1], arr.shape[2]
+        # Bound the frame-pixmap cache to ~250 MB regardless of frame size, so a
+        # large movie can't OOM (a 2048² frame → ~16 MB pixmap → ~16 frames).
+        self._pix_cache_cap = max(8, int(2.5e8 / (h * w * 4 + 1)))
         self._scene.setSceneRect(0, 0, w, h)
         self._update_time_axis(reset=True)
         self._show_time(0)
@@ -383,7 +387,7 @@ class FireflyViewer(QtWidgets.QWidget):
             if pix is None:
                 pix = QtGui.QPixmap.fromImage(
                     _gray_qimage(self._stack[j], self._levels))
-                if len(self._frame_pix_cache) >= 1024:   # bound memory
+                if len(self._frame_pix_cache) >= self._pix_cache_cap:
                     self._frame_pix_cache.clear()
                 self._frame_pix_cache[j] = pix
             if self._img_item is None:
