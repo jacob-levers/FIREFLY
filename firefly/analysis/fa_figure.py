@@ -150,6 +150,14 @@ def _close_figs_on_error(fn):
 
 
 @_close_figs_on_error
+def reflow_grid(n):
+    """(rows, cols) the single-sample combined figure packs `n` selected panels
+    into — the single source of truth shared with the UI panel-picker's live
+    grid count.  One column for a lone panel, else the compare-grid rule."""
+    c = 1 if n == 1 else (3 if n > 4 else 2)
+    return ((n + c - 1) // c, c)
+
+
 def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 pixel_size, frame_interval, output_path=None, roi_mask=None,
                 fig_theme="Dark", proj_cmap="Inferno", jdd=None,
@@ -265,8 +273,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     else:
         _chosen = [k for k in _all_keys if k in _sel]  # canonical A→Q order
         _n = len(_chosen)
-        _nc = 1 if _n == 1 else (3 if _n > 4 else 2)   # match the compare grid
-        _nr = (_n + _nc - 1) // _nc
+        _nr, _nc = reflow_grid(_n)
         _H = max(1, _nr) * (38.0 / 6.0)                # ~6.33 inches per row
         fig.set_size_inches(20.0 * _nc / 3.0, _H)
         # Headroom for the suptitle scales with the (now shorter) figure so it

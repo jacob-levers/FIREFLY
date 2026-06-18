@@ -48,17 +48,17 @@ _LOGD_STYLE_DISP = {v: k for k, v in _LOGD_STYLE_MAP.items()}
 
 
 def _cmp_panel_grid(n):
-    """(rows, cols) the comparison figure uses for n panels — mirrors
-    fa_compare.compare_groups so the picker's live count is truthful."""
-    c = 3 if n > 4 else 2
-    return ((n + c - 1) // c, c)
+    """(rows, cols) the comparison figure uses — delegates to the renderer's
+    own helper so the picker's live count can never drift out of sync."""
+    from firefly.analysis.fa_compare import comparison_grid
+    return comparison_grid(n)
 
 
 def _single_panel_grid(n):
-    """(rows, cols) the single-sample combined figure uses for n panels —
-    mirrors the subset reflow in fa_figure.make_figure."""
-    c = 1 if n == 1 else (3 if n > 4 else 2)
-    return ((n + c - 1) // c, c)
+    """(rows, cols) the single-sample combined figure uses — delegates to the
+    renderer's own helper (single source of truth)."""
+    from firefly.analysis.fa_figure import reflow_grid
+    return reflow_grid(n)
 
 
 class BuildMixin:
@@ -2352,7 +2352,7 @@ class BuildMixin:
             return page, col
 
         _ss_page, _ssv = _tab_with_preview(self.lbl_fig_preview_single,
-                                           "Single-sample figure")
+                                           "Single-sample figure  ·  example data")
         _batch_page, _batchv = _tab_with_preview(None, "")
         _cmp_page, _cmpv = _tab_with_preview(self.lbl_fig_preview_compare,
                                              "Comparison figure")
@@ -2561,9 +2561,12 @@ class BuildMixin:
         self._figpreview_timer.setSingleShot(True)
         self._figpreview_timer.setInterval(120)
         self._figpreview_timer.timeout.connect(self._refresh_figures_preview)
-        for w in (self.c_fig_theme, self.c_fig_proj_cmap, self.c_cmp_theme):
-            w.currentTextChanged.connect(
-                lambda _=None: self._figpreview_timer.start())
+        # Only the comparison theme drives a live preview now: the single-sample
+        # preview is a fixed real-data example map, so the single-sample theme /
+        # projection-colormap dropdowns don't change it (they still style the
+        # actual output figure).
+        self.c_cmp_theme.currentTextChanged.connect(
+            lambda _=None: self._figpreview_timer.start())
         # Toggling a single-sample panel greys / un-greys it in the preview map.
         for _cb in self._single_panel_checkboxes.values():
             _cb.toggled.connect(lambda _=None: self._figpreview_timer.start())

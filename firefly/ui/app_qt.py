@@ -710,7 +710,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
                             fig, np, rng, BG, PNL, TXT, GRD)
                     else:
                         self._render_single_sample_preview(
-                            fig, np, rng, BG, PNL, TXT, GRD, ACC, proj)
+                            fig, np, rng, BG, PNL, TXT, GRD, ACC)
                     fig.savefig(buf, format="png", facecolor=BG, dpi=save_dpi,
                                 bbox_inches="tight")
             except Exception as exc:
@@ -759,7 +759,7 @@ class MainWindow(QtWidgets.QMainWindow, VisualiseMixin, CompareMixin, BatchMixin
         return super().eventFilter(obj, event)
 
     def _render_single_sample_preview(self, fig, np, rng,
-                                       BG, PNL, TXT, GRD, ACC, proj_cmap):
+                                       BG, PNL, TXT, GRD, ACC):
         """Thumbnail map of EVERY single-sample panel (A–Q) in the real grid
         layout.  A panel that is currently DESELECTED in the picker is drawn in
         greyscale, so at a glance you see which panels the combined figure will

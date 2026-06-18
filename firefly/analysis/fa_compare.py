@@ -856,6 +856,13 @@ def render_logd_preview(fig, style, theme="Dark"):
         pass
 
 
+def comparison_grid(n):
+    """(rows, cols) the comparison figure packs `n` panels into — the single
+    source of truth shared with the UI panel-picker's live grid count."""
+    c = 3 if n > 4 else 2
+    return ((n + c - 1) // c, c)
+
+
 def compare_groups(groups,
                    output_dir=None, output_stem="comparison",
                    panels=None, theme="Dark",
@@ -1090,8 +1097,7 @@ def compare_groups(groups,
         print(f"  Compare: 'radial_dist' NOT in requested panels — "
               f"check the 'Radial distribution (polar)' tickbox in the "
               f"Compare tab to include it.")
-    ncols = 3 if n_plots > 4 else 2
-    nrows = (n_plots + ncols - 1) // ncols
+    nrows, ncols = comparison_grid(n_plots)
 
     # Quick-glance summary-band geometry (the band itself is drawn after the
     # suptitle, below).  Size it in ABSOLUTE inches and grow the figure height to
