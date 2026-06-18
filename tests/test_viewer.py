@@ -128,3 +128,68 @@ def test_empty_df_is_graceful():
     out = v.set_tracks_from_df(pd.DataFrame(), {}, {"Unknown": "#777"})
     assert out == {}
     assert v.class_names() == []
+
+
+def _tracks_df(n_particles=6, length=10):
+    rows = []
+    for pid in range(n_particles):
+        f = np.arange(pid, pid + length)         # staggered start frames
+        rows.append(pd.DataFrame({"particle": pid, "frame": f,
+                                  "x": np.linspace(0, 40, length) + pid,
+                                  "y": np.linspace(0, 30, length)}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def _head_count(v):
+    if v._head_item is None:
+        return 0
+    return sum(poly.count() for _, poly in v._head_item._groups)
+
+
+def test_timeline_comes_from_tracks_when_no_stack():
+    v = _viewer()
+    df = _tracks_df()
+    v.set_tracks_from_df(df, {p: "Brownian" for p in range(6)},
+                         {"Brownian": "#0a0", "Unknown": "#777"})
+    assert v.n_frames == int(df["frame"].max()) + 1     # 15, no raw stack needed
+
+
+def test_head_markers_track_the_current_frame():
+    v = _viewer()
+    df = _tracks_df()
+    v.set_tracks_from_df(df, {p: "Brownian" for p in range(6)},
+                         {"Brownian": "#0a0", "Unknown": "#777"})
+    v.current_frame = 7
+    assert _head_count(v) == int((df["frame"] == 7).sum())
+    v.current_frame = 0
+    assert _head_count(v) == int((df["frame"] == 0).sum())
+
+
+def test_play_pause_and_fps_control_the_timer():
+    v = _viewer()
+    v.set_stack(np.zeros((30, 20, 20), "float32"))
+    v._fps_spin.setValue(10)
+    v._play_btn.setChecked(True)
+    assert v._play_timer.isActive()
+    assert v._play_timer.interval() == 100          # 1000 / 10 fps
+    v._fps_spin.setValue(20)
+    assert v._play_timer.interval() == 50
+    v._play_btn.setChecked(False)
+    assert not v._play_timer.isActive()
+
+
+def test_advance_wraps_around():
+    v = _viewer()
+    v.set_stack(np.zeros((12, 16, 16), "float32"))
+    v.current_frame = v.n_frames - 1
+    v._advance()
+    assert v.current_frame == 0
+
+
+def test_axis_is_max_of_stack_and_tracks():
+    v = _viewer()
+    df = _tracks_df()                                # frames up to 14
+    v.set_tracks_from_df(df, {p: "Brownian" for p in range(6)},
+                         {"Brownian": "#0a0", "Unknown": "#777"})
+    v.set_stack(np.zeros((40, 30, 30), "float32"))
+    assert v.n_frames == max(40, int(df["frame"].max()) + 1)

@@ -11,9 +11,13 @@ napari removed — bespoke Qt viewers; numpy 2 / Python 3.13.
   `QPainter` + numpy) — no napari, no pyqtgraph, no vispy. This drops napari
   and its tree (magicgui, npe2, superqt, qtpy, dask, lxml_html_clean) and ends
   the private-API coupling that broke across napari versions.
-  - **`FireflyViewer`** (`firefly/ui/viewer.py`) — image stack + frame slider,
-    per-motion-class track polylines, cluster-points overlay, additive
-    super-resolution overlay, click-to-inspect, wheel-zoom / drag-pan.
+  - **`FireflyViewer`** (`firefly/ui/viewer.py`) — image stack with a timeline
+    **playback bar** (scrub + play/pause + adjustable fps) on a unified time
+    axis driven by the movie *and* the tracks, so the timeline works even when
+    only tracks (no raw movie) are loaded; per-motion-class track polylines with
+    moving current-frame position markers; cluster-points overlay; additive
+    super-resolution overlay; click-to-inspect; wheel-zoom / drag-pan.
+    (Restores the scrub/play/fps that napari's dims slider provided.)
   - **`RoiEditor`** (`firefly/ui/roi_editor.py`) — interactive draggable-vertex
     polygon editing, trackpy detection preview, bandpass "Filtered view",
     max-projection overlay, and the live auto/manual-threshold ROI mask.

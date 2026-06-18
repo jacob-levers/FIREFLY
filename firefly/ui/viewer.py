@@ -205,11 +205,22 @@ class FireflyViewer(QtWidgets.QWidget):
         self._point_ids = None
         self._sr_item: _AdditivePixmapItem | None = None
         self._img_item: QtWidgets.QGraphicsPixmapItem | None = None
+        self._track_frames: dict[str, np.ndarray] = {}   # per-vertex frame, ⟂ pick
+        self._head_item: _PointsItem | None = None        # current-frame markers
+        self._n_time = 0                                   # length of the time axis
+        self._max_track_frame = -1
 
         self._scene = QtWidgets.QGraphicsScene(self)
         self._scene.setBackgroundBrush(QtGui.QColor(background))
         self._view = _SceneView(self._scene, self)
         self._view.sceneClicked.connect(self._on_scene_clicked)
+
+        # ── playback bar: play/pause + scrub slider + fps ─────────────────
+        self._play_btn = QtWidgets.QToolButton()
+        self._play_btn.setText("▶")
+        self._play_btn.setCheckable(True)
+        self._play_btn.setToolTip("Play / pause the sequence (space)")
+        self._play_btn.toggled.connect(self._on_play_toggled)
 
         self._slider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
         self._slider.setMinimum(0)
@@ -220,11 +231,22 @@ class FireflyViewer(QtWidgets.QWidget):
         self._frame_lbl.setMinimumWidth(72)
         self._frame_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        self._fps_spin = QtWidgets.QSpinBox()
+        self._fps_spin.setRange(1, 60)
+        self._fps_spin.setValue(7)
+        self._fps_spin.setSuffix(" fps")
+        self._fps_spin.setToolTip("Playback frame rate")
+        self._fps_spin.valueChanged.connect(self._on_fps_changed)
+
+        self._play_timer = QtCore.QTimer(self)
+        self._play_timer.timeout.connect(self._advance)
+
         bar = QtWidgets.QHBoxLayout()
         bar.setContentsMargins(4, 2, 4, 2)
-        bar.addWidget(QtWidgets.QLabel("Frame"))
+        bar.addWidget(self._play_btn)
         bar.addWidget(self._slider, 1)
         bar.addWidget(self._frame_lbl)
+        bar.addWidget(self._fps_spin)
         self._bar_widget = QtWidgets.QWidget()
         self._bar_widget.setLayout(bar)
         self._bar_widget.setVisible(False)
@@ -249,14 +271,8 @@ class FireflyViewer(QtWidgets.QWidget):
         self._levels = _robust_levels(arr[arr.shape[0] // 2])
         h, w = arr.shape[1], arr.shape[2]
         self._scene.setSceneRect(0, 0, w, h)
-        n = arr.shape[0]
-        self._slider.blockSignals(True)
-        self._slider.setMaximum(max(0, n - 1))
-        self._slider.setValue(0)
-        self._slider.setEnabled(n > 1)
-        self._slider.blockSignals(False)
-        self._bar_widget.setVisible(n > 1)
-        self._show_frame(0)
+        self._update_time_axis(reset=True)
+        self._show_time(0)
         if autorange:
             self.reset_view()
 
@@ -265,12 +281,34 @@ class FireflyViewer(QtWidgets.QWidget):
             self._scene.removeItem(self._img_item)
             self._img_item = None
         self._stack = None
-        self._slider.setMaximum(0)
-        self._bar_widget.setVisible(False)
+        self._update_time_axis()
+
+    # ── time axis (stack frames ∪ track frames) + playback ────────────────
+    def _stack_len(self) -> int:
+        return 0 if self._stack is None else int(self._stack.shape[0])
+
+    def _update_time_axis(self, *, reset=False):
+        """Recompute the time-axis length from the loaded stack AND tracks,
+        and (re)size the scrub slider.  The bar shows whenever there's more
+        than one time step from EITHER source — so the timeline works even
+        when only tracks (no raw movie) are loaded."""
+        n = max(self._stack_len(), self._max_track_frame + 1)
+        self._n_time = n
+        cur = self._slider.value()
+        self._slider.blockSignals(True)
+        self._slider.setMaximum(max(0, n - 1))
+        self._slider.setValue(0 if reset else min(cur, max(0, n - 1)))
+        self._slider.setEnabled(n > 1)
+        self._slider.blockSignals(False)
+        self._play_btn.setEnabled(n > 1)
+        self._fps_spin.setEnabled(n > 1)
+        self._bar_widget.setVisible(n > 1)
+        if n <= 1 and self._play_btn.isChecked():
+            self._play_btn.setChecked(False)
 
     @property
     def n_frames(self) -> int:
-        return 0 if self._stack is None else int(self._stack.shape[0])
+        return int(self._n_time)
 
     @property
     def current_frame(self) -> int:
@@ -278,33 +316,80 @@ class FireflyViewer(QtWidgets.QWidget):
 
     @current_frame.setter
     def current_frame(self, i: int):
-        if self._stack is None:
+        if self._n_time <= 0:
             return
-        self._slider.setValue(int(max(0, min(self.n_frames - 1, i))))
+        self._slider.setValue(int(max(0, min(self._n_time - 1, i))))
 
     def _on_slider(self, i: int):
-        self._show_frame(int(i))
+        self._show_time(int(i))
         self.frameChanged.emit(int(i))
 
-    def _show_frame(self, i: int):
-        if self._stack is None:
-            return
-        i = int(max(0, min(self.n_frames - 1, i)))
-        pix = QtGui.QPixmap.fromImage(_gray_qimage(self._stack[i], self._levels))
-        if self._img_item is None:
-            self._img_item = self._scene.addPixmap(pix)
-            self._img_item.setZValue(0)
+    def _show_time(self, t: int):
+        t = int(max(0, min(max(0, self._n_time - 1), t)))
+        if self._stack is not None:
+            j = min(t, self._stack_len() - 1)
+            pix = QtGui.QPixmap.fromImage(
+                _gray_qimage(self._stack[j], self._levels))
+            if self._img_item is None:
+                self._img_item = self._scene.addPixmap(pix)
+                self._img_item.setZValue(0)
+            else:
+                self._img_item.setPixmap(pix)
+        self._refresh_heads(t)
+        self._frame_lbl.setText(f"{t + 1}/{max(1, self._n_time)}")
+
+    def _on_play_toggled(self, on: bool):
+        if on and self._n_time > 1:
+            self._play_timer.start(max(16, 1000 // int(self._fps_spin.value())))
+            self._play_btn.setText("❚❚")
         else:
-            self._img_item.setPixmap(pix)
-        self._frame_lbl.setText(f"{i + 1}/{self.n_frames}")
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+
+    def _on_fps_changed(self, fps: int):
+        if self._play_timer.isActive():
+            self._play_timer.start(max(16, 1000 // int(fps)))
+
+    def _advance(self):
+        if self._n_time <= 1:
+            return
+        self._slider.setValue((self._slider.value() + 1) % self._n_time)
+
+    def _refresh_heads(self, t: int):
+        """Draw a bright marker at each visible track's position at frame t,
+        so scrubbing / playback animates the particles over the static tracks."""
+        if self._head_item is not None:
+            self._scene.removeItem(self._head_item)
+            self._head_item = None
+        xs, ys = [], []
+        for cls, (xy, _pid) in self._track_pick.items():
+            if not self._class_visible.get(cls, True):
+                continue
+            fr = self._track_frames.get(cls)
+            if fr is None or not len(fr):
+                continue
+            m = fr == t
+            if m.any():
+                xs.append(xy[m, 0])
+                ys.append(xy[m, 1])
+        if not xs:
+            return
+        X = np.concatenate(xs)
+        Y = np.concatenate(ys)
+        item = _PointsItem(X, Y, [QtGui.QColor(255, 255, 255, 235)] * len(X), 7)
+        item.setZValue(15)
+        self._scene.addItem(item)
+        self._head_item = item
 
     # ─────────────────────────────────────────────────────────────────────
     # Tracks
     # ─────────────────────────────────────────────────────────────────────
     def _add_track_item(self, cls, trajs, color, width):
+        """trajs: list of (pid, yx_array, frames_array_or_None)."""
         path = QtGui.QPainterPath()
-        pick_xy, pick_pid = [], []
-        for pid, traj in trajs:
+        pick_xy, pick_pid, pick_fr = [], [], []
+        have_frames = True
+        for pid, traj, frames in trajs:
             t = np.asarray(traj, dtype=float)
             if t.ndim != 2 or t.shape[0] < 2:
                 continue
@@ -314,6 +399,10 @@ class FireflyViewer(QtWidgets.QWidget):
                 path.lineTo(float(x[k]), float(y[k]))
             pick_xy.append(np.column_stack([x, y]))
             pick_pid.append(np.full(len(x), int(pid), np.int64))
+            if frames is None:
+                have_frames = False
+            else:
+                pick_fr.append(np.asarray(frames))
         if path.isEmpty():
             return
         item = QtWidgets.QGraphicsPathItem(path)
@@ -328,6 +417,8 @@ class FireflyViewer(QtWidgets.QWidget):
         self._class_visible[cls] = True
         self._track_pick[cls] = (np.concatenate(pick_xy),
                                  np.concatenate(pick_pid))
+        if have_frames and pick_fr:
+            self._track_frames[cls] = np.concatenate(pick_fr)
 
     def set_tracks(self, tracks_by_class: dict, colors: dict, *, width=1.5):
         """Render per-class trajectories.  ``tracks_by_class``:
@@ -336,8 +427,9 @@ class FireflyViewer(QtWidgets.QWidget):
         self.clear_tracks()
         for cls, trajs in tracks_by_class.items():
             self._add_track_item(
-                cls, list(enumerate(trajs)),
+                cls, [(i, tr, None) for i, tr in enumerate(trajs)],
                 colors.get(cls, colors.get("Unknown", "#888")), width)
+        self._update_time_axis()
 
     def set_tracks_from_df(self, df, motion_map: dict, colors: dict, *,
                            min_len: int = 1, width=1.5):
@@ -357,7 +449,8 @@ class FireflyViewer(QtWidgets.QWidget):
             cls = str(motion_map.get(int(pid), "Unknown"))
             by_class.setdefault(cls, []).append(
                 (int(pid), np.column_stack([g["y"].to_numpy(float),
-                                            g["x"].to_numpy(float)])))
+                                            g["x"].to_numpy(float)]),
+                 g["frame"].to_numpy()))
         for cls in _order_classes(by_class.keys()):
             trajs = by_class.get(cls)
             if not trajs:
@@ -365,7 +458,17 @@ class FireflyViewer(QtWidgets.QWidget):
             self._add_track_item(cls, trajs,
                                  colors.get(cls, colors.get("Unknown", "#888")),
                                  width)
-            out[cls] = set(int(pid) for pid, _ in trajs)
+            out[cls] = set(int(pid) for pid, _, _ in trajs)
+        # Tracks define their own time axis (frame range), so the timeline +
+        # playback work even when no raw movie is loaded.
+        try:
+            self._max_track_frame = max(
+                (int(fr.max()) for fr in self._track_frames.values() if len(fr)),
+                default=-1)
+        except Exception:
+            self._max_track_frame = -1
+        self._update_time_axis()
+        self._refresh_heads(self.current_frame)
         return out
 
     def set_class_visible(self, cls: str, visible: bool):
@@ -373,6 +476,7 @@ class FireflyViewer(QtWidgets.QWidget):
         if item is not None:
             item.setVisible(bool(visible))
             self._class_visible[cls] = bool(visible)
+            self._refresh_heads(self.current_frame)
 
     def class_names(self) -> list:
         return list(self._track_items.keys())
@@ -386,6 +490,15 @@ class FireflyViewer(QtWidgets.QWidget):
         self._track_items.clear()
         self._track_pick.clear()
         self._class_visible.clear()
+        self._track_frames.clear()
+        self._max_track_frame = -1
+        if self._head_item is not None:
+            try:
+                self._scene.removeItem(self._head_item)
+            except Exception:
+                pass
+            self._head_item = None
+        self._update_time_axis()
 
     def recolor_tracks(self, colors: dict, *, width=1.5):
         for cls, item in self._track_items.items():
