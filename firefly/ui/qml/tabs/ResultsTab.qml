@@ -59,16 +59,19 @@ Flickable {
 
         // figure + right column
         GridLayout {
+            id: resGrid
             Layout.fillWidth: true
             columns: width < 880 ? 1 : 2
             columnSpacing: sc.sp6
             rowSpacing: sc.sp6
+            readonly property real splitGap: sc.sp6
 
             // figure card
             Card {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 420
                 Layout.minimumWidth: 360
+                Layout.maximumWidth: resGrid.columns === 2 ? (resGrid.width - resGrid.splitGap) * 0.6 : resGrid.width
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: sc.sp4
@@ -110,6 +113,7 @@ Flickable {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.minimumWidth: 320
+                Layout.maximumWidth: resGrid.columns === 2 ? (resGrid.width - resGrid.splitGap) * 0.4 : resGrid.width
                 Layout.alignment: Qt.AlignTop
                 spacing: sc.sp6
 
@@ -168,7 +172,8 @@ Flickable {
                                     }
                                     Text { text: modelData.relPath; color: pal.TXT
                                            font.pixelSize: sc.textXs; font.family: "Menlo"
-                                           elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                           elide: Text.ElideMiddle; Layout.fillWidth: true
+                                           Layout.preferredWidth: 0 }
                                     Icon { name: "arrow-up-right"; size: 12; color: pal.TXT_MUTED }
                                 }
                                 HoverHandler { id: rowHov }

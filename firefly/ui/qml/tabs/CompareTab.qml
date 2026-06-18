@@ -21,11 +21,14 @@ Flickable {
         columnSpacing: sc.sp6
         rowSpacing: sc.sp6
 
+        readonly property real splitGap: sc.sp6
+
         // ── left: overlaid figure ────────────────────────────────────────
         Card {
             Layout.fillWidth: true
             Layout.preferredHeight: 460
             Layout.minimumWidth: 360
+            Layout.maximumWidth: grid.columns === 2 ? (grid.width - grid.splitGap) * 0.6 : grid.width
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: sc.sp4
@@ -68,7 +71,7 @@ Flickable {
                     Badge { text: Compare.pValueLabel
                             tone: Compare.significant ? pal.SUCCESS : pal.TXT_MUTED; dot: true }
                     Text { text: Compare.testLabel; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
-                           elide: Text.ElideRight; Layout.fillWidth: true }
+                           elide: Text.ElideRight; Layout.fillWidth: true; Layout.preferredWidth: 0 }
                 }
             }
         }
@@ -77,6 +80,7 @@ Flickable {
         ColumnLayout {
             Layout.fillWidth: true
             Layout.minimumWidth: 300
+            Layout.maximumWidth: grid.columns === 2 ? (grid.width - grid.splitGap) * 0.4 : grid.width
             Layout.alignment: Qt.AlignTop
             spacing: sc.sp6
 
@@ -109,6 +113,8 @@ Flickable {
                                             Layout.alignment: Qt.AlignVCenter }
                                 FieldInput {
                                     Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
+                                    Layout.minimumWidth: 0
                                     text: modelData.name
                                     onEditingFinished: Compare.setLabel(modelData.id, text)
                                 }
@@ -134,7 +140,8 @@ Flickable {
                                         anchors.rightMargin: sc.sp2; spacing: sc.sp2
                                         Icon { name: "folder-plus"; size: 13; color: pal.TXT_MUTED }
                                         Text { text: "Drop run folders, or"; color: pal.TXT_MUTED
-                                               font.pixelSize: sc.textXs; Layout.fillWidth: true }
+                                               font.pixelSize: sc.textXs; Layout.fillWidth: true
+                                               Layout.preferredWidth: 0; elide: Text.ElideRight }
                                         Text { text: "Browse…"; color: pal.ACC; font.pixelSize: sc.textXs
                                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                                            onClicked: Compare.browseAddFolder(modelData.id) } }
@@ -176,7 +183,7 @@ Flickable {
                             required property var modelData
                             Layout.fillWidth: true
                             Text { text: modelData.groupLabel; color: pal.TXT; font.pixelSize: sc.textXs
-                                   elide: Text.ElideRight; Layout.fillWidth: true }
+                                   elide: Text.ElideRight; Layout.fillWidth: true; Layout.preferredWidth: 0 }
                             Text { text: modelData.d; color: pal.TXT; font.pixelSize: sc.textXs
                                    font.family: "Menlo"; Layout.preferredWidth: 56 }
                             Text { text: modelData.a; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
@@ -197,7 +204,7 @@ Flickable {
                     Text { text: Compare.outputDir || "(choose a folder)"
                            color: Compare.outputDir ? pal.TXT : pal.TXT_MUTED
                            font.pixelSize: sc.textXs; font.family: "Menlo"
-                           elide: Text.ElideMiddle; Layout.fillWidth: true }
+                           elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredWidth: 0 }
                     Button { variant: "secondary"; text: "Choose…"; icon: "folder-open"
                              onClicked: Compare.browseOutputDir() }
                 }
@@ -213,7 +220,8 @@ Flickable {
                         onClicked: Compare.running ? Compare.stop() : Compare.generate()
                     }
                     Text { text: Compare.status; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
-                           Layout.alignment: Qt.AlignVCenter; elide: Text.ElideRight; Layout.fillWidth: true }
+                           Layout.alignment: Qt.AlignVCenter; elide: Text.ElideRight
+                           Layout.fillWidth: true; Layout.preferredWidth: 0 }
                 }
             }
         }
