@@ -67,7 +67,8 @@ class VisualiseController(QObject):
         self._motion_pids: dict = {}
         self._class_visible: dict = {}     # class → bool (persists across loads)
         self._min_len = 1
-        self._motion_mode = "Default"
+        self._motion_mode = (settings.get_str("visualise/motion_colours", "Default")
+                             if settings else "Default")
         self._layers: list = []
         self._inspector: dict = {"mode": "none"}
         self._inspector_visible = False
@@ -86,7 +87,8 @@ class VisualiseController(QObject):
         self._cl_present = False
         self._cl_eps_nm = 50
         self._cl_min_samples = 8
-        self._cl_point_size = 3
+        self._cl_point_size = (int(settings.get_float("visualise/cluster_point_size", 3))
+                               if settings else 3)
         self._cl_color_mode = "Motion"
         self._cl_count = 0
         self._cl_status = ""
@@ -472,6 +474,9 @@ class VisualiseController(QObject):
     def motionColourMode(self, mode):
         if mode in _MOTION_COLOUR_THEMES and mode != self._motion_mode:
             self._motion_mode = mode
+            if self._s:
+                try:    self._s.set("visualise/motion_colours", mode)
+                except Exception: pass
             self.motionColourModeChanged.emit()
             if self._viewer is not None:
                 try:    self._viewer.recolor_tracks(self._palette())
@@ -674,6 +679,9 @@ class VisualiseController(QObject):
         v = max(1, int(v))
         if v != self._cl_point_size:
             self._cl_point_size = v
+            if self._s:
+                try:    self._s.set("visualise/cluster_point_size", v)
+                except Exception: pass
             self.clusterChanged.emit()
             if self._cl_present:
                 self._render_cluster_layer()
