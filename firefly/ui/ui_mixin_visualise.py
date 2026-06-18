@@ -1145,6 +1145,66 @@ class VisualiseMixin:
             f"Exported → {os.path.basename(labels_path)} (+ stats); "
             f"Analysis eps/min-samples updated.")
 
+    def _ws_render_superres(self):
+        """Render the loaded localisations into a super-resolution image layer,
+        scaled + positioned to overlay the raw image in the napari viewer."""
+        df = getattr(self, "_ws_tracks_df", None)
+        v = getattr(self, "_napari_viewer", None)
+        if v is None:
+            return
+        if df is None or not len(df) or not {"x", "y"} <= set(df.columns):
+            self._ws_sr_status.setText("Load a run or trajectories first.")
+            return
+        from firefly.analysis.fa_render import render_superres
+        px = float(getattr(self, "_ws_cluster_pixel_size_um", 1.0) or 1.0)
+        sr_nm = float(self._ws_sr_nm.value())
+        blur_nm = float(self._ws_sr_blur.value())
+        x = df["x"].to_numpy(); y = df["y"].to_numpy()
+        try:
+            img = render_superres(x, y, px, sr_nm=sr_nm, blur_nm=blur_nm)
+        except Exception as exc:
+            self._ws_sr_status.setText(f"Render failed: {exc}")
+            return
+        self._ws_sr_img = img
+        _scale = (sr_nm / 1000.0) / px          # SR-pixel size in camera-px units
+        _ty, _tx = float(np.nanmin(y)), float(np.nanmin(x))
+        name = "Super-resolution"
+        try:
+            if name in v.layers:
+                del v.layers[name]
+        except Exception:
+            pass
+        try:
+            v.add_image(img, name=name, colormap="inferno", blending="additive",
+                        scale=(_scale, _scale), translate=(_ty, _tx))
+        except Exception as exc:
+            self._ws_sr_status.setText(f"Layer add failed: {exc}")
+            return
+        self.btn_ws_save_sr.setEnabled(True)
+        self._ws_sr_status.setText(
+            f"{img.shape[1]}×{img.shape[0]} px @ {int(sr_nm)} nm/px "
+            f"({len(x):,} locs)")
+
+    def _ws_save_superres(self):
+        """Save the last-rendered super-resolution image as a PNG."""
+        img = getattr(self, "_ws_sr_img", None)
+        if img is None:
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save super-resolution PNG", "superres.png",
+            "PNG image (*.png)")
+        if not path:
+            return
+        try:
+            import matplotlib.image as _mpimg
+            vmax = (float(np.percentile(img[img > 0], 99.5))
+                    if (img > 0).any() else 1.0)
+            _mpimg.imsave(path, img, cmap="inferno", vmin=0.0,
+                          vmax=max(vmax, 1e-9), origin="lower")
+            self._ws_sr_status.setText(f"Saved {os.path.basename(path)}")
+        except Exception as exc:
+            self._ws_sr_status.setText(f"Save failed: {exc}")
+
     def _ws_load_run_folder(self, run_dir: str):
         """Load a complete FIREFLY analysis run:  finds the stack via the
         params.json (if present) and the matching trajectories.csv from

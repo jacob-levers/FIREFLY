@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.73.0"
+__version__ = "2.74.0"
+# v2.74.0 — super-resolution reconstruction: every run saves a *_superres.png
+#   (Gaussian/histogram render of the localisation cloud), plus an interactive
+#   live-tunable layer on the Visualise tab (overlaid on the raw image).
 # v2.73.0 — hardening: regression tests for the figure-defaults code; QC flags
 #   surfacing the DBSCAN sub-sample / skipped-ROI / dense-field auto-threshold
 #   caveats; figure-preview polish (dead proj-cmap trigger removed, shared grid).

@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.74.0
+
+Super-resolution reconstruction.
+
+### Added
+
+- **Super-resolution reconstruction** — a high-resolution render of the
+  localisation cloud (2-D histogram on a fine grid, Gaussian-blurred to the
+  localisation precision), the canonical PALM/STORM image.
+  - Every analysis run now saves `figures/<stem>_superres.png` (controlled by
+    `superres_nm` / `superres_blur_nm`, default 20 nm), recorded in the run's
+    summary metrics.
+  - The **Visualise tab** gains a live "Super-resolution" control group —
+    adjustable output pixel size + blur, a "Render" button that overlays the
+    reconstruction on the raw image as a napari layer, and "Save PNG…". Uses the
+    loaded run's localisations and pixel size.
+  - The renderer (`firefly/analysis/fa_render.py`) is a shared, Qt-free,
+    unit-tested function used by both paths.
+
 ## v2.73.0
 
 Hardening and polish after the v2.72 figure overhaul.

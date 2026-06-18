@@ -1651,6 +1651,9 @@ class BuildMixin:
         sec_clu  = _CollapsibleSection("Cluster (DBSCAN)")
         sec_clu.content_layout.addWidget(self._vis_dbscan_widget)
         vp_v.addWidget(sec_clu)
+        sec_sr = _CollapsibleSection("Super-resolution")
+        sec_sr.content_layout.addWidget(self._vis_superres_widget)
+        vp_v.addWidget(sec_sr)
         vp_v.addStretch(1)
         vp_scroll.setWidget(vp_inner)
         vp_outer.addWidget(vp_scroll)
@@ -3759,6 +3762,37 @@ class BuildMixin:
         self._ws_eps_slider.valueChanged.connect(_on_eps_changed)
         self._ws_minsamp_spin.valueChanged.connect(
             lambda _: self._ws_dbscan_debounce.start())
+
+        # ── Super-resolution render controls (re-parented into the sidebar) ──
+        self._vis_superres_widget = QtWidgets.QWidget()
+        sr_form = QtWidgets.QFormLayout(self._vis_superres_widget)
+        self._ws_sr_nm = QtWidgets.QSpinBox()
+        self._ws_sr_nm.setRange(2, 200); self._ws_sr_nm.setValue(20)
+        self._ws_sr_nm.setSuffix(" nm/px")
+        self._ws_sr_nm.setToolTip(
+            "Super-resolution output pixel size.  Smaller = finer detail (and a\n"
+            "larger image); 10–20 nm is typical for PALM/STORM.")
+        sr_form.addRow("Pixel size", self._ws_sr_nm)
+        self._ws_sr_blur = QtWidgets.QSpinBox()
+        self._ws_sr_blur.setRange(0, 200); self._ws_sr_blur.setValue(20)
+        self._ws_sr_blur.setSuffix(" nm")
+        self._ws_sr_blur.setToolTip(
+            "Gaussian blur sigma (≈ localisation precision).  0 = raw histogram.")
+        sr_form.addRow("Blur σ", self._ws_sr_blur)
+        self.btn_ws_render_sr = QtWidgets.QPushButton("Render super-resolution")
+        self.btn_ws_render_sr.setToolTip(
+            "Render the loaded localisations into a super-resolution image layer\n"
+            "overlaid on the viewer (load a run or trajectories first).")
+        self.btn_ws_render_sr.clicked.connect(self._ws_render_superres)
+        sr_form.addRow(self.btn_ws_render_sr)
+        self.btn_ws_save_sr = QtWidgets.QPushButton("Save PNG…")
+        self.btn_ws_save_sr.setEnabled(False)
+        self.btn_ws_save_sr.clicked.connect(self._ws_save_superres)
+        sr_form.addRow(self.btn_ws_save_sr)
+        self._ws_sr_status = QtWidgets.QLabel("")
+        self._ws_sr_status.setStyleSheet("color: #888;")
+        self._ws_sr_status.setWordWrap(True)
+        sr_form.addRow(self._ws_sr_status)
 
         # ── Viewer container ─────────────────────────────────────────────
         # Filled lazily on first tab activation.
