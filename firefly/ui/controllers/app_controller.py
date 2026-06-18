@@ -1,0 +1,54 @@
+"""AppController — top-level navigation state for the QML shell.
+
+Owns which page is showing (landing vs the main tabbed UI) and the active tab.
+The QML header/tab-bar binds to these; tiles/pills call the slots.
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import QObject, Property, Signal, Slot
+
+# Tab order mirrors the Widgets app (ui_constants TAB_*).
+TABS = ["Import", "Analysis", "Compare", "Results", "Visualise"]
+
+
+class AppController(QObject):
+    pageChanged = Signal()
+    tabChanged = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._page = "landing"      # "landing" | "main"
+        self._tab = 0
+
+    @Property(str, notify=pageChanged)
+    def page(self):
+        return self._page
+
+    @Property(int, notify=tabChanged)
+    def currentTab(self):
+        return self._tab
+
+    @Property("QStringList", constant=True)
+    def tabs(self):
+        return list(TABS)
+
+    @Slot(int)
+    def enterMain(self, tab: int):
+        if 0 <= tab < len(TABS) and tab != self._tab:
+            self._tab = tab
+            self.tabChanged.emit()
+        if self._page != "main":
+            self._page = "main"
+            self.pageChanged.emit()
+
+    @Slot()
+    def goLanding(self):
+        if self._page != "landing":
+            self._page = "landing"
+            self.pageChanged.emit()
+
+    @Slot(int)
+    def setTab(self, tab: int):
+        if 0 <= tab < len(TABS) and tab != self._tab:
+            self._tab = tab
+            self.tabChanged.emit()
