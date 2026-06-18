@@ -136,7 +136,10 @@ def build_params(settings, importc, fpath: str | None = None,
     g = settings
     if fpath is None:
         fpath = importc.filePath
-    is_csv = bool(getattr(importc, "isCsv", False))
+    # Derive is_csv from the actual file being built (correct for batch, where
+    # fpath is a series file, not importc's single Import-tab file).
+    is_csv = (str(fpath).lower().endswith((".csv", ".txt", ".tsv")) if fpath
+              else bool(getattr(importc, "isCsv", False)))
     if out_dir is None:
         out_dir = importc.outDir or (
             os.path.dirname(fpath) if (is_csv and fpath) else None)
