@@ -306,8 +306,11 @@ class FireflyViewer(QtWidgets.QWidget):
         self._point_item: _PointsItem | None = None
         self._point_xy = None
         self._point_ids = None
-        self._sr_item: _AdditivePixmapItem | None = None
         self._img_item: QtWidgets.QGraphicsPixmapItem | None = None
+        # selectable background sources for the base layer
+        self._maxproj = None                  # lazily computed from the stack
+        self._sr = None                       # (img, scale, (ty, tx)) or None
+        self._bg_mode = "Raw movie"
         self._track_frames: dict[str, np.ndarray] = {}   # per-vertex frame, ⟂ pick
         self._n_time = 0                                   # length of the time axis
         self._max_track_frame = -1
@@ -393,11 +396,20 @@ class FireflyViewer(QtWidgets.QWidget):
         row2 = QtWidgets.QHBoxLayout()
         row2.setContentsMargins(4, 0, 4, 2)
         row2.setSpacing(8)
+        self._bg_combo = QtWidgets.QComboBox()
+        self._bg_combo.setToolTip(
+            "Background layer shown beneath the tracks:\n"
+            "Raw movie (per-frame) · Max projection · Super-resolution · Off.")
+        self._bg_combo.currentTextChanged.connect(self._on_bg_changed)
+        self._bg_combo.setVisible(False)
+
         row2.addWidget(QtWidgets.QLabel("Tracks:"))
         row2.addWidget(self._width_spin)
         row2.addWidget(self._tail_spin)
         row2.addWidget(self._head_spin)
         row2.addStretch(1)
+        row2.addWidget(QtWidgets.QLabel("Background:"))
+        row2.addWidget(self._bg_combo)
         barv = QtWidgets.QVBoxLayout()
         barv.setContentsMargins(0, 0, 0, 0)
         barv.setSpacing(0)
@@ -430,9 +442,10 @@ class FireflyViewer(QtWidgets.QWidget):
         # Bound the frame-pixmap cache to ~250 MB regardless of frame size, so a
         # large movie can't OOM (a 2048² frame → ~16 MB pixmap → ~16 frames).
         self._pix_cache_cap = max(8, int(2.5e8 / (h * w * 4 + 1)))
+        self._maxproj = None
         self._scene.setSceneRect(0, 0, w, h)
         self._update_time_axis(reset=True)
-        self._show_time(0)
+        self._update_bg_options()           # registers Raw/Max + applies the bg
         if autorange:
             self.reset_view()
 
@@ -441,6 +454,8 @@ class FireflyViewer(QtWidgets.QWidget):
             self._scene.removeItem(self._img_item)
             self._img_item = None
         self._stack = None
+        self._maxproj = None
+        self._update_bg_options()
         self._update_time_axis()
 
     # ── time axis (stack frames ∪ track frames) + playback ────────────────
@@ -486,7 +501,9 @@ class FireflyViewer(QtWidgets.QWidget):
 
     def _show_time(self, t: int):
         t = int(max(0, min(max(0, self._n_time - 1), t)))
-        if self._stack is not None:
+        # Only the Raw-movie background animates per frame; Max projection /
+        # Super-resolution / Off are static, set once by _apply_background.
+        if self._bg_mode == "Raw movie" and self._stack is not None:
             j = min(t, self._stack_len() - 1)
             pix = self._frame_pix_cache.get(j)
             if pix is None:
@@ -495,14 +512,71 @@ class FireflyViewer(QtWidgets.QWidget):
                 if len(self._frame_pix_cache) >= self._pix_cache_cap:
                     self._frame_pix_cache.clear()
                 self._frame_pix_cache[j] = pix
-            if self._img_item is None:
-                self._img_item = self._scene.addPixmap(pix)
-                self._img_item.setZValue(0)
-            else:
-                self._img_item.setPixmap(pix)
+            self._set_base_pixmap(pix, None)
         self._apply_tail_windows(t)
         self._refresh_heads(t)
         self._frame_lbl.setText(f"{t + 1}/{max(1, self._n_time)}")
+
+    # ── selectable background layer ───────────────────────────────────────
+    def _set_base_pixmap(self, pix, transform):
+        if self._img_item is None:
+            self._img_item = self._scene.addPixmap(pix)
+            self._img_item.setZValue(0)
+        else:
+            self._img_item.setPixmap(pix)
+        self._img_item.setVisible(True)
+        self._img_item.setTransform(transform or QtGui.QTransform())
+
+    def _maxproj_array(self):
+        if self._maxproj is None and self._stack is not None:
+            self._maxproj = self._stack.max(axis=0)
+        return self._maxproj
+
+    def _update_bg_options(self):
+        """Rebuild the Background combo from what's available + apply it."""
+        opts = []
+        if self._stack is not None:
+            opts += ["Raw movie", "Max projection"]
+        if self._sr is not None:
+            opts.append("Super-resolution")
+        opts.append("Off")
+        if self._bg_mode not in opts:
+            self._bg_mode = opts[0]
+        self._bg_combo.blockSignals(True)
+        self._bg_combo.clear()
+        self._bg_combo.addItems(opts)
+        self._bg_combo.setCurrentText(self._bg_mode)
+        self._bg_combo.blockSignals(False)
+        self._bg_combo.setVisible(len(opts) > 1)
+        self._apply_background()
+
+    def _on_bg_changed(self, text: str):
+        if text:
+            self._bg_mode = text
+            self._apply_background()
+
+    def _apply_background(self):
+        mode = self._bg_mode
+        if mode == "Max projection":
+            mp = self._maxproj_array()
+            if mp is not None:
+                self._set_base_pixmap(
+                    QtGui.QPixmap.fromImage(_gray_qimage(mp, _robust_levels(mp))),
+                    None)
+        elif mode == "Super-resolution" and self._sr is not None:
+            img, scale, (ty, tx) = self._sr
+            tr = QtGui.QTransform()
+            tr.translate(tx, ty)
+            tr.scale(scale, scale)
+            self._set_base_pixmap(
+                QtGui.QPixmap.fromImage(
+                    _lut_qimage(img, "inferno", _robust_levels(img, 0, 99.5))),
+                tr)
+        elif mode == "Off":
+            if self._img_item is not None:
+                self._img_item.setVisible(False)
+        # "Raw movie" base is drawn per-frame by _show_time.
+        self._show_time(self.current_frame)
 
     def _apply_tail_windows(self, t: int):
         tail = int(self._tail_spin.value())
@@ -728,38 +802,27 @@ class FireflyViewer(QtWidgets.QWidget):
         self._point_ids = None
 
     # ─────────────────────────────────────────────────────────────────────
-    # Super-resolution overlay
+    # Super-resolution (a selectable background layer)
     # ─────────────────────────────────────────────────────────────────────
     def set_superres(self, img, *, scale=1.0, translate=(0.0, 0.0),
                      cmap="inferno", opacity=0.9):
-        """Add a super-res image as an additive overlay.  ``scale`` is raw px
-        per super-res px; ``translate`` is the ``(ty, tx)`` origin offset."""
-        self.clear_superres()
-        arr = np.asarray(img, float)
-        lo, hi = _robust_levels(arr, 0, 99.5)
-        qimg = _lut_qimage(arr, cmap, (lo, hi))
-        item = _AdditivePixmapItem(QtGui.QPixmap.fromImage(qimg))
-        item.setOpacity(float(opacity))
-        ty, tx = translate
-        tr = QtGui.QTransform()
-        tr.translate(float(tx), float(ty))
-        tr.scale(float(scale), float(scale))
-        item.setTransform(tr)
-        item.setZValue(5)
-        self._scene.addItem(item)
-        self._sr_item = item
+        """Store a super-res reconstruction and show it as the background.
+        ``scale`` is raw px per super-res px; ``translate`` is ``(ty, tx)``.
+        Adds a "Super-resolution" entry to the Background selector."""
+        self._sr = (np.asarray(img, float), float(scale),
+                    (float(translate[0]), float(translate[1])))
+        self._bg_mode = "Super-resolution"
+        self._update_bg_options()
 
     def clear_superres(self):
-        if self._sr_item is not None:
-            try:
-                self._scene.removeItem(self._sr_item)
-            except Exception:
-                pass
-        self._sr_item = None
+        self._sr = None
+        if self._bg_mode == "Super-resolution":
+            self._bg_mode = "Raw movie" if self._stack is not None else "Off"
+        self._update_bg_options()
 
     @property
     def has_superres(self) -> bool:
-        return self._sr_item is not None
+        return self._sr is not None
 
     # ─────────────────────────────────────────────────────────────────────
     # Camera
@@ -773,7 +836,8 @@ class FireflyViewer(QtWidgets.QWidget):
             self._view.centerOn(float(x), float(y))
 
     def reset_view(self):
-        rect = (self._img_item.sceneBoundingRect() if self._img_item is not None
+        rect = (self._img_item.sceneBoundingRect()
+                if self._img_item is not None and self._img_item.isVisible()
                 else self._scene.itemsBoundingRect())
         if rect.isValid() and rect.width() > 0 and rect.height() > 0:
             self._view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)

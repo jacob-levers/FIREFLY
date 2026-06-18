@@ -19,10 +19,11 @@ napari removed — bespoke Qt viewers; numpy 2 / Python 3.13.
     markers, the way napari's Tracks layer did — so playback shows the particles
     moving instead of every full track at once, with live controls for track
     **width**, **tail** length (frames behind) and **head** length (frames
-    ahead);
-    cluster-points overlay; additive super-resolution overlay; click-to-inspect;
-    wheel-zoom / drag-pan. (Restores the scrub/play/fps that napari's dims
-    slider provided.)
+    ahead); a **Background** selector for the base layer (Raw movie /
+    Max projection / Super-resolution / Off — super-res is now a selectable
+    background rather than a fixed overlay); cluster-points overlay;
+    click-to-inspect; wheel-zoom / drag-pan. (Restores the scrub/play/fps that
+    napari's dims slider provided.)
   - **`RoiEditor`** (`firefly/ui/roi_editor.py`) — interactive draggable-vertex
     polygon editing, trackpy detection preview, bandpass "Filtered view",
     max-projection overlay, and the live auto/manual-threshold ROI mask.

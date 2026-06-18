@@ -98,6 +98,25 @@ def test_points_take_priority_over_tracks():
     assert v.pick_at(10.0, 10.0, tol=2.0) == ("cluster", 55)
 
 
+def test_background_selector():
+    v = _viewer()
+    v.set_stack(np.random.default_rng(0).random((6, 16, 16)).astype("float32"))
+    opts = [v._bg_combo.itemText(i) for i in range(v._bg_combo.count())]
+    assert opts == ["Raw movie", "Max projection", "Off"]
+    assert v._bg_mode == "Raw movie" and v._img_item.isVisible()
+    v._bg_combo.setCurrentText("Max projection")
+    assert v._bg_mode == "Max projection" and v._maxproj is not None
+    assert v._img_item.isVisible()
+    v._bg_combo.setCurrentText("Off")
+    assert not v._img_item.isVisible()
+    # rendering super-res adds it as a selectable, auto-shown background
+    v.set_superres(np.random.default_rng(1).random((32, 32)).astype("float32"),
+                   scale=0.5, translate=(2.0, 3.0))
+    opts = [v._bg_combo.itemText(i) for i in range(v._bg_combo.count())]
+    assert "Super-resolution" in opts and v._bg_mode == "Super-resolution"
+    assert v.has_superres
+
+
 def test_superres_overlay_add_clear():
     v = _viewer()
     assert v.has_superres is False
