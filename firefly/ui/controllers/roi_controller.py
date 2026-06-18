@@ -16,12 +16,23 @@ class RoiController(QObject):
     polygonsChanged = Signal()
     draftChanged = Signal()
     frameChanged = Signal(int)
+    editingChanged = Signal()
+    imageChanged = Signal()
+    statusMessage = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, store=None, parent=None):
         super().__init__(parent)
         self._editor = None
         self._polys: list = []          # list[list[(y, x)]]
         self._draft: list = []          # open polygon being drawn
+        # ── per-file manual-polygon editing (Phase 6c) ───────────────────
+        self._store = store
+        self._file = ""
+        self._image = None              # QImage max-projection background
+        self._img_w = 0
+        self._img_h = 0
+        self._img_token = 0
+        self._editing = False
 
     # ── editor lifecycle ─────────────────────────────────────────────────
     def ensureEditor(self):
@@ -134,6 +145,106 @@ class RoiController(QObject):
     def draftLength(self):
         return len(self._draft)
 
+    @Property("QVariantList", notify=draftChanged)
+    def draftPoints(self):
+        return [[y, x] for y, x in self._draft]
+
     @Property(bool, notify=draftChanged)
     def canClose(self):
         return len(self._draft) >= 3
+
+    # ── per-file editing over the input image (Phase 6c) ──────────────────
+    def roi_image(self):
+        """The current max-projection background QImage (read by the provider)."""
+        return self._image
+
+    @Property(bool, notify=editingChanged)
+    def editing(self):
+        return self._editing
+
+    @Property(int, notify=imageChanged)
+    def imageToken(self):
+        return self._img_token
+
+    @Property(int, notify=imageChanged)
+    def imageWidth(self):
+        return self._img_w
+
+    @Property(int, notify=imageChanged)
+    def imageHeight(self):
+        return self._img_h
+
+    @Property(bool, notify=imageChanged)
+    def hasImage(self):
+        return self._image is not None and not self._image.isNull()
+
+    @Property(str, notify=editingChanged)
+    def fileName(self):
+        import os
+        return os.path.basename(self._file) if self._file else ""
+
+    @Slot(str)
+    def editFile(self, path):
+        """Open the manual-polygon editor over ``path``'s max-projection, loading
+        any polygon already stored for that file."""
+        self._file = path or ""
+        self._load_background(self._file)
+        self._draft = []
+        existing = self._store.get(self._file) if self._store else None
+        self._polys = [[(float(y), float(x)) for y, x in poly]
+                       for poly in (existing or [])]
+        self._editing = True
+        self.polygonsChanged.emit()
+        self.draftChanged.emit()
+        self.editingChanged.emit()
+
+    def _load_background(self, path):
+        from firefly.ui.controllers.live_frame_provider import render_frame
+        self._image = None
+        self._img_w = self._img_h = 0
+        try:
+            import os
+            if not (path and os.path.isfile(path)):
+                return
+            from firefly.sptpalm_analysis import load_file
+            self.statusMessage.emit(f"Loading {os.path.basename(path)}…")
+            stack, _, _ = load_file(path, channel=0)
+            import numpy as np
+            arr = np.asarray(stack)
+            maxproj = arr.max(axis=0) if arr.ndim == 3 else arr
+            img = render_frame(maxproj.astype("float32"))
+            if not img.isNull():
+                self._image = img
+                self._img_w, self._img_h = img.width(), img.height()
+        except Exception as exc:
+            self.statusMessage.emit(f"Couldn't load image: {exc}")
+        finally:
+            self._img_token += 1
+            self.imageChanged.emit()
+
+    @Slot()
+    def commit(self):
+        """Store the drawn polygons under the current file and close the editor."""
+        if self._store is not None:
+            self._store.set(self._file, self._polys)
+        self._editing = False
+        self.editingChanged.emit()
+        self.statusMessage.emit(
+            f"{len(self._polys)} ROI polygon(s) saved" if self._polys
+            else "ROI cleared")
+
+    @Slot()
+    def cancel(self):
+        """Discard edits and close — revert to whatever was stored."""
+        existing = self._store.get(self._file) if self._store else None
+        self._polys = [[(float(y), float(x)) for y, x in poly]
+                       for poly in (existing or [])]
+        self._draft = []
+        self._editing = False
+        self.polygonsChanged.emit()
+        self.draftChanged.emit()
+        self.editingChanged.emit()
+
+    @Slot(str, result=bool)
+    def fileHasRoi(self, path):
+        return bool(self._store and self._store.has(path))

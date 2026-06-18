@@ -82,10 +82,11 @@ class AnalysisController(QObject):
     runFailed = Signal(str)
     runStopped = Signal()
 
-    def __init__(self, settings, importc, parent=None):
+    def __init__(self, settings, importc, roi_store=None, parent=None):
         super().__init__(parent)
         self._s = settings
         self._import = importc
+        self._roi_store = roi_store
 
         self._proc = None
         self._msg_queue = None
@@ -203,7 +204,8 @@ class AnalysisController(QObject):
             self.runFailed.emit("Pick an input file on the Import tab first.")
             return
 
-        params = params_builder.build_params(self._s, self._import)
+        params = params_builder.build_params(self._s, self._import,
+                                             roi_store=self._roi_store)
 
         # Histogram threshold: only meaningful with a manual minmass.
         self._minmass = (-1.0 if params.get("auto_minmass")

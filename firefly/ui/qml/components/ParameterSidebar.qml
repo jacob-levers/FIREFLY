@@ -42,6 +42,19 @@ ColumnLayout {
                     field: modelData
                 }
             }
+
+            // ROI section: manual-polygon editor entry point
+            Button {
+                visible: modelData.key === "roi"
+                         && (Sidebar.revision, Sidebar.get("analysis/roi_mode") === "Manual polygon")
+                width: parent ? parent.width : implicitWidth
+                variant: "secondary"
+                text: !Import.hasFile ? "Pick an image file to draw an ROI"
+                    : Roi.fileHasRoi(Import.filePath) ? "Edit polygon ROI ✓" : "Draw polygon ROI…"
+                icon: "move"
+                enabled: Import.hasFile && !Import.isCsv
+                onClicked: Roi.editFile(Import.filePath)
+            }
         }
     }
 }

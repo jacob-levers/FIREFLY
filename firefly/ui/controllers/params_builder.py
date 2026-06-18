@@ -122,14 +122,16 @@ def _i(settings, key, default):
 
 
 def build_params(settings, importc, fpath: str | None = None,
-                 out_dir: str | None = None) -> dict:
+                 out_dir: str | None = None, roi_store=None) -> dict:
     """Build the worker params dict from persisted settings + the Import tab.
 
     ``settings`` is a SettingsController (or any object with
     ``get_str/get_float/get_bool``); ``importc`` is the ImportController
     (file / out_dir / calibration + overrides).  ``fpath`` / ``out_dir`` default
     to the Import tab's current file / output (the latter falling back to beside
-    the input file, matching ``_start_single_run``).
+    the input file, matching ``_start_single_run``).  ``roi_store`` (optional) is
+    a per-file manual-polygon store; its polygon for ``fpath`` is sent as
+    ``roi_polygon`` regardless of ROI mode (parity with ``_build_params_for_file``).
     """
     g = settings
     if fpath is None:
@@ -197,7 +199,7 @@ def build_params(settings, importc, fpath: str | None = None,
         "roi_sister_suffix":     "_green",
         "roi_sister_autodetect": True,
         "roi_imagej_autodetect": (roi_mode == "imagej"),
-        "roi_polygon":    None,
+        "roi_polygon":    ((roi_store.get(fpath) if (roi_store and fpath) else None) or None),
         "drift_correct":  g.get_bool("analysis/drift_correct", _DEFAULTS["drift_correct"]),
         "drift_segment":  _i(g, "analysis/drift_segment", _DEFAULTS["drift_segment"]),
         "cluster_eps_nm": g.get_float("analysis/cluster_eps_nm", _DEFAULTS["cluster_eps_nm"]),

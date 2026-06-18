@@ -42,9 +42,11 @@ from firefly.ui.controllers.embed_controller import EmbedController
 from firefly.ui.controllers.results_controller import ResultsController
 from firefly.ui.controllers.compare_controller import CompareController
 from firefly.ui.controllers.sidebar_controller import SidebarController
+from firefly.ui.controllers.roi_store import RoiStore
 from firefly.ui.controllers.icon_provider import IconImageProvider
 from firefly.ui.controllers.live_frame_provider import LiveFrameProvider
 from firefly.ui.controllers.figure_image_provider import FigureImageProvider
+from firefly.ui.controllers.qimage_provider import QImageProvider
 from firefly.sptpalm_analysis import __version__
 
 
@@ -73,9 +75,10 @@ def build_main_window(app: QtWidgets.QApplication):
     appc = AppController()
     settings = SettingsController()
     importc = ImportController(settings)
-    analysis = AnalysisController(settings, importc)
+    roi_store = RoiStore()
+    analysis = AnalysisController(settings, importc, roi_store=roi_store)
     visualise = VisualiseController(settings, importc)
-    roi = RoiController()
+    roi = RoiController(roi_store)
     embed = EmbedController()
     results = ResultsController()
     comparec = CompareController(settings, results=results)
@@ -97,6 +100,7 @@ def build_main_window(app: QtWidgets.QApplication):
     qw.engine().addImageProvider("liveframe", LiveFrameProvider(analysis))
     qw.engine().addImageProvider("resultfig", FigureImageProvider(results))
     qw.engine().addImageProvider("comparefig", FigureImageProvider(comparec))
+    qw.engine().addImageProvider("roibg", QImageProvider(roi.roi_image))
     ctx = qw.rootContext()
     ctx.setContextProperty("Theme", theme)
     ctx.setContextProperty("App", appc)

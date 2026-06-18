@@ -74,6 +74,13 @@ Item {
         }
     }
 
+    // Manual-polygon ROI editor — a full-window modal shown while drawing.
+    Loader {
+        anchors.fill: parent
+        active: Roi.editing
+        sourceComponent: Component { RoiOverlay {} }
+    }
+
     // ── landing page ─────────────────────────────────────────────────
     Component {
         id: landingPage
