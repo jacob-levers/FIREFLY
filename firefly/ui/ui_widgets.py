@@ -2770,6 +2770,7 @@ class _RoiDialog(QtWidgets.QDialog):
         self.resize(1000, 760)
         self._file_path = file_path
         self._result_polygons: list[list[tuple[float, float]]] = []
+        self._editor = None
         self._viewer = None
         self._shapes_layer = None
 
@@ -2955,55 +2956,28 @@ class _RoiDialog(QtWidgets.QDialog):
 
     def _init_viewer(self, current_polygons):
         try:
-            import napari
+            from firefly.ui.roi_editor import RoiEditor
         except Exception as exc:
-            self._status.setText(
-                f"napari isn't installed: {exc}.\n"
-                f"Run `pip install \"napari[pyside6]>=0.4.19\"` and restart.")
+            self._status.setText(f"ROI editor failed to load: {exc}")
             return
-
         try:
-            self._viewer = napari.Viewer(show=False)
-            qt_window = self._viewer.window._qt_window
-            # Seal the OUTER container so napari's internal size hints
-            # can't propagate up and grow the parent FIREFLY window.
-            # Napari itself is left completely untouched — its dim
-            # slider / layer panel / canvas all work as designed.
-            _make_napari_container_layout_opaque(self._viewer_container)
-            self._viewer_layout.addWidget(qt_window)
-            _hide_napari_chrome(self._viewer)
+            self._editor = RoiEditor()
+            self._viewer_layout.addWidget(self._editor)
         except Exception as exc:
-            self._status.setText(f"Couldn't embed napari viewer: {exc}")
+            self._status.setText(f"Couldn't create the ROI editor: {exc}")
             return
 
         # Load just enough to render an ROI background.  No full-stack load,
         # no concat — see _quick_preview's docstring.  Synchronous on the
         # dialog's event loop but the read is tiny (~30 frames).
         try:
-            import numpy as _np
             mean_img = self._quick_preview(self._file_path, max_frames=30)
-            self._viewer.add_image(mean_img, name="ROI background",
-                                    colormap="gray")
-            # Shapes layer for the polygon
-            initial_shapes = [_np.asarray(poly)
-                              for poly in (current_polygons or [])]
-            self._shapes_layer = self._viewer.add_shapes(
-                data=initial_shapes if initial_shapes else None,
-                shape_type="polygon",
-                edge_color="#58a6ff",
-                face_color="rgba(88,166,255,0.18)",
-                edge_width=2,
-                name="ROI",
-            )
-            # Switch to polygon-add mode so the user can start drawing
-            try:
-                self._shapes_layer.mode = "add_polygon"
-            except Exception:
-                pass
+            self._editor.set_stack(mean_img, cmap="gray")   # 2-D background
+            self._editor.set_polygons(current_polygons or [])
             self._status.setText(
                 f"{mean_img.shape[1]} × {mean_img.shape[0]} px preview "
-                f"(quick load).  Draw polygon(s) on the ROI layer; "
-                "right-click or Esc to close each polygon.")
+                f"(quick load).  Draw polygon(s); right-click or Esc to "
+                "close each polygon.")
         except Exception as exc:
             import traceback as _tb
             self._status.setText(
@@ -3011,28 +2985,13 @@ class _RoiDialog(QtWidgets.QDialog):
                 f"{_tb.format_exc()}")
 
     def _polygons_from_layer(self) -> list[list[tuple[float, float]]]:
-        """Pull current polygon vertices out of the Shapes layer.
-        Each entry is a list of (y, x) tuples."""
-        polys: list[list[tuple[float, float]]] = []
-        if self._shapes_layer is None:
-            return polys
+        """Current polygon vertices as lists of (y, x) tuples."""
+        if self._editor is None:
+            return []
         try:
-            for shape_data, shape_type in zip(self._shapes_layer.data,
-                                              self._shapes_layer.shape_type):
-                if shape_type not in ("polygon", "rectangle", "ellipse"):
-                    continue
-                if shape_type == "polygon":
-                    polys.append([(float(y), float(x))
-                                  for y, x in shape_data])
-                else:
-                    # Rectangles / ellipses are stored as 4-vertex bounding
-                    # boxes; treat as polygons (rectangle is exact, ellipse
-                    # is approximated by its bounding box for now).
-                    polys.append([(float(y), float(x))
-                                  for y, x in shape_data])
+            return self._editor.polygons()
         except Exception:
-            pass
-        return polys
+            return []
 
     def _on_save(self):
         self._result_polygons = self._polygons_from_layer()
@@ -3072,7 +3031,8 @@ class _RoiViewer(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_file: str = ""
-        self._viewer = None
+        self._editor = None            # bespoke RoiEditor (replaces napari)
+        self._viewer = None            # vestigial — kept None
         self._shapes_layer = None
         self._image_layer  = None
         self._points_layer = None
@@ -3160,6 +3120,15 @@ class _RoiViewer(QtWidgets.QWidget):
             "internally, so what you see is closer to what the detector decides.")
         self._cb_filtered.toggled.connect(self._on_filtered_toggled)
         header.addWidget(self._cb_filtered)
+        # Max-projection anatomy overlay toggle (replaces napari's per-layer
+        # eye icon).  Off by default.
+        self._cb_maxproj = QtWidgets.QCheckBox("Max proj")
+        self._cb_maxproj.setToolTip(
+            "Overlay the max-projection across the sampled frames (inferno) —\n"
+            "reveals where the cells are so you know where to draw the ROI.")
+        self._cb_maxproj.toggled.connect(
+            lambda on: self._editor and self._editor.set_max_projection_visible(on))
+        header.addWidget(self._cb_maxproj)
         self._b_clear = QtWidgets.QPushButton("Clear polygons")
         self._b_clear.setToolTip(
             "Remove every polygon drawn on the current file's ROI.")
@@ -3197,107 +3166,28 @@ class _RoiViewer(QtWidgets.QWidget):
         self._viewer_layout.addWidget(self._placeholder)
         v.addWidget(self._viewer_container, stretch=1)
 
-    # ── Lazy napari init ─────────────────────────────────────────────────
+    # ── Lazy editor init ─────────────────────────────────────────────────
     def _ensure_viewer(self) -> bool:
-        if self._viewer is not None:
+        if self._editor is not None:
             return True
         try:
-            import napari
+            from firefly.ui.roi_editor import RoiEditor
         except Exception as exc:
-            self._status.setText(
-                f"napari not available: {exc} — install it to use the preview viewer.")
+            self._status.setText(f"ROI editor failed to load: {exc}")
             return False
         try:
-            self._viewer = napari.Viewer(show=False)
-            qt_window = self._viewer.window._qt_window
-            # Seal the OUTER container so napari's internal size hints
-            # can't propagate up and grow the parent FIREFLY window.
-            # Napari itself is left completely untouched.
-            _make_napari_container_layout_opaque(self._viewer_container)
+            self._editor = RoiEditor()
             self._viewer_layout.removeWidget(self._placeholder)
             self._placeholder.hide()
-            self._viewer_layout.addWidget(qt_window)
-            # Hide napari's "Drag image(s) here" welcome overlay + the
-            # bottom-of-canvas viewer-buttons row (ndisplay / grid / home /
-            # console / etc.) + the new-layer/delete buttons under the
-            # layer list — all visual noise for a viewer driven entirely
-            # programmatically by FIREFLY.
-            _hide_napari_chrome(self._viewer)
-            # Re-run detection when the user scrubs frames (idempotent)
-            if not self._dims_connected:
-                try:
-                    self._viewer.dims.events.current_step.connect(
-                        self._on_dims_changed)
-                    self._dims_connected = True
-                except Exception:
-                    pass
-            # Auto-recover if the user deletes a layer we own (e.g. the
-            # ROI shapes layer via napari's trash button).
-            try:
-                self._viewer.layers.events.removed.connect(
-                    self._on_layer_removed)
-            except Exception:
-                pass
+            self._viewer_layout.addWidget(self._editor)
+            # Auto-save polygons whenever they change; re-run detection on
+            # frame scrub.
+            self._editor.polygonsChanged.connect(self._on_shapes_changed)
+            self._editor.frameChanged.connect(self._on_dims_changed)
             return True
         except Exception as exc:
-            self._status.setText(f"Couldn't embed napari viewer: {exc}")
+            self._status.setText(f"Couldn't create the ROI editor: {exc}")
             return False
-
-    def _on_layer_removed(self, event):
-        """Recover from the user deleting one of our managed layers.
-
-        Shapes layer → recreate empty (so they can keep drawing polygons,
-        and let the host know the previous polygons are gone).
-        Image / points / mask layers → just null the stored reference;
-        the next set_file / detection run / mask-refresh will re-create
-        them lazily.
-        """
-        # Programmatic layer teardown (e.g. set_file clearing the old
-        # file's layers before loading a new one) sets this flag so we
-        # don't fight napari's iterator by reinserting layers mid-clear.
-        if self._suppress_layer_events:
-            return
-        try:
-            removed = getattr(event, "value", None)
-        except Exception:
-            removed = None
-        if removed is None or self._viewer is None:
-            return
-        if removed is self._shapes_layer:
-            try:
-                import numpy as _np
-                self._shapes_layer = self._viewer.add_shapes(
-                    data=None,
-                    shape_type="polygon",
-                    edge_color="#58a6ff",
-                    face_color="rgba(88,166,255,0.18)",
-                    edge_width=2,
-                    name="ROI",
-                )
-                try:    self._shapes_layer.mode = "add_polygon"
-                except Exception: pass
-                try:    self._shapes_layer.events.data.connect(
-                            self._on_shapes_changed)
-                except Exception: pass
-                # Notify host that polygons for the current file have
-                # been wiped (matches the napari state on disk).
-                if self._current_file:
-                    self.polygons_changed.emit(self._current_file, [])
-                self._status.setText(
-                    "ROI layer was deleted — recreated empty.  "
-                    "Draw a new polygon to set the ROI.")
-            except Exception:
-                self._shapes_layer = None
-            return
-        if removed is self._image_layer:
-            self._image_layer = None
-            return
-        if removed is self._points_layer:
-            self._points_layer = None
-            return
-        if removed is self._roi_mask_layer:
-            self._roi_mask_layer = None
-            return
 
     # ── Public API ───────────────────────────────────────────────────────
     def set_file(self, file_path: str,
@@ -3324,33 +3214,27 @@ class _RoiViewer(QtWidgets.QWidget):
         if not self._ensure_viewer():
             return
 
-        # Clear out any old layers from a previous file.  Wrap the clear
-        # in `_suppress_layer_events = True` so _on_layer_removed doesn't
-        # try to recreate layers MID-clear — that recursion is what
-        # froze the GUI when switching files.
-        self._suppress_layer_events = True
-        try:
-            try:    self._viewer.layers.clear()
-            except Exception: pass
-        finally:
-            self._suppress_layer_events = False
-        self._image_layer = None
-        self._shapes_layer = None
-        self._points_layer = None
+        # Reset overlays + caches for the new file (we own the editor's
+        # items directly, so there's no layer-iterator hazard).
         self._stack = None
         self._stack_filtered = None
         self._stack_preprocessed = None
         self._pp_signature = None
         self._last_mass = None
-        self._roi_mask_layer = None
-        self._max_proj_layer = None
-        # Reset the toggle silently so it doesn't fight the new image
         try:
-            self._cb_filtered.blockSignals(True)
-            self._cb_filtered.setChecked(False)
-            self._cb_filtered.blockSignals(False)
-        except AttributeError:
+            self._editor.clear_detections()
+            self._editor.clear_mask()
+            self._editor.clear_max_projection()
+            self._editor.clear_polygons(emit=False)
+        except Exception:
             pass
+        # Reset the view toggles silently so they don't fight the new image.
+        for cb in (getattr(self, "_cb_filtered", None),
+                   getattr(self, "_cb_maxproj", None)):
+            if cb is not None:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
 
         self._title.setText(f"Preview — {os.path.basename(file_path)}")
         self._status.setText("Loading preview…")
@@ -3359,55 +3243,16 @@ class _RoiViewer(QtWidgets.QWidget):
             import numpy as _np
             stack, _idx = _RoiDialog._quick_preview_stack(file_path, max_frames=30)
             self._stack = stack
-            # Percentile-based contrast so a few hot pixels don't blow out the
-            # display.  Sample a single mid-stack frame for speed.
-            sample = stack[stack.shape[0] // 2]
-            lo, hi = _np.percentile(sample, [1.0, 99.5])
-            if hi <= lo:
-                hi = lo + 1.0
-            self._image_layer = self._viewer.add_image(
-                stack, name="ROI background", colormap="gray",
-                contrast_limits=(float(lo), float(hi)))
-            # Anatomy layer — max projection across the sampled frames.
-            # Individual frames in sptPALM data are mostly sparse blinks
-            # on noise: hard to see where the cells actually are.  The
-            # max projection reveals the underlying structure (each pixel
-            # = its brightest moment over the sample) so the user knows
-            # where to draw a manual polygon AND can sanity-check the
-            # auto-threshold mask against true anatomy.  Off by default
-            # (eye icon toggles it) so it doesn't surprise users used to
-            # the old single-layer view.
+            self._editor.set_stack(stack, cmap="gray")
+            # Anatomy layer — max projection across the sampled frames; off
+            # by default (the "Max proj" checkbox toggles it).  Reveals where
+            # the cells are for drawing + sanity-checking the auto-mask.
             try:
-                max_proj = stack.max(axis=0).astype(_np.float32)
-                lo_m, hi_m = _np.percentile(max_proj, [1.0, 99.5])
-                if hi_m <= lo_m:
-                    hi_m = lo_m + 1.0
-                self._max_proj_layer = self._viewer.add_image(
-                    max_proj, name="Max projection",
-                    colormap="inferno",
-                    contrast_limits=(float(lo_m), float(hi_m)),
-                    opacity=0.85, visible=False, blending="additive")
-            except Exception:
-                self._max_proj_layer = None
-            initial_shapes = [_np.asarray(poly)
-                              for poly in (current_polygons or [])]
-            self._shapes_layer = self._viewer.add_shapes(
-                data=initial_shapes if initial_shapes else None,
-                shape_type="polygon",
-                edge_color="#58a6ff",
-                face_color="rgba(88,166,255,0.18)",
-                edge_width=2,
-                name="ROI",
-            )
-            try:
-                self._shapes_layer.mode = "add_polygon"
+                self._editor.set_max_projection(
+                    stack.max(axis=0).astype(_np.float32))
             except Exception:
                 pass
-            # Auto-save: emit whenever the shapes layer changes
-            try:
-                self._shapes_layer.events.data.connect(self._on_shapes_changed)
-            except Exception:
-                pass
+            self._editor.set_polygons(current_polygons or [])
             self._status.setText(
                 f"{stack.shape[0]}-frame preview, "
                 f"{stack.shape[2]} × {stack.shape[1]} px — "
@@ -3441,28 +3286,24 @@ class _RoiViewer(QtWidgets.QWidget):
         if not self._ensure_viewer():
             return
 
-        self._suppress_layer_events = True
-        try:
-            try:    self._viewer.layers.clear()
-            except Exception: pass
-        finally:
-            self._suppress_layer_events = False
-        self._image_layer = None
-        self._shapes_layer = None
-        self._points_layer = None
         self._stack = None
         self._stack_filtered = None
         self._stack_preprocessed = None
         self._pp_signature = None
         self._last_mass = None
-        self._roi_mask_layer = None
-        self._max_proj_layer = None
         try:
-            self._cb_filtered.blockSignals(True)
-            self._cb_filtered.setChecked(False)
-            self._cb_filtered.blockSignals(False)
-        except AttributeError:
+            self._editor.clear_detections()
+            self._editor.clear_mask()
+            self._editor.clear_max_projection()
+            self._editor.clear_polygons(emit=False)
+        except Exception:
             pass
+        for cb in (getattr(self, "_cb_filtered", None),
+                   getattr(self, "_cb_maxproj", None)):
+            if cb is not None:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
 
         self._title.setText(f"Preview — {label}")
         self._status.setText("Rendering background…")
@@ -3470,30 +3311,11 @@ class _RoiViewer(QtWidgets.QWidget):
             arr = _np.asarray(image, dtype=_np.float32)
             if arr.ndim != 2:
                 raise ValueError(f"expected 2-D image, got shape {arr.shape}")
-            lo, hi = _np.percentile(arr, [1.0, 99.5])
-            if hi <= lo:
-                hi = lo + 1.0
-            self._image_layer = self._viewer.add_image(
-                arr, name="ROI background", colormap="inferno",
-                contrast_limits=(float(lo), float(hi)))
-            initial_shapes = [_np.asarray(poly)
-                              for poly in (current_polygons or [])]
-            self._shapes_layer = self._viewer.add_shapes(
-                data=initial_shapes if initial_shapes else None,
-                shape_type="polygon",
-                edge_color="#58a6ff",
-                face_color="rgba(88,166,255,0.18)",
-                edge_width=2,
-                name="ROI",
-            )
-            try:
-                self._shapes_layer.mode = "add_polygon"
-            except Exception:
-                pass
-            try:
-                self._shapes_layer.events.data.connect(self._on_shapes_changed)
-            except Exception:
-                pass
+            # Inferno background (a localisation histogram, not a raw movie);
+            # detection / mask are not used in post-process mode (self._stack
+            # stays None) so those overlays correctly no-op.
+            self._editor.set_stack(arr, cmap="inferno")
+            self._editor.set_polygons(current_polygons or [])
             self._status.setText(
                 f"{arr.shape[1]} × {arr.shape[0]} px — "
                 "draw polygon(s); right-click or Esc to close each one.")
@@ -3506,24 +3328,18 @@ class _RoiViewer(QtWidgets.QWidget):
         return self._current_file
 
     def current_polygons(self) -> list:
-        polys = []
-        if self._shapes_layer is None:
-            return polys
+        if self._editor is None:
+            return []
         try:
-            for shape_data, shape_type in zip(self._shapes_layer.data,
-                                              self._shapes_layer.shape_type):
-                if shape_type in ("polygon", "rectangle", "ellipse"):
-                    polys.append([(float(y), float(x))
-                                  for y, x in shape_data])
+            return self._editor.polygons()
         except Exception:
-            pass
-        return polys
+            return []
 
     # ── Internal ─────────────────────────────────────────────────────────
     def _flush_current_polygons_if_changed(self):
         """Emit a final polygons_changed for the outgoing file, in case
         the user drew something but never triggered the data-changed event."""
-        if self._current_file and self._shapes_layer is not None:
+        if self._current_file and self._editor is not None:
             try:
                 self.polygons_changed.emit(
                     self._current_file, self.current_polygons())
@@ -3539,12 +3355,9 @@ class _RoiViewer(QtWidgets.QWidget):
                 pass
 
     def _on_clear(self):
-        if self._shapes_layer is None:
+        if self._editor is None:
             return
-        try:
-            self._shapes_layer.data = []
-        except Exception:
-            pass
+        self._editor.clear_polygons(emit=False)
         if self._current_file:
             self.polygons_changed.emit(self._current_file, [])
 
@@ -3586,31 +3399,18 @@ class _RoiViewer(QtWidgets.QWidget):
                        f"unsupported).")
             QtWidgets.QMessageBox.information(self, "No polygons", msg)
             return
-        # Append to the existing shapes layer, falling back to creating
-        # one if napari isn't initialised yet.
+        # Append the loaded polygons to whatever is already drawn.
+        if not self._ensure_viewer():
+            return
         try:
-            if self._shapes_layer is None:
-                if not self._ensure_viewer():
-                    return
-                import napari   # noqa: F401  (ensure import)
-                # If there's no image yet, add the shapes layer empty.
-                self._shapes_layer = self._viewer.add_shapes(
-                    shape_type="polygon",
-                    edge_color="cyan", face_color="transparent",
-                    edge_width=2, name="ROIs")
-            existing = list(self._shapes_layer.data) \
-                if self._shapes_layer.data is not None else []
-            self._shapes_layer.data = existing + new_polys
+            self._editor.add_polygons(new_polys, emit=False)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
                 self, "ROI applied with warning",
-                f"Polygons loaded but the napari layer raised: {exc}")
+                f"Polygons loaded but the editor raised: {exc}")
         if self._current_file:
-            try:
-                polys_out = list(self._shapes_layer.data)
-            except Exception:
-                polys_out = new_polys
-            self.polygons_changed.emit(self._current_file, polys_out)
+            self.polygons_changed.emit(self._current_file,
+                                       self.current_polygons())
 
     # ── Detection preview ────────────────────────────────────────────────
     def enable_detection_preview(self, enabled: bool):
@@ -3645,15 +3445,15 @@ class _RoiViewer(QtWidgets.QWidget):
             self._detect_debounce.start()
 
     def _current_frame_idx(self) -> int:
-        if self._viewer is None or self._stack is None:
+        if self._editor is None or self._stack is None:
             return 0
         try:
-            return int(self._viewer.dims.current_step[0])
+            return int(self._editor.current_frame)
         except Exception:
             return 0
 
     def _run_detection(self):
-        if not self._detect_enabled or self._stack is None or self._viewer is None:
+        if not self._detect_enabled or self._stack is None or self._editor is None:
             return
         idx = max(0, min(self._current_frame_idx(), self._stack.shape[0] - 1))
         # Locate on the PREPROCESSED frame so the mass scale here matches
@@ -3727,58 +3527,25 @@ class _RoiViewer(QtWidgets.QWidget):
     def _update_points_layer(self, pts, diameter: int, mass=None):
         import numpy as _np
         size = max(4, int(diameter) + 6)
-        # Build per-point colour array (turbo on log mass) for visibility.
+        if pts is None or len(pts) == 0:
+            if self._editor is not None:
+                self._editor.clear_detections()
+            return
+        arr = _np.asarray(pts, dtype=float)
+        ys, xs = arr[:, 0], arr[:, 1]
+        # Per-point colour: turbo on log(mass) for visibility, else cyan.
         if mass is not None and len(mass) > 0:
-            colours = self._mass_to_rgba(mass)
+            brushes = [tuple(c) for c in self._mass_to_rgba(mass)]
         else:
-            colours = _np.tile([0.0, 1.0, 1.0, 1.0],
-                               (len(pts), 1)) if len(pts) else None
-        if self._points_layer is None:
-            kwargs = dict(
-                size=size,
-                face_color="transparent",
-                symbol="o",
-                name="Detections",
-                opacity=1.0,
-            )
-            try:
-                self._points_layer = self._viewer.add_points(
-                    pts,
-                    border_color=(colours if colours is not None else "#00ffff"),
-                    border_width=0.30,
-                    **kwargs)
-            except TypeError:
-                # napari < 0.5 — edge_* names
-                self._points_layer = self._viewer.add_points(
-                    pts,
-                    edge_color=(colours if colours is not None else "#00ffff"),
-                    edge_width=0.30,
-                    **kwargs)
-            except Exception as exc:
-                self._status.setText(f"Points layer failed: {exc}")
-                self._points_layer = None
-                return
-            try:
-                if self._shapes_layer is not None:
-                    self._viewer.layers.selection.active = self._shapes_layer
-            except Exception:
-                pass
-        else:
-            try:
-                self._points_layer.data = pts
-                self._points_layer.size = size
-                if colours is not None and len(colours):
-                    try:
-                        self._points_layer.border_color = colours
-                    except Exception:
-                        try: self._points_layer.edge_color = colours
-                        except Exception: pass
-            except Exception:
-                pass
+            brushes = None
+        try:
+            self._editor.set_detections(ys, xs, brushes=brushes, size=size)
+        except Exception as exc:
+            self._status.setText(f"Detections overlay failed: {exc}")
 
     # ── Bandpass-filtered view ───────────────────────────────────────────
     def _on_filtered_toggled(self, checked: bool):
-        if self._viewer is None or self._image_layer is None or self._stack is None:
+        if self._editor is None or self._stack is None:
             return
         if checked:
             if self._stack_filtered is None:
@@ -3787,13 +3554,7 @@ class _RoiViewer(QtWidgets.QWidget):
         else:
             target = self._stack
         try:
-            self._image_layer.data = target
-            import numpy as _np
-            sample = target[target.shape[0] // 2]
-            lo, hi = _np.percentile(sample, [1.0, 99.5])
-            if hi <= lo:
-                hi = lo + 1.0
-            self._image_layer.contrast_limits = (float(lo), float(hi))
+            self._editor.swap_base_stack(target)
         except Exception as exc:
             self._status.setText(f"Couldn't swap image: {exc}")
 
@@ -3860,7 +3621,7 @@ class _RoiViewer(QtWidgets.QWidget):
         self._refresh_roi_mask_overlay()
 
     def _refresh_roi_mask_overlay(self):
-        if self._viewer is None or self._stack is None:
+        if self._editor is None or self._stack is None:
             return
         mode = self._roi_mask_params.get("mode", "None")
         if mode not in ("Auto threshold", "Manual threshold"):
@@ -3949,54 +3710,24 @@ class _RoiViewer(QtWidgets.QWidget):
 
     def _draw_roi_mask_layer(self, mask, threshold: float):
         import numpy as _np
-        # Convert bool mask to (Y, X) uint8 so we can colour it via a
-        # custom colormap with transparency at 0.
-        layer_data = mask.astype(_np.uint8)
-        if self._roi_mask_layer is None:
-            try:
-                # Render through a 2-stop colormap: 0 = transparent,
-                # 1 = bright lime so the mask is unmistakable on grey.
-                from napari.utils.colormaps import Colormap as _NCmap
-                cmap = _NCmap([[0, 0, 0, 0], [0.20, 1.00, 0.30, 1.0]],
-                              name="firefly_roi_mask")
-                self._roi_mask_layer = self._viewer.add_image(
-                    layer_data, name="ROI mask", colormap=cmap,
-                    contrast_limits=(0, 1), opacity=0.35,
-                    blending="translucent")
-            except Exception:
-                try:
-                    self._roi_mask_layer = self._viewer.add_image(
-                        layer_data, name="ROI mask", colormap="green",
-                        contrast_limits=(0, 1), opacity=0.35,
-                        blending="translucent")
-                except Exception as exc:
-                    self._status.setText(f"ROI mask layer failed: {exc}")
-                    return
-            # Re-select shapes layer so polygon drawing keeps working
-            try:
-                if self._shapes_layer is not None:
-                    self._viewer.layers.selection.active = self._shapes_layer
-            except Exception:
-                pass
-        else:
-            try:
-                self._roi_mask_layer.data = layer_data
-            except Exception:
-                pass
-        # Refresh status with the threshold the user can see and tune
+        try:
+            self._editor.set_mask(mask)
+        except Exception as exc:
+            self._status.setText(f"ROI mask overlay failed: {exc}")
+            return
         try:
             n_in = int(_np.sum(mask))
             total = int(mask.size)
             pct = 100.0 * n_in / total if total else 0.0
-            self._roi_mask_layer.metadata = {"threshold": threshold,
-                                             "fraction": pct}
+            self._roi_mask_info = {"threshold": float(threshold),
+                                   "fraction": pct}
         except Exception:
             pass
 
     def _remove_roi_mask_layer(self):
-        if self._roi_mask_layer is not None and self._viewer is not None:
+        if self._editor is not None:
             try:
-                self._viewer.layers.remove(self._roi_mask_layer)
+                self._editor.clear_mask()
             except Exception:
                 pass
         self._roi_mask_layer = None
@@ -4031,9 +3762,9 @@ class _RoiViewer(QtWidgets.QWidget):
                 return stack
 
     def _remove_points_layer(self):
-        if self._points_layer is not None and self._viewer is not None:
+        if self._editor is not None:
             try:
-                self._viewer.layers.remove(self._points_layer)
+                self._editor.clear_detections()
             except Exception:
                 pass
         self._points_layer = None
