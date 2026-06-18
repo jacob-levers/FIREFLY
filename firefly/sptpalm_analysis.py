@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.72.1"
+__version__ = "2.73.0"
+# v2.73.0 — hardening: regression tests for the figure-defaults code; QC flags
+#   surfacing the DBSCAN sub-sample / skipped-ROI / dense-field auto-threshold
+#   caveats; figure-preview polish (dead proj-cmap trigger removed, shared grid).
 # v2.72.1 — new FIREFLY app icon (Windows .ico + macOS .icns + runtime PNG).
 # v2.72.0 — Figure-defaults reorg (sub-tabs), panel pickers for both figures,
 #   single-sample combined figure is now panel-selectable, real-data preview;

@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.73.0
+
+Hardening and polish after the v2.72 figure overhaul.
+
+### Added
+
+- **QC warnings for silent caveats.** The run's QC flags now surface three
+  conditions that previously only printed to the console: DBSCAN cluster
+  sub-sampling (the 250k-localisation cap — cluster counts/areas reflect the
+  sub-sample), a **skipped ROI** (when a polygon was drawn on a differently-sized
+  movie and the whole frame was analysed instead), and a **dense field** with
+  auto-threshold on (auto minmass is less reliable above ~40 emitters/frame).
+- Regression tests for the figure-defaults code that the v2.72 reflow shipped
+  untested — `make_figure` panel-selection edge cases (empty / invalid sets,
+  height scaling), picker grid formulas matching the real renderers, preview
+  asset presence, and the comparison summary band.
+
+### Changed
+
+- The panel-grid rule is now a single shared helper
+  (`fa_compare.comparison_grid` / `fa_figure.reflow_grid`) that both the
+  renderers and the UI picker's live "N → grid" count use, so they can't drift.
+- The single-sample figure preview is fixed real-data example panels, so the
+  single-sample theme / projection-colormap dropdowns no longer trigger a no-op
+  preview re-render; the preview is now labelled "example data".
+
 ## v2.72.1
 
 - **New FIREFLY app icon** — refreshed glossy firefly mark, regenerated for every

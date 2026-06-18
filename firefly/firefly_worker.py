@@ -1422,6 +1422,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
              f"to disable.")
         roi_mode = "sister"
 
+    _roi_skipped = False   # set True if a polygon ROI is dropped (shape mismatch)
     if roi_mode != "none" and len(locs) > 0:
         _log(f"\n── ROI mask ───────────────────────")
         try:
@@ -1560,6 +1561,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                                  f"movie.  Skipping ROI to avoid masking the "
                                  f"wrong region.")
                             roi_mask = None
+                            _roi_skipped = True
                         else:
                             roi_mask = _np.zeros((h, w), dtype=bool)
                             for poly in polys:
@@ -2676,6 +2678,26 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "msg": f"{drift_total_nm:.0f} nm of sample drift was corrected "
                        "over the acquisition — large drift can still leave "
                        "residual blur; inspect the drift trace if D looks high."})
+        # Surface the silent caveats so a result isn't quietly misread.
+        if cluster_subsampled_n:
+            flags.append({"level": "info",
+                "msg": f"Cluster analysis used a {int(cluster_subsampled_n):,}-"
+                       "localisation sub-sample (250k cap) — the cluster "
+                       "counts / areas / densities reflect that sub-sample, "
+                       "not every localisation."})
+        if _roi_skipped:
+            flags.append({"level": "warn",
+                "msg": "ROI was SKIPPED — its polygon extends past this movie's "
+                       "frame (drawn on a differently-sized movie), so the WHOLE "
+                       "frame was analysed.  Re-draw the ROI on this movie if you "
+                       "meant to mask a region."})
+        if (p.get("auto_minmass", False) and avg_locs_pf is not None
+                and avg_locs_pf > 40):
+            flags.append({"level": "info",
+                "msg": f"Dense field ({avg_locs_pf:.0f} locs/frame) with "
+                       "auto-threshold — the auto minmass is less reliable above "
+                       "~40 emitters/frame; set minmass manually if detection "
+                       "looks off."})
         qc["flags"] = flags
     except Exception:
         pass
