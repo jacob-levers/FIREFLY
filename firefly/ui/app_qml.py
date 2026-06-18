@@ -22,7 +22,7 @@ except RuntimeError:
     pass  # already set
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QUrl, Qt, QEvent, QObject
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtQuickControls2 import QQuickStyle
 
@@ -36,9 +36,27 @@ from firefly.ui.controllers.app_controller import AppController
 from firefly.ui.controllers.settings_controller import SettingsController
 from firefly.ui.controllers.import_controller import ImportController
 from firefly.ui.controllers.analysis_controller import AnalysisController
+from firefly.ui.controllers.visualise_controller import VisualiseController
+from firefly.ui.controllers.roi_controller import RoiController
+from firefly.ui.controllers.embed_controller import EmbedController
 from firefly.ui.controllers.icon_provider import IconImageProvider
 from firefly.ui.controllers.live_frame_provider import LiveFrameProvider
 from firefly.sptpalm_analysis import __version__
+
+
+class _StageResizer(QObject):
+    """Keeps the chrome QQuickWidget filling the layout-less ``stage`` central
+    widget on every resize.  The chrome is pinned at the stage origin so QML
+    scene coords == stage coords (no offset maths for the native island)."""
+    def __init__(self, stage, chrome):
+        super().__init__(stage)
+        self._stage = stage
+        self._chrome = chrome
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Resize:
+            self._chrome.setGeometry(self._stage.rect())
+        return False
 
 _QML_DIR = os.path.join(os.path.dirname(__file__), "qml")
 _ICONS_DIR = os.path.join(_QML_DIR, "assets", "icons")
@@ -52,11 +70,22 @@ def build_main_window(app: QtWidgets.QApplication):
     settings = SettingsController()
     importc = ImportController(settings)
     analysis = AnalysisController(settings, importc)
+    visualise = VisualiseController(settings, importc)
+    roi = RoiController()
+    embed = EmbedController()
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle("FIREFLY")
 
-    qw = QQuickWidget()
+    # Layout-less stage central widget hosts three composited layers: the chrome
+    # QQuickWidget (L1), the native FireflyViewer island (L2, raised over an
+    # invisible QML anchor on the Visualise tab), and a transparent HUD
+    # QQuickWidget (L3, raised above the island).  See EmbedController.
+    stage = QtWidgets.QWidget()
+    win.setCentralWidget(stage)
+
+    # ── L1: chrome ───────────────────────────────────────────────────────
+    qw = QQuickWidget(stage)
     qw.engine().addImageProvider("icon", IconImageProvider(_ICONS_DIR))
     qw.engine().addImageProvider("liveframe", LiveFrameProvider(analysis))
     ctx = qw.rootContext()
@@ -65,19 +94,53 @@ def build_main_window(app: QtWidgets.QApplication):
     ctx.setContextProperty("Settings", settings)
     ctx.setContextProperty("Import", importc)
     ctx.setContextProperty("Analysis", analysis)
+    ctx.setContextProperty("Vis", visualise)
+    ctx.setContextProperty("Roi", roi)
+    ctx.setContextProperty("Embed", embed)
     ctx.setContextProperty("appVersion", __version__)
     qw.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     qw.setSource(QUrl.fromLocalFile(os.path.join(_QML_DIR, "Main.qml")))
-    errs = qw.errors()
-    if errs:
-        for e in errs:
-            print(f"[FIREFLY-QML] {e.toString()}", file=sys.stderr)
+    qw.setGeometry(0, 0, 1100, 760)
+    for e in qw.errors():
+        print(f"[FIREFLY-QML] {e.toString()}", file=sys.stderr)
 
-    win.setCentralWidget(qw)
+    # ── L3: transparent HUD overlay (glass pill + track inspector) ───────
+    hud = QQuickWidget(stage)
+    hud.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    hud.setClearColor(Qt.GlobalColor.transparent)
+    hud.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
+    hud.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    hud.engine().addImageProvider("icon", IconImageProvider(_ICONS_DIR))
+    hctx = hud.rootContext()
+    hctx.setContextProperty("Theme", theme)
+    hctx.setContextProperty("Vis", visualise)
+    hctx.setContextProperty("Embed", embed)
+    hud.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+    hud.setSource(QUrl.fromLocalFile(os.path.join(_QML_DIR, "HudOverlay.qml")))
+    for e in hud.errors():
+        print(f"[FIREFLY-QML] {e.toString()}", file=sys.stderr)
+    hud.hide()
+
+    # ── L2: native viewer island (built eagerly so the embed has a target) ─
+    viewer_w = visualise.viewerWidget()
+    viewer_w.setParent(stage)
+    viewer_w.hide()
+    embed.setIslands(viewer=viewer_w, hud=hud)
+
+    resizer = _StageResizer(stage, qw)
+    stage.installEventFilter(resizer)
+
+    # Tab / page changes drive the island's show/hide (Visualise tab only).
+    def _loc(*_):
+        embed.onLocationChanged(appc.currentTab, appc.page)
+    appc.tabChanged.connect(_loc)
+    appc.pageChanged.connect(_loc)
+
     win.resize(1100, 760)
-    # Keep controllers + the quick widget referenced on the window so Python
-    # doesn't GC them while QML still binds to them.
-    win._firefly_ctx = (theme, appc, settings, importc, analysis, qw)
+    # Keep controllers + widgets referenced on the window so Python doesn't GC
+    # them while QML still binds to them (and the islands while they're hidden).
+    win._firefly_ctx = (theme, appc, settings, importc, analysis, visualise,
+                        roi, embed, qw, hud, viewer_w, resizer)
     return win, qw
 
 

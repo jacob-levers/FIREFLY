@@ -171,6 +171,7 @@ Item {
                 Layout.fillHeight: true
                 sourceComponent: App.currentTab === 0 ? importTab
                                : App.currentTab === 1 ? analysisTab
+                               : App.currentTab === 4 ? visualiseTab
                                : comingSoon
             }
         }
@@ -179,6 +180,7 @@ Item {
     // ── tab content components ───────────────────────────────────────
     Component { id: importTab; ImportTab {} }
     Component { id: analysisTab; AnalysisTab {} }
+    Component { id: visualiseTab; VisualiseTab {} }
     Component {
         id: comingSoon
         Item {

@@ -21,7 +21,7 @@ Retina with the chrome pinned at the stage origin — no devicePixelRatio maths.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Property, QObject, QRect, QRectF, Signal, Slot
+from PySide6.QtCore import Property, QObject, QRect, QRectF, QTimer, Signal, Slot
 
 
 class EmbedController(QObject):
@@ -32,18 +32,22 @@ class EmbedController(QObject):
         super().__init__(parent)
         self._viewer = None
         self._roi = None
+        self._hud = None               # transparent HUD QQuickWidget (L3)
         self._active = "none"          # none | viewer | roi
         self._modal = False
         self._rect = QRect()           # last-applied geometry (dedupe)
         self._anchor = QRectF()        # last anchor rect (logical px)
+        self._viewer_shown = False     # first-show reset_view guard
 
-    def setIslands(self, viewer=None, roi=None):
-        """Register the native island widgets (called once from app_qml after
-        the controllers are built)."""
+    def setIslands(self, viewer=None, roi=None, hud=None):
+        """Register the native island widgets + the transparent HUD overlay
+        (called once from app_qml after the controllers are built)."""
         if viewer is not None:
             self._viewer = viewer
         if roi is not None:
             self._roi = roi
+        if hud is not None:
+            self._hud = hud
 
     def _widget(self, name=None):
         name = name or self._active
@@ -66,6 +70,11 @@ class EmbedController(QObject):
         w = self._widget()
         if w is not None and not self._rect.isEmpty():
             w.setGeometry(self._rect)
+        # The HUD overlay tracks the viewer island exactly (only over the
+        # viewer, not the ROI editor).
+        if self._hud is not None and self._active == "viewer" and not self._rect.isEmpty():
+            self._hud.setGeometry(self._rect)
+            self._hud.raise_()
 
     @Property("QRectF", notify=anchorChanged)
     def anchorRect(self):
@@ -94,7 +103,24 @@ class EmbedController(QObject):
                 except Exception: pass
             else:
                 w.hide()
+        # HUD overlays the viewer only.
+        if self._hud is not None:
+            if name == "viewer" and not self._modal:
+                self._hud.setGeometry(self._rect)
+                self._hud.show()
+                self._hud.raise_()
+            else:
+                self._hud.hide()
+        # First time the viewer is shown at a real size, re-fit (fitInView is a
+        # no-op before the widget is laid out, so defer one tick).
+        if name == "viewer" and self._viewer is not None and not self._viewer_shown:
+            self._viewer_shown = True
+            QTimer.singleShot(0, self._reset_viewer)
         self.activeIslandChanged.emit()
+
+    def _reset_viewer(self):
+        try:    self._viewer.reset_view()
+        except Exception: pass
 
     @Slot()
     def hideIslands(self):
@@ -102,6 +128,8 @@ class EmbedController(QObject):
             w = self._widget(n)
             if w is not None:
                 w.hide()
+        if self._hud is not None:
+            self._hud.hide()
 
     @Slot(bool)
     def setModalOpen(self, on: bool):
@@ -116,6 +144,10 @@ class EmbedController(QObject):
                 w.setGeometry(self._rect)
                 w.show()
                 w.raise_()
+            if self._hud is not None and self._active == "viewer":
+                self._hud.setGeometry(self._rect)
+                self._hud.show()
+                self._hud.raise_()
 
     # ── tab / page visibility ────────────────────────────────────────────
     @Slot(int, str)

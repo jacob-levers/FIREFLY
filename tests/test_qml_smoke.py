@@ -119,6 +119,20 @@ def test_analysis_tab_qml_loads_without_errors():
     assert obj is not None
 
 
+def test_visualise_tab_qml_loads_without_errors():
+    import os as _os
+    from PySide6.QtCore import QUrl
+    from PySide6.QtQml import QQmlComponent
+    from firefly.ui.app_qml import build_main_window, _QML_DIR
+    win, qw = build_main_window(_app)
+    for rel in (("tabs", "VisualiseTab.qml"), ("HudOverlay.qml",)):
+        comp = QQmlComponent(qw.engine(),
+                             QUrl.fromLocalFile(_os.path.join(_QML_DIR, *rel)))
+        obj = comp.create(qw.rootContext())
+        assert comp.errors() == [], comp.errorString()
+        assert obj is not None
+
+
 def test_app_controller_navigation():
     from firefly.ui.controllers.app_controller import AppController
     a = AppController()
