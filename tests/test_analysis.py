@@ -1944,13 +1944,19 @@ def test_adaptive_forces_stream_for_lazy_stack(tmp_path):
     try:
         common = dict(diameter=7, minmass=5, percentile=64, bg_radius=10,
                       workers=1, chunk_size=8, backend="trackpy")
-        with contextlib.redirect_stdout(io.StringIO()) as _buf:
+        with contextlib.redirect_stdout(io.StringIO()) as _buf_e:
             locs_e = preprocess_and_localise_adaptive(eager, **common)[0]
+        with contextlib.redirect_stdout(io.StringIO()) as _buf_l:
             locs_l = preprocess_and_localise_adaptive(lazy, **common)[0]
     finally:
         lazy.close()
-    # The lazy stack must have been routed through STREAM, never FAST.
-    assert "forcing STREAM (lazy on-demand stack)" in _buf.getvalue()
+    # A lazy on-demand stack must be STREAMed, never loaded eagerly into RAM —
+    # whether the lazy-stack detection forces it OR the RAM heuristic (on a
+    # low-memory machine) chooses STREAM anyway.  Both print "STREAM"; the FAST
+    # in-RAM path would not.  (Asserting the specific "forcing STREAM (lazy …)"
+    # line was flaky: under ~4 GB free the heuristic picks STREAM first, so that
+    # line is never reached even though the behaviour is correct.)
+    assert "STREAM" in _buf_l.getvalue()
     assert len(locs_e) == len(locs_l) and len(locs_l) > 0
     for col in ("x", "y", "frame"):
         np.testing.assert_allclose(
