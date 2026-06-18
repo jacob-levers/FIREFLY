@@ -243,6 +243,9 @@ class _SceneView(QtWidgets.QGraphicsView):
         self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setMouseTracking(True)
+        # Accept keyboard focus so spacebar-play works once the viewer is
+        # clicked (the parent FireflyViewer.keyPressEvent handles Space).
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._panning = False
         self._last = None
         self._press = None
@@ -823,6 +826,83 @@ class FireflyViewer(QtWidgets.QWidget):
     @property
     def has_superres(self) -> bool:
         return self._sr is not None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Headless transport façade (Phase 4)
+    # ─────────────────────────────────────────────────────────────────────
+    # Thin property wrappers over the existing control-bar widgets so a QML
+    # VisualiseController can drive the viewer without reaching into private
+    # widgets.  The spins/combos stay the canonical store — every setter routes
+    # through the SAME slot the user's interaction does (_on_tail_changed /
+    # _on_width_changed / _on_fps_changed / _on_play_toggled / _on_bg_changed),
+    # so behaviour is identical whether driven from QML or the native bar.
+    @property
+    def tail(self) -> int:
+        return int(self._tail_spin.value())
+
+    @tail.setter
+    def tail(self, v: int):
+        self._tail_spin.setValue(int(v))
+
+    @property
+    def head(self) -> int:
+        return int(self._head_spin.value())
+
+    @head.setter
+    def head(self, v: int):
+        self._head_spin.setValue(int(v))
+
+    @property
+    def track_width(self) -> float:
+        return float(self._width_spin.value())
+
+    @track_width.setter
+    def track_width(self, v: float):
+        self._width_spin.setValue(float(v))
+
+    @property
+    def fps(self) -> int:
+        return int(self._fps_spin.value())
+
+    @fps.setter
+    def fps(self, v: int):
+        self._fps_spin.setValue(int(v))
+
+    @property
+    def playing(self) -> bool:
+        return bool(self._play_btn.isChecked())
+
+    @playing.setter
+    def playing(self, on: bool):
+        self._play_btn.setChecked(bool(on))
+
+    @property
+    def background_mode(self) -> str:
+        return str(self._bg_mode)
+
+    @background_mode.setter
+    def background_mode(self, mode: str):
+        # Only an available layer can be selected — setCurrentText is a no-op
+        # for an unknown mode, which is the correct (can't-select-missing)
+        # behaviour.  Routes through _on_bg_changed → _apply_background.
+        self._bg_combo.setCurrentText(str(mode))
+
+    def background_options(self) -> list:
+        """Current Background-selector layers (Raw movie / Max projection /
+        Super-resolution / Off), in order."""
+        return [self._bg_combo.itemText(i)
+                for i in range(self._bg_combo.count())]
+
+    def keyPressEvent(self, ev):
+        # Spacebar toggles playback when the viewer island has focus (the
+        # _SceneView grabs focus; an unhandled space bubbles up to here).
+        # Scoped to the focused widget — NOT an app/window QShortcut — so it
+        # never steals space from a QML text field elsewhere.
+        if ev.key() == Qt.Key.Key_Space:
+            self._play_btn.toggle()
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
 
     # ─────────────────────────────────────────────────────────────────────
     # Camera
