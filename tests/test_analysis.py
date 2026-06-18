@@ -886,6 +886,68 @@ def test_make_figure_smoke(tmp_path):
     r_vh = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
                        want_panels=set(), combined_panels=None, van_hove=vh)
     assert len(r_vh["panel_titles"]) == 17
+    # combined_panels=set() (deselect everything) falls back to ALL — never an
+    # empty/blank figure.
+    r_empty = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                          want_panels=set(), combined_panels=set())
+    assert len(r_empty["panel_titles"]) == 17
+    # invalid keys are ignored; valid ones kept (no crash).
+    r_inv = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                        want_panels=set(), combined_panels={"A", "Z", "99"})
+    assert set(r_inv["panel_titles"].keys()) == {"A"}
+    # a small subset reflows into a SHORTER figure than the full 17-panel one.
+    r_sub = make_figure(stack, tracks, imsd, emsd, diff, 0.106, 0.02,
+                        want_panels=set(), combined_panels={"A", "B", "C"})
+    assert r_sub["combined"].height < r_all["combined"].height
+
+
+def test_panel_grid_formulas_match_renderers():
+    """The picker's live 'N → R × C grid' count must match the grid the
+    renderers actually use, or the count misleads the user."""
+    from firefly.ui.ui_mixin_build import _single_panel_grid, _cmp_panel_grid
+    # comparison: ncols = 3 if n>4 else 2 (mirrors fa_compare.compare_groups)
+    for n in (1, 2, 4, 5, 13):
+        c = 3 if n > 4 else 2
+        assert _cmp_panel_grid(n) == ((n + c - 1) // c, c)
+    # single-sample: 1 col for a lone panel, else same rule (mirrors the
+    # make_figure subset reflow).
+    assert _single_panel_grid(1) == (1, 1)
+    for n in (2, 4, 5, 17):
+        c = 3 if n > 4 else 2
+        assert _single_panel_grid(n) == ((n + c - 1) // c, c)
+
+
+def test_preview_panel_assets_present():
+    """All 17 single-sample preview panels (A–Q) ship as bundled assets — guards
+    against the figure-defaults preview silently losing its real-data panels."""
+    import os
+    import glob
+    import firefly
+    base = os.path.join(os.path.dirname(firefly.__file__),
+                        "ui", "assets", "preview_panels")
+    found = {os.path.splitext(os.path.basename(p))[0]
+             for p in glob.glob(os.path.join(base, "*.png"))}
+    assert set("ABCDEFGHIJKLMNOPQ") <= found, f"missing preview panels: {found}"
+
+
+def test_comparison_band_one_entry_per_group(tmp_path):
+    """The quick-glance summary band draws exactly one colour-matched entry per
+    group (it replaced the legend as the figure's key)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from firefly.analysis.fa_compare import compare_groups
+    for ng in (2, 5):
+        root = str(tmp_path / f"g{ng}")
+        groups = []
+        for gi in range(ng):
+            folders = [_write_run_folder(root, f"G{gi}", f"G{gi}_c{c}",
+                                         sigma_px=2.0 + 0.2 * gi, seed=gi * 5 + c)
+                       for c in range(3)]
+            groups.append({"folders": folders, "label": f"Group {gi}"})
+        fig, _, _ = compare_groups(groups, output_dir=str(tmp_path / f"out{ng}"),
+                                   panels={"msd", "track_count"}, pdf_report=False)
+        band = [t for t in fig.texts if t.get_text().lstrip().startswith("●")]
+        assert len(band) == ng, f"{ng} groups -> {len(band)} band entries"
 
 
 def test_load_external_locs_formats(tmp_path):
