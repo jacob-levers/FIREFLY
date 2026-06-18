@@ -2838,41 +2838,46 @@ class _RoiDialog(QtWidgets.QDialog):
         import numpy as _np
         ext = _os.path.splitext(file_path)[1].lower()
 
-        if ext in (".tif", ".tiff"):
-            import tifffile
-            with tifffile.TiffFile(file_path) as tif:
-                n_pages = len(tif.pages)
-                n = min(max_frames, n_pages)
-                # Sample evenly across the (single) file so blinks /
-                # bleaches don't dominate the preview
-                if n_pages > n:
-                    idx = _np.linspace(0, n_pages - 1, n, dtype=int)
-                else:
-                    idx = _np.arange(n_pages)
-                frames = []
-                for i in idx:
-                    frames.append(tif.pages[int(i)].asarray()
-                                  .astype(_np.float32))
-                return _np.mean(_np.stack(frames), axis=0)
+        try:
+            if ext in (".tif", ".tiff"):
+                import tifffile
+                with tifffile.TiffFile(file_path) as tif:
+                    n_pages = len(tif.pages)
+                    n = min(max_frames, n_pages)
+                    # Sample evenly across the (single) file so blinks /
+                    # bleaches don't dominate the preview
+                    if n_pages > n:
+                        idx = _np.linspace(0, n_pages - 1, n, dtype=int)
+                    else:
+                        idx = _np.arange(n_pages)
+                    frames = [tif.pages[int(i)].asarray().astype(_np.float32)
+                              for i in idx]
+                    return _np.mean(_np.stack(frames), axis=0)
 
-        if ext == ".czi":
-            from aicspylibczi import CziFile
-            czi = CziFile(file_path)
-            # Read first frame.  CZI reads can return shape (1, 1, 1, Y, X)
-            # or similar depending on dim order — squeeze to (Y, X).
-            try:
-                img, _ = czi.read_image(T=0)
-            except Exception:
-                # Some CZIs have different dim names; fall back to
-                # reading the whole thing if T isn't a valid dim
-                img = czi.read_mosaic(C=0, scale_factor=1)
-            arr = _np.squeeze(_np.asarray(img))
-            # If we accidentally got >2D (multichannel etc.) take a mean
-            while arr.ndim > 2:
-                arr = arr.mean(axis=0)
-            return arr.astype(_np.float32)
+            if ext == ".czi":
+                from aicspylibczi import CziFile
+                czi = CziFile(file_path)
+                try:
+                    img, _ = czi.read_image(T=0)
+                except Exception:
+                    img = czi.read_mosaic(C=0, scale_factor=1)
+                arr = _np.squeeze(_np.asarray(img))
+                while arr.ndim > 2:
+                    arr = arr.mean(axis=0)
+                return arr.astype(_np.float32)
+        except Exception:
+            # Quick path failed — fall through to the canonical loader rather
+            # than raising a raw tifffile/aicspylibczi traceback.
+            pass
 
-        raise ValueError(f"Unsupported file extension: {ext}")
+        from firefly.sptpalm_analysis import load_file
+        full, _, _ = load_file(file_path, channel=0)
+        full = _np.asarray(full)
+        if full.ndim == 2:
+            return full.astype(_np.float32)
+        n = min(max_frames, full.shape[0])
+        idx = _np.linspace(0, full.shape[0] - 1, n, dtype=int)
+        return _np.mean(full[idx].astype(_np.float32), axis=0)
 
     @staticmethod
     def _quick_preview_stack(file_path: str, max_frames: int = 30):
@@ -2883,56 +2888,70 @@ class _RoiDialog(QtWidgets.QDialog):
         import numpy as _np
         ext = _os.path.splitext(file_path)[1].lower()
 
-        if ext in (".tif", ".tiff"):
-            import tifffile
-            with tifffile.TiffFile(file_path) as tif:
-                n_pages = len(tif.pages)
-                n = min(max_frames, n_pages)
-                if n_pages > n:
-                    idx = _np.linspace(0, n_pages - 1, n, dtype=int)
-                else:
-                    idx = _np.arange(n_pages)
-                # Batched asarray(key=...) with internal multithreading
-                # is ~5× faster than the old per-page asarray() loop —
-                # tifffile re-initialises its codec on every per-page
-                # call, so the loop ran the codec setup N times.
-                try:
-                    import os as _os2
-                    workers = max(1, (_os2.cpu_count() or 1) // 2)
-                    arr = tif.asarray(key=[int(i) for i in idx],
-                                       maxworkers=workers)
-                    # asarray may return 2-D for a single page; normalise
-                    # to (T, Y, X) regardless.
-                    if arr.ndim == 2:
-                        arr = arr[None, ...]
-                    return arr.astype(_np.float32, copy=False), [int(i) for i in idx]
-                except Exception:
-                    # Fallback to the old per-page path if batched read
-                    # fails (rare — old tifffile versions).
-                    frames = [tif.pages[int(i)].asarray().astype(_np.float32)
-                              for i in idx]
-                    return _np.stack(frames), [int(i) for i in idx]
+        try:
+            if ext in (".tif", ".tiff"):
+                import tifffile
+                with tifffile.TiffFile(file_path) as tif:
+                    n_pages = len(tif.pages)
+                    n = min(max_frames, n_pages)
+                    if n_pages > n:
+                        idx = _np.linspace(0, n_pages - 1, n, dtype=int)
+                    else:
+                        idx = _np.arange(n_pages)
+                    # Batched asarray(key=...) with internal multithreading
+                    # is ~5× faster than the old per-page asarray() loop —
+                    # tifffile re-initialises its codec on every per-page
+                    # call, so the loop ran the codec setup N times.
+                    try:
+                        import os as _os2
+                        workers = max(1, (_os2.cpu_count() or 1) // 2)
+                        arr = tif.asarray(key=[int(i) for i in idx],
+                                           maxworkers=workers)
+                        if arr.ndim == 2:
+                            arr = arr[None, ...]
+                        return (arr.astype(_np.float32, copy=False),
+                                [int(i) for i in idx])
+                    except Exception:
+                        frames = [tif.pages[int(i)].asarray()
+                                  .astype(_np.float32) for i in idx]
+                        return _np.stack(frames), [int(i) for i in idx]
 
-        if ext == ".czi":
-            from aicspylibczi import CziFile
-            czi = CziFile(file_path)
-            frames = []
-            indices = []
-            for t in range(max_frames):
-                try:
-                    img, _ = czi.read_image(T=t)
-                except Exception:
-                    break
-                arr = _np.squeeze(_np.asarray(img))
-                while arr.ndim > 2:
-                    arr = arr.mean(axis=0)
-                frames.append(arr.astype(_np.float32))
-                indices.append(t)
-            if not frames:
-                raise ValueError("No frames could be read from CZI")
-            return _np.stack(frames), indices
+            if ext == ".czi":
+                from aicspylibczi import CziFile
+                czi = CziFile(file_path)
+                frames, indices = [], []
+                for t in range(max_frames):
+                    try:
+                        img, _ = czi.read_image(T=t)
+                    except Exception:
+                        break
+                    arr = _np.squeeze(_np.asarray(img))
+                    while arr.ndim > 2:
+                        arr = arr.mean(axis=0)
+                    frames.append(arr.astype(_np.float32))
+                    indices.append(t)
+                if frames:
+                    return _np.stack(frames), indices
+        except Exception:
+            # The fast path couldn't read the file (e.g. a `.tif` that isn't a
+            # clean single TIFF, an OME/BigTIFF variant, or a multi-file
+            # series).  Fall through to FIREFLY's canonical loader rather than
+            # surfacing a raw tifffile traceback.
+            pass
 
-        raise ValueError(f"Unsupported file extension: {ext}")
+        # Robust fallback: the SAME loader the analysis pipeline uses, so any
+        # file FIREFLY can analyse also previews here.  Heavier (may load the
+        # full stack) but only runs when the quick path fails.
+        from firefly.sptpalm_analysis import load_file
+        full, _, _ = load_file(file_path, channel=0)
+        full = _np.asarray(full)
+        if full.ndim == 2:
+            full = full[None, ...]
+        n_pages = full.shape[0]
+        n = min(max_frames, n_pages)
+        idx = (_np.linspace(0, n_pages - 1, n, dtype=int)
+               if n_pages > n else _np.arange(n_pages))
+        return full[idx].astype(_np.float32, copy=False), [int(i) for i in idx]
 
     def _init_viewer(self, current_polygons):
         try:
