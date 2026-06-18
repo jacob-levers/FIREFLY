@@ -1,5 +1,5 @@
-"""Headless integration tests for the Workspace tab after the napari→pyqtgraph
-port: the viewer is a FireflyViewer, motion classes build per-class polylines +
+"""Headless integration tests for the Workspace tab after the napari→Qt port:
+the viewer is a FireflyViewer, motion classes build per-class polylines +
 visibility checkboxes, the cluster overlay renders + picks, and the super-res
 overlay attaches.  Skipped in the Qt-less CI image.
 """
@@ -11,7 +11,6 @@ import pandas as pd                                    # noqa: E402
 import pytest                                          # noqa: E402
 
 pytest.importorskip("PySide6")
-pytest.importorskip("pyqtgraph")
 from PySide6 import QtWidgets                           # noqa: E402
 
 _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -38,7 +37,7 @@ def _window_with_tracks(n=20, seed=2):
 
 
 def test_viewer_is_fireflyviewer():
-    from firefly.ui.viewer_pg import FireflyViewer
+    from firefly.ui.viewer import FireflyViewer
     from firefly.ui.app_qt import MainWindow
     w = MainWindow()
     w._ws_init_viewer()

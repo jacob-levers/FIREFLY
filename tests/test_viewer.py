@@ -1,4 +1,4 @@
-"""Headless tests for FireflyViewer (the pyqtgraph napari replacement).
+"""Headless tests for FireflyViewer (the bespoke Qt-only napari replacement).
 
 Builds the widget offscreen (skipped in the Qt-less CI image) and exercises the
 data paths: stack scrubbing, per-class tracks + visibility, points overlay,
@@ -12,9 +12,8 @@ import pandas as pd                                    # noqa: E402
 import pytest                                          # noqa: E402
 
 pytest.importorskip("PySide6")
-pytest.importorskip("pyqtgraph")
 from PySide6 import QtWidgets                           # noqa: E402
-from firefly.ui.viewer_pg import FireflyViewer         # noqa: E402
+from firefly.ui.viewer import FireflyViewer             # noqa: E402
 
 _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
@@ -34,16 +33,14 @@ def test_set_stack_frames_and_scrubbing():
     v.current_frame = 5
     assert v.current_frame == 5
     assert seen == [5]
-    # 2-D input is promoted to a single frame
-    v.set_stack(np.zeros((16, 16)))
+    v.set_stack(np.zeros((16, 16)))   # 2-D promoted to a single frame
     assert v.n_frames == 1
 
 
 def test_tracks_from_df_build_per_class_and_visibility():
     v = _viewer()
     rng = np.random.default_rng(1)
-    rows = []
-    motion = {}
+    rows, motion = [], {}
     classes = ["Immobile", "Brownian", "Directed"]
     for pid in range(12):
         n = int(rng.integers(3, 8))
@@ -58,7 +55,6 @@ def test_tracks_from_df_build_per_class_and_visibility():
     assert set(pids_by_cls) <= {"Immobile", "Brownian", "Directed"}
     assert sum(len(s) for s in pids_by_cls.values()) == 12
     assert set(v.class_names()) == set(pids_by_cls)
-    # visibility toggle hides the item and removes it from picking
     cls0 = v.class_names()[0]
     v.set_class_visible(cls0, False)
     assert v._class_visible[cls0] is False
@@ -67,14 +63,10 @@ def test_tracks_from_df_build_per_class_and_visibility():
 
 def test_points_overlay_and_cluster_pick():
     v = _viewer()
-    ys = np.array([10.0, 20.0, 30.0])
-    xs = np.array([10.0, 20.0, 30.0])
-    v.set_points(ys, xs, ids=np.array([100, 101, 102]),
+    v.set_points(np.array([10.0, 20.0, 30.0]), np.array([10.0, 20.0, 30.0]),
+                 ids=np.array([100, 101, 102]),
                  brushes=["#f00", "#0f0", "#00f"])
-    # a click right on the middle point resolves to its id
-    hit = v.pick_at(20.0, 20.0, tol=1.0)
-    assert hit == ("cluster", 101)
-    # far away → no hit
+    assert v.pick_at(20.0, 20.0, tol=1.0) == ("cluster", 101)
     assert v.pick_at(200.0, 200.0, tol=1.0) is None
     v.clear_points()
     assert v._point_xy is None
@@ -87,12 +79,11 @@ def test_track_pick_resolves_particle_id():
         "frame": [0, 1, 2, 0, 1, 2],
         "x": [5.0, 6.0, 7.0, 40.0, 41.0, 42.0],
         "y": [5.0, 5.0, 5.0, 40.0, 40.0, 40.0]})
-    motion = {7: "Brownian", 9: "Directed"}
-    v.set_tracks_from_df(df, motion, {"Brownian": "#0a0", "Directed": "#a00",
-                                      "Unknown": "#777"})
+    v.set_tracks_from_df(df, {7: "Brownian", 9: "Directed"},
+                         {"Brownian": "#0a0", "Directed": "#a00",
+                          "Unknown": "#777"})
     assert v.pick_at(5.0, 6.0, tol=2.0) == ("track", 7)
     assert v.pick_at(40.0, 41.0, tol=2.0) == ("track", 9)
-    # hidden class is excluded from picking
     v.set_class_visible("Directed", False)
     assert v.pick_at(40.0, 41.0, tol=2.0) is None
 
@@ -119,12 +110,17 @@ def test_superres_overlay_add_clear():
 
 def test_center_on_keeps_span_and_recentres():
     v = _viewer()
-    v.set_stack(np.zeros((1, 100, 100)))
+    v.resize(400, 400)
+    v.show()
+    _app.processEvents()
+    v.set_stack(np.zeros((1, 200, 200)))
     v.center_on(25.0, 75.0, span=20.0)
-    (xr, yr) = v._vb.viewRange()
-    assert abs((xr[0] + xr[1]) / 2 - 75.0) < 1e-6
-    assert abs((yr[0] + yr[1]) / 2 - 25.0) < 1e-6
+    _app.processEvents()
+    r = v.visible_rect()
+    assert abs(r.center().x() - 75.0) < 2.0
+    assert abs(r.center().y() - 25.0) < 2.0
     v.reset_view()   # must not raise
+    v.hide()
 
 
 def test_empty_df_is_graceful():

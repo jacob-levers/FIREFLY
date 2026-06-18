@@ -46,23 +46,23 @@ class VisualiseMixin:
         self._ws_init_viewer()
 
     def _ws_init_viewer(self):
-        """Build the embedded FireflyViewer (pyqtgraph) and wire its click
-        signals.  Shows a clear error in the placeholder on failure.
+        """Build the embedded FireflyViewer (bespoke Qt-only viewer) and wire
+        its click signals.  Shows a clear error in the placeholder on failure.
 
         `self._napari_viewer` is the (historically-named) handle to the
         embedded viewer — now a FireflyViewer, not a napari Viewer.
         """
         try:
-            from firefly.ui.viewer_pg import FireflyViewer
+            from firefly.ui.viewer import FireflyViewer
         except Exception as exc:
             self._ws_placeholder.setText(
                 f"The interactive viewer failed to load:\n\n"
-                f"  {type(exc).__name__}: {exc}\n\n"
-                f"Install the viewer backend with:\n"
-                f"    pip install pyqtgraph\n"
-                f"and restart FIREFLY.")
+                f"  {type(exc).__name__}: {exc}")
             self._ws_placeholder.setStyleSheet(
                 "color: #f78166; padding: 40px; font-size: 13px;")
+            import traceback as _tb
+            print(f"[FIREFLY] viewer import failed:\n{_tb.format_exc()}",
+                  file=sys.stderr)
             return
 
         try:
@@ -613,7 +613,6 @@ class VisualiseMixin:
         if v is None:
             return
         import numpy as _np
-        import pyqtgraph as pg
         ids = self._ws_cluster_labels.astype(_np.int32)
         pt_size = 3
         try:
@@ -655,7 +654,8 @@ class VisualiseMixin:
                     brushes[int(i)] = (0.30, 0.30, 0.30, 0.45)
         else:
             # Turbo by normalised cluster id; noise greyed.
-            cmap = pg.colormap.get("turbo")
+            import matplotlib
+            cmap = matplotlib.colormaps["turbo"]
             valid = ids[ids >= 0]
             lo = float(valid.min()) if valid.size else 0.0
             span = (float(valid.max()) - lo) if valid.size else 1.0
@@ -665,8 +665,7 @@ class VisualiseMixin:
                 if cid < 0:
                     brushes.append((0.30, 0.30, 0.30, 0.55))
                 else:
-                    brushes.append(cmap.map((float(cid) - lo) / span,
-                                            mode="qcolor"))
+                    brushes.append(tuple(cmap((float(cid) - lo) / span)))
 
         try:
             v.set_points(ys, xs, ids=ids, brushes=brushes, size=pt_size)
