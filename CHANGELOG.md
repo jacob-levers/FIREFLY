@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.76.0
+
+napari removed — bespoke Qt viewers; numpy 2 / Python 3.13.
+
+### Changed
+
+- **Removed napari as a dependency.** The Visualise-tab viewer and both ROI
+  editors are now FIREFLY's own Qt-only widgets (`QGraphicsView` / `QImage` /
+  `QPainter` + numpy) — no napari, no pyqtgraph, no vispy. This drops napari
+  and its tree (magicgui, npe2, superqt, qtpy, dask, lxml_html_clean) and ends
+  the private-API coupling that broke across napari versions.
+  - **`FireflyViewer`** (`firefly/ui/viewer.py`) — image stack + frame slider,
+    per-motion-class track polylines, cluster-points overlay, additive
+    super-resolution overlay, click-to-inspect, wheel-zoom / drag-pan.
+  - **`RoiEditor`** (`firefly/ui/roi_editor.py`) — interactive draggable-vertex
+    polygon editing, trackpy detection preview, bandpass "Filtered view",
+    max-projection overlay, and the live auto/manual-threshold ROI mask.
+- Per-class track **visibility** is now driven by colour-coded checkboxes in
+  the Visualise sidebar (replacing napari's layer list); a "Max proj" checkbox
+  replaces napari's per-layer eye toggle in the ROI editor.
+- **Stack moved to numpy 2 / Python 3.13** (the napari pin is gone):
+  `numpy>=2,<3`, `numba>=0.61`, `torch>=2.6,<3` — aligned with `pyproject.toml`
+  and the CI test matrix.
+
+### Fixed
+
+- ROI preview no longer crashes on a `.tif` that isn't a clean single TIFF
+  (OME / BigTIFF / odd-header / multi-file series) — it falls back to FIREFLY's
+  canonical loader, so any file the app can analyse also previews.
+
 ## v2.75.0
 
 Interactive track explorer.

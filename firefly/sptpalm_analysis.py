@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.75.0"
+__version__ = "2.76.0"
+# v2.76.0 — napari REMOVED: the interactive viewers (Visualise tab + ROI editor)
+#   are now bespoke Qt-only widgets (QGraphicsView/QImage/QPainter + numpy) —
+#   no napari, no pyqtgraph, no vispy.  Drops napari + its dependency tree and
+#   moves the stack to numpy 2 / Python 3.13.
 # v2.75.0 — interactive Track explorer on the Visualise tab: filter the loaded
 #   trajectories by D / α / motion-class / length in a sortable table, click a
 #   row to centre the viewer + populate the inspector, and export the filtered
