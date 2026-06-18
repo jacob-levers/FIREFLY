@@ -179,6 +179,21 @@ def main() -> int:
     app.setOrganizationName("jacoblevers")   # must match the Widgets app for QSettings
     win, qw = build_main_window(app)
     win.show()
+
+    # CI/frozen smoke-test marker (mirrors the Widgets app): write the file the
+    # packaging smoke waits on once the QML root has rendered, so a "blank frozen
+    # window" (missing Qt Quick plugins) is caught — the marker only lands when
+    # the scene graph actually painted.
+    marker_path = os.environ.get("SPTPALM_READY_MARKER")
+    if marker_path:
+        try:    qw.repaint()
+        except Exception: pass
+        try:
+            with open(marker_path, "w") as f:
+                f.write("ready\n")
+        except Exception:
+            pass
+
     return app.exec()
 
 

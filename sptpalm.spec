@@ -111,6 +111,14 @@ hidden += [
 # modules are all present in the frozen bundle.
 hidden += collect_submodules("firefly")
 
+# Qt Quick front-end (FIREFLY_UI=qml).  run_firefly.py imports app_qml LAZILY,
+# so PyInstaller's static analysis can miss these — name them explicitly.  The
+# PySide6 hook then pulls the Quick plugin + scenegraph trees + qmldir manifests
+# (a missing one is the classic "blank frozen window").  QtSvg backs the Lucide
+# icon image-provider; QtQuickControls2 is restyled to the Basic style.
+hidden += ["PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
+           "PySide6.QtQuickControls2", "PySide6.QtSvg"]
+
 # ── Datas ─────────────────────────────────────────────────────────────────────
 datas = []
 datas += collect_data_files("skimage")
@@ -169,6 +177,13 @@ _preview_panels = os.path.join(SPECPATH, "firefly", "ui", "assets",
 if os.path.isdir(_preview_panels):
     datas += [(_preview_panels,
                os.path.join("firefly", "ui", "assets", "preview_panels"))]
+
+# Bundle the QML UI tree (Main.qml + components/ + tabs/ + assets/icons) so the
+# QML front-end loads them from sys._MEIPASS in the frozen app — app_qml.py
+# resolves them relative to its own __file__.
+_qml_dir = os.path.join(SPECPATH, "firefly", "ui", "qml")
+if os.path.isdir(_qml_dir):
+    datas += [(_qml_dir, os.path.join("firefly", "ui", "qml"))]
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
