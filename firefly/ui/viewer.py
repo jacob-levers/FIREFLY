@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, QLineF, Signal
 
 
 def _qcolor(c) -> QtGui.QColor:
@@ -165,6 +165,59 @@ class _HeadItem(QtWidgets.QGraphicsItem):
             painter.drawPoints(self._poly)
 
 
+class _TailItem(QtWidgets.QGraphicsItem):
+    """A motion class's track **tail**.
+
+    Holds every track segment for the class, pre-sorted by frame, and each tick
+    paints only the segments whose frame lies in ``(t - tail, t]`` — so the view
+    shows the trajectories *near the current frame*, the way napari's Tracks
+    layer does, instead of every full track at once.  Window selection is a
+    contiguous ``searchsorted`` slice, so it's O(log n) + the (small) draw.
+    """
+    def __init__(self, lines, frames, color, width, rect):
+        super().__init__()
+        self._lines = lines              # list[QLineF], sorted by frame
+        self._frames = frames            # np.ndarray[int], sorted, ⟂ lines
+        self._rect = rect
+        self._lo, self._hi = 0, 0
+        self._pen = QtGui.QPen(_qcolor(color))
+        self._pen.setWidthF(float(width))
+        self._pen.setCosmetic(True)
+        self.setZValue(10)
+
+    def set_color(self, color, width):
+        self._pen = QtGui.QPen(_qcolor(color))
+        self._pen.setWidthF(float(width))
+        self._pen.setCosmetic(True)
+        self.update()
+
+    def set_window(self, t, tail):
+        if tail is None or tail <= 0:
+            lo, hi = 0, len(self._lines)
+        else:
+            lo = int(np.searchsorted(self._frames, t - tail + 1, side="left"))
+            hi = int(np.searchsorted(self._frames, t + 1, side="left"))
+        if (lo, hi) != (self._lo, self._hi):
+            self._lo, self._hi = lo, hi
+            self.update()
+
+    def boundingRect(self):
+        return self._rect
+
+    def paint(self, painter, option, widget=None):
+        if self._hi > self._lo:
+            # AA off for the tail strokes: antialiasing thousands of cosmetic
+            # line segments is pathologically slow in Qt's raster engine (tens
+            # of ms); off it's a few ms and 1px lines still read fine.  Restore
+            # the hint afterwards so the markers/points above stay crisp.
+            aa = QtGui.QPainter.RenderHint.Antialiasing
+            was = bool(painter.renderHints() & aa)
+            painter.setRenderHint(aa, False)
+            painter.setPen(self._pen)
+            painter.drawLines(self._lines[self._lo:self._hi])
+            painter.setRenderHint(aa, was)
+
+
 class _SceneView(QtWidgets.QGraphicsView):
     """QGraphicsView with wheel-zoom (anchored under the cursor), left-drag pan,
     and a click signal (a press+release that didn't drag) in scene coords."""
@@ -289,6 +342,16 @@ class FireflyViewer(QtWidgets.QWidget):
         self._fps_spin.setToolTip("Playback frame rate")
         self._fps_spin.valueChanged.connect(self._on_fps_changed)
 
+        self._tail_spin = QtWidgets.QSpinBox()
+        self._tail_spin.setRange(1, 100000)
+        self._tail_spin.setValue(30)
+        self._tail_spin.setPrefix("tail ")
+        self._tail_spin.setToolTip(
+            "Track tail length: how many frames of trajectory history to show\n"
+            "behind the current frame.  Small = clean, fast playback that follows\n"
+            "the particles; raise it toward the clip length to show whole tracks.")
+        self._tail_spin.valueChanged.connect(self._on_tail_changed)
+
         self._play_timer = QtCore.QTimer(self)
         self._play_timer.timeout.connect(self._advance)
 
@@ -297,6 +360,7 @@ class FireflyViewer(QtWidgets.QWidget):
         bar.addWidget(self._play_btn)
         bar.addWidget(self._slider, 1)
         bar.addWidget(self._frame_lbl)
+        bar.addWidget(self._tail_spin)
         bar.addWidget(self._fps_spin)
         self._bar_widget = QtWidgets.QWidget()
         self._bar_widget.setLayout(bar)
@@ -395,8 +459,17 @@ class FireflyViewer(QtWidgets.QWidget):
                 self._img_item.setZValue(0)
             else:
                 self._img_item.setPixmap(pix)
+        self._apply_tail_windows(t)
         self._refresh_heads(t)
         self._frame_lbl.setText(f"{t + 1}/{max(1, self._n_time)}")
+
+    def _apply_tail_windows(self, t: int):
+        tail = int(self._tail_spin.value())
+        for item in self._track_items.values():
+            item.set_window(t, tail)
+
+    def _on_tail_changed(self, _v=None):
+        self._apply_tail_windows(self.current_frame)
 
     def _on_play_toggled(self, on: bool):
         if on and self._n_time > 1:
@@ -443,45 +516,44 @@ class FireflyViewer(QtWidgets.QWidget):
     # Tracks
     # ─────────────────────────────────────────────────────────────────────
     def _add_track_item(self, cls, trajs, color, width):
-        """trajs: list of (pid, yx_array, frames_array_or_None)."""
-        path = QtGui.QPainterPath()
+        """trajs: list of (pid, yx_array, frames_array_or_None).  Builds a
+        frame-sorted set of segments rendered as a time-windowed tail."""
+        lines, seg_frames = [], []
         pick_xy, pick_pid, pick_fr = [], [], []
-        have_frames = True
+        xmin = ymin = np.inf
+        xmax = ymax = -np.inf
         for pid, traj, frames in trajs:
             t = np.asarray(traj, dtype=float)
             if t.ndim != 2 or t.shape[0] < 2:
                 continue
             y, x = t[:, 0], t[:, 1]
-            path.moveTo(float(x[0]), float(y[0]))
+            fr = (np.arange(len(x)) if frames is None
+                  else np.asarray(frames))
             for k in range(1, len(x)):
-                path.lineTo(float(x[k]), float(y[k]))
+                lines.append(QLineF(float(x[k - 1]), float(y[k - 1]),
+                                    float(x[k]), float(y[k])))
+                seg_frames.append(int(fr[k]))
             pick_xy.append(np.column_stack([x, y]))
             pick_pid.append(np.full(len(x), int(pid), np.int64))
-            if frames is None:
-                have_frames = False
-            else:
-                pick_fr.append(np.asarray(frames))
-        if path.isEmpty():
+            pick_fr.append(fr)
+            xmin = min(xmin, float(x.min())); xmax = max(xmax, float(x.max()))
+            ymin = min(ymin, float(y.min())); ymax = max(ymax, float(y.max()))
+        if not lines:
             return
-        item = QtWidgets.QGraphicsPathItem(path)
-        pen = QtGui.QPen(_qcolor(color))
-        pen.setWidthF(float(width))
-        pen.setCosmetic(True)
-        item.setPen(pen)
-        item.setBrush(Qt.BrushStyle.NoBrush)
-        item.setZValue(10)
-        # Cache the (static) stroked path as a device pixmap so it isn't
-        # re-stroked every playback frame when the markers above it move —
-        # this is the single biggest playback-smoothness win.
-        item.setCacheMode(
-            QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
+        seg_frames = np.asarray(seg_frames)
+        order = np.argsort(seg_frames, kind="mergesort")
+        lines = [lines[i] for i in order]
+        seg_frames = seg_frames[order]
+        pad = 4.0
+        rect = QRectF(xmin - pad, ymin - pad,
+                      (xmax - xmin) + 2 * pad, (ymax - ymin) + 2 * pad)
+        item = _TailItem(lines, seg_frames, color, width, rect)
         self._scene.addItem(item)
         self._track_items[cls] = item
         self._class_visible[cls] = True
         self._track_pick[cls] = (np.concatenate(pick_xy),
                                  np.concatenate(pick_pid))
-        if have_frames and pick_fr:
-            self._track_frames[cls] = np.concatenate(pick_fr)
+        self._track_frames[cls] = np.concatenate(pick_fr)
 
     def set_tracks(self, tracks_by_class: dict, colors: dict, *, width=1.5):
         """Render per-class trajectories.  ``tracks_by_class``:
@@ -531,7 +603,13 @@ class FireflyViewer(QtWidgets.QWidget):
         except Exception:
             self._max_track_frame = -1
         self._update_time_axis()
-        self._refresh_heads(self.current_frame)
+        # Tracks-only load: park the playhead at the LAST frame so the tail
+        # view isn't empty on arrival (a movie load starts at frame 0 instead).
+        if self._stack is None and self._n_time > 1:
+            self._slider.blockSignals(True)
+            self._slider.setValue(self._n_time - 1)
+            self._slider.blockSignals(False)
+        self._show_time(self.current_frame)
         return out
 
     def set_class_visible(self, cls: str, visible: bool):
@@ -562,11 +640,7 @@ class FireflyViewer(QtWidgets.QWidget):
 
     def recolor_tracks(self, colors: dict, *, width=1.5):
         for cls, item in self._track_items.items():
-            pen = QtGui.QPen(_qcolor(colors.get(cls, colors.get("Unknown",
-                                                                "#888"))))
-            pen.setWidthF(float(width))
-            pen.setCosmetic(True)
-            item.setPen(pen)
+            item.set_color(colors.get(cls, colors.get("Unknown", "#888")), width)
 
     # ─────────────────────────────────────────────────────────────────────
     # Points (DBSCAN clusters)

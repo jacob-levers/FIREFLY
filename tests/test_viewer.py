@@ -186,6 +186,24 @@ def test_advance_wraps_around():
     assert v.current_frame == 0
 
 
+def test_tail_windows_segments_by_frame():
+    v = _viewer()
+    df = _tracks_df(n_particles=6, length=10)            # frames 0..14
+    v.set_tracks_from_df(df, {p: "Brownian" for p in range(6)},
+                         {"Brownian": "#0a0", "Unknown": "#777"})
+    item = v._track_items["Brownian"]
+    v._tail_spin.setValue(3)
+    v.current_frame = 8
+    fr = item._frames
+    # window is the segments with frame in (8-3, 8] = [6, 8]
+    expected = int(((fr > 8 - 3) & (fr <= 8)).sum())
+    assert (item._hi - item._lo) == expected
+    # a very long tail shows every segment
+    v._tail_spin.setValue(100000)
+    v.current_frame = 14
+    assert (item._hi - item._lo) == len(item._frames)
+
+
 def test_axis_is_max_of_stack_and_tracks():
     v = _viewer()
     df = _tracks_df()                                # frames up to 14
