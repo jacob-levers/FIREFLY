@@ -19,6 +19,20 @@ from firefly.ui.ui_constants import (TAB_IMPORT, TAB_ANALYSIS, TAB_COMPARE,
                           TAB_VISUALISE, TAB_REPROCESS)
 
 
+class _NumItem(QtWidgets.QTableWidgetItem):
+    """Table cell that displays formatted text but sorts by its numeric value
+    (so the Track-explorer table sorts D / α / length as numbers, not strings)."""
+    def __init__(self, value, text):
+        super().__init__(text)
+        self._v = value
+
+    def __lt__(self, other):
+        try:
+            return self._v < other._v
+        except Exception:
+            return super().__lt__(other)
+
+
 class VisualiseMixin:
     def _ws_maybe_init(self, idx: int):
         """If the user just switched to the Workspace tab, try to embed
@@ -299,6 +313,12 @@ class VisualiseMixin:
             # checkboxes are currently set to (defaults to ALL classes
             # checked → no filtering on first load).
             self._ws_apply_motion_filter(initial=True)
+
+            # Populate the Track-explorer table from the freshly-loaded data.
+            try:
+                self._ws_build_explorer_data()
+            except Exception:
+                pass
 
             self.statusBar().showMessage(
                 f"Loaded {df['particle'].nunique():,} tracks "
@@ -1204,6 +1224,120 @@ class VisualiseMixin:
             self._ws_sr_status.setText(f"Saved {os.path.basename(path)}")
         except Exception as exc:
             self._ws_sr_status.setText(f"Save failed: {exc}")
+
+    _WS_EXP_KNOWN_MOTION = ("Immobile", "Confined", "Brownian", "Directed")
+
+    def _ws_build_explorer_data(self):
+        """Build the per-track table (particle, D, alpha, motion, length) from
+        the loaded trajectories + diffusion summary.  Called when a run loads."""
+        tracks = getattr(self, "_ws_tracks_df", None)
+        diff = getattr(self, "_ws_diff_df", None)
+        if (tracks is None or not len(tracks)
+                or "particle" not in tracks.columns):
+            self._ws_explorer_df = None
+            self.btn_ws_export_tracks.setEnabled(False)
+            self._ws_exp_count.setText("Load a run to explore tracks.")
+            return
+        df = tracks.groupby("particle").size().rename("length").reset_index()
+        if diff is not None and "particle" in getattr(diff, "columns", []):
+            cols = [c for c in ("particle", "D", "alpha", "motion")
+                    if c in diff.columns]
+            df = df.merge(diff[cols], on="particle", how="left")
+        for c in ("D", "alpha"):
+            if c not in df.columns:
+                df[c] = np.nan
+        if "motion" not in df.columns:
+            df["motion"] = "Unclassified"
+        df["motion"] = df["motion"].astype(str)
+        self._ws_explorer_df = df
+        self.btn_ws_export_tracks.setEnabled(True)
+        self._ws_refresh_explorer()
+
+    def _ws_refresh_explorer(self):
+        """Apply the explorer filters and repopulate the table + count."""
+        d = getattr(self, "_ws_explorer_df", None)
+        if d is None or not len(d):
+            self._ws_exp_count.setText("Load a run to explore tracks.")
+            return
+        dmin, dmax = self._ws_exp_d_min.value(), self._ws_exp_d_max.value()
+        amin, amax = self._ws_exp_a_min.value(), self._ws_exp_a_max.value()
+        mlen = int(self._ws_exp_min_len.value())
+        keep = {m for m, cb in self._ws_exp_motion.items() if cb.isChecked()}
+        known = d["motion"].isin(self._WS_EXP_KNOWN_MOTION)
+        mask = ((d["length"] >= mlen)
+                & (d["D"].isna() | d["D"].between(dmin, dmax))
+                & (d["alpha"].isna() | d["alpha"].between(amin, amax))
+                & ((~known) | d["motion"].isin(keep)))
+        filt = d[mask]
+        self._ws_exp_filtered = filt
+        CAP = 1500
+        shown = filt.head(CAP)
+        tbl = self._ws_exp_table
+        tbl.setSortingEnabled(False)
+        tbl.setRowCount(len(shown))
+        for i, (_, row) in enumerate(shown.iterrows()):
+            pid = int(row["particle"]); ln = int(row["length"])
+            dv, av = row["D"], row["alpha"]
+            tbl.setItem(i, 0, _NumItem(pid, str(pid)))
+            tbl.setItem(i, 1, _NumItem(dv if pd.notna(dv) else -1.0,
+                                       f"{dv:.4g}" if pd.notna(dv) else "—"))
+            tbl.setItem(i, 2, _NumItem(av if pd.notna(av) else -1.0,
+                                       f"{av:.3g}" if pd.notna(av) else "—"))
+            tbl.setItem(i, 3, QtWidgets.QTableWidgetItem(str(row["motion"])))
+            tbl.setItem(i, 4, _NumItem(ln, str(ln)))
+        tbl.setSortingEnabled(True)
+        n = len(filt)
+        extra = f"  (showing first {CAP:,})" if n > CAP else ""
+        self._ws_exp_count.setText(f"{n:,} of {len(d):,} tracks{extra}")
+
+    def _ws_explorer_row_clicked(self):
+        """Centre the viewer on the selected track + fill the inspector."""
+        sel = self._ws_exp_table.selectionModel().selectedRows()
+        if not sel:
+            return
+        it = self._ws_exp_table.item(sel[0].row(), 0)
+        if it is None:
+            return
+        try:
+            pid = int(it.text())
+        except Exception:
+            return
+        # Reuse the canonical inspector populator (start/end frame, net
+        # displacement, path length, straightness, mass, D, α, motion) so a
+        # row-click matches a direct viewer click exactly.
+        if hasattr(self, "_show_track_in_inspector"):
+            try:
+                self._show_track_in_inspector(pid)
+            except Exception:
+                pass
+        v = getattr(self, "_napari_viewer", None)
+        tracks = getattr(self, "_ws_tracks_df", None)
+        if v is not None and tracks is not None:
+            t = tracks[tracks["particle"] == pid]
+            if len(t):
+                cy, cx = float(t["y"].mean()), float(t["x"].mean())
+                try:
+                    cur = list(v.camera.center)
+                    cur[-2], cur[-1] = cy, cx
+                    v.camera.center = tuple(cur)
+                except Exception:
+                    pass
+
+    def _ws_export_filtered_tracks(self):
+        """Write the currently-filtered tracks to a CSV."""
+        f = getattr(self, "_ws_exp_filtered", None)
+        if f is None or not len(f):
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export filtered tracks", "filtered_tracks.csv", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            f.to_csv(path, index=False)
+            self._ws_exp_count.setText(
+                f"Exported {len(f):,} tracks → {os.path.basename(path)}")
+        except Exception as exc:
+            self._ws_exp_count.setText(f"Export failed: {exc}")
 
     def _ws_load_run_folder(self, run_dir: str):
         """Load a complete FIREFLY analysis run:  finds the stack via the

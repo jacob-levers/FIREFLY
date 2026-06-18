@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.75.0
+
+Interactive track explorer.
+
+### Added
+
+- **Track explorer** (Visualise tab) — a new "Track explorer" sidebar section
+  to slice the loaded trajectories interactively:
+  - Filter by **D range**, **α range**, **motion class** (Immobile / Confined /
+    Brownian / Directed), and **minimum track length**; a live count shows how
+    many of the total tracks match.
+  - A **sortable table** (Track, D, α, Motion, Length) lists the matches —
+    click any column header to sort numerically.
+  - **Selecting a row** centres the napari viewer on that track and fills the
+    track inspector (start/end frame, net displacement, path length,
+    straightness, mass, D, α, motion) — identical to clicking the track in the
+    viewer.
+  - **Export filtered tracks…** writes the current filtered subset to CSV.
+  - Numeric-range filters are NaN-tolerant, so tracks without a diffusion fit
+    are not silently dropped.
+
 ## v2.74.0
 
 Super-resolution reconstruction.

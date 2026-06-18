@@ -1654,6 +1654,9 @@ class BuildMixin:
         sec_sr = _CollapsibleSection("Super-resolution")
         sec_sr.content_layout.addWidget(self._vis_superres_widget)
         vp_v.addWidget(sec_sr)
+        sec_exp = _CollapsibleSection("Track explorer")
+        sec_exp.content_layout.addWidget(self._vis_explorer_widget)
+        vp_v.addWidget(sec_exp)
         vp_v.addStretch(1)
         vp_scroll.setWidget(vp_inner)
         vp_outer.addWidget(vp_scroll)
@@ -3793,6 +3796,84 @@ class BuildMixin:
         self._ws_sr_status.setStyleSheet("color: #888;")
         self._ws_sr_status.setWordWrap(True)
         sr_form.addRow(self._ws_sr_status)
+
+        # ── Track explorer (filter / select trajectories) ─────────────────
+        self._vis_explorer_widget = QtWidgets.QWidget()
+        exp_v = QtWidgets.QVBoxLayout(self._vis_explorer_widget)
+        exp_v.setContentsMargins(0, 0, 0, 0); exp_v.setSpacing(6)
+        exp_form = QtWidgets.QFormLayout()
+
+        def _dspin(lo, hi, val, dec):
+            s = QtWidgets.QDoubleSpinBox(); s.setRange(lo, hi)
+            s.setDecimals(dec); s.setValue(val); return s
+
+        def _range_row(a, b):
+            w = QtWidgets.QWidget(); h = QtWidgets.QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
+            h.addWidget(a); h.addWidget(QtWidgets.QLabel("–")); h.addWidget(b)
+            return w
+
+        self._ws_exp_d_min = _dspin(0.0, 1e6, 0.0, 4)
+        self._ws_exp_d_max = _dspin(0.0, 1e6, 1000.0, 4)
+        exp_form.addRow("D (µm²/s)", _range_row(self._ws_exp_d_min,
+                                                self._ws_exp_d_max))
+        self._ws_exp_a_min = _dspin(0.0, 5.0, 0.0, 2)
+        self._ws_exp_a_max = _dspin(0.0, 5.0, 5.0, 2)
+        exp_form.addRow("α", _range_row(self._ws_exp_a_min, self._ws_exp_a_max))
+        self._ws_exp_min_len = QtWidgets.QSpinBox()
+        self._ws_exp_min_len.setRange(0, 100000); self._ws_exp_min_len.setValue(0)
+        exp_form.addRow("Min length", self._ws_exp_min_len)
+        exp_v.addLayout(exp_form)
+
+        self._ws_exp_motion = {}
+        _mw = QtWidgets.QWidget(); _mh = QtWidgets.QHBoxLayout(_mw)
+        _mh.setContentsMargins(0, 0, 0, 0); _mh.setSpacing(6)
+        for _mc in ("Immobile", "Confined", "Brownian", "Directed"):
+            cb = QtWidgets.QCheckBox(_mc); cb.setChecked(True)
+            self._ws_exp_motion[_mc] = cb
+            _mh.addWidget(cb)
+        _mh.addStretch(1)
+        exp_v.addWidget(_mw)
+
+        self._ws_exp_count = QtWidgets.QLabel("Load a run to explore tracks.")
+        self._ws_exp_count.setStyleSheet("color: #888;")
+        self._ws_exp_count.setWordWrap(True)
+        exp_v.addWidget(self._ws_exp_count)
+
+        self._ws_exp_table = QtWidgets.QTableWidget(0, 5)
+        self._ws_exp_table.setHorizontalHeaderLabels(
+            ["Track", "D", "α", "Motion", "Len"])
+        self._ws_exp_table.setSortingEnabled(True)
+        self._ws_exp_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self._ws_exp_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self._ws_exp_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._ws_exp_table.verticalHeader().setVisible(False)
+        self._ws_exp_table.setMinimumHeight(220)
+        self._ws_exp_table.itemSelectionChanged.connect(
+            self._ws_explorer_row_clicked)
+        exp_v.addWidget(self._ws_exp_table)
+
+        self.btn_ws_export_tracks = QtWidgets.QPushButton(
+            "Export filtered tracks…")
+        self.btn_ws_export_tracks.setEnabled(False)
+        self.btn_ws_export_tracks.setToolTip(
+            "Save the currently-filtered tracks (Track, D, α, Motion, Length)\n"
+            "to a CSV.")
+        self.btn_ws_export_tracks.clicked.connect(self._ws_export_filtered_tracks)
+        exp_v.addWidget(self.btn_ws_export_tracks)
+
+        self._ws_exp_debounce = QTimer(self)
+        self._ws_exp_debounce.setSingleShot(True)
+        self._ws_exp_debounce.setInterval(250)
+        self._ws_exp_debounce.timeout.connect(self._ws_refresh_explorer)
+        for _w in (self._ws_exp_d_min, self._ws_exp_d_max, self._ws_exp_a_min,
+                   self._ws_exp_a_max, self._ws_exp_min_len):
+            _w.valueChanged.connect(lambda _=None: self._ws_exp_debounce.start())
+        for cb in self._ws_exp_motion.values():
+            cb.toggled.connect(lambda _=None: self._ws_exp_debounce.start())
 
         # ── Viewer container ─────────────────────────────────────────────
         # Filled lazily on first tab activation.

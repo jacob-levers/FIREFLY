@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.74.0"
+__version__ = "2.75.0"
+# v2.75.0 — interactive Track explorer on the Visualise tab: filter the loaded
+#   trajectories by D / α / motion-class / length in a sortable table, click a
+#   row to centre the viewer + populate the inspector, and export the filtered
+#   subset to CSV.
 # v2.74.0 — super-resolution reconstruction: every run saves a *_superres.png
 #   (Gaussian/histogram render of the localisation cloud), plus an interactive
 #   live-tunable layer on the Visualise tab (overlaid on the raw image).
