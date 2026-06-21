@@ -30,7 +30,7 @@ class FakeImport:
 
 # ── batch_scan ───────────────────────────────────────────────────────────────
 def test_scan_series_groups_and_filters(tmp_path):
-    from firefly.ui.controllers import batch_scan
+    from firefly.ui.controllers.params import batch_scan
     d = str(tmp_path)
     # top folder (no czi): a.tif + its split-TIFF siblings → one series "a"
     _touch(os.path.join(d, "a.tif"))
@@ -51,13 +51,13 @@ def test_scan_series_groups_and_filters(tmp_path):
 
 
 def test_scan_series_empty(tmp_path):
-    from firefly.ui.controllers import batch_scan
+    from firefly.ui.controllers.params import batch_scan
     assert batch_scan.scan_series(str(tmp_path)) == []
     assert batch_scan.scan_series("/nonexistent/xyz") == []
 
 
 def test_series_key_strips_suffixes():
-    from firefly.ui.controllers.batch_scan import series_key
+    from firefly.ui.controllers.params.batch_scan import series_key
     assert series_key("expt.tif") == "expt"
     assert series_key("expt-file002.tif") == "expt"
     assert series_key("expt(1).tif") == "expt"

@@ -20,15 +20,6 @@ def _write_imagej_rect_roi(path, x=10, y=20, w=8, h=6):
     roi.tofile(path)
 
 
-def test_reexport_from_ui_widgets_matches_fa_roi():
-    # The GUI must still import the parsers from ui_widgets (re-export), and
-    # they must be the SAME objects now defined in fa_roi.
-    pytest.importorskip("PySide6")
-    from firefly.ui import ui_widgets
-    assert ui_widgets._load_any_roi_file is fa_roi._load_any_roi_file
-    assert ui_widgets._load_imagej_roi_polygons is fa_roi._load_imagej_roi_polygons
-
-
 def test_load_imagej_roi_zip(tmp_path):
     pytest.importorskip("roifile")
     r1 = tmp_path / "0011-0038.roi"

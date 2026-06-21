@@ -46,11 +46,13 @@ def _boot(ui_env, marker, timeout=40):
             proc.kill()
 
 
-def test_qml_frontend_boots_to_ready(tmp_path):
+def test_default_frontend_boots_to_ready(tmp_path):
+    """The (only) QML front-end boots to a rendered root with no env override."""
+    marker = tmp_path / "ready_default"
+    assert _boot(None, marker), "front-end never reached the ready marker"
+
+
+def test_explicit_qml_env_still_boots(tmp_path):
+    """FIREFLY_UI=qml is now a no-op alias but must still boot cleanly."""
     marker = tmp_path / "ready_qml"
     assert _boot("qml", marker), "QML front-end never reached the ready marker"
-
-
-def test_widgets_frontend_still_boots(tmp_path):
-    marker = tmp_path / "ready_widgets"
-    assert _boot(None, marker), "Widgets front-end never reached the ready marker"

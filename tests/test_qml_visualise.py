@@ -101,8 +101,8 @@ def test_visualise_background_selection():
     assert "Max projection" in c.backgroundOptions
     c.selectBackground("Max projection")
     assert c.backgroundMode == "Max projection"
-    # exposed as a layer-rail image layer
-    assert any(l["id"] == "bg:Max projection" and l["visible"] for l in c.layers)
+    # background is the dropdown above the LAYERS list, NOT a track layer
+    assert all(l["kind"] == "tracks" for l in c.layers)
 
 
 def test_visualise_pick_to_inspector(tmp_path):
@@ -289,7 +289,19 @@ def test_embed_location_changes_visibility():
     viewer = _FakeIsland()
     e.setIslands(viewer=viewer)
     e.setAnchorRect(0, 0, 80, 80)
+    # On the Visualise tab but nothing loaded → island stays hidden (no blank card)
     e.onLocationChanged(VISUALISE_TAB, "main")
+    assert viewer.isVisible() is False
+    # Content arrives → island shows
+    e.setViewerContent(True)
     assert e.activeIsland == "viewer"
-    e.onLocationChanged(0, "main")            # left Visualise → hidden
+    assert viewer.isVisible() is True
+    # Leaving Visualise hides it even with content
+    e.onLocationChanged(0, "main")
+    assert viewer.isVisible() is False
+    # Returning with content still loaded re-shows it
+    e.onLocationChanged(VISUALISE_TAB, "main")
+    assert viewer.isVisible() is True
+    # Clearing content hides it again
+    e.setViewerContent(False)
     assert viewer.isVisible() is False

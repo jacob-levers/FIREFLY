@@ -111,7 +111,7 @@ hidden += [
 # modules are all present in the frozen bundle.
 hidden += collect_submodules("firefly")
 
-# Qt Quick front-end (FIREFLY_UI=qml).  run_firefly.py imports app_qml LAZILY,
+# Qt Quick front-end (the only UI).  run_firefly.py imports app_qml LAZILY,
 # so PyInstaller's static analysis can miss these — name them explicitly.  The
 # PySide6 hook then pulls the Quick plugin + scenegraph trees + qmldir manifests
 # (a missing one is the classic "blank frozen window").  QtSvg backs the Lucide

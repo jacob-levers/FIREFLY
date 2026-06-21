@@ -32,7 +32,7 @@ def test_roi_store_roundtrip(tmp_path):
 
 # ── params_builder reads the per-file polygon ───────────────────────────────
 def test_params_builder_roi_polygon_from_store():
-    from firefly.ui.controllers import params_builder as pb
+    from firefly.ui.controllers.params import params_builder as pb
     from firefly.ui.controllers.roi_store import RoiStore
 
     class FakeSettings:

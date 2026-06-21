@@ -62,7 +62,7 @@ tell application "Terminal"
         echo ''; \
         echo '────────────────────────────────────────────────'; \
         echo '  FIREFLY first-time setup'; \
-        echo '  Installs PySide6, napari, PyTorch, scipy, etc.'; \
+        echo '  Installs PySide6, PyTorch, scipy, etc.'; \
         echo '  Expect 3-8 minutes depending on network speed.'; \
         echo '────────────────────────────────────────────────'; \
         echo ''; \
@@ -80,12 +80,15 @@ tell application "Terminal"
         echo '  Setup complete — launching FIREFLY...'; \
         echo '────────────────────────────────────────────────'; \
         echo ''; \
-        sptpalm-env/bin/python3 run_firefly.py"
+        FIREFLY_UI=qml sptpalm-env/bin/python3 run_firefly.py"
 end tell
 EOF
     exit 0
 fi
 
 # ── Normal launch ────────────────────────────────────────────────────────────
+# FIREFLY_UI=qml selects the new QML / Qt Quick front-end.  This launcher is the
+# user-facing entry point; a bare `python run_firefly.py` from a terminal still
+# defaults to the Widgets app unless this env var is set.
 cd "$FOLDER"
-exec "$VENV_PY" "$APP"
+exec env FIREFLY_UI=qml "$VENV_PY" "$APP"

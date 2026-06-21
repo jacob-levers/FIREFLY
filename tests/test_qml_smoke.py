@@ -56,7 +56,7 @@ def _theme_bg(name):
 def test_icon_provider_renders_tinted():
     from PySide6.QtCore import QSize
     from firefly.ui import app_qml
-    from firefly.ui.controllers.icon_provider import IconImageProvider
+    from firefly.ui.controllers.providers.icon_provider import IconImageProvider
     p = IconImageProvider(app_qml._ICONS_DIR)
     img = p.requestImage("scan-search/58a6ff", QSize(), QSize(48, 48))
     assert not img.isNull() and img.width() == 48
@@ -126,7 +126,7 @@ def test_visualise_tab_qml_loads_without_errors():
     from firefly.ui.app_qml import build_main_window, _QML_DIR
     win, qw = build_main_window(_app)
     for rel in (("tabs", "ImportTab.qml"), ("tabs", "VisualiseTab.qml"),
-                ("tabs", "ResultsTab.qml"), ("tabs", "CompareTab.qml"),
+                ("tabs", "ProcessTab.qml"),
                 ("HudOverlay.qml",), ("RoiOverlay.qml",),
                 ("components", "ParameterSidebar.qml"), ("PreferencesDialog.qml",)):
         comp = QQmlComponent(qw.engine(),
@@ -140,10 +140,10 @@ def test_app_controller_navigation():
     from firefly.ui.controllers.app_controller import AppController
     a = AppController()
     assert a.page == "landing" and a.currentTab == 0
-    assert a.tabs[:2] == ["Import", "Analysis"]
+    assert a.tabs[:2] == ["Import", "Process"]
     a.enterMain(2)
     assert a.page == "main" and a.currentTab == 2
-    a.setTab(4)
-    assert a.currentTab == 4
+    a.setTab(3)
+    assert a.currentTab == 3
     a.goLanding()
     assert a.page == "landing"

@@ -27,7 +27,7 @@ class FakeSettings:
 
 
 def _make(tmp_path, monkeypatch):
-    from firefly.ui.controllers.sidebar_controller import SidebarController
+    from firefly.ui.controllers.params.sidebar_controller import SidebarController
     from firefly.ui.controllers.preset_controller import PresetController
     sb = SidebarController(FakeSettings())
     pc = PresetController(sb)

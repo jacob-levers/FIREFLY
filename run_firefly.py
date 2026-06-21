@@ -7,11 +7,9 @@ multiprocessing (start method = spawn) re-imports this file in each worker child
 so the ``freeze_support()`` + ``__main__`` guard below must remain here to stop
 the GUI from relaunching recursively in those children.
 
-Front-end selection: the default is the mature Widgets app; set ``FIREFLY_UI=qml``
-(env) to launch the new QML / Qt Quick front-end instead.  Both ship in the
-frozen bundle; the default flips to QML once side-by-side parity is signed off.
-The UI module is imported LAZILY inside ``_select_main`` so a spawned worker
-child (which re-imports this file but never runs ``main``) doesn't load Qt.
+The front-end is the QML / Qt Quick app (``firefly.ui.app_qml``).  It's imported
+LAZILY inside the ``__main__`` guard so a spawned worker child (which re-imports
+this file but never runs ``main``) doesn't load Qt.
 """
 import os
 import sys
@@ -36,17 +34,7 @@ if getattr(sys, "frozen", False):
 import multiprocessing  # noqa: E402  (after the stream guard, intentionally)
 
 
-def _select_main():
-    """Return the chosen front-end's ``main`` (imported lazily so worker children
-    don't pull in Qt)."""
-    ui = os.environ.get("FIREFLY_UI", "").strip().lower()
-    if ui in ("qml", "quick", "new"):
-        from firefly.ui.app_qml import main as _m
-    else:
-        from firefly.ui.app_qt import main as _m
-    return _m
-
-
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    _select_main()()
+    from firefly.ui.app_qml import main   # lazy: worker children never reach here
+    main()

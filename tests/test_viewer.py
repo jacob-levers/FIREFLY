@@ -105,7 +105,8 @@ def test_background_selector():
     assert opts == ["Raw movie", "Max projection", "Off"]
     assert v._bg_mode == "Raw movie" and v._img_item.isVisible()
     v._bg_combo.setCurrentText("Max projection")
-    assert v._bg_mode == "Max projection" and v._maxproj is not None
+    # small stack (≤256 frames) → full max projection computed inline
+    assert v._bg_mode == "Max projection" and v._maxproj_full is not None
     assert v._img_item.isVisible()
     v._bg_combo.setCurrentText("Off")
     assert not v._img_item.isVisible()

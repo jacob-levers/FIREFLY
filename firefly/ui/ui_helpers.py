@@ -1,7 +1,5 @@
-"""Icon factories, napari-chrome helpers, the motion colormap and
-small GUI utilities (open-folder, Qt message handler).
-
-Extracted from app_qt.py (#7); re-exported there for compatibility.
+"""Icon factories, the motion colormap and small GUI utilities (open-folder, Qt
+message handler).  Shared helpers used by the QML controllers and viewers.
 """
 from __future__ import annotations
 
