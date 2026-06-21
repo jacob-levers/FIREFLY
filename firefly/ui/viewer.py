@@ -185,7 +185,14 @@ class _SceneView(QtWidgets.QGraphicsView):
         self._moved = 0.0
 
     def wheelEvent(self, ev):
-        f = 1.25 if ev.angleDelta().y() > 0 else 1.0 / 1.25
+        # Zoom proportional to the scroll delta, not a fixed step per event: a
+        # trackpad emits many small wheel events, so a fixed 1.25×/event rocketed
+        # the view in/out.  ~10% per mouse-wheel notch (delta 120); clamped so a
+        # fling can't jump wildly.
+        delta = ev.angleDelta().y()
+        if not delta:
+            return
+        f = pow(1.0008, max(-700, min(700, delta)))
         self.scale(f, f)
 
     def mousePressEvent(self, ev):
@@ -228,9 +235,18 @@ class FireflyViewer(QtWidgets.QWidget):
     trackClicked = Signal(int)        # particle id of the nearest track
     clusterClicked = Signal(int)      # cluster id of the nearest point (-1 = noise)
     frameChanged = Signal(int)        # current stack frame index
+    _maxprojReady = Signal()          # full max projection finished (off-thread)
 
-    def __init__(self, parent=None, *, background="#0d1117"):
+    def __init__(self, parent=None, *, background=None):
         super().__init__(parent)
+        if background is None:
+            # match the active theme's page canvas (the colour behind the tabs)
+            # so the viewer doesn't read as a different shade.
+            try:
+                from firefly.ui.ui_theme import _THEMES, _pick_startup_theme
+                background = _THEMES.get(_pick_startup_theme(), _THEMES["Dark"])["BG"]
+            except Exception:
+                background = "#090b0f"
 
         self._stack = None
         self._levels = (0.0, 1.0)
@@ -244,7 +260,10 @@ class FireflyViewer(QtWidgets.QWidget):
         self._point_ids = None
         self._img_item: QtWidgets.QGraphicsPixmapItem | None = None
         # selectable background sources for the base layer
-        self._maxproj = None                  # lazily computed from the stack
+        self._maxproj_full = None             # full max projection (computed off-thread)
+        self._maxproj_quick = None            # instant strided-sample preview
+        self._maxproj_computing = False
+        self._maxprojReady.connect(self._on_maxproj_ready)
         self._sr = None                       # (img, scale, (ty, tx)) or None
         self._bg_mode = "Raw movie"
         self._track_frames: dict[str, np.ndarray] = {}   # per-vertex frame, ⟂ pick
@@ -283,7 +302,7 @@ class FireflyViewer(QtWidgets.QWidget):
 
         self._fps_spin = QtWidgets.QSpinBox()
         self._fps_spin.setRange(1, 60)
-        self._fps_spin.setValue(7)
+        self._fps_spin.setValue(60)
         self._fps_spin.setSuffix(" fps")
         self._fps_spin.setToolTip("Playback frame rate")
         self._fps_spin.valueChanged.connect(self._on_fps_changed)
@@ -346,11 +365,16 @@ class FireflyViewer(QtWidgets.QWidget):
         row2.addStretch(1)
         row2.addWidget(QtWidgets.QLabel("Background:"))
         row2.addWidget(self._bg_combo)
+        # Track-display + background row — hidden here; surfaced in the QML
+        # Visualise SETTINGS rail instead (the spins/combo still drive the view).
+        self._row2_widget = QtWidgets.QWidget()
+        self._row2_widget.setLayout(row2)
+        self._row2_widget.setVisible(False)
         barv = QtWidgets.QVBoxLayout()
         barv.setContentsMargins(0, 0, 0, 0)
         barv.setSpacing(0)
         barv.addLayout(row1)
-        barv.addLayout(row2)
+        barv.addWidget(self._row2_widget)
         self._bar_widget = QtWidgets.QWidget()
         self._bar_widget.setLayout(barv)
         self._bar_widget.setVisible(False)
@@ -378,7 +402,7 @@ class FireflyViewer(QtWidgets.QWidget):
         # Bound the frame-pixmap cache to ~250 MB regardless of frame size, so a
         # large movie can't OOM (a 2048² frame → ~16 MB pixmap → ~16 frames).
         self._pix_cache_cap = max(8, int(2.5e8 / (h * w * 4 + 1)))
-        self._maxproj = None
+        self._maxproj_full = None; self._maxproj_quick = None; self._maxproj_computing = False
         self._scene.setSceneRect(0, 0, w, h)
         self._update_time_axis(reset=True)
         self._update_bg_options()           # registers Raw/Max + applies the bg
@@ -390,7 +414,7 @@ class FireflyViewer(QtWidgets.QWidget):
             self._scene.removeItem(self._img_item)
             self._img_item = None
         self._stack = None
-        self._maxproj = None
+        self._maxproj_full = None; self._maxproj_quick = None; self._maxproj_computing = False
         self._update_bg_options()
         self._update_time_axis()
 
@@ -413,7 +437,10 @@ class FireflyViewer(QtWidgets.QWidget):
         self._slider.blockSignals(False)
         self._play_btn.setEnabled(n > 1)
         self._fps_spin.setEnabled(n > 1)
-        self._bar_widget.setVisible(n > 1)
+        # The transport is now driven by the QML scrubber (HudOverlay / VisualiseTab
+        # via VisualiseController); keep these native widgets alive as the backing
+        # state + play timer, but never show the dated native bar.
+        self._bar_widget.setVisible(False)
         if n <= 1 and self._play_btn.isChecked():
             self._play_btn.setChecked(False)
 
@@ -464,9 +491,47 @@ class FireflyViewer(QtWidgets.QWidget):
         self._img_item.setTransform(transform or QtGui.QTransform())
 
     def _maxproj_array(self):
-        if self._maxproj is None and self._stack is not None:
-            self._maxproj = self._stack.max(axis=0)
-        return self._maxproj
+        # A full max projection over a 10⁴-frame movie reads the whole stack and
+        # stalls the UI. Show an instant strided-SAMPLE preview, compute the full
+        # projection on a background thread, and swap it in when ready (an SMLM
+        # max needs every frame — blinks land at different pixels each frame).
+        if self._stack is None:
+            return None
+        if self._maxproj_full is not None:
+            return self._maxproj_full
+        self._ensure_maxproj_full()
+        if self._maxproj_quick is None:
+            n = self._stack.shape[0]
+            stride = max(1, n // 256)
+            sample = self._stack[::stride] if stride > 1 else self._stack
+            self._maxproj_quick = sample.max(axis=0)
+        return self._maxproj_quick
+
+    def _ensure_maxproj_full(self):
+        """Compute the full max projection once, off the GUI thread (or inline
+        for a small stack where the sample already IS the full)."""
+        if (self._maxproj_full is not None or self._maxproj_computing
+                or self._stack is None):
+            return
+        if self._stack.shape[0] <= 256:
+            self._maxproj_full = self._stack.max(axis=0)
+            return
+        self._maxproj_computing = True
+        stack = self._stack
+        import threading
+
+        def _work():
+            try:    mp = stack.max(axis=0)
+            except Exception: mp = None
+            self._maxproj_full = mp
+            self._maxproj_computing = False
+            try:    self._maxprojReady.emit()       # GUI-thread refresh (queued)
+            except Exception: pass
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_maxproj_ready(self):
+        if self._bg_mode == "Max projection":
+            self._apply_background()                 # swap the preview for the full proj
 
     def _update_bg_options(self):
         """Rebuild the Background combo from what's available + apply it."""
@@ -623,6 +688,10 @@ class FireflyViewer(QtWidgets.QWidget):
             self._slider.setValue(self._n_time - 1)
             self._slider.blockSignals(False)
         self._show_time(self.current_frame)
+        # Keep the Background selector populated even on a tracks-only load (no
+        # stack) so the control is always available — "Off" until a movie/super-
+        # res layer is added, then Raw movie / Max projection appear.
+        self._update_bg_options()
         return out
 
     def set_class_visible(self, cls: str, visible: bool):
@@ -829,7 +898,9 @@ class FireflyViewer(QtWidgets.QWidget):
         if tol is None:
             tol = self._data_tol()
         return _pick_at_core(self._point_xy, self._point_ids, self._track_pick,
-                             self._class_visible, y, x, tol)
+                             self._class_visible, y, x, tol,
+                             track_frames=self._track_frames,
+                             t=self.current_frame, tail=self.tail, head=self.head)
 
     def _on_scene_clicked(self, scene_pt: QPointF):
         hit = self.pick_at(scene_pt.y(), scene_pt.x())

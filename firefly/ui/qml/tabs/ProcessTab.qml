@@ -16,16 +16,16 @@ Flickable {
 
     // ── status-pill mapping ──────────────────────────────────────────────
     readonly property color statusTone:
-        Analysis.running ? pal.ACC
-        : Analysis.resultSeverity === "ok"    ? pal.SUCCESS
-        : Analysis.resultSeverity === "error" ? pal.DANGER
-        : Analysis.resultSeverity === "warn"  ? pal.WARN
+        Process.running ? pal.ACC
+        : Process.resultSeverity === "ok"    ? pal.SUCCESS
+        : Process.resultSeverity === "error" ? pal.DANGER
+        : Process.resultSeverity === "warn"  ? pal.WARN
         : pal.TXT_MUTED
     readonly property string statusText:
-        Analysis.running ? "Running"
-        : Analysis.resultSeverity === "ok"    ? "Complete"
-        : Analysis.resultSeverity === "error" ? "Error"
-        : Analysis.resultSeverity === "warn"  ? "Finished"
+        Process.running ? "Running"
+        : Process.resultSeverity === "ok"    ? "Complete"
+        : Process.resultSeverity === "error" ? "Error"
+        : Process.resultSeverity === "warn"  ? "Finished"
         : "Idle"
 
     ColumnLayout {
@@ -38,23 +38,25 @@ Flickable {
         RowLayout {
             Layout.fillWidth: true
             spacing: sc.sp4
-            Text { text: "Analysis"; color: pal.TXT; font.pixelSize: sc.textXl; font.bold: true }
-            Badge { text: root.statusText; tone: root.statusTone; dot: true
+            Text { text: "Process"; color: pal.TXT; font.pixelSize: sc.textXl; font.bold: true }
+            StatusDot { tone: root.statusTone; pulsing: Process.running
+                        Layout.alignment: Qt.AlignVCenter }
+            Badge { text: root.statusText; tone: root.statusTone; dot: false
                     Layout.alignment: Qt.AlignVCenter }
             Item { Layout.fillWidth: true }
             RowLayout {
                 spacing: sc.sp2
-                visible: Analysis.running || Analysis.elapsed !== "00:00"
+                visible: Process.running || Process.elapsed !== "00:00"
                 Icon { name: "clock"; size: 13; color: pal.TXT_MUTED }
-                Text { text: Analysis.elapsed; color: pal.TXT_MUTED
+                Text { text: Process.elapsed; color: pal.TXT_MUTED
                        font.pixelSize: sc.textSm; font.family: "Menlo" }
             }
             Button {
-                variant: Analysis.running ? "danger" : "primary"
-                text: Analysis.running ? "Stop" : "Start analysis"
-                icon: Analysis.running ? "x" : "play"
-                enabled: Analysis.running || Import.hasFile
-                onClicked: Analysis.running ? Analysis.stop() : Analysis.start()
+                variant: Process.running ? "danger" : "primary"
+                text: Process.running ? "Stop" : "Start analysis"
+                icon: Process.running ? "x" : "play"
+                enabled: Process.running || Import.hasFile
+                onClicked: Process.running ? Process.stop() : Process.start()
             }
         }
 
@@ -69,13 +71,13 @@ Flickable {
                 anchors.rightMargin: sc.sp8
                 spacing: 0
                 Repeater {
-                    model: Analysis.stages
+                    model: Process.stages
                     delegate: RowLayout {
                         id: node
                         required property int index
                         required property string modelData
-                        readonly property bool done: Analysis.complete || index < Analysis.stage
-                        readonly property bool active: index === Analysis.stage && !Analysis.complete
+                        readonly property bool done: Process.complete || index < Process.stage
+                        readonly property bool active: index === Process.stage && !Process.complete
                         Layout.fillWidth: index > 0
                         spacing: 0
 
@@ -85,7 +87,7 @@ Flickable {
                             Layout.fillWidth: true
                             Layout.preferredHeight: 2
                             radius: 1
-                            color: (Analysis.complete || index <= Analysis.stage) ? pal.SUCCESS
+                            color: (Process.complete || index <= Process.stage) ? pal.SUCCESS
                                  : pal.BORDER
                         }
 
@@ -105,12 +107,12 @@ Flickable {
                                     visible: node.active
                                     opacity: 0.0
                                     SequentialAnimation on opacity {
-                                        running: node.active && Analysis.running && !Theme.reducedMotion
+                                        running: node.active && Process.running && !Theme.reducedMotion
                                         loops: Animation.Infinite
                                         NumberAnimation { from: 0.6; to: 0.0; duration: 1100; easing.type: Easing.OutQuad }
                                     }
                                     SequentialAnimation on scale {
-                                        running: node.active && Analysis.running && !Theme.reducedMotion
+                                        running: node.active && Process.running && !Theme.reducedMotion
                                         loops: Animation.Infinite
                                         NumberAnimation { from: 1.0; to: 1.7; duration: 1100; easing.type: Easing.OutQuad }
                                     }
@@ -158,35 +160,64 @@ Flickable {
                 radius: 4
                 color: pal.PANEL_ALT
                 border.width: 1; border.color: pal.BORDER
+                clip: true
                 Rectangle {
+                    id: progressFill
                     height: parent.height
-                    width: Math.max(0, Math.min(1, Analysis.progress / 100)) * parent.width
+                    width: Math.max(0, Math.min(1, Process.progress / 100)) * parent.width
                     radius: 4
+                    clip: true
                     gradient: Gradient {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0.0; color: pal.SUCCESS }
                         GradientStop { position: 1.0; color: pal.ACC }
                     }
                     Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
+                    // sweeping "working" highlight while a run is in progress
+                    IndeterminateShimmer { active: Process.running }
+                }
+                // completion flash — one SUCCESS pulse across the whole track
+                Rectangle {
+                    id: doneFlash
+                    anchors.fill: parent
+                    radius: 4; color: pal.SUCCESS; opacity: 0
+                    SequentialAnimation {
+                        id: progressFlash
+                        NumberAnimation { target: doneFlash; property: "opacity"; to: 0.55
+                                          duration: Theme.reducedMotion ? 0 : 160; easing.type: Easing.OutCubic }
+                        NumberAnimation { target: doneFlash; property: "opacity"; to: 0
+                                          duration: Theme.reducedMotion ? 0 : 220; easing.type: Easing.OutCubic }
+                    }
+                }
+                Connections {
+                    target: Process
+                    function onRunningChanged() {
+                        if (!Process.running && Process.resultSeverity === "ok") progressFlash.restart()
+                    }
                 }
             }
             Text {
-                text: Analysis.progressText || (Analysis.running ? "Working…" : "Ready")
+                text: Process.progressText || (Process.running ? "Working…" : "Ready")
                 color: pal.TXT_MUTED; font.pixelSize: sc.textXs
             }
         }
 
         // ── live frame + histogram ───────────────────────────────────────
         GridLayout {
+            id: cockpit
             Layout.fillWidth: true
             columns: width < 720 ? 1 : 2
             columnSpacing: sc.sp6
             rowSpacing: sc.sp6
 
-            // live detection view
+            // live detection view — spans both right-column rows (histogram +
+            // meters) so the preview stays tall and boxy.
             Card {
                 Layout.fillWidth: true
+                Layout.rowSpan: cockpit.columns === 2 ? 2 : 1
+                Layout.fillHeight: true
                 Layout.preferredHeight: 280
+                Layout.minimumHeight: 280
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: sc.sp4
@@ -197,36 +228,54 @@ Flickable {
                         Text { text: "Live detection"; color: pal.TXT; font.pixelSize: sc.textSm; font.bold: true }
                         Item { Layout.fillWidth: true }
                     }
-                    Rectangle {
+                    // The bordered frame hugs the image's aspect ratio (contained
+                    // in the available cell) so a square movie leaves no black
+                    // letterbox bars inside the border.  Before a frame loads, the
+                    // box fills the cell so the placeholder text sits comfortably.
+                    Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        radius: sc.radiusMd
-                        color: "#05070a"
-                        border.width: 1; border.color: pal.BORDER
-                        clip: true
-                        Image {
-                            anchors.fill: parent
-                            anchors.margins: 2
-                            visible: Analysis.hasLiveFrame
-                            fillMode: Image.PreserveAspectFit
-                            smooth: false
-                            cache: false
-                            asynchronous: true
-                            source: Analysis.hasLiveFrame
-                                    ? ("image://liveframe/" + Analysis.frameToken) : ""
-                        }
-                        Text {
+                        Rectangle {
+                            id: liveFrame
                             anchors.centerIn: parent
-                            visible: !Analysis.hasLiveFrame
-                            text: Analysis.running ? "Waiting for first frame…"
-                                                   : "Detection preview appears here while running"
-                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                            readonly property real ar:
+                                (liveImg.implicitWidth > 0 && liveImg.implicitHeight > 0)
+                                    ? liveImg.implicitWidth / liveImg.implicitHeight
+                                    : (parent.height > 0 ? parent.width / parent.height : 1.0)
+                            width: Math.max(1, Math.min(parent.width, parent.height * ar))
+                            height: Math.max(1, Math.min(parent.height, parent.width / ar))
+                            radius: sc.radiusMd
+                            color: "#05070a"
+                            border.width: 1; border.color: pal.BORDER
+                            clip: true
+                            Image {
+                                id: liveImg
+                                anchors.fill: parent
+                                anchors.margins: 2
+                                visible: Process.hasLiveFrame
+                                fillMode: Image.PreserveAspectFit
+                                smooth: false
+                                cache: false
+                                asynchronous: true
+                                source: Process.hasLiveFrame
+                                        ? ("image://liveframe/" + Process.frameToken) : ""
+                            }
+                            Text {
+                                anchors.centerIn: parent
+                                width: parent.width - sc.sp6
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.WordWrap
+                                visible: !Process.hasLiveFrame
+                                text: Process.running ? "Waiting for first frame…"
+                                                       : "Detection preview appears here while running"
+                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                            }
                         }
                     }
                 }
             }
 
-            // mass histogram
+            // mass histogram (top of the right column)
             Card {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 280
@@ -280,7 +329,7 @@ Flickable {
                         function clearHist() { bins = []; total = 0; dirty = false; requestPaint(); }
 
                         Timer {
-                            interval: 120; running: Analysis.running; repeat: true
+                            interval: 120; running: Process.running; repeat: true
                             onTriggered: if (hist.dirty) { hist.dirty = false; hist.requestPaint(); }
                         }
 
@@ -292,7 +341,7 @@ Flickable {
                                 ctx.fillStyle = pal.TXT_MUTED;
                                 ctx.font = "11px sans-serif";
                                 ctx.textAlign = "center";
-                                ctx.fillText(Analysis.running ? "Accumulating localisations…"
+                                ctx.fillText(Process.running ? "Accumulating localisations…"
                                                               : "Mass distribution appears here",
                                              width / 2, height / 2);
                                 return;
@@ -310,8 +359,8 @@ Flickable {
                                 ctx.fillRect(x, y, bw, h);
                             }
                             // dashed minmass threshold line
-                            if (Analysis.minmassThreshold >= 0 && vmax > vmin) {
-                                var tt = (Analysis.minmassThreshold - vmin) / (vmax - vmin);
+                            if (Process.minmassThreshold >= 0 && vmax > vmin) {
+                                var tt = (Process.minmassThreshold - vmin) / (vmax - vmin);
                                 if (tt >= 0 && tt <= 1) {
                                     var lx = pad + tt * (width - pad * 2);
                                     ctx.strokeStyle = pal.WARN;
@@ -325,56 +374,83 @@ Flickable {
                     }
                 }
             }
-        }
 
-        // ── resource meters ──────────────────────────────────────────────
-        Card {
-            Layout.fillWidth: true
-            Layout.preferredHeight: meters.implicitHeight + sc.sp5 * 2
-            ColumnLayout {
-                id: meters
-                x: sc.sp5; y: sc.sp5
-                width: parent.width - sc.sp5 * 2
-                spacing: sc.sp4
-                component Meter: RowLayout {
-                    property string label
-                    property string iconName
-                    property real value         // 0..100
-                    width: meters.width
+            // ── resource meters (right column, under the histogram) ───────
+            Card {
+                Layout.fillWidth: true
+                Layout.preferredHeight: meters.implicitHeight + sc.sp5 * 2
+                ColumnLayout {
+                    id: meters
+                    x: sc.sp5; y: sc.sp5
+                    width: parent.width - sc.sp5 * 2
                     spacing: sc.sp4
-                    Icon { name: iconName; size: 15; color: value > 80 ? pal.WARN : pal.ACC }
-                    Text { text: label; color: pal.TXT_MUTED; font.pixelSize: sc.textXs; Layout.preferredWidth: 44 }
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 8; radius: 4
-                        color: pal.PANEL_ALT; border.width: 1; border.color: pal.BORDER
+                    component Meter: RowLayout {
+                        property string label
+                        property string iconName
+                        property real value: -1       // 0..100 → progress bar; <0 → text mode
+                        property string valueText: "" // shown instead of a bar when value < 0
+                        readonly property bool barMode: value >= 0
+                        width: meters.width
+                        spacing: sc.sp4
+                        Icon { name: iconName; size: 15
+                               color: !barMode ? pal.ACC : value > 95 ? pal.DANGER : value > 80 ? pal.WARN : pal.ACC }
+                        Text { text: label; color: pal.TXT_MUTED; font.pixelSize: sc.textXs; Layout.preferredWidth: 44 }
+                        // ── percent mode: gradient bar + % readout ──────────
                         Rectangle {
-                            height: parent.height
-                            width: Math.max(0, Math.min(1, value / 100)) * parent.width
-                            radius: 4
-                            gradient: Gradient {
-                                orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: pal.ACC }
-                                GradientStop { position: 1.0; color: value > 80 ? pal.WARN : pal.ACC_HOVER }
+                            visible: barMode
+                            Layout.fillWidth: true
+                            implicitHeight: 8; radius: 4
+                            color: pal.PANEL_ALT; border.width: 1; border.color: pal.BORDER
+                            Rectangle {
+                                height: parent.height
+                                width: Math.max(0, Math.min(1, value / 100)) * parent.width
+                                radius: 4
+                                gradient: Gradient {
+                                    orientation: Gradient.Horizontal
+                                    GradientStop { position: 0.0; color: value > 95 ? pal.DANGER : pal.ACC }
+                                    GradientStop { position: 1.0; color: value > 95 ? pal.DANGER : value > 80 ? pal.WARN : pal.ACC_HOVER }
+                                }
+                                // 1 Hz samples interpolate smoothly (a GPU bar dropping to 0 is then visible)
+                                Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 300; easing.type: Easing.OutCubic } }
                             }
-                            Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 200 } }
+                        }
+                        Text {
+                            visible: barMode
+                            text: Math.round(value) + "%"
+                            color: pal.TXT; font.pixelSize: sc.textXs; font.family: "Menlo"
+                            Layout.preferredWidth: 38; horizontalAlignment: Text.AlignRight
+                        }
+                        // ── text mode: right-aligned label (e.g. "Unified") ─
+                        Text {
+                            visible: !barMode
+                            Layout.fillWidth: true
+                            text: valueText
+                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                            horizontalAlignment: Text.AlignRight
                         }
                     }
-                    Text {
-                        text: Math.round(value) + "%"
-                        color: pal.TXT; font.pixelSize: sc.textXs; font.family: "Menlo"
-                        Layout.preferredWidth: 38; horizontalAlignment: Text.AlignRight
-                    }
+                    Meter { label: "CPU";  iconName: "cpu";          value: Process.cpuPercent }
+                    Meter { label: "RAM";  iconName: "memory-stick"; value: Process.memPercent }
+                    Meter { label: "GPU";  iconName: "zap";          value: Process.gpuPercent
+                            valueText: Process.gpuText }
+                    Meter { label: "VRAM"; iconName: "database";     value: -1
+                            valueText: Process.vramText }
                 }
-                Meter { label: "CPU"; iconName: "cpu"; value: Analysis.cpuPercent }
-                Meter { label: "RAM"; iconName: "memory-stick"; value: Analysis.memPercent }
             }
         }
 
         // ── result summary ───────────────────────────────────────────────
+        // Fades + rises in when a run finishes (the "done" cue), out when cleared.
         Card {
             Layout.fillWidth: true
-            visible: Analysis.resultHeadline !== ""
+            readonly property bool present: Process.resultHeadline !== ""
+            visible: present || opacity > 0.001
+            opacity: present ? 1 : 0
+            transform: Translate {
+                y: present ? 0 : 8
+                Behavior on y { NumberAnimation { duration: Theme.reducedMotion ? 0 : 220; easing.type: Easing.OutCubic } }
+            }
+            Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 220; easing.type: Easing.OutCubic } }
             Layout.preferredHeight: resCol.implicitHeight + sc.sp5 * 2
             ColumnLayout {
                 id: resCol
@@ -384,29 +460,29 @@ Flickable {
                 RowLayout {
                     Layout.fillWidth: true
                     Icon {
-                        name: Analysis.resultSeverity === "ok" ? "circle-check"
-                            : Analysis.resultSeverity === "error" ? "triangle-alert"
+                        name: Process.resultSeverity === "ok" ? "circle-check"
+                            : Process.resultSeverity === "error" ? "triangle-alert"
                             : "info"
                         size: 16; color: root.statusTone
                     }
                     Text {
-                        text: Analysis.resultHeadline
+                        text: Process.resultHeadline
                         color: pal.TXT; font.pixelSize: sc.textMd; font.bold: true
                         Layout.fillWidth: true; elide: Text.ElideRight
                     }
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    visible: Analysis.resultOutDir !== ""
+                    visible: Process.resultOutDir !== ""
                     spacing: sc.sp4
                     Text {
-                        text: Analysis.resultOutDir
+                        text: Process.resultOutDir
                         color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
                         elide: Text.ElideMiddle; Layout.fillWidth: true
                     }
                     Button {
                         variant: "secondary"; text: "Open folder"; icon: "folder-open"
-                        onClicked: Qt.openUrlExternally("file://" + Analysis.resultOutDir)
+                        onClicked: Qt.openUrlExternally("file://" + Process.resultOutDir)
                     }
                 }
             }
@@ -462,7 +538,7 @@ Flickable {
             logArea.cursorPosition = logArea.length;
         }
         function onRunningChanged() {
-            if (Analysis.running) { hist.clearHist(); logArea.text = ""; }
+            if (Process.running) { hist.clearHist(); logArea.text = ""; }
         }
     }
 }

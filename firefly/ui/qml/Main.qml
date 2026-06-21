@@ -16,6 +16,12 @@ Item {
     Rectangle {            // app canvas
         anchors.fill: parent
         color: pal.BG
+        // While a full-window modal (Preferences / ROI editor) is open, make the
+        // whole app behind it non-interactive.  A backdrop MouseArea alone does
+        // NOT reliably swallow the app's TapHandler-based controls (a Qt 6
+        // event-delivery gap), so disable the subtree outright — this stops every
+        // MouseArea AND pointer handler under it.
+        enabled: !(prefs.opened || Roi.editing)
 
         ColumnLayout {
             anchors.fill: parent
@@ -69,10 +75,23 @@ Item {
             }
 
             // ── body: landing or main ────────────────────────────────
+            // Incoming page fades + rises 8px (280ms) — the workflow "settles
+            // into place" rather than hard-cutting.
             Loader {
+                id: pageLoader
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 sourceComponent: App.page === "landing" ? landingPage : mainPage
+                opacity: 0
+                transform: Translate { id: pageT; y: 8 }
+                onLoaded: { pageT.y = 8; pageLoader.opacity = 0; pageShow.restart() }
+                ParallelAnimation {
+                    id: pageShow
+                    NumberAnimation { target: pageLoader; property: "opacity"; to: 1
+                                      duration: Theme.reducedMotion ? 0 : 280; easing.type: Easing.OutCubic }
+                    NumberAnimation { target: pageT; property: "y"; to: 0
+                                      duration: Theme.reducedMotion ? 0 : 280; easing.type: Easing.OutCubic }
+                }
             }
         }
     }
@@ -100,6 +119,7 @@ Item {
                 spacing: sc.sp3
 
                 RowLayout {                                // eyebrow + microscope
+                    Layout.alignment: Qt.AlignHCenter
                     spacing: sc.sp2
                     Icon { name: "microscope"; color: pal.WARN; size: 13 }
                     Text {
@@ -110,11 +130,15 @@ Item {
                     }
                 }
                 Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    horizontalAlignment: Text.AlignHCenter
                     text: "What would you like to do?"
                     color: pal.TXT
                     font.pixelSize: sc.displayMd; font.bold: true
                 }
                 Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    horizontalAlignment: Text.AlignHCenter
                     text: "Single-particle tracking PALM · localise, link, and analyse single molecules."
                     color: pal.TXT_MUTED
                     font.pixelSize: sc.textLg
@@ -129,8 +153,8 @@ Item {
                         model: [
                             { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0 },
                             { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0 },
-                            { icon: "git-compare", t: "Compare groups",   d: "Overlay 2–6 analysis-output folders into one figure.", tab: 2 },
-                            { icon: "waypoints",   t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 4 }
+                            { icon: "git-compare", t: "Compare & analyse", d: "Drop 2–6 conditions into one live comparison — figure, stats and significance.", tab: 2 },
+                            { icon: "waypoints",   t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 3 }
                         ]
                         delegate: Tile {
                             required property var modelData
@@ -191,37 +215,72 @@ Item {
                     Layout.fillWidth: true
                     Layout.margins: sc.sp4
                     spacing: sc.sp2
-                    Repeater {
-                        model: App.tabs
-                        delegate: Rectangle {
-                            required property int index
-                            required property string modelData
-                            readonly property bool active: App.currentTab === index
-                            implicitWidth: lbl.implicitWidth + sc.sp8 * 2
-                            implicitHeight: 30
-                            radius: sc.radiusLg
-                            color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : "transparent"
-                            border.width: 1
-                            border.color: active ? pal.ACC : pal.BORDER
-                            Text {
-                                id: lbl; anchors.centerIn: parent; text: modelData
-                                color: active ? pal.ACC : pal.TXT_MUTED
-                                font.pixelSize: sc.textSm
+                    // One accent pill SLIDES to the active tab (instead of each
+                    // tab popping its own fill). `activeItem` tracks the live
+                    // delegate so the highlight binds without fragile child
+                    // indexing over the Repeater.
+                    Item {
+                        id: tabbar
+                        property Item activeItem: null
+                        implicitWidth: tabRow.implicitWidth
+                        implicitHeight: tabRow.implicitHeight
+                        TabHighlight { target: tabbar.activeItem }
+                        Row {
+                            id: tabRow
+                            spacing: sc.sp2
+                            Repeater {
+                                model: App.tabs
+                                delegate: Item {
+                                    required property int index
+                                    required property string modelData
+                                    readonly property bool active: App.currentTab === index
+                                    implicitWidth: lbl.implicitWidth + sc.sp8 * 2
+                                    implicitHeight: 30
+                                    onActiveChanged: if (active) tabbar.activeItem = this
+                                    Component.onCompleted: if (active) tabbar.activeItem = this
+                                    Text {
+                                        id: lbl; anchors.centerIn: parent; text: modelData
+                                        color: active ? pal.ACC : pal.TXT_MUTED
+                                        font.pixelSize: sc.textSm
+                                        Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
+                                    }
+                                    TapHandler { onTapped: App.setTab(index) }
+                                }
                             }
-                            TapHandler { onTapped: App.setTab(index) }
                         }
                     }
                     Item { Layout.fillWidth: true }
                 }
-                Loader {                     // per-tab content
+                Item {                       // per-tab content stage
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    sourceComponent: App.currentTab === 0 ? importTab
-                                   : App.currentTab === 1 ? analysisTab
-                                   : App.currentTab === 2 ? compareTab
-                                   : App.currentTab === 3 ? resultsTab
-                                   : App.currentTab === 4 ? visualiseTab
-                                   : comingSoon
+
+                    // Tabs 0–2 (+ coming-soon) swap through one Loader.  The
+                    // Visualise tab is *not* loaded here — it lives below as an
+                    // always-present layer so its floating panels can animate
+                    // out when you leave it (a switching Loader would destroy
+                    // the tab the instant currentTab changes, killing the exit).
+                    Loader {
+                        id: tabLoader
+                        anchors.fill: parent
+                        active: App.currentTab !== 3
+                        sourceComponent: App.currentTab === 0 ? importTab
+                                       : App.currentTab === 1 ? processTab
+                                       : App.currentTab === 2 ? analysisTab
+                                       : App.currentTab === 4 ? hyperflyTab
+                                       : comingSoon
+                        // Fast fade between tabs (no horizontal slide — the app
+                        // has no spatial tab order). 180ms.
+                        opacity: 0
+                        onLoaded: { tabLoader.opacity = 0; tabFade.restart() }
+                        NumberAnimation { id: tabFade; target: tabLoader; property: "opacity"; to: 1
+                                          duration: Theme.reducedMotion ? 0 : 180; easing.type: Easing.OutCubic }
+                    }
+
+                    // Always-loaded Visualise chrome (panels + viewer anchor).
+                    // Transparent + disabled when off-tab, so it never blocks
+                    // the tab below; its panels slide/fade on App.currentTab.
+                    VisualiseTab { anchors.fill: parent }
                 }
             }
         }
@@ -229,10 +288,9 @@ Item {
 
     // ── tab content components ───────────────────────────────────────
     Component { id: importTab; ImportTab {} }
+    Component { id: processTab; ProcessTab {} }
     Component { id: analysisTab; AnalysisTab {} }
-    Component { id: compareTab; CompareTab {} }
-    Component { id: resultsTab; ResultsTab {} }
-    Component { id: visualiseTab; VisualiseTab {} }
+    Component { id: hyperflyTab; HyperflyTab {} }
     Component {
         id: comingSoon
         Item {
@@ -240,6 +298,29 @@ Item {
                 anchors.centerIn: parent
                 text: App.tabs[App.currentTab] + " — coming soon"
                 color: pal.TXT_MUTED; font.pixelSize: sc.textLg
+            }
+        }
+    }
+
+    // ── global toast (run-manifest replay confirmation, …) ───────────
+    Rectangle {
+        id: toast
+        z: 9999
+        anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter; bottomMargin: sc.sp5 }
+        visible: opacity > 0; opacity: 0
+        color: pal.PANEL_ALT; radius: sc.radiusMd; border.width: 1; border.color: pal.BORDER
+        implicitWidth: tlabel.implicitWidth + sc.sp5 * 2; implicitHeight: 34
+        Text { id: tlabel; anchors.centerIn: parent; color: pal.TXT; font.pixelSize: sc.textSm }
+        Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 200 } }
+        transform: Translate {                       // slide up 12px on enter
+            y: toast.opacity > 0 ? 0 : 12
+            Behavior on y { NumberAnimation { duration: Theme.reducedMotion ? 0 : 200; easing.type: Easing.OutCubic } }
+        }
+        Timer { id: toastTimer; interval: 2600; onTriggered: toast.opacity = 0 }
+        Connections {
+            target: Sidebar
+            function onManifestLoaded(msg) {
+                tlabel.text = msg; toast.opacity = 1; toastTimer.restart()
             }
         }
     }

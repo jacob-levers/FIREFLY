@@ -12,6 +12,18 @@ Item {
     readonly property var sc: Theme.scale
     readonly property var insp: Vis.inspector
 
+    // ── rounded frame outline ────────────────────────────────────────────
+    // The native island is masked to a rounded rect by EmbedController; this
+    // antialiased border traces the same edge so the viewer reads as a floating
+    // card (matching the side-panel cards). Mouse-transparent like the HUD.
+    Rectangle {
+        anchors.fill: parent
+        color: "transparent"
+        radius: 14
+        border.width: 1
+        border.color: pal.BORDER_HI
+    }
+
     // ── glass HUD pill (top-left) ────────────────────────────────────────
     Rectangle {
         x: sc.sp6; y: sc.sp6
@@ -34,19 +46,24 @@ Item {
         }
     }
 
-    // ── inspector card (bottom-right, above the native control bar) ──────
+    // ── inspector card (bottom-right) ────────────────────────────────────
     Rectangle {
         id: card
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.rightMargin: sc.sp6
-        anchors.bottomMargin: 70
+        anchors.bottomMargin: sc.sp6
         width: 168
         height: col.implicitHeight + sc.sp5 * 2
         radius: sc.radius2xl
         color: Qt.rgba(0.05, 0.07, 0.10, 0.74)
         border.width: 1; border.color: Qt.rgba(1, 1, 1, 0.10)
-        visible: Vis.inspectorVisible
+        // fade + scale in when a track/cluster is selected
+        visible: Vis.inspectorVisible || opacity > 0.001
+        opacity: Vis.inspectorVisible ? 1 : 0
+        scale:   Vis.inspectorVisible ? 1 : 0.95
+        Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 180; easing.type: Easing.OutCubic } }
+        Behavior on scale   { NumberAnimation { duration: Theme.reducedMotion ? 0 : 180; easing.type: Easing.OutCubic } }
 
         Column {
             id: col
@@ -64,25 +81,32 @@ Item {
 
             // track rows
             Column {
+                id: trackRows
                 visible: root.insp.mode === "track"
                 spacing: sc.sp1
                 width: parent.width
+                // Fixed-length Repeater so each CountUp instance persists and
+                // animates from the old value to the new one on track switch.
+                readonly property var fields: [
+                    { k: "Length", value: root.insp.length,  decimals: 0, suffix: " frames", show: root.insp.length !== undefined },
+                    { k: "D",      value: root.insp.d,        decimals: 4, suffix: " µm²/s",  show: root.insp.d !== undefined },
+                    { k: "α",      value: root.insp.alpha,    decimals: 3, suffix: "",         show: root.insp.alpha !== undefined },
+                    { k: "Net",    value: root.insp.net_displacement_um !== undefined
+                                          ? Math.round(root.insp.net_displacement_um * 1000) : 0,
+                                   decimals: 0, suffix: " nm", show: root.insp.net_displacement_um !== undefined }
+                ]
                 Repeater {
-                    model: [
-                        { k: "Length", v: root.insp.length !== undefined ? root.insp.length + " frames" : "" },
-                        { k: "D",      v: root.insp.d !== undefined ? root.insp.d.toFixed(4) + " µm²/s" : "" },
-                        { k: "α",      v: root.insp.alpha !== undefined ? root.insp.alpha.toFixed(3) : "" },
-                        { k: "Net",    v: root.insp.net_displacement_um !== undefined
-                                          ? Math.round(root.insp.net_displacement_um * 1000) + " nm" : "" }
-                    ]
+                    model: 4
                     delegate: Row {
-                        required property var modelData
-                        visible: modelData.v !== ""
+                        required property int index
+                        readonly property var f: trackRows.fields[index]
+                        visible: f.show
                         width: col.width; spacing: sc.sp2
-                        Text { text: modelData.k; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                        Text { text: f.k; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                                width: 42 }
-                        Text { text: modelData.v; color: pal.TXT; font.pixelSize: sc.textXs
-                               font.family: "Menlo" }
+                        CountUp { value: f.value !== undefined ? f.value : 0
+                                  decimals: f.decimals; suffix: f.suffix
+                                  color: pal.TXT; font.pixelSize: sc.textXs; font.family: "Menlo" }
                     }
                 }
                 // motion badge

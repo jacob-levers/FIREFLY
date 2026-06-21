@@ -1,35 +1,47 @@
 import QtQuick
 import QtQuick.Layouts
 
-// One sidebar parameter row: label + the right control for its kind (Switch /
-// Select / SpinBox), bound to the SidebarController. Value + enabled are read
-// reactively off Sidebar.revision so a single notify refreshes the sidebar.
-RowLayout {
+// One sidebar parameter, stacked label-over-control: bool fields keep the label
+// inline with a trailing Switch; combo / numeric fields put a small label above
+// a full-width control. Value + enabled are read reactively off Sidebar.revision
+// so a single notify refreshes the whole sidebar. Bound to SidebarController.
+Column {
     id: root
     required property var field            // a Sidebar.fields(section) entry
     readonly property var pal: Theme.palette
     readonly property var sc: Theme.scale
-    // re-evaluated whenever any sidebar value changes
     readonly property bool en: (Sidebar.revision, Sidebar.isEnabled(field.key))
+    readonly property bool isBool: field.kind === "bool"
 
-    Layout.fillWidth: true
-    spacing: sc.sp3
+    width: parent ? parent.width : implicitWidth
+    spacing: sc.sp2                        // 4: label → control
     opacity: en ? 1.0 : 0.45
 
-    Text {
-        text: field.label
-        color: pal.TXT_MUTED
-        font.pixelSize: sc.textXs
-        Layout.fillWidth: true
-        Layout.preferredWidth: 0
-        elide: Text.ElideRight
+    // ── label (+ inline Switch for bool) ──────────────────────────────────
+    RowLayout {
+        width: parent.width
+        spacing: sc.sp3
+        Text {
+            text: root.field.label
+            color: pal.TXT_MUTED
+            font.pixelSize: sc.textXs
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+            Layout.preferredWidth: 0
+            elide: Text.ElideRight
+        }
+        Loader {
+            active: root.isBool; visible: root.isBool
+            sourceComponent: switchC
+        }
     }
 
+    // ── control (combo / slider / numeric), full width ────────────────────
     Loader {
-        id: ctl
-        Layout.preferredWidth: field.kind === "bool" ? -1 : 132
-        sourceComponent: field.kind === "bool" ? switchC
-                       : field.kind === "combo" ? selectC
+        width: parent.width
+        active: !root.isBool; visible: !root.isBool
+        sourceComponent: root.field.kind === "combo" ? selectC
+                       : root.field.slider ? sliderC
                        : spinC
     }
 
@@ -57,15 +69,30 @@ RowLayout {
         }
     }
 
+    // ── slider (numeric, flagged slider:true) ─────────────────────────────
+    Component {
+        id: sliderC
+        Slider {
+            enabled: root.en
+            from: root.field.min != null ? root.field.min : 0
+            to: root.field.max != null ? root.field.max : 1
+            step: root.field.step != null ? root.field.step : 0
+            decimals: root.field.decimals != null ? root.field.decimals : 0
+            suffix: root.field.suffix
+            value: (Sidebar.revision, Sidebar.get(root.field.key))
+            onMoved: (v) => Sidebar.setValue(root.field.key, v)
+        }
+    }
+
     // ── numeric ──────────────────────────────────────────────────────────
     Component {
         id: spinC
         SpinBox {
             enabled: root.en
-            from: root.field.min !== null ? root.field.min : 0
-            to: root.field.max !== null ? root.field.max : 1e9
-            step: root.field.step !== null ? root.field.step : 1
-            decimals: root.field.decimals !== null ? root.field.decimals : 0
+            from: root.field.min != null ? root.field.min : 0
+            to: root.field.max != null ? root.field.max : 1e9
+            step: root.field.step != null ? root.field.step : 1
+            decimals: root.field.decimals != null ? root.field.decimals : 0
             suffix: root.field.suffix
             special: root.field.special
             value: (Sidebar.revision, Sidebar.get(root.field.key))

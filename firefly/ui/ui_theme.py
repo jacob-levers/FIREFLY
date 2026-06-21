@@ -1,6 +1,7 @@
 """Theme palettes, QSS and theme application for the FIREFLY GUI.
 
-Extracted from app_qt.py (#7); re-exported there for compatibility.
+Shared theme source (Dark / AMOLED / Light) used by the QML ThemeController and
+the analysis figures.
 """
 from __future__ import annotations
 
@@ -9,11 +10,11 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 _THEMES = {
     "Dark": {
-        "BG":          "#0d1117",
-        "PANEL":       "#161b22",
-        "PANEL_ALT":   "#1c2128",
-        "BORDER":      "#30363d",
-        "BORDER_HI":   "#484f58",
+        "BG":          "#090b0f",
+        "PANEL":       "#0e1218",
+        "PANEL_ALT":   "#151a22",
+        "BORDER":      "#1d232c",
+        "BORDER_HI":   "#2b333d",
         "TXT":         "#e6edf3",
         "TXT_MUTED":   "#8b949e",
         "ACC":         "#58a6ff",

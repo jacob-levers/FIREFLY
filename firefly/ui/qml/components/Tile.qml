@@ -37,7 +37,7 @@ Rectangle {
         spacing: sc.sp6
 
         Rectangle {                       // icon chip
-            Layout.alignment: Qt.AlignTop
+            Layout.alignment: Qt.AlignVCenter
             width: 38; height: 38
             radius: sc.radius2xl
             color: Qt.rgba(0.345, 0.651, 1.0, hov.hovered ? 0.16 : 0.10)

@@ -185,9 +185,15 @@ def head_xy_for_frame(track_pick, track_frames, class_visible, t):
 
 
 # ── picking (points take priority over tracks) ───────────────────────────────
-def pick_at(point_xy, point_ids, track_pick, class_visible, y, x, tol):
+def pick_at(point_xy, point_ids, track_pick, class_visible, y, x, tol,
+            track_frames=None, t=None, tail=None, head=0):
     """Resolve a data-space click. ``("cluster", id)`` (points priority) or
-    ``("track", pid)`` for the nearest visible match within ``tol``, else None."""
+    ``("track", pid)`` for the nearest visible match within ``tol``, else None.
+
+    When ``track_frames`` + ``t`` are supplied, only vertices actually drawn at
+    frame ``t`` — those inside the ``(t - tail, t + head]`` tail/head window —
+    are pickable, so a click can't select a track whose lit segment isn't on the
+    current frame (picking matches what's on screen)."""
     px, py = float(x), float(y)
     if point_xy is not None and len(point_xy):
         d = np.hypot(point_xy[:, 0] - px, point_xy[:, 1] - py)
@@ -198,6 +204,13 @@ def pick_at(point_xy, point_ids, track_pick, class_visible, y, x, tol):
     for cls, (xy, pid) in track_pick.items():
         if not class_visible.get(cls, True) or not len(xy):
             continue
+        fr = track_frames.get(cls) if track_frames is not None else None
+        if fr is not None and t is not None and len(fr) == len(xy):
+            hi = t + int(head or 0)
+            vis = (fr <= hi) if (tail is None or tail <= 0) else ((fr > t - tail) & (fr <= hi))
+            if not vis.any():
+                continue
+            xy, pid = xy[vis], pid[vis]
         d = np.hypot(xy[:, 0] - px, xy[:, 1] - py)
         j = int(np.argmin(d))
         if d[j] < best_d:
