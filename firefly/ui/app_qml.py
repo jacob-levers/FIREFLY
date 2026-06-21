@@ -57,7 +57,11 @@ from firefly.ui.controllers.providers.live_frame_provider import LiveFrameProvid
 from firefly.ui.controllers.providers.figure_image_provider import FigureImageProvider
 from firefly.ui.controllers.providers.qimage_provider import QImageProvider
 from firefly.ui.controllers.workspace.workspace_panel_provider import WorkspacePanelProvider
-from firefly.sptpalm_analysis import __version__
+# Read the version WITHOUT importing sptpalm_analysis — that module imports
+# matplotlib.pyplot at module level, which builds the font cache on a frozen
+# first run and stalls startup past the smoke deadline.
+from firefly.ui._appversion import app_version
+__version__ = app_version()
 
 
 class _StageResizer(QObject):

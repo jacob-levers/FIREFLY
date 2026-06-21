@@ -13,7 +13,11 @@ import threading
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
-from firefly.sptpalm_analysis import __version__
+# Avoid `from firefly.sptpalm_analysis import __version__` — it pulls
+# matplotlib.pyplot (module-level there), which builds the font cache on a
+# frozen first run and stalls startup. Read the version string directly instead.
+from firefly.ui._appversion import app_version
+__version__ = app_version()
 
 _API_URL = "https://api.github.com/repos/jacob-levers/FIREFLY/releases/latest"
 _RELEASES_PAGE = "https://github.com/jacob-levers/FIREFLY/releases"
