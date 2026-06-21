@@ -30,6 +30,14 @@ from firefly.ui.ui_helpers import _MOTION_ORDER
 # VisualiseMixin._WS_MOTION_COLOUR_THEMES).
 _MOTION_COLOUR_THEMES = {"Default": "Dark", "Colour-blind safe": "Publication"}
 
+# Multi-run track comparison: each loaded run's particle ids are offset by
+# _RUN_OFFSET * run_index so picking can decode which run a track belongs to
+# (assumes < 1e6 particles per run). Per-run "colour by file" palette:
+_RUN_OFFSET = 1_000_000
+_SEP = "\x1f"                       # compound class separator: f"{run_idx}{_SEP}{motion}"
+_RUN_COLOURS = ["#58a6ff", "#f6a623", "#4fe0a0", "#27c0e8", "#e05252",
+                "#a371f7", "#7ed321", "#f78166", "#d2a8ff", "#56d364"]
+
 
 class VisualiseController(QObject):
     # property-notify signals
@@ -43,6 +51,7 @@ class VisualiseController(QObject):
     trackWidthChanged = Signal()
     minLenChanged = Signal()
     motionColourModeChanged = Signal()
+    colourByChanged = Signal()
     backgroundChanged = Signal()
     inspectorChanged = Signal()
     nFramesChanged = Signal()
@@ -62,10 +71,15 @@ class VisualiseController(QObject):
         self._import = importc
         self._viewer = None
 
-        self._tracks_df = None
+        self._tracks_df = None             # PRIMARY run (drives clusters/super-res/explorer)
         self._diff_df = None
-        self._motion_pids: dict = {}
-        self._class_visible: dict = {}     # class → bool (persists across loads)
+        self._runs: list = []              # [{name, df, diff, color, offset}] — track overlays
+        self._colour_by = (settings.get_str("visualise/track_colour_by", "auto")
+                           if settings else "auto")
+        if self._colour_by not in ("auto", "motion", "file"):
+            self._colour_by = "auto"
+        self._motion_pids: dict = {}       # compound class → set(pids)
+        self._class_visible: dict = {}     # compound class → bool (persists across loads)
         self._min_len = 1
         self._motion_mode = (settings.get_str("visualise/motion_colours", "Default")
                              if settings else "Default")
@@ -184,6 +198,11 @@ class VisualiseController(QObject):
                     params = json.load(fh)
                 stack_path = params.get("input_file") or params.get("stem")
                 stem = params_files[0][:-len("_params.json")]
+                try:                               # real pixel size → sane super-res canvas
+                    if params.get("pixel_size"):
+                        self._cl_px_um = float(params["pixel_size"])
+                except (TypeError, ValueError):
+                    pass
             if not stem:
                 tr = [f for f in os.listdir(extras) if f.endswith("_trajectories.csv")]
                 if tr:
@@ -252,32 +271,67 @@ class VisualiseController(QObject):
                 if guess != csv_path and os.path.isfile(guess):
                     try:    diff_df = pd.read_csv(guess)
                     except Exception: diff_df = None
-            self._tracks_df = df
-            self._diff_df = diff_df
-            self._apply_motion_filter()
+            # Register as an overlay run (multi-run track comparison). Each run's
+            # particle ids are offset so picking can decode which run a track is
+            # from; the first run is the PRIMARY (drives clusters/super-res/explorer).
+            name = os.path.splitext(os.path.basename(csv_path))[0].replace("_trajectories", "")
+            ri = len(self._runs)
+            off = ri * _RUN_OFFSET
+            df = df.copy(); df["particle"] = df["particle"].astype("int64") + off
+            if diff_df is not None and "particle" in diff_df.columns:
+                diff_df = diff_df.copy()
+                diff_df["particle"] = diff_df["particle"].astype("int64") + off
+            self._runs.append({"name": name, "df": df, "diff": diff_df,
+                               "color": _RUN_COLOURS[ri % len(_RUN_COLOURS)], "offset": off})
+            self._tracks_df = self._runs[0]["df"]      # primary
+            self._diff_df = self._runs[0]["diff"]
+            self._render_tracks()
             self._build_explorer_data()
             self._has_run = True
             self.dataChanged.emit()
+            extra = f" · {len(self._runs)} runs" if len(self._runs) > 1 else ""
             self.statusMessage.emit(
                 f"Loaded {df['particle'].nunique():,} tracks "
-                f"({len(df):,} points) — click a track to inspect.")
+                f"({len(df):,} points){extra} — click a track to inspect.")
         except Exception as exc:
             self.warn.emit("Load failed",
                            f"Couldn't load tracks from {os.path.basename(csv_path)}:\n{exc}")
 
-    def _apply_motion_filter(self):
-        df = self._tracks_df
-        if df is None:
+    def _effective_colour_by(self) -> str:
+        """'motion' or 'file' — resolves 'auto' (file when ≥2 runs)."""
+        if self._colour_by in ("file", "motion"):
+            return self._colour_by
+        return "file" if len(self._runs) > 1 else "motion"
+
+    def _class_key(self, ri, cls):
+        """Viewer class key: plain motion class for a single run (back-compat),
+        compound ``f"{run}{SEP}{motion}"`` once ≥2 runs are loaded."""
+        return cls if len(self._runs) <= 1 else f"{ri}{_SEP}{cls}"
+
+    def _render_tracks(self):
+        """(Re)render all loaded runs' tracks into the viewer. Each track's
+        'class' is the compound ``f"{run_idx}{SEP}{motion}"`` so the viewer's
+        generic per-class colour + visibility doubles as per-(file, motion)."""
+        if not self._runs:
             return
+        import pandas as pd
         v = self.ensureViewer()
-        diff_df = self._diff_df
-        motion_map = {}
-        if diff_df is not None and "motion" in diff_df.columns:
-            motion_map = dict(zip(diff_df["particle"], diff_df["motion"]))
-        pal = self._palette()
-        pids_by_cls = v.set_tracks_from_df(df, motion_map, pal, min_len=int(self._min_len))
+        mode = self._effective_colour_by()
+        motion_pal = self._palette()
+        class_map, colors, frames = {}, {}, []
+        for ri, run in enumerate(self._runs):
+            df, diff = run["df"], run["diff"]
+            mmap = (dict(zip(diff["particle"], diff["motion"]))
+                    if diff is not None and "motion" in diff.columns else {})
+            for pid in df["particle"].unique():
+                cls = mmap.get(pid, "Unknown")
+                comp = self._class_key(ri, cls)
+                class_map[int(pid)] = comp
+                colors[comp] = run["color"] if mode == "file" else motion_pal.get(cls, "#aaaaaa")
+            frames.append(df)
+        combined = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        pids_by_cls = v.set_tracks_from_df(combined, class_map, colors, min_len=int(self._min_len))
         self._motion_pids = {c: set(s) for c, s in pids_by_cls.items()}
-        # Default any newly-seen class to visible; preserve prior toggles.
         for cls in pids_by_cls:
             self._class_visible.setdefault(cls, True)
             try:    v.set_class_visible(cls, self._class_visible[cls])
@@ -290,35 +344,44 @@ class VisualiseController(QObject):
     # ── layer model (QML rail) ───────────────────────────────────────────
     def _rebuild_layers(self):
         pal = self._palette()
+        mode = self._effective_colour_by()
+        multi = len(self._runs) > 1
         layers = []
-        for cls in _MOTION_ORDER:
-            if cls in self._motion_pids:
-                layers.append({
-                    "id": f"tracks:{cls}", "kind": "tracks", "name": cls,
-                    "present": True, "visible": bool(self._class_visible.get(cls, True)),
-                    "opacity": 1.0, "colorHex": pal.get(cls, "#aaaaaa"),
-                    "motionClass": cls,
-                    "count": len(self._motion_pids.get(cls, ())),
-                })
-        # Background image layers (selectable via the same backgroundMode).
-        if self._viewer is not None:
-            opts = self._viewer.background_options()
-            mode = self._viewer.background_mode
-            for name, kind, col in (("Max projection", "maxproj", "#8b949e"),
-                                    ("Super-resolution", "superres", "#a371f7")):
-                if name in opts:
+        for ri, run in enumerate(self._runs):
+            for cls in _MOTION_ORDER:
+                comp = self._class_key(ri, cls)
+                if comp in self._motion_pids:
                     layers.append({
-                        "id": f"bg:{name}", "kind": kind, "name": name,
-                        "present": True, "visible": (mode == name),
-                        "opacity": 1.0, "colorHex": col, "motionClass": "",
-                        "count": 0,
+                        "id": f"tracks:{comp}", "kind": "tracks", "name": cls,
+                        "file": run["name"] if multi else "", "runColor": run["color"],
+                        "present": True, "visible": bool(self._class_visible.get(comp, True)),
+                        "opacity": 1.0,
+                        "colorHex": run["color"] if mode == "file" else pal.get(cls, "#aaaaaa"),
+                        "motionClass": cls, "count": len(self._motion_pids.get(comp, ())),
                     })
+        # Background images are NOT track layers — they're chosen via the
+        # Background dropdown above the LAYERS list, so they're excluded here.
         self._layers = layers
         self.layersChanged.emit()
+        self.backgroundChanged.emit()      # keep the LAYERS-panel bg dropdown in sync
 
     @Property("QVariantList", notify=layersChanged)
     def layers(self):
         return self._layers
+
+    @Property("QVariantList", notify=layersChanged)
+    def layerGroups(self):
+        """Layers grouped by owning file/run (for multi-run track comparison).
+        Single-run layers carry no ``file`` → one unnamed group; the QML hides the
+        group header when ``file`` is empty."""
+        order, by_file = [], {}
+        for lyr in self._layers:
+            f = lyr.get("file", "")
+            if f not in by_file:
+                by_file[f] = {"file": f, "colorHex": lyr.get("runColor", ""), "layers": []}
+                order.append(f)
+            by_file[f]["layers"].append(lyr)
+        return [by_file[f] for f in order]
 
     @Slot(str, bool)
     def setLayerVisible(self, layer_id: str, on: bool):
@@ -410,7 +473,7 @@ class VisualiseController(QObject):
 
     @Property(int, notify=fpsChanged)
     def fps(self):
-        return self._viewer.fps if self._viewer is not None else 7
+        return self._viewer.fps if self._viewer is not None else 60
 
     @fps.setter
     def fps(self, v):
@@ -459,8 +522,8 @@ class VisualiseController(QObject):
         if v != self._min_len:
             self._min_len = v
             self.minLenChanged.emit()
-            if self._tracks_df is not None:
-                self._apply_motion_filter()
+            if self._runs:
+                self._render_tracks()
 
     @Property("QStringList", constant=True)
     def motionColourModes(self):
@@ -478,13 +541,51 @@ class VisualiseController(QObject):
                 try:    self._s.set("visualise/motion_colours", mode)
                 except Exception: pass
             self.motionColourModeChanged.emit()
-            if self._viewer is not None:
-                try:    self._viewer.recolor_tracks(self._palette())
+            # Compound classes carry the palette, so re-render rather than recolour.
+            if self._runs:
+                self._render_tracks()
+            else:
+                self._rebuild_layers()
+
+    # ── track colour mode (motion class vs by file) ──────────────────────
+    @Property("QStringList", constant=True)
+    def colourByModes(self):
+        return ["Auto", "Motion", "File"]
+
+    @Property(str, notify=colourByChanged)
+    def colourBy(self):
+        return self._colour_by.capitalize()
+
+    @Property(str, notify=colourByChanged)
+    def effectiveColourBy(self):
+        return self._effective_colour_by().capitalize()
+
+    @Slot(str)
+    def setColourBy(self, mode):
+        m = str(mode).lower()
+        if m in ("auto", "motion", "file") and m != self._colour_by:
+            self._colour_by = m
+            if self._s:
+                try:    self._s.set("visualise/track_colour_by", m)
                 except Exception: pass
-                for cls, on in self._class_visible.items():
-                    try:    self._viewer.set_class_visible(cls, on)
-                    except Exception: pass
-            self._rebuild_layers()
+            self.colourByChanged.emit()
+            if self._runs:
+                self._render_tracks()
+
+    @Slot(str, bool)
+    def setRunVisible(self, file_name, on):
+        """Toggle every motion-class layer of one run (the file-group header)."""
+        for ri, run in enumerate(self._runs):
+            if run["name"] == file_name:
+                for cls in _MOTION_ORDER:
+                    comp = self._class_key(ri, cls)
+                    if comp in self._motion_pids:
+                        self._class_visible[comp] = bool(on)
+                        if self._viewer is not None:
+                            try:    self._viewer.set_class_visible(comp, bool(on))
+                            except Exception: pass
+                self._rebuild_layers()
+                break
 
     @Slot()
     def resetView(self):
@@ -548,15 +649,21 @@ class VisualiseController(QObject):
         return info
 
     def _track_info(self, pid: int):
-        df = self._tracks_df
+        pid = int(pid)
+        ri = pid // _RUN_OFFSET                     # decode which run this track is from
+        run = self._runs[ri] if 0 <= ri < len(self._runs) else None
+        df = run["df"] if run else self._tracks_df
+        diff = run["diff"] if run else self._diff_df
         if df is None:
             return None
         rows = df[df["particle"] == pid]
         if rows.empty:
             return None
-        info = {"mode": "track", "particle_id": pid, "length": int(len(rows)),
+        info = {"mode": "track", "particle_id": pid % _RUN_OFFSET, "length": int(len(rows)),
                 "start_frame": int(rows["frame"].min()),
                 "end_frame": int(rows["frame"].max())}
+        if run is not None and len(self._runs) > 1:
+            info["file"] = run["name"]
         px = 1.0
         if self._import is not None:
             try:
@@ -578,7 +685,6 @@ class VisualiseController(QObject):
         if "mass" in rows.columns:
             try:    info["mean_mass"] = float(rows["mass"].mean())
             except Exception: pass
-        diff = self._diff_df
         if diff is not None and "particle" in diff.columns:
             d_row = diff[diff["particle"] == pid]
             if not d_row.empty:
@@ -957,7 +1063,13 @@ class VisualiseController(QObject):
             self.srChanged.emit()
             return
         self._sr_img = img
-        scale = (sr_nm / 1000.0) / px
+        # Derive the data-px-per-super-res-px scale from the ACTUAL rendered
+        # image vs the localisations' extent, so the overlay is correct even when
+        # render_superres caps a huge canvas (and regardless of the pixel size).
+        h, w = img.shape[0], img.shape[1]
+        xext = float(np.nanmax(x) - np.nanmin(x))
+        yext = float(np.nanmax(y) - np.nanmin(y))
+        scale = max(xext / max(1, w), yext / max(1, h), 1e-6)
         try:
             self.ensureViewer().set_superres(
                 img, scale=scale, translate=(float(np.nanmin(y)), float(np.nanmin(x))))

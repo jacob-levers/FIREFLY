@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
-from firefly.ui.controllers import sidebar_schema as S
+from firefly.ui.controllers.params import sidebar_schema as S
 
 
 class SidebarController(QObject):
     revisionChanged = Signal()
     fieldChanged = Signal(str)
+    manifestLoaded = Signal(str)        # human message after a successful replay
 
     def __init__(self, settings, importc=None, parent=None):
         super().__init__(parent)
@@ -51,7 +52,8 @@ class SidebarController(QObject):
                 "key": f["key"], "kind": f["kind"], "label": f["label"],
                 "items": f["items"], "min": f["min"], "max": f["max"],
                 "step": f["step"], "decimals": f["decimals"], "suffix": f["suffix"],
-                "special": f["special"], "tooltip": f["tooltip"]})
+                "special": f["special"], "tooltip": f["tooltip"],
+                "slider": f["slider"]})
         return out
 
     # ── value get / set (coerced per kind) ───────────────────────────────
@@ -110,6 +112,42 @@ class SidebarController(QObject):
             self._write(k, v)
         self._bump("")
 
+    @Slot()
+    def loadManifest(self):
+        """Replay a finished run's parameters.  Open its ``*_run_manifest.json``,
+        apply the embedded ``widget_state`` snapshot to the sidebar (the same
+        dict ``params_builder`` writes), then repopulate the input/output paths.
+        Mirrors the Widgets app's 'Load run manifest' button."""
+        import json
+        import os
+        from PySide6 import QtWidgets
+        start = (self._import.outDir if self._import is not None else "") \
+            or os.path.expanduser("~")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None, "Open run manifest", start,
+            "Manifest (*_run_manifest.json);;JSON (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                manifest = json.load(fh)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                None, "Couldn't load manifest", str(exc))
+            return
+        self.applyState(manifest.get("widget_state") or {})
+        if self._import is not None:
+            inp = (manifest.get("input") or {}).get("path", "") or ""
+            if inp and os.path.isfile(inp):
+                self._import.filePath = inp
+            outd = manifest.get("output_dir", "")
+            if outd:
+                self._import.outDir = outd
+        v = manifest.get("firefly_version", "?")
+        when = manifest.get("created_at", "?")
+        self.manifestLoaded.emit(
+            f"Loaded {os.path.basename(path)}  ·  FIREFLY {v}, {when}")
+
     @Slot(str, result=bool)
     def isEnabled(self, key):
         f = S.BY_KEY.get(key)
@@ -119,6 +157,8 @@ class SidebarController(QObject):
         other = self.get(en["key"])
         if "eq" in en:
             return other == en["eq"]
+        if "in" in en:
+            return other in en["in"]
         if "truthy" in en:
             return bool(other) == bool(en["truthy"])
         return True

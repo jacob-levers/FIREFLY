@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-# Tab order mirrors the Widgets app (ui_constants TAB_*).
-TABS = ["Import", "Analysis", "Compare", "Results", "Visualise"]
+# Tab order mirrors the Widgets app (ui_constants TAB_*); HYPER-FLY is the live
+# parallel-batch dashboard (populated only during a HYPER-FLY batch run).
+TABS = ["Import", "Process", "Analysis", "Visualise", "HYPER-FLY"]
 
 
 class AppController(QObject):

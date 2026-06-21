@@ -22,6 +22,13 @@ Retina with the chrome pinned at the stage origin — no devicePixelRatio maths.
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QObject, QRect, QRectF, QTimer, Signal, Slot
+from PySide6.QtGui import QPainterPath, QRegion
+
+from firefly.ui.controllers.app_controller import TABS
+
+# Corner radius for the rounded viewer island (matched by the HUD border + the
+# QML panel cards so the viewer reads as a floating widget).
+_VIEWER_RADIUS = 14
 
 
 class EmbedController(QObject):
@@ -38,6 +45,8 @@ class EmbedController(QObject):
         self._rect = QRect()           # last-applied geometry (dedupe)
         self._anchor = QRectF()        # last anchor rect (logical px)
         self._viewer_shown = False     # first-show reset_view guard
+        self._on_visualise = False     # currently on the Visualise tab/page
+        self._viewer_content = False   # viewer actually has data to draw
 
     def setIslands(self, viewer=None, roi=None, hud=None):
         """Register the native island widgets + the transparent HUD overlay
@@ -70,11 +79,28 @@ class EmbedController(QObject):
         w = self._widget()
         if w is not None and not self._rect.isEmpty():
             w.setGeometry(self._rect)
+            if self._active == "viewer":
+                self._round_viewer(w)
         # The HUD overlay tracks the viewer island exactly (only over the
         # viewer, not the ROI editor).
         if self._hud is not None and self._active == "viewer" and not self._rect.isEmpty():
             self._hud.setGeometry(self._rect)
             self._hud.raise_()
+
+    def _round_viewer(self, w):
+        """Mask the viewer island to a rounded rect so it composites as a
+        floating card (the HUD draws the matching border at the same rect)."""
+        try:
+            r = self._rect
+            if r.isEmpty():
+                w.clearMask()
+                return
+            path = QPainterPath()
+            path.addRoundedRect(0.0, 0.0, float(r.width()), float(r.height()),
+                                float(_VIEWER_RADIUS), float(_VIEWER_RADIUS))
+            w.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        except Exception:
+            pass
 
     @Property("QRectF", notify=anchorChanged)
     def anchorRect(self):
@@ -97,6 +123,8 @@ class EmbedController(QObject):
                 continue
             if n == name and not self._modal:
                 w.setGeometry(self._rect)
+                if name == "viewer":
+                    self._round_viewer(w)
                 w.show()
                 w.raise_()
                 try:    w.setFocus()
@@ -152,13 +180,31 @@ class EmbedController(QObject):
     # ── tab / page visibility ────────────────────────────────────────────
     @Slot(int, str)
     def onLocationChanged(self, tab: int, page: str):
-        """Show the viewer island only on the Visualise tab of the main page;
-        hide it everywhere else (synchronously, to avoid island bleed during a
-        tab transition)."""
-        if page == "main" and tab == VISUALISE_TAB:
-            self.showIsland("viewer" if self._active == "none" else self._active)
+        """Track whether we're on the Visualise tab of the main page.  The viewer
+        island shows only there AND only once it has content (see
+        :meth:`setViewerContent`) — an empty Visualise tab shows the placeholder
+        rather than a blank floating card."""
+        self._on_visualise = (page == "main" and tab == VISUALISE_TAB)
+        self._sync_viewer_visibility()
+
+    @Slot(bool)
+    def setViewerContent(self, on: bool):
+        """Mark whether the viewer has something to draw (a run / tracks / stack)
+        so the island isn't shown as an empty card before anything is loaded."""
+        self._viewer_content = bool(on)
+        self._sync_viewer_visibility()
+
+    def _sync_viewer_visibility(self):
+        if self._on_visualise and self._viewer_content:
+            self.showIsland("viewer" if self._active in ("none", "viewer") else self._active)
         else:
             self.hideIslands()
 
 
-VISUALISE_TAB = 4
+# Derived from the single source of truth so a tab reorder/rename can't silently
+# strand the island (it was hardcoded to 4 and broke when Compare+Results merged
+# into "Analysis", shifting Visualise from index 4 → 3).
+try:
+    VISUALISE_TAB = TABS.index("Visualise")
+except ValueError:  # pragma: no cover — tab set changed unexpectedly
+    VISUALISE_TAB = 3

@@ -39,6 +39,16 @@ class ThemeController(QObject):
         "eyebrowTracking": 0.18, "sidebarWidth": 380,
     }
 
+    # Accent presets — a colour axis independent of the light/dark theme. Each
+    # overrides ACC / ACC_HOVER / ACC_PRESSED in the active palette.
+    _ACCENTS = [
+        {"name": "Luminous blue",  "v": "#58a6ff", "h": "#79c0ff", "p": "#388bfd"},
+        {"name": "Firefly amber",  "v": "#f6a623", "h": "#ffc65c", "p": "#d98e10"},
+        {"name": "Motion green",   "v": "#4fe0a0", "h": "#7ef0bd", "p": "#33c084"},
+        {"name": "Detection cyan", "v": "#27c0e8", "h": "#5fd4f0", "p": "#15a3c8"},
+    ]
+    accentChanged = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._name = _pick_startup_theme()
@@ -48,11 +58,49 @@ class ThemeController(QObject):
                 "ui/reduce_motion", False, type=bool)
         except Exception:
             self._reduced_motion = False
+        # accent lives alongside the theme (FIREFLY/sptPALM, key ui/accent).
+        self._accent = "Luminous blue"
+        try:
+            a = QSettings("FIREFLY", "sptPALM").value("ui/accent", "Luminous blue")
+            if any(x["name"] == a for x in self._ACCENTS):
+                self._accent = a
+        except Exception:
+            pass
+
+    def _accent_def(self):
+        for a in self._ACCENTS:
+            if a["name"] == self._accent:
+                return a
+        return self._ACCENTS[0]
 
     # ── active palette (the 14 semantic colour tokens) ───────────────────
     @Property("QVariantMap", notify=changed)
     def palette(self):
-        return dict(_THEMES.get(self._name, _THEMES["Dark"]))
+        pal = dict(_THEMES.get(self._name, _THEMES["Dark"]))
+        a = self._accent_def()                  # apply the chosen accent over the theme
+        pal["ACC"], pal["ACC_HOVER"], pal["ACC_PRESSED"] = a["v"], a["h"], a["p"]
+        return pal
+
+    # ── accent (independent colour axis) ─────────────────────────────────
+    @Property("QVariantList", constant=True)
+    def accents(self):
+        return [dict(a) for a in self._ACCENTS]
+
+    @Property(str, notify=accentChanged)
+    def accentName(self):
+        return self._accent
+
+    @Slot(str)
+    def setAccent(self, name: str):
+        if any(a["name"] == name for a in self._ACCENTS) and name != self._accent:
+            self._accent = name
+            try:
+                s = QSettings("FIREFLY", "sptPALM")
+                s.setValue("ui/accent", name); s.sync()
+            except Exception:
+                pass
+            self.accentChanged.emit()
+            self.changed.emit()                 # repaint every palette binding live
 
     @Property(str, notify=changed)
     def name(self):
@@ -77,8 +125,9 @@ class ThemeController(QObject):
         if bool(v) != self._reduced_motion:
             self._reduced_motion = bool(v)
             try:
-                QSettings("jacoblevers", "FIREFLY").setValue(
-                    "ui/reduce_motion", self._reduced_motion)
+                s = QSettings("jacoblevers", "FIREFLY")
+                s.setValue("ui/reduce_motion", self._reduced_motion)
+                s.sync()                          # flush now — survive a crash
             except Exception:
                 pass
             self.reducedMotionChanged.emit()
@@ -89,7 +138,8 @@ class ThemeController(QObject):
             self._name = name
             # persist to the SAME key the Widgets Figures-tab dropdown writes.
             try:
-                QSettings("FIREFLY", "sptPALM").setValue("ui/app_theme", name)
+                s = QSettings("FIREFLY", "sptPALM")
+                s.setValue("ui/app_theme", name); s.sync()
             except Exception:
                 pass
             self.changed.emit()

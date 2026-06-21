@@ -122,7 +122,8 @@ def _i(settings, key, default):
 
 
 def build_params(settings, importc, fpath: str | None = None,
-                 out_dir: str | None = None, roi_store=None) -> dict:
+                 out_dir: str | None = None, roi_store=None,
+                 override_store=None) -> dict:
     """Build the worker params dict from persisted settings + the Import tab.
 
     ``settings`` is a SettingsController (or any object with
@@ -132,6 +133,9 @@ def build_params(settings, importc, fpath: str | None = None,
     the input file, matching ``_start_single_run``).  ``roi_store`` (optional) is
     a per-file manual-polygon store; its polygon for ``fpath`` is sent as
     ``roi_polygon`` regardless of ROI mode (parity with ``_build_params_for_file``).
+    ``override_store`` (optional) is a per-file ROI-settings override
+    (RoiOverrideStore): if it has a spec for ``fpath`` it REPLACES the global
+    ``analysis/roi_*`` defaults for this file only (the Preview & ROI viewer).
     """
     g = settings
     if fpath is None:
@@ -153,7 +157,19 @@ def build_params(settings, importc, fpath: str | None = None,
                              _DEFAULTS["minmass_false_rate"])
     max_tl = _i(g, "analysis/max_track_len", _DEFAULTS["max_track_len"])
 
-    roi_mode_label = g.get_str("analysis/roi_mode", _DEFAULTS["roi_mode"])
+    # ROI: global sidebar defaults, optionally replaced by a per-file override.
+    roi_mode_label  = g.get_str("analysis/roi_mode", _DEFAULTS["roi_mode"])
+    roi_auto_method = g.get_str("analysis/roi_auto_method", _DEFAULTS["roi_auto_method"])
+    roi_threshold   = g.get_float("analysis/roi_threshold", _DEFAULTS["roi_threshold"])
+    roi_mask_mode   = g.get_str("analysis/roi_mask_mode", _DEFAULTS["roi_mask_mode"])
+    roi_bg_sigma    = g.get_float("analysis/roi_bg_sigma", _DEFAULTS["roi_bg_sigma"])
+    ovr = override_store.get(fpath) if (override_store and fpath) else None
+    if ovr:
+        roi_mode_label  = ovr.get("roi_mode", roi_mode_label)
+        roi_auto_method = ovr.get("roi_auto_method", roi_auto_method)
+        roi_threshold   = float(ovr.get("roi_threshold", roi_threshold))
+        roi_mask_mode   = ovr.get("roi_mask_mode", roi_mask_mode)
+        roi_bg_sigma    = float(ovr.get("roi_bg_sigma", roi_bg_sigma))
     roi_mode = ROI_MODE_MAP.get(roi_mode_label, "none")
     backend_label = g.get_str("analysis/backend", _DEFAULTS["backend"])
     linker_label = g.get_str("analysis/linker", _DEFAULTS["linker"])
@@ -195,10 +211,10 @@ def build_params(settings, importc, fpath: str | None = None,
         "filter_d_min":   g.get_float("analysis/filter_d_min", _DEFAULTS["filter_d_min"]),
         "filter_d_max":   g.get_float("analysis/filter_d_max", _DEFAULTS["filter_d_max"]),
         "roi_mode":       roi_mode,
-        "roi_auto_method": g.get_str("analysis/roi_auto_method", _DEFAULTS["roi_auto_method"]),
-        "roi_threshold":  g.get_float("analysis/roi_threshold", _DEFAULTS["roi_threshold"]),
-        "roi_mask_mode":  g.get_str("analysis/roi_mask_mode", _DEFAULTS["roi_mask_mode"]),
-        "roi_bg_sigma":   g.get_float("analysis/roi_bg_sigma", _DEFAULTS["roi_bg_sigma"]),
+        "roi_auto_method": roi_auto_method,
+        "roi_threshold":  roi_threshold,
+        "roi_mask_mode":  roi_mask_mode,
+        "roi_bg_sigma":   roi_bg_sigma,
         "roi_sister_suffix":     "_green",
         "roi_sister_autodetect": True,
         "roi_imagej_autodetect": (roi_mode == "imagej"),
@@ -236,7 +252,11 @@ def build_params(settings, importc, fpath: str | None = None,
         if not params["frame_interval"]:
             params["frame_interval"] = float(importc.frameInterval)
         params["source"] = "external_csv"
-        params["csv_preset"] = "auto"
+        # Source-format override (default "auto" auto-detects) + optional
+        # background image so the figure gets a real max-projection.  getattr so
+        # a minimal import double (batch path / tests) still builds.
+        params["csv_preset"] = getattr(importc, "csvPreset", "auto") or "auto"
+        params["bg_image_path"] = getattr(importc, "bgImagePath", "") or ""
 
     # Widget-state snapshot for the run manifest (manifest "Replay" reads this).
     # Partial until the QML sidebar lands in Phase 6 — the analysis/* + figures/*

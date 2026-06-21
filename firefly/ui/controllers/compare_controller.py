@@ -16,8 +16,8 @@ from PySide6 import QtWidgets
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from firefly.analysis.fa_enums import MsgKind
-from firefly.ui.controllers import compare_params_builder as cpb
-from firefly.ui.controllers.run_session import RunSession
+from firefly.ui.controllers.params import compare_params_builder as cpb
+from firefly.ui.controllers.params.run_session import RunSession
 from firefly.ui import results_format as rf
 
 _DEFAULT_COLORS = ["#3b6ed8", "#f78166", "#56d364", "#d2a8ff",

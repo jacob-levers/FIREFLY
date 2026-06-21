@@ -5,7 +5,7 @@ A faithful port of the Widgets run path (``_start_single_run`` +
 a QObject so QML binds to it.  It:
 
   * builds the worker params dict from persisted settings + the Import tab
-    (:mod:`firefly.ui.controllers.params_builder` — byte-identical shape),
+    (:mod:`firefly.ui.controllers.params.params_builder` — byte-identical shape),
   * spawns ``firefly_worker.run_analysis`` in a ``multiprocessing.Process``
     (spawn context, clean interpreter for MPS/CUDA — same rationale as the
     Widgets app),
@@ -22,13 +22,14 @@ from __future__ import annotations
 import multiprocessing
 import os
 import queue
+import sys
 import time
 
 from PySide6.QtCore import (Property, QObject, QTimer, Signal, Slot)
 
 from firefly.analysis.fa_enums import MsgKind
-from firefly.ui.controllers import params_builder
-from firefly.ui.controllers.live_frame_provider import render_frame
+from firefly.ui.controllers.params import params_builder
+from firefly.ui.controllers.providers.live_frame_provider import render_frame
 
 # Connected-stepper stages — mirror ui_widgets._PipelineDiagram._STAGES so the
 # QML stepper lights up identically.
@@ -82,11 +83,13 @@ class AnalysisController(QObject):
     runFailed = Signal(str)
     runStopped = Signal()
 
-    def __init__(self, settings, importc, roi_store=None, parent=None):
+    def __init__(self, settings, importc, roi_store=None, override_store=None,
+                 parent=None):
         super().__init__(parent)
         self._s = settings
         self._import = importc
         self._roi_store = roi_store
+        self._override_store = override_store
 
         self._proc = None
         self._msg_queue = None
@@ -111,6 +114,12 @@ class AnalysisController(QObject):
 
         self._cpu = 0.0
         self._mem = 0.0
+        self._gpu = -1.0               # 0..100 %, or -1 when there's no percentage
+        self._gpu_text = ""            # shown when _gpu < 0 (e.g. "MPS", "CPU only")
+        self._vram_text = "—"          # "Unified" on Apple Silicon, "X / Y GB" on CUDA
+        self._mps_util_cache = None    # latest ioreg GPU % (written off-thread)
+        self._mps_polling = False
+        self._torch = None
         self._minmass = -1.0           # -1 → auto (no histogram threshold line)
 
         self._stop_requested_at = None
@@ -125,6 +134,10 @@ class AnalysisController(QObject):
         self._res_timer = QTimer(self)
         self._res_timer.setInterval(1000)
         self._res_timer.timeout.connect(self._sample_resources)
+        # Always-on (1 Hz) so all four meters are live at idle and during runs,
+        # matching the legacy Widgets _ResourceMonitor.
+        self._res_timer.start()
+        self._sample_resources()
 
     # ── properties ───────────────────────────────────────────────────────
     @Property(bool, notify=runningChanged)
@@ -191,6 +204,18 @@ class AnalysisController(QObject):
     def memPercent(self):
         return self._mem
 
+    @Property(float, notify=resourcesChanged)
+    def gpuPercent(self):
+        return self._gpu               # 0..100, or -1 → show gpuText instead of a bar
+
+    @Property(str, notify=resourcesChanged)
+    def gpuText(self):
+        return self._gpu_text          # "MPS" / "CPU only" when there's no percentage
+
+    @Property(str, notify=resourcesChanged)
+    def vramText(self):
+        return self._vram_text         # "Unified" on Apple Silicon, "X / Y GB" on CUDA
+
     @Property(float, notify=minmassChanged)
     def minmassThreshold(self):
         return self._minmass
@@ -205,7 +230,8 @@ class AnalysisController(QObject):
             return
 
         params = params_builder.build_params(self._s, self._import,
-                                             roi_store=self._roi_store)
+                                             roi_store=self._roi_store,
+                                             override_store=self._override_store)
 
         # Histogram threshold: only meaningful with a manual minmass.
         self._minmass = (-1.0 if params.get("auto_minmass")
@@ -253,8 +279,7 @@ class AnalysisController(QObject):
         self.elapsedChanged.emit()
         self._poll_timer.start()
         self._elapsed_timer.start()
-        self._sample_resources()
-        self._res_timer.start()
+        self._sample_resources()       # immediate refresh on run start
 
     @Slot()
     def stop(self):
@@ -472,18 +497,126 @@ class AnalysisController(QObject):
         self.elapsedChanged.emit()
 
     def _sample_resources(self):
+        # CPU + RAM via psutil (cheap, always available).
         try:
             import psutil
             self._cpu = float(psutil.cpu_percent(interval=None))
             self._mem = float(psutil.virtual_memory().percent)
-            self.resourcesChanged.emit()
         except Exception:
             pass
+        # GPU % + VRAM — probed torch-free so we never import torch into the
+        # GUI process (subprocess-isolation invariant; see firefly_worker).
+        self._gpu, self._gpu_text, self._vram_text = self._sample_gpu()
+        self.resourcesChanged.emit()
+
+    def _sample_gpu(self):
+        """Return ``(gpu_percent, gpu_text, vram_text)``.  ``gpu_percent`` is -1
+        when there's no numeric utilisation to show (then ``gpu_text`` labels
+        it).  Never imports torch — uses ioreg (macOS) / pynvml / nvidia-smi."""
+        # ── macOS: Metal/MPS utilisation via ioreg (torch-free) ───────────
+        if sys.platform == "darwin":
+            self._poll_mps_async()
+            if self._mps_util_cache is not None:
+                gpu, gpu_text = float(self._mps_util_cache), ""
+            else:
+                gpu, gpu_text = -1.0, "MPS"
+            # Apple-Silicon memory is unified with system RAM — no separate
+            # VRAM pool.  Report torch's MPS allocator footprint only if torch
+            # is already loaded (rare in the GUI process), else say "Unified".
+            vram = "Unified"
+            torch_mod = self._maybe_get_torch()
+            if torch_mod is not None:
+                try:
+                    if (hasattr(torch_mod.backends, "mps")
+                            and torch_mod.backends.mps.is_available()):
+                        vram = f"{torch_mod.mps.current_allocated_memory()/1e9:.1f} GB"
+                except Exception:
+                    pass
+            return gpu, gpu_text, vram
+
+        # ── NVIDIA (any other OS): util + VRAM via pynvml (torch-free) ─────
+        try:
+            import pynvml as _nv
+            _nv.nvmlInit()
+            try:
+                h = _nv.nvmlDeviceGetHandleByIndex(0)
+                util = _nv.nvmlDeviceGetUtilizationRates(h).gpu
+                mem = _nv.nvmlDeviceGetMemoryInfo(h)
+                return (float(util), "",
+                        f"{mem.used/1e9:.1f} / {mem.total/1e9:.0f} GB")
+            finally:
+                try:    _nv.nvmlShutdown()
+                except Exception: pass
+        except Exception:
+            pass
+        # nvidia-smi fallback (no pynvml installed).
+        try:
+            import subprocess as _sub
+            flags = (getattr(_sub, "CREATE_NO_WINDOW", 0)
+                     if sys.platform == "win32" else 0)
+            out = _sub.run(
+                ["nvidia-smi",
+                 "--query-gpu=utilization.gpu,memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2,
+                creationflags=flags).stdout.strip().splitlines()
+            if out:
+                u, used, total = [s.strip() for s in out[0].split(",")]
+                return (float(u), "",
+                        f"{float(used)/1024:.1f} / {float(total)/1024:.0f} GB")
+        except Exception:
+            pass
+
+        # ── nothing detected → CPU-only run ───────────────────────────────
+        return -1.0, "CPU only", "—"
+
+    @staticmethod
+    def _mps_gpu_utilization():
+        """Best-effort macOS GPU utilisation via ``ioreg`` (a subprocess — call
+        only off the GUI thread, via :meth:`_poll_mps_async`).  Returns an int
+        percent or None.  Chip/OS combos expose the field under a few keys."""
+        import re
+        import subprocess
+        try:
+            out = subprocess.check_output(
+                ["ioreg", "-r", "-c", "IOAccelerator", "-d", "1"],
+                stderr=subprocess.DEVNULL, timeout=1.0).decode(
+                    "utf-8", errors="ignore")
+        except Exception:
+            return None
+        for pattern in (r'"Device Utilization\s*%"\s*=\s*(\d+)',
+                        r'"GPU Busy %"\s*=\s*(\d+)',
+                        r'"GPU Core Utilization\s*%"\s*=\s*(\d+)'):
+            m = re.search(pattern, out)
+            if m:
+                try:    return int(m.group(1))
+                except Exception: pass
+        return None
+
+    def _poll_mps_async(self):
+        """Run the ioreg parse on a daemon thread → ``self._mps_util_cache``.
+        Re-entrancy-guarded so 1 Hz ticks don't pile up threads."""
+        if self._mps_polling:
+            return
+        self._mps_polling = True
+        import threading
+
+        def _run():
+            try:    self._mps_util_cache = self._mps_gpu_utilization()
+            finally: self._mps_polling = False
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _maybe_get_torch(self):
+        """Return torch ONLY if it's already in ``sys.modules`` — never triggers
+        a fresh import (keeps torch/Metal out of the GUI process)."""
+        if self._torch is None:
+            self._torch = sys.modules.get("torch")
+        return self._torch
 
     def _cleanup_after_run(self):
         self._poll_timer.stop()
         self._elapsed_timer.stop()
-        self._res_timer.stop()
+        # _res_timer stays running — the meters keep updating at idle.
         if self._run_start is not None:
             self._elapsed = _format_elapsed(time.monotonic() - self._run_start)
             self.elapsedChanged.emit()

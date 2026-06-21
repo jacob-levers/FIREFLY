@@ -36,3 +36,38 @@ class RoiStore:
 
     def clear(self, path):
         self._by_file.pop(self._key(path), None)
+
+
+class RoiOverrideStore:
+    """Per-file ROI-settings override (abspath → spec dict of the analysis/roi_*
+    values: ``roi_mode``/``roi_auto_method``/``roi_threshold``/``roi_mask_mode``/
+    ``roi_bg_sigma`` in their settings-label form).
+
+    The left sidebar holds the DEFAULT ROI applied to every file; a file with an
+    entry here overrides that default for THAT file only (set from the Preview &
+    ROI viewer).  Read by ``params_builder`` at run time.  Session-only, like
+    ``RoiStore``.
+    """
+
+    def __init__(self):
+        self._by_file: dict = {}
+
+    @staticmethod
+    def _key(path):
+        return os.path.abspath(path) if path else ""
+
+    def get(self, path):
+        return self._by_file.get(self._key(path))
+
+    def set(self, path, spec):
+        k = self._key(path)
+        if spec:
+            self._by_file[k] = dict(spec)
+        else:
+            self._by_file.pop(k, None)
+
+    def has(self, path):
+        return self._key(path) in self._by_file
+
+    def clear(self, path):
+        self._by_file.pop(self._key(path), None)

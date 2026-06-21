@@ -31,19 +31,17 @@ SECTIONS = [
     {"key": "drift",         "title": "Drift correction",       "icon": "waypoints"},
     {"key": "clustering",    "title": "Clustering (DBSCAN)",    "icon": "circle-dot"},
     {"key": "performance",   "title": "Performance",            "icon": "cpu"},
-    {"key": "figures",       "title": "Figures — style",        "icon": "image"},
-    {"key": "figures_batch", "title": "Figures — batch",        "icon": "layers"},
 ]
 
 
 def _f(section, key, kind, label, default, *, min=None, max=None, step=None,
        decimals=None, items=None, suffix="", special="", enable=None,
-       hyperfly=False, tooltip=""):
+       hyperfly=False, tooltip="", slider=False):
     return {"section": section, "key": key, "kind": kind, "label": label,
             "default": default, "min": min, "max": max, "step": step,
             "decimals": decimals, "items": items or [], "suffix": suffix,
             "special": special, "enable": enable, "hyperfly": hyperfly,
-            "tooltip": tooltip}
+            "tooltip": tooltip, "slider": slider}
 
 
 # enable predicates: {"key": other_key, "truthy": bool} or {"key": k, "eq": value}
@@ -51,6 +49,9 @@ _FULL_LAP = "Jaqaman LAP — TrackMate (merge/split)"
 
 FIELDS = [
     # ── Imaging metadata ─────────────────────────────────────────────────
+    # Calibration (pixel size + frame interval) is owned here — there's no
+    # calibration UI on the Import tab; these write the analysis/* keys that
+    # params_builder reads.
     _f("imaging", "analysis/override_px", "bool", "Override pixel size", False),
     _f("imaging", "analysis/pixel_size", "double", "Pixel size (µm)", 0.106,
        min=0.01, max=1.0, step=0.001, decimals=3,
@@ -136,14 +137,21 @@ FIELDS = [
     _f("roi", "analysis/roi_mode", "combo", "ROI mode", "Auto threshold",
        items=["None", "Auto threshold", "Manual threshold", "Manual polygon",
               "Sister TIFF", "ImageJ ROI"]),
+    # Auto method only applies in Auto-threshold mode; the manual Threshold only
+    # in Manual-threshold mode; Mask mode + Background σ apply to either
+    # threshold mode. Mirrors the legacy _on_roi_mode_changed grey-out.
     _f("roi", "analysis/roi_auto_method", "combo", "Auto method", "Li",
-       items=["Li", "Otsu", "Triangle", "Mean"]),
+       items=["Li", "Otsu", "Triangle", "Mean"],
+       enable={"key": "analysis/roi_mode", "eq": "Auto threshold"}),
     _f("roi", "analysis/roi_threshold", "double", "Threshold", 0.08,
-       min=0.0, max=1.0, step=0.005, decimals=3),
+       min=0.0, max=1.0, step=0.005, decimals=3, slider=True,
+       enable={"key": "analysis/roi_mode", "eq": "Manual threshold"}),
     _f("roi", "analysis/roi_mask_mode", "combo", "Mask mode", "Max",
-       items=["Max", "Blink density", "Mean", "Sum"]),
+       items=["Max", "Blink density", "Mean", "Sum"],
+       enable={"key": "analysis/roi_mode", "in": ["Auto threshold", "Manual threshold"]}),
     _f("roi", "analysis/roi_bg_sigma", "double", "Background σ", 25.0,
-       min=0.0, max=100.0, step=1.0, decimals=1),
+       min=0.0, max=100.0, step=1.0, decimals=1, slider=True,
+       enable={"key": "analysis/roi_mode", "in": ["Auto threshold", "Manual threshold"]}),
 
     # ── Drift correction ─────────────────────────────────────────────────
     _f("drift", "analysis/drift_correct", "bool", "Correct drift", True),
@@ -178,21 +186,7 @@ FIELDS = [
     _f("performance", "performance/hyperfly_gpu_slots", "int", "HF GPU slots (0=auto)", 0,
        min=0, max=8, step=1, special="auto", hyperfly=True),
     _f("performance", "performance/czi_parallel_decode", "bool", "Parallel CZI decode", True),
-
-    # ── Figures — style ──────────────────────────────────────────────────
-    _f("figures", "figures/theme", "combo", "Theme", "Dark",
-       items=["Dark", "Light", "Publication"]),
-    _f("figures", "figures/proj_cmap", "combo", "Projection cmap", "Inferno",
-       items=["Inferno", "Hot", "Viridis", "Plasma", "Greys"]),
-    _f("figures", "figures/traj_bg", "bool", "Trajectory background", True),
-    _f("figures", "figures/dpi", "int", "DPI", 150, min=72, max=600, step=10),
-    _f("figures", "figures/save_pdf", "bool", "Save PDF", False),
-    _f("figures", "figures/per_panel", "bool", "Per-panel PNGs", False),
-
-    # ── Figures — batch ──────────────────────────────────────────────────
-    _f("figures_batch", "figures/batch_dpi", "int", "Batch DPI", 110, min=72, max=600, step=10),
-    _f("figures_batch", "figures/batch_save_pdf", "bool", "Batch save PDF", False),
-    _f("figures_batch", "figures/batch_per_panel", "bool", "Batch per-panel PNGs", False),
+    # Figure style/batch settings moved to the Preferences › Figures menu.
 ]
 
 # index by key for O(1) lookup

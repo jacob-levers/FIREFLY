@@ -58,44 +58,34 @@ def _nat_key(name):
     return -1
 
 
-def scan_series(folder: str, recursive: bool = False) -> list:
-    """Return one entry per analysable series:
-    ``[{"key", "primary", "files": [abspath…], "fileCount"}]``."""
-    if not folder or not os.path.isdir(folder):
-        return []
-    candidates = []          # (display, full, sub)
-    for dirpath, dirnames, filenames in os.walk(folder):
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if not d.startswith(".")
-            and d.lower() not in ("batch_results", "compare_results")
-            and not (recursive and is_analysis_output_dir(d)))
-        rel = os.path.relpath(dirpath, folder)
-        if not recursive and rel != os.curdir:
-            dirnames[:] = []
-        sub = None if rel == os.curdir else rel.replace(os.sep, "/")
-        for cname in sorted(filenames):
-            if cname.startswith("."):
-                continue
-            if recursive and not is_raw_image_name(cname):
-                continue
-            full = os.path.join(dirpath, cname)
-            if os.path.isfile(full) and looks_like_input_file(cname):
-                candidates.append((cname if sub is None else f"{sub}/{cname}", full, sub))
+def _human_size(n) -> str:
+    """A short human file size, e.g. ``2.1 GB`` / ``312 KB`` / ``0 B``."""
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
+
+def _group_series(candidates: list) -> list:
+    """Group ``(display, full, sub)`` candidate tuples into series entries
+    (``czi`` preference + series-key bucketing + ROI-sister drop), enriched with
+    per-file ``parts`` and aggregate size.  Shared by ``scan_series`` (folder
+    walk) and ``scan_paths`` (an explicit file list)."""
     # prefer the raw .czi over derived siblings in the same folder
     by_folder = defaultdict(list)
     for c in candidates:
         by_folder[c[2]].append(c)
-    candidates = []
+    cands = []
     for grp in by_folder.values():
         czis = [c for c in grp if c[1].lower().endswith(".czi")]
-        candidates.extend(czis if czis else grp)
+        cands.extend(czis if czis else grp)
 
     # group by series key (subfolder-prefixed so same-named files stay separate)
     smap = defaultdict(list)
     generic = {"locpalmtracer", "trcpalmtracer"}
-    for display, full, sub in candidates:
+    for display, full, sub in cands:
         if sub is None:
             key = series_key(display)
         else:
@@ -120,7 +110,61 @@ def scan_series(folder: str, recursive: bool = False) -> list:
             if os.path.splitext(os.path.basename(nm))[0] == key:
                 primary_name, primary_full = nm, pth
                 break
+        parts, total = [], 0
+        for nm, pth in sisters:
+            try:
+                sz = os.path.getsize(pth)
+            except OSError:
+                sz = 0
+            total += sz
+            parts.append({"path": pth, "name": os.path.basename(nm),
+                          "size": sz, "sizeStr": _human_size(sz)})
         out.append({"key": key, "primary": primary_full,
-                    "files": [p for _, p in sisters], "fileCount": len(sisters),
+                    "files": [p for _, p in sisters], "parts": parts,
+                    "fileCount": len(sisters), "sizeBytes": total,
+                    "sizeStr": _human_size(total),
                     "name": os.path.basename(primary_name)})
     return out
+
+
+def scan_series(folder: str, recursive: bool = False) -> list:
+    """Return one entry per analysable series found by walking ``folder``:
+    ``[{"key", "primary", "files": [abspath…], "parts": [...], "fileCount",
+    "sizeBytes", "sizeStr", "name"}]``."""
+    if not folder or not os.path.isdir(folder):
+        return []
+    candidates = []          # (display, full, sub)
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not d.startswith(".")
+            and d.lower() not in ("batch_results", "compare_results")
+            and not (recursive and is_analysis_output_dir(d)))
+        rel = os.path.relpath(dirpath, folder)
+        if not recursive and rel != os.curdir:
+            dirnames[:] = []
+        sub = None if rel == os.curdir else rel.replace(os.sep, "/")
+        for cname in sorted(filenames):
+            if cname.startswith("."):
+                continue
+            if recursive and not is_raw_image_name(cname):
+                continue
+            full = os.path.join(dirpath, cname)
+            if os.path.isfile(full) and looks_like_input_file(cname):
+                candidates.append((cname if sub is None else f"{sub}/{cname}", full, sub))
+    return _group_series(candidates)
+
+
+def scan_paths(paths: list) -> list:
+    """Group an explicit list of file paths into series (for ``Add files`` /
+    drag-and-drop).  Same grouping + enrichment as ``scan_series``; non-input or
+    missing paths are dropped."""
+    candidates = []
+    for full in paths or []:
+        if not full:
+            continue
+        cname = os.path.basename(full)
+        if (os.path.isfile(full) and not cname.startswith(".")
+                and looks_like_input_file(cname)):
+            candidates.append((cname, full, None))
+    return _group_series(candidates)
