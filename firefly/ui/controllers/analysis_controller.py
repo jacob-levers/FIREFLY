@@ -137,7 +137,9 @@ class AnalysisController(QObject):
         # Always-on (1 Hz) so all four meters are live at idle and during runs,
         # matching the legacy Widgets _ResourceMonitor.
         self._res_timer.start()
-        self._sample_resources()
+        # First sample is deferred to the event loop (not the __init__ critical
+        # path) so the ioreg / nvidia-smi probe can never stall app startup.
+        QTimer.singleShot(0, self._sample_resources)
 
     # ── properties ───────────────────────────────────────────────────────
     @Property(bool, notify=runningChanged)

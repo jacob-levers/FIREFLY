@@ -36,5 +36,12 @@ import multiprocessing  # noqa: E402  (after the stream guard, intentionally)
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    # CI/packaging smoke runs the frozen app on a GPU-less runner where the Qt
+    # Quick scene graph can't create a hardware (D3D/Metal) context and hangs at
+    # first paint.  When the smoke handshake is active (SPTPALM_READY_MARKER set)
+    # fall back to the software renderer so the window still shows + repaints.
+    # Real machines (with a GPU) never set the marker, so they keep hardware.
+    if os.environ.get("SPTPALM_READY_MARKER") and not os.environ.get("QT_QUICK_BACKEND"):
+        os.environ["QT_QUICK_BACKEND"] = "software"
     from firefly.ui.app_qml import main   # lazy: worker children never reach here
     main()

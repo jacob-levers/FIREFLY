@@ -106,7 +106,14 @@ class _CrashUI(QObject):
             pass
 
 
-_QML_DIR = os.path.join(os.path.dirname(__file__), "qml")
+# Resolve the QML tree both in dev (next to this file) and in a frozen
+# PyInstaller build (extracted under sys._MEIPASS/firefly/ui/qml — see
+# sptpalm.spec, which bundles the whole dir).  Without the frozen branch a
+# packaged app looks beside a path that doesn't exist → Main.qml never loads.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _QML_DIR = os.path.join(sys._MEIPASS, "firefly", "ui", "qml")
+else:
+    _QML_DIR = os.path.join(os.path.dirname(__file__), "qml")
 _ICONS_DIR = os.path.join(_QML_DIR, "assets", "icons")
 
 
