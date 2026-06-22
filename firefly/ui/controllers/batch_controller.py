@@ -608,7 +608,12 @@ class BatchController(QObject):
         self.statusChanged.emit()
         self._model.allChanged()
         if self._hf:
-            self._hf.start(self._files_total)   # arm the HYPER-FLY dashboard
+            # stem → input path, so the dashboard can show each running tile's
+            # max-projection (HF_TILE only carries the stem, not the path).
+            stem_paths = {p.get("stem_override"): p.get("file")
+                          for p in params_list
+                          if p.get("stem_override") and p.get("file")}
+            self._hf.start(self._files_total, stem_paths)   # arm the HYPER-FLY dashboard
 
         from firefly import firefly_worker
         ok = self._session.start(

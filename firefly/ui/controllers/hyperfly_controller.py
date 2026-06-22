@@ -15,6 +15,7 @@ grid never reshuffles.  Fed by BatchController; nothing here touches the worker.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 from PySide6.QtCore import (Property, QAbstractListModel, QByteArray, QModelIndex,
@@ -105,6 +106,18 @@ class HyperflyController(QObject):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self.aggregateChanged)
 
+        # ── per-file max-projection previews (shown until/unless a live frame
+        #    arrives).  HF_TILE carries only the stem, so BatchController hands us
+        #    a stem→path map at start(); we load each file's sampled projection
+        #    off-thread and deliver it on the GUI thread via a drain timer. ──
+        self._stem_paths = {}            # stem → input path (set in start)
+        self._proj_cache = {}            # stem → QImage (loaded projection)
+        self._proj_inflight = set()      # stems whose projection is loading
+        self._proj_ready = []            # [(stem, QImage)] produced off-thread
+        self._proj_timer = QTimer(self)
+        self._proj_timer.setInterval(150)
+        self._proj_timer.timeout.connect(self._drain_proj)
+
     # ── model / provider access ───────────────────────────────────────────
     @Property(QObject, constant=True)
     def workerModel(self):
@@ -115,7 +128,8 @@ class HyperflyController(QObject):
 
     def _idle_slot(self):
         return {"file": None, "stem": "", "state": "idle", "pct": 0,
-                "stage": "", "locs": 0, "tracks": 0, "frame_token": 0, "error": ""}
+                "stage": "", "locs": 0, "tracks": 0, "frame_token": 0, "error": "",
+                "has_live": False}
 
     def _row_dict(self, row):
         d = self._slots[row]
@@ -126,9 +140,12 @@ class HyperflyController(QObject):
 
     # ── lifecycle (called by BatchController) ─────────────────────────────
     @Slot(int)
-    def start(self, total):
+    @Slot(int, "QVariantMap")
+    def start(self, total, stem_paths=None):
         """A batch run is starting — reset the dashboard.  Whether it's actually
-        a HYPER-FLY (parallel) run is confirmed later by HYPERFLY_STATUS."""
+        a HYPER-FLY (parallel) run is confirmed later by HYPERFLY_STATUS.
+        ``stem_paths`` maps each file's stem to its input path so each running
+        tile can show that file's max projection."""
         self._total = int(total)
         self._done = 0
         self._failed = 0
@@ -138,6 +155,10 @@ class HyperflyController(QObject):
         self._slots = []
         self._file_slot = {}
         self._frames = {}
+        self._stem_paths = dict(stem_paths or {})
+        self._proj_cache = {}
+        self._proj_inflight = set()
+        self._proj_ready = []
         self._start_t = time.monotonic()
         self._model.reset()
         self._timer.start()
@@ -193,6 +214,7 @@ class HyperflyController(QObject):
             d["error"] = str(payload.get("error") or "")[:300]
         if payload.get("stem"):
             d["stem"] = str(payload["stem"])
+            self._maybe_load_projection(slot, d["stem"])
         if payload.get("pct") is not None:
             d["pct"] = int(payload["pct"])
         if payload.get("stage"):
@@ -214,6 +236,7 @@ class HyperflyController(QObject):
         img = self._render(payload)
         if img is not None and not img.isNull():
             self._frames[slot] = img
+            self._slots[slot]["has_live"] = True       # live frame wins over the projection
             self._slots[slot]["frame_token"] += 1
             self._model.rowChanged(slot)
 
@@ -244,6 +267,68 @@ class HyperflyController(QObject):
                 self._frames.pop(i, None)
                 return i
         return None
+
+    # ── per-file max-projection preview ───────────────────────────────────
+    def _maybe_load_projection(self, slot, stem):
+        """Show this file's max projection on its tile (fallback when no live
+        frame streams).  Sampled read off-thread, cached per stem, GUI-applied."""
+        if not stem or not (0 <= slot < len(self._slots)):
+            return
+        if self._slots[slot].get("has_live"):
+            return                                 # live frames already cover it
+        cached = self._proj_cache.get(stem)
+        if cached is not None:
+            self._apply_projection(slot, stem, cached)
+            return
+        path = self._stem_paths.get(stem)
+        if not path or stem in self._proj_inflight:
+            return
+        self._proj_inflight.add(stem)
+
+        def _work():
+            img = None
+            try:
+                from PySide6.QtCore import Qt as _Qt
+                from firefly.ui.controllers.params import preview_loader
+                from firefly.ui.controllers.providers.live_frame_provider import render_frame
+                proj = preview_loader.sampled_projection(path, "max", cap=48)
+                if proj is not None:
+                    img = render_frame(proj)
+                    # the tile is tiny — cache a thumbnail, not a full-res frame,
+                    # so a big batch doesn't pile up dozens of large QImages.
+                    if img is not None and not img.isNull() and max(img.width(), img.height()) > 256:
+                        img = img.scaled(256, 256, _Qt.KeepAspectRatio,
+                                         _Qt.SmoothTransformation)
+            except Exception:
+                img = None
+            self._proj_ready.append((stem, img))   # list.append is atomic (GIL)
+
+        threading.Thread(target=_work, daemon=True).start()
+        if not self._proj_timer.isActive():
+            self._proj_timer.start()
+
+    def _apply_projection(self, slot, stem, img):
+        if not (0 <= slot < len(self._slots)):
+            return
+        d = self._slots[slot]
+        if d.get("has_live") or d.get("stem") != stem or img is None or img.isNull():
+            return
+        self._frames[slot] = img
+        d["frame_token"] += 1
+        self._model.rowChanged(slot)
+
+    def _drain_proj(self):
+        if self._proj_ready:
+            pending, self._proj_ready = self._proj_ready, []
+            for stem, img in pending:
+                self._proj_inflight.discard(stem)
+                if img is not None and not img.isNull():
+                    self._proj_cache[stem] = img
+                    for i, d in enumerate(self._slots):
+                        if d.get("stem") == stem and not d.get("has_live"):
+                            self._apply_projection(i, stem, img)
+        if not self._proj_ready and not self._proj_inflight:
+            self._proj_timer.stop()
 
     def _render(self, payload):
         try:

@@ -104,19 +104,40 @@ Flickable {
                     source: (tile.item && tile.item.hasFrame)
                             ? ("image://hfworker/" + tile.idx + "_" + tile.item.frameToken) : ""
                 }
-                // scan line whose top tracks progress (reads as "reading the frame")
-                Rectangle {
+                // scanner beam sweeping up + down over the projection while localising
+                Item {
+                    id: scanBar
                     visible: tile.st === "running"
                     anchors.left: parent.left; anchors.right: parent.right
                     height: 2
-                    y: (0.08 + 0.78 * Math.max(0, Math.min(1, (tile.item ? tile.item.pct : 0) / 100))) * parent.height
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: "transparent" }
-                        GradientStop { position: 0.5; color: pal.ACC }
-                        GradientStop { position: 1.0; color: "transparent" }
+                    y: 0
+                    Rectangle {                       // soft glow band
+                        anchors.centerIn: parent
+                        width: parent.width; height: 18
+                        opacity: 0.16
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: "transparent" }
+                            GradientStop { position: 0.5; color: pal.ACC }
+                            GradientStop { position: 1.0; color: "transparent" }
+                        }
                     }
-                    Behavior on y { NumberAnimation { duration: Theme.reducedMotion ? 0 : 250; easing.type: Easing.OutCubic } }
+                    Rectangle {                       // crisp beam
+                        anchors.fill: parent
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: "transparent" }
+                            GradientStop { position: 0.5; color: pal.ACC }
+                            GradientStop { position: 1.0; color: "transparent" }
+                        }
+                    }
+                    SequentialAnimation on y {
+                        running: tile.st === "running" && !Theme.reducedMotion
+                        loops: Animation.Infinite
+                        NumberAnimation { from: 0; to: thumb.height - 2
+                                          duration: 1500; easing.type: Easing.InOutSine }
+                        NumberAnimation { from: thumb.height - 2; to: 0
+                                          duration: 1500; easing.type: Easing.InOutSine }
+                    }
                 }
                 // status badge (top-left)
                 Rectangle {
