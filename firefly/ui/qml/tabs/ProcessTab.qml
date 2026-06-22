@@ -528,7 +528,7 @@ Flickable {
 
     // ── controller signal wiring ─────────────────────────────────────────
     Connections {
-        target: Analysis
+        target: Process          // the run cockpit owns logLine/massChunk/running
         function onMassChunk(vals) { hist.addChunk(vals); }
         function onLogLine(line) {
             // Cap the log so a long run doesn't grow the document unbounded.
