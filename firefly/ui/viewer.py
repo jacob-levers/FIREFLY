@@ -55,6 +55,13 @@ class _PointsItem(QtWidgets.QGraphicsItem):
         return self._rect
 
     def paint(self, painter, option, widget=None):
+        # AA off for the scatter: antialiasing every dot is the dominant repaint
+        # cost when the cache regenerates on zoom — up to one drawPoints group
+        # per cluster in "ID" mode (hundreds of groups, tens of thousands of
+        # points). The tails layer disables AA for the same reason.
+        aa = QtGui.QPainter.RenderHint.Antialiasing
+        was = painter.testRenderHint(aa)
+        painter.setRenderHint(aa, False)
         for col, poly in self._groups:
             pen = QtGui.QPen(col)
             pen.setWidth(self._size)
@@ -62,6 +69,7 @@ class _PointsItem(QtWidgets.QGraphicsItem):
             pen.setCosmetic(True)        # constant on-screen size while zooming
             painter.setPen(pen)
             painter.drawPoints(poly)
+        painter.setRenderHint(aa, was)
 
 
 class _HeadItem(QtWidgets.QGraphicsItem):

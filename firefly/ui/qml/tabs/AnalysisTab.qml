@@ -11,13 +11,14 @@ Item {
     id: root
     readonly property var pal: Theme.palette
     readonly property var sc: Theme.scale
-    readonly property color faint: pal.TXT_MUTED
-    readonly property color mat: pal.WELL
-    // exact prototype shades (darkest→lightest): page #090b0f < condition
-    // card/timepoints #0b0f14 < card body #0e1218 < card header #10151b <
-    // chip/input #151a22.  cSunken = the recessed condition-panel well.
-    readonly property color cSunken: pal.WELL
-    readonly property color cCardHead: pal.PANEL_ALT
+    readonly property color faint: "#5b636e"        // dim text; same on both dark themes
+    // layered shades (darkest→lightest): page = BG < recessed well / figure mat
+    // ≈ BG < card body = PANEL < card header < chip = PANEL_ALT.  mat + cSunken
+    // track the theme via BG (so AMOLED goes pure-black) rather than a near-black
+    // WELL, which made the Dark theme read as AMOLED in the Analysis cards.
+    readonly property color mat: pal.BG
+    readonly property color cSunken: pal.BG
+    readonly property color cCardHead: "#10151b"     // header, slightly above card body
     // design spacing: cards are 12px-radius with 14px interior padding and sit
     // 14px apart; columns are 16px apart with a 20px page inset.
     readonly property int gRad: 12

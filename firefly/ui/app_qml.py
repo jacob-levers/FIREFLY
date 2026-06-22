@@ -254,7 +254,7 @@ def build_main_window(app: QtWidgets.QApplication):
     # The viewer island only appears once the Visualise viewer has content, so an
     # empty Visualise tab shows the placeholder instead of a blank floating card.
     def _vis_content(*_):
-        embed.setViewerContent(visualise.hasRun)
+        embed.setViewerContent(visualise.hasContent)   # tracks OR a cluster map
     visualise.dataChanged.connect(_vis_content)
 
     # The preview colour is chosen in the ROI editor; reflect it in the Import

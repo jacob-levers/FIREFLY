@@ -99,6 +99,7 @@ class VisualiseController(QObject):
         self._cl_xy_um = None
         self._cl_labels = None
         self._cl_motion = None
+        self._cl_motion_tried_derive = False   # re-join cluster locs↔track motion once
         self._cl_xy_px = None
         self._cl_px_um = 1.0
         self._cl_stats_df = None
@@ -290,10 +291,13 @@ class VisualiseController(QObject):
                 diff_df["particle"] = diff_df["particle"].astype("int64") + off
             self._runs.append({"name": name, "df": df, "diff": diff_df,
                                "color": _RUN_COLOURS[ri % len(_RUN_COLOURS)], "offset": off})
+            self._cl_motion_tried_derive = False   # new tracks → re-derive cluster motion
             self._tracks_df = self._runs[0]["df"]      # primary
             self._diff_df = self._runs[0]["diff"]
             self._render_tracks()
             self._build_explorer_data()
+            if self._cl_present:          # clusters loaded before tracks → recolour
+                self._render_cluster_layer()   # with the now-available motion data
             self._has_run = True
             self.dataChanged.emit()
             extra = f" · {len(self._runs)} runs" if len(self._runs) > 1 else ""
@@ -622,6 +626,13 @@ class VisualiseController(QObject):
     def hasRun(self):
         return self._has_run
 
+    @Property(bool, notify=dataChanged)
+    def hasContent(self):
+        """The viewer has something to show — tracks OR a standalone cluster map.
+        Gates the floating viewer island + the 'open a run' placeholder, so a
+        cluster map can be explored without first loading trajectories."""
+        return self._has_run or self._cl_present
+
     @Property(int, notify=dataChanged)
     def hudTrackCount(self):
         return self._hud_tracks
@@ -882,6 +893,7 @@ class VisualiseController(QObject):
             self._cl_labels = labels_df["cluster_id"].to_numpy(dtype=np.int32)
             self._cl_motion = (labels_df["motion"].astype(str).to_numpy()
                                if "motion" in labels_df.columns else None)
+            self._cl_motion_tried_derive = False   # allow re-derive for new clusters
             self._cl_px_um = px_um
             self._cl_xy_px = np.column_stack([
                 self._cl_xy_um[:, 1] / px_um, self._cl_xy_um[:, 0] / px_um])
@@ -896,11 +908,86 @@ class VisualiseController(QObject):
             self._update_cluster_counts()
             self._rebuild_layers()           # surface the cluster layer row + toggle
             self.clusterChanged.emit()
+            # Surface the viewer island even with no tracks loaded, then fit the
+            # view to the scatter once the island has been shown + sized.
+            self.dataChanged.emit()
+            QTimer.singleShot(0, self.resetView)
             return True
         except Exception as exc:
             self.warn.emit("Couldn't load clusters",
                            f"{os.path.basename(run_dir)}:\n{exc}")
             return False
+
+    _REAL_MOTION = frozenset(_MOTION_ORDER)   # MOTION_CLASS_ORDER + "Unknown"
+
+    def _has_real_motion(self) -> bool:
+        """True when the per-loc cluster motion holds at least one genuine class.
+        'Unmatched'/'Unclassified' (locs that never made it into a classified
+        track) are NOT real — they collapse to the Unknown grey, so a column of
+        only those reads as 'no motion data'."""
+        import numpy as np
+        m = self._cl_motion
+        if m is None:
+            return False
+        try:
+            return any(str(x) in self._REAL_MOTION for x in np.unique(m))
+        except Exception:
+            return False
+
+    def _ensure_cluster_motion(self):
+        """Re-derive per-loc cluster motion from the loaded run tracks when the
+        analysis column is missing or wholesale 'Unmatched' (the worker's
+        loc↔track join can fail entirely, leaving every cluster loc grey).
+
+        Coordinate-joins each cluster loc (µm → px via the run's pixel size) to a
+        track row's motion class.  Cheap, runs at most once per cluster load, and
+        only replaces the column when it actually recovers matches — so it can
+        never make the colouring worse."""
+        if self._has_real_motion():
+            return                            # analysis column already usable
+        if (self._cl_motion_tried_derive or not self._runs
+                or self._cl_xy_um is None):
+            return
+        self._cl_motion_tried_derive = True
+        derived = self._derive_cluster_motion()
+        if derived is not None:
+            self._cl_motion = derived
+
+    def _derive_cluster_motion(self):
+        """Vectorised (rounded px x, px y) → motion join: build the lookup from
+        every loaded run's tracks and left-merge the cluster locs onto it.
+        Returns a str ndarray, or None if no track motion data is available or
+        nothing matched (so the caller keeps the analysis column unchanged)."""
+        import numpy as np, pandas as pd
+        px = float(self._cl_px_um or 1.0) or 1.0
+        frames = []
+        for run in self._runs:
+            df = run.get("df"); diff = run.get("diff")
+            if (df is None or diff is None
+                    or "motion" not in getattr(diff, "columns", [])
+                    or not {"x", "y", "particle"}.issubset(getattr(df, "columns", []))):
+                continue
+            mmap = dict(zip(diff["particle"].astype("int64"),
+                            diff["motion"].astype(str)))
+            frames.append(pd.DataFrame({
+                "kx": np.round(df["x"].to_numpy(dtype=float), 3),
+                "ky": np.round(df["y"].to_numpy(dtype=float), 3),
+                "motion": df["particle"].astype("int64").map(mmap)
+                            .fillna("Unknown").to_numpy(),
+            }))
+        if not frames:
+            return None
+        keyed = (pd.concat(frames, ignore_index=True)
+                   .drop_duplicates(["kx", "ky"], keep="last"))
+        cl = pd.DataFrame({
+            "kx": np.round(self._cl_xy_um[:, 0].astype(float) / px, 3),
+            "ky": np.round(self._cl_xy_um[:, 1].astype(float) / px, 3),
+        })
+        merged = cl.merge(keyed, on=["kx", "ky"], how="left")
+        motion = merged["motion"].to_numpy()
+        if int(pd.notna(merged["motion"]).sum()) == 0:
+            return None
+        return np.where(pd.isna(motion), "Unmatched", motion).astype(object)
 
     def _render_cluster_layer(self):
         if self._cl_xy_px is None:
@@ -912,9 +999,14 @@ class VisualiseController(QObject):
             except Exception: pass
             return
         import numpy as np
+        self._ensure_cluster_motion()        # recover motion from tracks if the
+                                             # worker's loc↔track join came up empty
         ids = self._cl_labels.astype(np.int32)
         mode = self._cl_color_mode
-        if mode in ("Motion", "Cluster motion") and self._cl_motion is None:
+        # Fall back to per-cluster ID colours when there is no real motion data
+        # — otherwise "colour by motion" would be a uniform grey blob (every loc
+        # tagged "Unmatched"/"Unclassified" collapses to the Unknown grey).
+        if mode in ("Motion", "Cluster motion") and not self._has_real_motion():
             mode = "ID"
         ys, xs = self._cl_xy_px[:, 0], self._cl_xy_px[:, 1]
         noise = ids == -1

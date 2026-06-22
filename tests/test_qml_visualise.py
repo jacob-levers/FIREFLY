@@ -162,6 +162,72 @@ def test_visualise_clusters_load_recluster_suggest(tmp_path):
                                        "cell1_cluster_labels_tuned.csv"))
 
 
+def test_visualise_clusters_standalone_without_tracks(tmp_path):
+    """A cluster map can be opened on its own — no trajectories required. The
+    viewer island surfaces (hasContent) and the scatter renders even though no
+    run/tracks are loaded (hasRun stays False)."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    run = _make_run(tmp_path)
+    _add_cluster_labels(run)
+    c = VisualiseController()
+    assert not c.hasContent                       # nothing loaded yet → placeholder
+    assert c.loadClustersFolder(run) is True
+    assert c.hasClusters and c.clusterCount >= 2
+    assert c.hasContent                           # island appears without tracks…
+    assert not c.hasRun                           # …but no trajectories were loaded
+    assert c._viewer._point_item is not None      # the scatter actually rendered
+
+
+def test_visualise_cluster_motion_recovered_from_tracks(tmp_path):
+    """When the analysis cluster_labels 'motion' column is wholesale 'Unmatched'
+    (the worker's loc↔track join failed), the controller re-derives per-loc
+    motion from the loaded tracks — so 'Colour by motion' shows real classes
+    instead of a uniform grey ('Unknown') blob."""
+    import os, numpy as np, pandas as pd
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    run = _make_run(tmp_path)
+    extras = os.path.join(run, "firefly_extras")
+    traj = pd.read_csv(os.path.join(extras, "cell1_trajectories.csv"))
+    diff = pd.read_csv(os.path.join(extras, "cell1_diffusion_summary.csv"))
+    pmotion = {int(p): m for p, m in zip(diff["particle"], diff["motion"])}
+    # cluster locs sit exactly on the track locs (px size defaults to 1.0 → the
+    # µm coord equals the pixel coord), but every motion is the worker sentinel.
+    pd.DataFrame({
+        "loc_index": np.arange(len(traj)),
+        "x_um": traj["x"].to_numpy(),
+        "y_um": traj["y"].to_numpy(),
+        "cluster_id": traj["particle"].to_numpy().astype(int),
+        "motion": ["Unmatched"] * len(traj),
+    }).to_csv(os.path.join(extras, "cell1_cluster_labels.csv"), index=False)
+
+    # Guard: clusters loaded WITHOUT tracks → nothing to derive from, stays grey.
+    c0 = VisualiseController()
+    assert c0.loadClustersFolder(run) is True
+    assert not c0._has_real_motion()
+
+    # With tracks loaded first, the controller recovers real motion classes.
+    c = VisualiseController()
+    assert c.loadRunFolder(run) is True
+    assert c.loadClustersFolder(run) is True
+    assert c._has_real_motion()
+    derived = [str(m) for m in c._cl_motion]
+    assert derived == [pmotion[int(p)] for p in traj["particle"]]
+    assert set(derived) == {"Brownian", "Immobile"}
+    # the scatter was painted with the motion palette, NOT collapsed to grey
+    pal = c._palette()
+    hexes = {col.name().lower() for col, _poly in c._viewer._point_item._groups}
+    assert pal["Brownian"].lower() in hexes
+    assert pal["Immobile"].lower() in hexes
+    assert pal["Unknown"].lower() not in hexes      # no all-grey fallback
+
+    # reverse order: clusters first (grey), then tracks → run-load recolours them
+    cr = VisualiseController()
+    assert cr.loadClustersFolder(run) is True
+    assert not cr._has_real_motion()                # no tracks yet
+    assert cr.loadRunFolder(run) is True            # tracks arrive → recolour
+    assert cr._has_real_motion()
+
+
 def test_visualise_superres_render(tmp_path):
     from firefly.ui.controllers.visualise_controller import VisualiseController
     c = VisualiseController()

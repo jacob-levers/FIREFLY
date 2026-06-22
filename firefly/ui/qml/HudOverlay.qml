@@ -53,7 +53,7 @@ Item {
         anchors.bottom: parent.bottom
         anchors.rightMargin: sc.sp6
         anchors.bottomMargin: sc.sp6
-        width: 168
+        width: 190
         height: col.implicitHeight + sc.sp5 * 2
         radius: sc.radius2xl
         color: Qt.rgba(0.05, 0.07, 0.10, 0.74)
@@ -123,11 +123,14 @@ Item {
                 }
             }
 
-            // cluster note
+            // cluster note — wrap inside the card so a long "Dominant motion:
+            // …" string can't overflow the fixed-width card past the screen edge
             Text {
                 visible: root.insp.mode === "cluster" && root.insp.note !== undefined
                 text: root.insp.note !== undefined ? root.insp.note : ""
                 color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                width: col.width
+                wrapMode: Text.WordWrap
             }
         }
     }

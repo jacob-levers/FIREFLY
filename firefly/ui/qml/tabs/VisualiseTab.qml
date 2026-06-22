@@ -205,10 +205,11 @@ Item {
                                 delegate: Rectangle {
                                     required property string modelData
                                     readonly property bool active: Vis.clusterColorMode === modelData
-                                    implicitWidth: 52; implicitHeight: 24; radius: sc.radiusMd
+                                    implicitWidth: cbLabel.implicitWidth + sc.sp3 * 2   // fit the label
+                                    implicitHeight: 24; radius: sc.radiusMd
                                     color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
                                     border.width: 1; border.color: active ? pal.ACC : pal.BORDER
-                                    Text { anchors.centerIn: parent; text: modelData
+                                    Text { id: cbLabel; anchors.centerIn: parent; text: modelData
                                            color: active ? pal.ACC : pal.TXT_MUTED; font.pixelSize: sc.textXs }
                                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                                 onClicked: Vis.clusterColorMode = modelData }
@@ -320,7 +321,7 @@ Item {
 
             ColumnLayout {
                 anchors.centerIn: parent
-                visible: !Vis.hasRun && root.onTab
+                visible: !Vis.hasContent && root.onTab
                 spacing: sc.sp3
                 Icon { name: "waypoints"; size: 40; color: pal.TXT_MUTED
                        Layout.alignment: Qt.AlignHCenter }
