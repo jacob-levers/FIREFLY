@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.76.3
+
+Critical fix — frozen Windows builds failed every analysis run.
+
+### Fixed
+
+- **Frozen builds: every single-file and HYPER-FLY run failed instantly with no
+  visible error.** The packaged app launched fine, but starting any run ended
+  immediately in "Analysis error — see log" with an empty log (and no Windows
+  crash report). Root cause: scipy ≥1.16 vendors `array_api_compat` (plus
+  `array_api_extra`, `packaging_version`) under `scipy._external`, and
+  PyInstaller's `collect_submodules("scipy")` does **not** recurse into it — so
+  `scipy._external.array_api_compat.numpy.fft` (pulled in transitively by
+  `scipy.ndimage` ← trackpy ← `sptpalm_analysis`) was absent from the bundle.
+  The analysis **worker** subprocess — the only process that imports the analysis
+  stack (the GUI deliberately avoids it) — therefore died on
+  `import sptpalm_analysis` with `ModuleNotFoundError` the instant a run began.
+  The spec now collects the vendored `scipy._external` / `sklearn.externals`
+  subtrees explicitly. (`sptpalm.spec`)
+- **Worker failures are now recorded on disk.** The analysis subprocess sent its
+  traceback only to the live in-app log (ephemeral, and not always shown), so a
+  failed run could leave no trace anywhere on disk. The worker now also writes
+  the traceback to `firefly_worker.log` and arms `faulthandler` (native-fault
+  dump to `firefly_worker_fault.log`), so a silent failure can never again be
+  undiagnosable. (`firefly/firefly_worker.py`)
+- **Super-resolution reconstruction PNG** silently failed on every run with a
+  `name 'np' is not defined` NameError (should be `_np`); it now saves correctly.
+  (`firefly/firefly_worker.py`)
+
+### Added
+
+- Headless self-test entry (`FIREFLY_SELFTEST=<input-file>`) that runs one
+  analysis through the real worker subprocess and records every message to
+  `selftest.log` — used to reproduce and verify packaging fixes on a frozen build
+  without driving the GUI. (`firefly/_selftest.py`, `run_firefly.py`)
+
 ## v2.76.0
 
 napari removed — bespoke Qt viewers; numpy 2 / Python 3.13.

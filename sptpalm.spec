@@ -32,6 +32,30 @@ hidden += collect_submodules("joblib")
 hidden += collect_submodules("aicspylibczi")
 hidden += collect_submodules("imagecodecs")
 
+# Vendored sub-packages under scipy._external / sklearn.externals.  scipy >=1.16
+# moved array_api_compat (+ array_api_extra, packaging_version) under
+# `scipy._external`, and collect_submodules("scipy") does NOT recurse into it —
+# so e.g. scipy._external.array_api_compat.numpy.fft (pulled in transitively by
+# scipy.ndimage <- trackpy <- sptpalm_analysis) is absent from the bundle.  The
+# result: the analysis WORKER dies on `import sptpalm_analysis` with
+# `ModuleNotFoundError` the instant a run starts, while the GUI — which never
+# imports the analysis stack (see firefly.ui._appversion) — launches fine.  That
+# "app opens, every single/HYPER-FLY run fails with no visible error" is exactly
+# the Windows-frozen failure this closes.  collect_submodules of the _external /
+# externals PARENT is itself flaky here (misses packaging_version / _numpydoc),
+# so collect each vendored subtree explicitly.
+for _vendored in (
+    "scipy._external.array_api_compat",
+    "scipy._external.array_api_extra",
+    "scipy._external._array_api_compat_vendor",
+    "scipy._external.packaging_version",
+    "sklearn.externals._numpydoc",
+):
+    try:
+        hidden += collect_submodules(_vendored)
+    except Exception:
+        pass
+
 # pingouin (two-way mixed ANOVA for the Compare tab) and its heavy deps.
 # Optional at runtime — fa_twoway guards the import — so only collect if
 # actually installed, to avoid inflating the bundle with missing stubs.

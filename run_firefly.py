@@ -36,6 +36,16 @@ import multiprocessing  # noqa: E402  (after the stream guard, intentionally)
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    # Headless self-test (diagnostics only): when FIREFLY_SELFTEST=<input-file> is
+    # set, run ONE analysis through the real firefly_worker.run_analysis subprocess
+    # and capture every queue message (incl. the ERROR traceback the GUI may not
+    # surface) to <app-data>/FIREFLY/logs/selftest.log, then exit.  Reached only by
+    # the MAIN process — freeze_support() already ran-and-exited any spawn child
+    # above, so worker/pool children never enter this branch.  No-op on normal
+    # launches (env var unset).
+    if os.environ.get("FIREFLY_SELFTEST"):
+        from firefly._selftest import run_selftest
+        raise SystemExit(run_selftest(os.environ["FIREFLY_SELFTEST"]))
     # CI/packaging smoke runs the frozen app on a GPU-less runner where the Qt
     # Quick scene graph can't create a hardware (D3D/Metal) context and hangs at
     # first paint.  When the smoke handshake is active (SPTPALM_READY_MARKER set)

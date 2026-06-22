@@ -11,7 +11,12 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.0"
+__version__ = "2.76.3"
+# v2.76.3 — CRITICAL frozen-build fix: bundle scipy's vendored scipy._external
+#   (array_api_compat/.numpy.fft etc.) so the analysis worker no longer dies on
+#   `import sptpalm_analysis` with ModuleNotFoundError the instant a run starts;
+#   + durable worker crash logging (firefly_worker.log/faulthandler) + super-res
+#   `np`→`_np` NameError fix.  See sptpalm.spec / CHANGELOG.
 # v2.76.0 — napari REMOVED: the interactive viewers (Visualise tab + ROI editor)
 #   are now bespoke Qt-only widgets (QGraphicsView/QImage/QPainter + numpy) —
 #   no napari, no pyqtgraph, no vispy.  Drops napari + its dependency tree and

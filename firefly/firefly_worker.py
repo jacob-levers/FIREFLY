@@ -2608,7 +2608,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 blur_nm=float(p.get("superres_blur_nm", 20.0) or 20.0),
                 field_px=_field)
             if _sr.size > 1 and (_sr > 0).any():
-                _vmax = max(float(np.percentile(_sr[_sr > 0], 99.5)), 1e-9)
+                _vmax = max(float(_np.percentile(_sr[_sr > 0], 99.5)), 1e-9)
                 os.makedirs(fig_dir, exist_ok=True)
                 _sr_path = os.path.join(fig_dir, f"{stem}_superres.png")
                 _mpimg.imsave(_sr_path, _sr, cmap="inferno",
@@ -2777,6 +2777,23 @@ def run_analysis(params: dict, msg_queue, cancel_event):
     except Exception:
         pass
 
+    # Diagnostics: dump native faults (access violation / abort / segfault) to a
+    # durable file BEFORE the process dies.  A C-level crash in a bundled DLL
+    # (torch / numba-llvm / Qt / numpy) bypasses Python's except blocks entirely,
+    # so without this it leaves NO trace — the "worker exits, no traceback, no WER"
+    # failure mode.  `_fault_fh` is a local: it stays referenced for the whole
+    # worker lifetime (this function is the process entry point), which faulthandler
+    # requires to write into it when the fatal signal fires.
+    try:
+        import faulthandler as _fhmod
+        from firefly import crash_reporter as _crf
+        _fault_fh = open(os.path.join(_crf.log_dir(), "firefly_worker_fault.log"),
+                         "a", buffering=1, encoding="utf-8")
+        _fault_fh.write(f"\n--- worker pid={os.getpid()} faulthandler armed ---\n")
+        _fhmod.enable(file=_fault_fh, all_threads=True)
+    except Exception:
+        pass
+
     def _log(msg: str):       _put_reliable(msg_queue, (MsgKind.LOG, msg))
     def _prog(pct, msg):      _safe_put(msg_queue, (MsgKind.PROGRESS, (int(pct), str(msg))))
 
@@ -2811,6 +2828,15 @@ def run_analysis(params: dict, msg_queue, cancel_event):
             msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
             _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
+            # Persist the traceback to disk too — the queue ERROR only reaches the
+            # live GUI log (ephemeral); a durable on-disk record is what makes a
+            # frozen-app failure diagnosable after the fact.
+            try:
+                from firefly import crash_reporter as _crf2
+                _crf2.get_logger().error(
+                    "Worker analysis failed:\n%s", traceback.format_exc())
+            except Exception:
+                pass
             _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
             # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
             # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
@@ -3059,6 +3085,15 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             msg_queue.put((MsgKind.LOG, "\n── Stopped by user ──"))
             _put_reliable(msg_queue, (MsgKind.STOPPED, None))
         else:
+            # Persist the traceback to disk too — the queue ERROR only reaches the
+            # live GUI log (ephemeral); a durable on-disk record is what makes a
+            # frozen-app failure diagnosable after the fact.
+            try:
+                from firefly import crash_reporter as _crf2
+                _crf2.get_logger().error(
+                    "Worker analysis failed:\n%s", traceback.format_exc())
+            except Exception:
+                pass
             _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
             # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
             # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
@@ -3210,6 +3245,15 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
             msg_queue.put((MsgKind.LOG, f"\n  {exc}"))
             _put_reliable(msg_queue, (MsgKind.COMPARE_ERROR, str(exc)))
         else:
+            # Persist the traceback to disk too — the queue ERROR only reaches the
+            # live GUI log (ephemeral); a durable on-disk record is what makes a
+            # frozen-app failure diagnosable after the fact.
+            try:
+                from firefly import crash_reporter as _crf2
+                _crf2.get_logger().error(
+                    "Worker analysis failed:\n%s", traceback.format_exc())
+            except Exception:
+                pass
             _put_reliable(msg_queue, (MsgKind.ERROR, traceback.format_exc()))
             # Exit NON-ZERO so the subprocess EXIT CODE reflects the failure.  If
             # the ERROR above is dropped (GUI frozen > the _put_reliable timeout),
