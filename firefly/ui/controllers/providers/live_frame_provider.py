@@ -17,9 +17,11 @@ from PySide6.QtQuick import QQuickImageProvider
 
 
 def render_frame(arr, xs=None, ys=None,
-                 marker_rgb=(88, 166, 255)) -> QImage:
+                 marker_rgb=(57, 255, 110)) -> QImage:
     """Render a float32 frame to an RGB QImage with robust contrast + detection
-    markers.  ``xs``/``ys`` are detection centres in pixel coords (optional)."""
+    markers.  ``xs``/``ys`` are detection centres in pixel coords (optional).
+    Markers are a bright spring-green (high contrast on the grayscale frame —
+    far more legible than the old accent-blue, which washed out over mid-grays)."""
     a = np.asarray(arr, dtype=np.float32)
     if a.ndim != 2 or a.size == 0:
         return QImage()
