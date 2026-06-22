@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.76.6
+
+UI: a post-run stats panel, live HYPER-FLY tile previews, and two visibility
+fixes in the run cockpit.
+
+### Added
+
+- **Post-analysis run-summary panel.** When a single-file run finishes, the
+  result card expands into an animated metrics grid — trajectories,
+  localisations, median D, median α, mobile fraction, localisation precision,
+  clusters, frames — read straight from the run's summary. Hero metrics in
+  accent; each tile uses the staggered FadeRise entrance and counts up from 0;
+  metrics the run didn't produce show an em dash. Replays each run.
+- **HYPER-FLY tile previews.** Worker tiles were blank during localisation. Each
+  running tile now shows that file's max projection (sampled, loaded
+  off-thread, cached + thumbnailed) with a scanner beam sweeping up and down; a
+  live preview frame still takes over if one streams.
+
+### Fixed
+
+- **The Process log + live mass histogram never populated during a run.** The
+  cockpit's signal handlers were bound to the wrong controller (`Analysis`, the
+  workspace, instead of `Process`, the run cockpit) — a leftover from the
+  cockpit→"Process" rename — so `logLine` and `massChunk` never arrived. The log
+  now streams the worker output live and the "Localisation mass" histogram fills
+  in as localisations accumulate.
+
+### Changed
+
+- **Brighter live-detection markers.** The detection dots are now a bright
+  spring-green instead of accent-blue, which washed out over mid-gray pixels.
+
 ## v2.76.5
 
 UI quality-of-life: the in-app updater actually installs now, an update pill

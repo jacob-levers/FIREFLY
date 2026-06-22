@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.5"
+__version__ = "2.76.6"
+# v2.76.6 — UI: post-analysis run-summary stats panel (animated); HYPER-FLY tiles
+#           show each file's max projection + a sweeping scanner; FIX Process log
+#           + minmass histogram never populating (wrong signal target); brighter
+#           green live-detection markers.
 # v2.76.5 — UI: real in-app update install + header update pill + auto-check on
 #           launch; clean-slate startup (no preloaded file); Analysis design card
 #           + HYPER-FLY tile error reporting.
