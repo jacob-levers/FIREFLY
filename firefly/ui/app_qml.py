@@ -51,6 +51,7 @@ from firefly.ui.controllers.batch_controller import BatchController
 from firefly.ui.controllers.hyperfly_controller import (HyperflyController,
                                                         HfWorkerFrameProvider)
 from firefly.ui.controllers.updates_controller import UpdatesController
+from firefly.ui.controllers.cuda_controller import CudaController
 from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
 from firefly.ui.controllers.providers.icon_provider import IconImageProvider
 from firefly.ui.controllers.providers.live_frame_provider import LiveFrameProvider
@@ -149,6 +150,7 @@ def build_main_window(app: QtWidgets.QApplication):
     # In-app update: once the swap-and-relaunch helper is staged, the app MUST
     # quit so the helper can replace the running bundle and relaunch it.
     updates.quitForUpdate.connect(app.quit)
+    cuda = CudaController()        # Preferences ▸ GPU acceleration (CUDA installer)
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle("FIREFLY")
@@ -189,6 +191,7 @@ def build_main_window(app: QtWidgets.QApplication):
     ctx.setContextProperty("Batch", batchc)
     ctx.setContextProperty("Hyperfly", hyperfly)
     ctx.setContextProperty("Updates", updates)
+    ctx.setContextProperty("Cuda", cuda)
     ctx.setContextProperty("appVersion", __version__)
     qw.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     qw.setSource(QUrl.fromLocalFile(os.path.join(_QML_DIR, "Main.qml")))
@@ -284,7 +287,7 @@ def build_main_window(app: QtWidgets.QApplication):
     # them while QML still binds to them (and the islands while they're hidden).
     win._firefly_ctx = (theme, appc, settings, importc, analysis, visualise,
                         roi, embed, results, comparec, sidebar, presets, batchc,
-                        updates, qw, hud, viewer_w, resizer, crash_ui)
+                        updates, cuda, qw, hud, viewer_w, resizer, crash_ui)
     return win, qw
 
 

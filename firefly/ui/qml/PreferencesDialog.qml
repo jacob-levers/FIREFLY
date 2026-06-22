@@ -34,13 +34,15 @@ Item {
         { id: "appearance", icon: "palette",        label: "Appearance", sub: "Theme & accent" },
         { id: "figures",    icon: "chart-spline",   label: "Figures",    sub: "Plots & export" },
         { id: "glossary",   icon: "quote",          label: "Glossary",   sub: "Stats & analysis terms" },
+        { id: "gpu",        icon: "zap",            label: "GPU",        sub: "CUDA acceleration" },
         { id: "updates",    icon: "download-cloud", label: "Updates",    sub: "Version & channel" }
     ]
-    readonly property var sectionTitle: ({ appearance: "Appearance", figures: "Figures", glossary: "Glossary", updates: "Updates" })
+    readonly property var sectionTitle: ({ appearance: "Appearance", figures: "Figures", glossary: "Glossary", gpu: "GPU acceleration", updates: "Updates" })
     readonly property var sectionSub: ({
         appearance: "Choose how FIREFLY looks — its theme and accent colour.",
         figures: "Control the graphs FIREFLY renders and how they are exported.",
         glossary: "Plain-language definitions of the statistics and analysis terms.",
+        gpu: "Install or update the CUDA backend so analysis runs on your NVIDIA GPU.",
         updates: "Manage releases from GitHub and the update channel." })
     readonly property var themeTiles: [
         { name: "Dark",   sub: "GitHub-dark · default", bg: "#0d1117", panel: "#161b22", line: "#30363d", text: "#e6edf3", muted: "#8b949e" },
@@ -336,6 +338,7 @@ Item {
                             sourceComponent: root.section === "appearance" ? appearanceView
                                            : root.section === "figures" ? figuresView
                                            : root.section === "glossary" ? glossaryView
+                                           : root.section === "gpu" ? gpuView
                                            : updatesView
                         }
                     }
@@ -792,6 +795,127 @@ Item {
                     }
                 }
                 Item { Layout.fillWidth: true; Layout.preferredHeight: sc.sp8 }
+            }
+        }
+    }
+
+    // ════════════════════════ GPU ACCELERATION (CUDA) ═══════════════════════
+    Component {
+        id: gpuView
+        ColumnLayout {
+            spacing: sc.sp5
+            Component.onCompleted: Cuda.refresh()    // probe GPU + sidecar (off-thread)
+
+            Group {
+                title: "GPU backend"
+                RowLayout {
+                    Layout.fillWidth: true; spacing: sc.sp4
+                    Rectangle {
+                        Layout.preferredWidth: 44; Layout.preferredHeight: 44; radius: sc.radius2xl
+                        color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
+                        Icon { anchors.centerIn: parent; name: "zap"; size: 22; color: pal.ACC }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true; Layout.preferredWidth: 0; spacing: 2
+                        Text {
+                            Layout.fillWidth: true; elide: Text.ElideRight
+                            text: !Cuda.checked ? "Checking for a GPU…"
+                                : Cuda.gpuName !== "" ? Cuda.gpuName
+                                : Cuda.supported ? "No NVIDIA GPU detected"
+                                : "Apple GPU — Metal (MPS)"
+                            color: pal.TXT; font.pixelSize: sc.textMd; font.weight: Font.DemiBold
+                        }
+                        Text {
+                            Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            text: !Cuda.checked ? "Probing nvidia-smi + the torch sidecar…"
+                                : !Cuda.supported ? "macOS uses the built-in Metal (MPS) backend — no CUDA install is needed."
+                                : Cuda.installed ? ("CUDA torch " + Cuda.installedVersion + " installed — analysis runs on the GPU.")
+                                : ("Using the bundled CPU torch " + (Cuda.bundledVersion || "—") + " — install CUDA below to use the GPU.")
+                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                        }
+                    }
+                    Badge {
+                        visible: Cuda.checked && Cuda.supported
+                        text: Cuda.installed ? "GPU ready" : (Cuda.gpuName !== "" ? "CPU only" : "no GPU")
+                        tone: Cuda.installed ? pal.SUCCESS : pal.TXT_MUTED; dot: true
+                    }
+                }
+            }
+
+            Group {
+                visible: Cuda.checked && Cuda.supported && Cuda.gpuName !== ""
+                title: Cuda.installed ? "Update or remove" : "Install CUDA acceleration"
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: sc.sp3
+                    Text {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                        text: Cuda.installed
+                            ? "A CUDA torch build is installed. Reinstall to pull the newest matching CUDA wheel, or remove it to fall back to the bundled CPU build."
+                            : "Downloads the CUDA build of PyTorch matched to your GPU + interpreter so detection runs on the GPU. ~2–3 GB; a restart is needed afterwards."
+                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                    }
+
+                    // download / extract progress
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: Cuda.busy
+                        spacing: sc.sp2
+                        Rectangle {
+                            Layout.fillWidth: true; implicitHeight: 8; radius: 4; clip: true
+                            color: pal.PANEL; border.width: 1; border.color: pal.BORDER
+                            Rectangle {
+                                height: parent.height; radius: 4
+                                visible: Cuda.progress >= 0
+                                width: Math.max(0, Math.min(1, Cuda.progress)) * parent.width
+                                gradient: Gradient {
+                                    orientation: Gradient.Horizontal
+                                    GradientStop { position: 0.0; color: pal.SUCCESS }
+                                    GradientStop { position: 1.0; color: pal.ACC }
+                                }
+                                Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
+                            }
+                            IndeterminateShimmer { active: Cuda.busy && Cuda.progress < 0 }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: sc.sp3
+                            Text { Layout.fillWidth: true; text: Cuda.status || "Working…"
+                                   color: pal.TXT_MUTED; font.pixelSize: sc.textXs; elide: Text.ElideRight }
+                            Text { visible: Cuda.progress >= 0
+                                   text: Math.round(Cuda.progress * 100) + "%"
+                                   color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo" }
+                        }
+                    }
+
+                    Alert {
+                        Layout.fillWidth: true
+                        visible: Cuda.error !== ""
+                        severity: "warn"
+                        text: Cuda.error
+                    }
+                    Alert {
+                        Layout.fillWidth: true
+                        visible: !Cuda.busy && Cuda.status.indexOf("restart") >= 0
+                        severity: "success"
+                        text: Cuda.status
+                    }
+
+                    RowLayout {
+                        spacing: sc.sp3
+                        visible: !Cuda.busy
+                        Button { variant: "primary"
+                                 text: Cuda.installed ? "Reinstall / update" : "Install CUDA"
+                                 icon: "download"; onClicked: Cuda.install() }
+                        Button { variant: "secondary"; text: "Remove"; icon: "trash-2"
+                                 visible: Cuda.installed; onClicked: Cuda.uninstall() }
+                        Button { variant: "ghost"; text: "Re-check"; icon: "refresh-cw"
+                                 onClicked: Cuda.refresh() }
+                    }
+                    RowLayout {
+                        visible: Cuda.busy
+                        Button { variant: "secondary"; text: "Cancel"; icon: "x"
+                                 onClicked: Cuda.cancel() }
+                    }
+                }
             }
         }
     }
