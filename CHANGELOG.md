@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.76.9
+
+A critical updater fix plus a batch of settings/Preferences improvements.
+
+### Fixed
+
+- **The in-app updater never saw new releases.** Frozen builds ship no usable CA
+  store, so HTTPS certificate verification failed for *every* request — silently
+  breaking the update check (it returned nothing → always "Up to date"), the
+  in-app update download, and the CUDA-wheel download. The certifi default-HTTPS
+  setup lived in the deleted Widgets entry point and was never ported to the QML
+  app. Now restored. **This is the first build with a working updater** — install
+  it manually once from the Releases page, then in-app updates work thereafter.
+- **A failed update check now says "Couldn't check"** (with the reason — offline,
+  proxy, or GitHub rate-limit) instead of falsely reporting "Up to date".
+- **Parameter tooltips are back.** Hovering a sidebar parameter shows its help
+  again — the QML rewrite had shipped every field with empty tooltip text.
+- **The Figures preview is actually live.** Changing the figure theme, colormap,
+  etc. now updates the preview immediately (its bindings were only refreshed by
+  "Restore defaults").
+- **Font size and Interface density now do something.** They scale the UI's type
+  and spacing live.
+
+### Added
+
+- **Colour-blind motion-class palette** selectable in Preferences ▸ Figures — the
+  Visualise viewer + legend switch to the Okabe–Ito set.
+
+### Changed
+
+- **AMOLED theme applies properly.** The dark "media well" backgrounds (live
+  detection, HYPER-FLY tiles, ROI stage, etc.) now follow the theme (new `WELL`
+  palette token) and go pure-black under AMOLED instead of staying dark grey.
+- **The ROI viewer's detection threshold syncs to the sidebar** and is now clearly
+  labelled "Threshold (minmass)".
+
 ## v2.76.8
 
 Visualise cluster controls, a detection-threshold preview in the ROI viewer, and

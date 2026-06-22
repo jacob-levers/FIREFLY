@@ -11,7 +11,14 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.8"
+__version__ = "2.76.9"
+# v2.76.9 — FIX the auto-updater in frozen builds (no CA store → HTTPS silently
+#           failed → always 'Up to date'); failed checks now say 'Couldn't check'.
+#           Settings UX: parameter tooltips restored (all 52); the Figures preview
+#           is actually live; font-size + interface-density now scale the UI; a
+#           colour-blind motion palette is selectable; the AMOLED theme applies
+#           to the media wells (new WELL token); ROI detection threshold syncs to
+#           the sidebar.  FIRST build with a working in-app updater.
 # v2.76.8 — Visualise: close the DBSCAN cluster overlay (LAYERS toggle) + a
 #           "Cluster motion" colour mode (tint each cluster by dominant motion).
 #           Preview/ROI viewer: a detection-threshold (minmass) preview — toggle
