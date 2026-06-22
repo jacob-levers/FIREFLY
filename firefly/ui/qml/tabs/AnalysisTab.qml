@@ -297,6 +297,7 @@ Item {
                     Layout.maximumWidth: 580
                     spacing: root.gGap
                     ConditionsCard {}
+                    DesignCard {}
                     SettingsCard {}
                 }
             }
@@ -1189,6 +1190,98 @@ Item {
     }
 
     // ════ settings card ════
+    // ── experimental design + stats recommendations (ported from the Widgets
+    //    "design & recommended settings" panel) ─────────────────────────────
+    component DesignCard: WCard {
+        Layout.fillWidth: true
+        visible: Analysis.designSummary.ready
+        title: "Experimental design"
+        ColumnLayout {
+            width: parent.width
+            spacing: sc.sp5
+
+            // ── 1 · your experimental design ──
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: sc.sp3
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: sc.sp2
+                    Repeater {
+                        model: Analysis.designSummary.groups
+                        delegate: Rectangle {
+                            required property var modelData
+                            radius: sc.radiusPill; height: 26
+                            width: gRow.implicitWidth + sc.sp4 * 2
+                            color: pal.PANEL_ALT; border.width: 1; border.color: pal.BORDER
+                            RowLayout {
+                                id: gRow; anchors.centerIn: parent; spacing: sc.sp2
+                                Rectangle { width: 8; height: 8; radius: 4
+                                            color: modelData.color || pal.ACC
+                                            Layout.alignment: Qt.AlignVCenter }
+                                Text { text: modelData.name; color: pal.TXT
+                                       font.pixelSize: sc.textSm; font.bold: true }
+                                Text { text: "n=" + modelData.n; color: root.faint
+                                       font.pixelSize: sc.textXs; font.family: "Menlo" }
+                            }
+                        }
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    text: Analysis.designSummary.description
+                    color: pal.TXT_MUTED; font.pixelSize: sc.textSm; lineHeight: 1.3
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: pal.BORDER }
+
+            // ── 2 · recommended for your data ──
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: sc.sp3
+                Text { text: "Recommended for your data"; color: pal.TXT_MUTED
+                       font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.8 }
+                Repeater {
+                    model: Analysis.recommendations
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property color tone: modelData.tone === "ok" ? pal.SUCCESS
+                                                     : modelData.tone === "warn" ? pal.WARN : pal.ACC
+                        Layout.fillWidth: true
+                        radius: sc.radiusMd
+                        color: pal.PANEL_ALT
+                        // left accent stripe (full-side border → square corners on that edge)
+                        Rectangle { anchors.left: parent.left; anchors.top: parent.top
+                                    anchors.bottom: parent.bottom; width: 2; radius: 1; color: tone }
+                        implicitHeight: recRow.implicitHeight + sc.sp4 * 2
+                        RowLayout {
+                            id: recRow
+                            anchors.fill: parent
+                            anchors.leftMargin: sc.sp5; anchors.rightMargin: sc.sp5
+                            anchors.topMargin: sc.sp4; anchors.bottomMargin: sc.sp4
+                            spacing: sc.sp4
+                            Icon {
+                                name: modelData.tone === "ok" ? "circle-check"
+                                    : modelData.tone === "warn" ? "triangle-alert" : "info"
+                                size: 15; color: tone; Layout.alignment: Qt.AlignTop
+                            }
+                            Text {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: modelData.text; color: pal.TXT
+                                font.pixelSize: sc.textSm; lineHeight: 1.3
+                            }
+                        }
+                    }
+                }
+            }
+
+            Button {
+                Layout.alignment: Qt.AlignRight
+                variant: "primary"; text: "Apply recommended settings"; icon: "sparkles"
+                onClicked: Analysis.applyRecommended()
+            }
+        }
+    }
+
     component SettingsCard: WCard {
         Layout.fillWidth: true
         title: "Comparison settings"
@@ -1196,27 +1289,8 @@ Item {
         ColumnLayout {
             width: parent.width
             spacing: sc.sp8
-            // recommend
-            Rectangle {
-                Layout.fillWidth: true
-                color: pal.PANEL_ALT; radius: 9; border.width: 1; border.color: pal.BORDER
-                implicitHeight: recrow.implicitHeight + sc.sp5 * 2
-                RowLayout {
-                    id: recrow
-                    anchors.fill: parent; anchors.margins: sc.sp5; spacing: sc.sp4
-                    Rectangle {
-                        width: 28; height: 28; radius: 7
-                        color: Qt.rgba(0.345, 0.651, 1.0, 0.12)
-                        Icon { anchors.centerIn: parent; name: "sparkles"; size: 15; color: pal.ACC }
-                    }
-                    ColumnLayout {
-                        Layout.fillWidth: true; spacing: 1
-                        Text { text: "Recommend settings"; color: pal.TXT; font.pixelSize: 12; font.bold: true }
-                        Text { Layout.fillWidth: true; text: Analysis.recommendWhy; color: root.faint; font.pixelSize: 10; elide: Text.ElideRight }
-                    }
-                    Button { variant: "primary"; text: "Apply"; onClicked: Analysis.applyRecommended() }
-                }
-            }
+            // (the "Recommend settings" affordance now lives in the richer
+            //  DesignCard above — kept DRY to avoid two Apply buttons)
             // presets
             RowLayout {
                 Layout.fillWidth: true; spacing: sc.sp4

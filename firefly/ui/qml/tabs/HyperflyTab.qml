@@ -157,10 +157,18 @@ Flickable {
                     }
                 }
                 Text {
-                    anchors.centerIn: parent
+                    anchors.fill: parent
+                    anchors.margins: sc.sp4
                     visible: !(tile.item && tile.item.hasFrame)
-                    text: tile.st === "idle" ? "idle" : "…"
-                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere; elide: Text.ElideRight
+                    maximumLineCount: 4
+                    text: tile.st === "failed"
+                          ? ((tile.item && tile.item.error) ? tile.item.error : "failed")
+                          : tile.st === "idle" ? "idle" : "…"
+                    color: tile.st === "failed" ? pal.DANGER : pal.TXT_MUTED
+                    font.pixelSize: tile.st === "failed" ? 10 : sc.textXs
+                    font.family: tile.st === "failed" ? "Menlo" : Qt.application.font.family
                 }
             }
 

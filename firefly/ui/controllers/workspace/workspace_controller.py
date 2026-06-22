@@ -1557,6 +1557,77 @@ class AnalysisWorkspaceController(QObject):
     def conditionCount(self):
         return len(self._conditions)
 
+    # ── experimental-design summary + stats recommendations (the "design &
+    #    recommended settings" panel ported from the Widgets UI) ──────────────
+    def _design_info(self):
+        """(groups-by-name, sorted timepoints, factorial?) for the design panel.
+        Groups are the GROUP factor (distinct condition names) with replicates
+        pooled across time points; factorial = ≥2 names AND ≥2 time points."""
+        shown = self._shown()
+        phases = sorted({c.phase for c in shown if c.phase not in ("—", "")})
+        by_name: dict = {}
+        for c in shown:
+            e = by_name.setdefault(c.name, {"name": c.name, "n": 0, "color": c.color})
+            e["n"] += len(c.active())
+        groups = list(by_name.values())
+        factorial = len(by_name) >= 2 and len(phases) >= 2
+        return groups, phases, factorial
+
+    @Property("QVariantMap", notify=resultsChanged)
+    def designSummary(self):
+        groups, phases, factorial = self._design_info()
+        n = len(groups)
+        if factorial:
+            desc = (f"Paired design — {n} group(s) × {len(phases)} time points "
+                    f"({', '.join(phases)}). Cells are matched across time points "
+                    f"by folder name.")
+        elif n >= 2:
+            desc = f"Unpaired — {n} conditions compared independently."
+        else:
+            desc = "Add at least two conditions (with run folders) to compare."
+        return {"groups": groups, "timepoints": phases, "factorial": factorial,
+                "ready": n >= 2, "description": desc}
+
+    @Property("QVariantList", notify=resultsChanged)
+    def recommendations(self):
+        groups, phases, factorial = self._design_info()
+        n = len(groups)
+        if n < 2:
+            return []
+        min_n = min(g["n"] for g in groups)
+        n_metrics = len(wd.PANEL_METRIC)
+        recs = []
+        # 1. replicate adequacy → normality test / Auto default
+        if min_n >= 12:
+            recs.append({"tone": "ok", "text":
+                f"{min_n}+ replicates per group — enough for the normality test to "
+                f"choose sensibly. Auto is a good default."})
+        elif min_n >= 3:
+            recs.append({"tone": "info", "text":
+                f"{min_n} replicates in the smallest group — Auto picks a sensible "
+                f"test; more would let the normality check decide."})
+        else:
+            recs.append({"tone": "warn", "text":
+                f"Only {min_n} replicate(s) in the smallest group — results are "
+                f"exploratory; a non-parametric test is safer."})
+        # 2. design → test choice
+        if factorial:
+            recs.append({"tone": "info", "text":
+                "Paired design detected (time points set) → a two-way mixed ANOVA "
+                "(Greenhouse–Geisser) tests the group × time interaction."})
+        elif n > 2:
+            recs.append({"tone": "info", "text":
+                f"Comparing {n} groups → Kruskal–Wallis with post-hoc pairwise tests."})
+        else:
+            recs.append({"tone": "info", "text":
+                "Two groups → Mann–Whitney U (a t-test if both look normal under Auto)."})
+        # 3. multiple metrics → family-wise correction
+        if n_metrics > 1:
+            recs.append({"tone": "info", "text":
+                f"You're comparing {n_metrics} metrics, so family-wise correction "
+                f"across metrics is recommended to keep false positives in check."})
+        return recs
+
     @Property("QStringList", notify=conditionsChanged)
     def groupLabels(self):
         """Current condition names — populates the Dunnett control-group picker."""

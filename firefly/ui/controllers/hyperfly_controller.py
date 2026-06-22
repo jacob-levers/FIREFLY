@@ -27,7 +27,7 @@ class HfWorkerModel(QAbstractListModel):
     """One row per HYPER-FLY worker slot; reads the owner's live slot state."""
 
     _ROLES = ["slot", "stem", "state", "pct", "stage", "locs", "tracks",
-              "frameToken", "hasFrame"]
+              "frameToken", "hasFrame", "error"]
 
     def __init__(self, owner):
         super().__init__(owner)
@@ -115,14 +115,14 @@ class HyperflyController(QObject):
 
     def _idle_slot(self):
         return {"file": None, "stem": "", "state": "idle", "pct": 0,
-                "stage": "", "locs": 0, "tracks": 0, "frame_token": 0}
+                "stage": "", "locs": 0, "tracks": 0, "frame_token": 0, "error": ""}
 
     def _row_dict(self, row):
         d = self._slots[row]
         return {"slot": row + 1, "stem": d["stem"], "state": d["state"],
                 "pct": d["pct"], "stage": d["stage"], "locs": d["locs"],
                 "tracks": d["tracks"], "frameToken": d["frame_token"],
-                "hasFrame": row in self._frames}
+                "hasFrame": row in self._frames, "error": d.get("error", "")}
 
     # ── lifecycle (called by BatchController) ─────────────────────────────
     @Slot(int)
@@ -190,6 +190,7 @@ class HyperflyController(QObject):
             d["tracks"] = int(payload.get("n_tracks") or d["tracks"])
         elif state == "failed":
             d["state"] = "failed"
+            d["error"] = str(payload.get("error") or "")[:300]
         if payload.get("stem"):
             d["stem"] = str(payload["stem"])
         if payload.get("pct") is not None:
