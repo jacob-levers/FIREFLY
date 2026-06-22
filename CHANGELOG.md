@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.76.10
+
+Visualise cluster-map fixes.
+
+### Fixed
+
+- **"Colour by motion" no longer renders clusters as a uniform grey blob.** Every
+  cluster localisation was being tagged `"Unmatched"` (the analysis loc↔track join
+  came up empty), which collapsed to the Unknown-class grey. The controller now
+  re-derives each loc's motion class from the loaded run's tracks by coordinate
+  join — but only when the analysis column has no real classes, so it can never
+  make a good column worse. Falls back to per-cluster ID colours when there's no
+  motion data at all, instead of grey.
+- **A cluster map opens on its own.** Loading a cluster map no longer requires
+  loading trajectories first — the viewer now surfaces for tracks *or* a cluster
+  map, and fits the view to the scatter.
+- **The cluster map is no longer laggy.** The scatter was antialiasing every dot
+  on each pan/zoom repaint (up to one draw group per cluster in ID mode);
+  antialiasing is now disabled for the scatter, matching the tracks-tail layer.
+- **The cluster-info popup no longer runs off the screen.** A long "Dominant
+  motion: …" note now wraps inside the inspector card instead of overflowing the
+  fixed-width card past the viewer edge.
+- **Dark theme no longer shows AMOLED near-black in some cards.** The Analysis-tab
+  condition cards / drop zone are recessed to the theme's proper dark shade again.
+- **The cluster "Colour by" chips no longer overlap.** They size to their labels.
+
 ## v2.76.9
 
 A critical updater fix plus a batch of settings/Preferences improvements.

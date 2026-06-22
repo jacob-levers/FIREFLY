@@ -11,7 +11,12 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.9"
+__version__ = "2.76.10"
+# v2.76.10 — Visualise cluster-map fixes: colour-by-motion now works (per-loc
+#           motion is re-derived from the loaded tracks when the analysis column
+#           is wholesale "Unmatched"); a cluster map opens standalone without
+#           loading trajectories; pan/zoom is no longer laggy (scatter AA off);
+#           the cluster-info popup wraps instead of running off-screen.
 # v2.76.9 — FIX the auto-updater in frozen builds (no CA store → HTTPS silently
 #           failed → always 'Up to date'); failed checks now say 'Couldn't check'.
 #           Settings UX: parameter tooltips restored (all 52); the Figures preview
