@@ -16,21 +16,36 @@ from PyInstaller.utils.hooks import (
 import os
 import sys
 
+
+def _collect_no_tests(pkg):
+    """collect_submodules(pkg) MINUS test subpackages.
+
+    The scientific wheels ship large ``*.tests.*`` trees (pandas alone ~1,100
+    modules; ~2,300 across pandas/scipy/sklearn/statsmodels/numpy) that
+    PyInstaller would otherwise analyse AND bundle into the onefile — code never
+    imported at run time, bloating both the .exe and the build.  Drops only the
+    ``tests`` package; ``testing`` utilities (e.g. numpy.testing, which some
+    libraries import at run time) are deliberately KEPT.
+    """
+    return collect_submodules(pkg, filter=lambda n: "tests" not in n.split("."))
+
+
 # ── Hidden imports ───────────────────────────────────────────────────────────
 hidden = []
 
 # Scientific Python — collect every submodule because lazy imports under
-# numpy._core / pandas._libs / scipy.* are missed by static analysis.
-hidden += collect_submodules("numpy")
-hidden += collect_submodules("pandas")
-hidden += collect_submodules("trackpy")
-hidden += collect_submodules("scipy")
-hidden += collect_submodules("skimage")
-hidden += collect_submodules("sklearn")
-hidden += collect_submodules("matplotlib")
-hidden += collect_submodules("joblib")
-hidden += collect_submodules("aicspylibczi")
-hidden += collect_submodules("imagecodecs")
+# numpy._core / pandas._libs / scipy.* are missed by static analysis.  No-tests
+# variant: the wheels' bundled `*.tests.*` trees are never imported at run time.
+hidden += _collect_no_tests("numpy")
+hidden += _collect_no_tests("pandas")
+hidden += _collect_no_tests("trackpy")
+hidden += _collect_no_tests("scipy")
+hidden += _collect_no_tests("skimage")
+hidden += _collect_no_tests("sklearn")
+hidden += _collect_no_tests("matplotlib")
+hidden += _collect_no_tests("joblib")
+hidden += _collect_no_tests("aicspylibczi")
+hidden += _collect_no_tests("imagecodecs")
 
 # Vendored sub-packages under scipy._external / sklearn.externals.  scipy >=1.16
 # moved array_api_compat (+ array_api_extra, packaging_version) under
@@ -62,7 +77,7 @@ for _vendored in (
 for _opt in ("pingouin", "statsmodels", "pandas_flavor", "outdated"):
     try:
         __import__(_opt)
-        hidden += collect_submodules(_opt)
+        hidden += _collect_no_tests(_opt)
     except Exception:
         pass
 

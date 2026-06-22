@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.3"
+__version__ = "2.76.4"
+# v2.76.4 — packaging: drop bundled `*.tests.*` trees (~2,300 modules across
+#   pandas/scipy/sklearn/statsmodels/numpy) from the onefile via a no-tests
+#   collect_submodules filter — smaller .exe + faster build, no runtime change.
 # v2.76.3 — CRITICAL frozen-build fix: bundle scipy's vendored scipy._external
 #   (array_api_compat/.numpy.fft etc.) so the analysis worker no longer dies on
 #   `import sptpalm_analysis` with ModuleNotFoundError the instant a run starts;

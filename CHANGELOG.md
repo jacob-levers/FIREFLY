@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.76.4
+
+Packaging — smaller onefile, faster build.
+
+### Changed
+
+- **Stopped bundling the scientific wheels' test suites into the onefile.**
+  `collect_submodules("pandas"/"scipy"/"sklearn"/"statsmodels"/"numpy"/…)` was
+  pulling in their entire `*.tests.*` trees — ~2,300 modules (pandas alone
+  ~1,100) — which PyInstaller analysed and packed into the `.exe` despite never
+  being imported at run time. The spec now collects via a no-tests filter
+  (`tests` package dropped; `testing` utilities like `numpy.testing` kept), which
+  shrinks the bundle and speeds the build. Verified to drop **zero** modules the
+  analysis worker imports. (`sptpalm.spec`)
+
 ## v2.76.3
 
 Critical fix — frozen Windows builds failed every analysis run.
