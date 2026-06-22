@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.76.8
+
+Visualise cluster controls, a detection-threshold preview in the ROI viewer, and
+the first release of the accent dots, CUDA installer, and HYPER-FLY console.
+
+### Added
+
+- **Close the cluster overlay.** DBSCAN clusters now appear as a row in the
+  Visualise **LAYERS** panel — toggle it off to remove the overlay from the
+  scene (there was previously no way to hide it once rendered).
+- **Colour clusters by motion type.** New **"Cluster motion"** colour mode tints
+  each *whole* cluster by its dominant motion class (vs the existing
+  per-localisation "Motion" mode).
+- **Detection-threshold preview in the Preview/ROI viewer.** A **"Detections"**
+  toggle + **minmass slider** runs the same detect path the analysis uses
+  (preprocess + `trackpy.locate`) on the displayed frame and overlays the
+  detected spots as green circles — per-frame while scrubbing raw frames. The
+  slider writes through to the run's detection threshold, so what you preview is
+  what gets detected.
+- **Accent-tracking detection dots** — the live-detection markers now use the
+  accent colour chosen in Preferences.
+- **In-app CUDA installer** (Preferences ▸ **GPU**) — detect the NVIDIA GPU and
+  install / update / remove the CUDA torch backend with live progress. Windows
+  only; macOS shows the built-in Metal (MPS) note.
+- **HYPER-FLY console** — a live log of the batch worker output on the
+  HYPER-FLY tab.
+
 ## v2.76.7
 
 HYPER-FLY (parallel-batch) audit — memory-management + tile-rendering fixes.

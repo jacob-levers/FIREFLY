@@ -11,7 +11,13 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.7"
+__version__ = "2.76.8"
+# v2.76.8 — Visualise: close the DBSCAN cluster overlay (LAYERS toggle) + a
+#           "Cluster motion" colour mode (tint each cluster by dominant motion).
+#           Preview/ROI viewer: a detection-threshold (minmass) preview — toggle
+#           + slider overlays trackpy-detected spots, written through to the run.
+#           Also first release of: accent-tracking live-detection dots, the
+#           in-app CUDA installer (Preferences ▸ GPU), and the HYPER-FLY console.
 # v2.76.7 — HYPER-FLY audit fixes: (HIGH) a memory-watchdog abort mid-wave no
 #           longer cancels the whole parallel batch + mislabels it "stopped by
 #           user" — completed files are kept, the events cleared, batch_done
