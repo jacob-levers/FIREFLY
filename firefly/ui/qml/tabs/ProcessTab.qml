@@ -471,6 +471,79 @@ Flickable {
                         Layout.fillWidth: true; elide: Text.ElideRight
                     }
                 }
+                // ── post-analysis summary stats (animated; on a successful run) ──
+                // A Loader so the metric grid is re-instantiated each completion —
+                // that replays the staggered FadeRise entrance + the count-up
+                // (CountUp tweens 0 → value once `reveal` flips after layout).
+                Loader {
+                    id: statsLoader
+                    Layout.fillWidth: true
+                    active: Process.resultSeverity === "ok"
+                    visible: active
+                    Layout.preferredHeight: (active && item) ? item.implicitHeight : 0
+                    sourceComponent: Component {
+                        ColumnLayout {
+                            id: sg
+                            width: statsLoader.width
+                            spacing: sc.sp4
+                            property bool reveal: false
+                            Component.onCompleted: reveal = true
+
+                            Rectangle { Layout.fillWidth: true; height: 1; color: pal.BORDER }
+                            Text { text: "Run summary"; color: pal.TXT_MUTED
+                                   font.pixelSize: sc.textXs; font.bold: true }
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: 4
+                                columnSpacing: sc.sp6; rowSpacing: sc.sp5
+                                Repeater {
+                                    model: [
+                                        { label: "Trajectories",    key: "n_tracks",            dec: 0, unit: "",      mul: 1, hero: true },
+                                        { label: "Localisations",   key: "n_locs",              dec: 0, unit: "",      mul: 1, hero: true },
+                                        { label: "Median D",        key: "median_d",            dec: 3, unit: "µm²/s", mul: 1, hero: false },
+                                        { label: "Median α",        key: "median_alpha",        dec: 2, unit: "",      mul: 1, hero: false },
+                                        { label: "Mobile fraction", key: "mobile_fraction",     dec: 0, unit: "%",     mul: 100, hero: false },
+                                        { label: "Loc precision",   key: "median_loc_sigma_nm", dec: 0, unit: "nm",    mul: 1, hero: false },
+                                        { label: "Clusters",        key: "n_clusters",          dec: 0, unit: "",      mul: 1, hero: false },
+                                        { label: "Frames",          key: "frames",              dec: 0, unit: "",      mul: 1, hero: false }
+                                    ]
+                                    delegate: FadeRise {
+                                        required property var modelData
+                                        required property int index
+                                        Layout.fillWidth: true
+                                        delay: index * 55
+                                        ColumnLayout {
+                                            id: cell
+                                            spacing: 2
+                                            readonly property var raw:
+                                                (Process.stats && Process.stats[modelData.key] !== undefined
+                                                 && Process.stats[modelData.key] !== null)
+                                                    ? Process.stats[modelData.key] : null
+                                            Text { text: modelData.label; color: pal.TXT_MUTED
+                                                   font.pixelSize: sc.textXs }
+                                            RowLayout {
+                                                spacing: sc.sp1
+                                                CountUp {
+                                                    visible: cell.raw !== null
+                                                    value: (sg.reveal && cell.raw !== null) ? cell.raw * modelData.mul : 0
+                                                    decimals: modelData.dec
+                                                    color: modelData.hero ? pal.ACC : pal.TXT
+                                                    font.pixelSize: sc.textXl; font.bold: true; font.family: "Menlo"
+                                                }
+                                                Text { visible: cell.raw === null; text: "—"
+                                                       color: pal.TXT_MUTED; font.pixelSize: sc.textXl; font.bold: true }
+                                                Text { visible: modelData.unit !== "" && cell.raw !== null
+                                                       text: modelData.unit; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                                                       Layout.alignment: Qt.AlignBottom; bottomPadding: 3 }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 RowLayout {
                     Layout.fillWidth: true
                     visible: Process.resultOutDir !== ""
