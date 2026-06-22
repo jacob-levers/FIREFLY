@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls
 import "../components"
 
 // HYPER-FLY dashboard (tab 4): the live view of a parallel-batch run. A command
@@ -404,5 +405,51 @@ Flickable {
                 }
             }
         }
+
+        // ── run console log ───────────────────────────────────────────────
+        Card {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 220
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: sc.sp4
+                spacing: sc.sp2
+                RowLayout {
+                    Layout.fillWidth: true
+                    Icon { name: "terminal"; size: 13; color: pal.TXT_MUTED }
+                    Text { text: "Console"; color: pal.TXT; font.pixelSize: sc.textSm; font.bold: true }
+                    Badge { visible: Batch.running; text: "live"; tone: pal.ACC; dot: true }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: "Clear"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: hfLog.text = "" }
+                    }
+                }
+                ScrollView {
+                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                    TextArea {
+                        id: hfLog
+                        readOnly: true; wrapMode: TextEdit.NoWrap
+                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                        background: Rectangle { color: "transparent" }
+                        text: ""
+                        placeholderText: "Batch worker output appears here during a run…"
+                    }
+                }
+            }
+        }
+    }
+
+    // stream the batch worker's log into the HYPER-FLY console
+    Connections {
+        target: Batch
+        function onLogLine(line) {
+            var t = hfLog.text + (hfLog.text ? "\n" : "") + line
+            if (t.length > 60000) t = t.substring(t.length - 60000)
+            hfLog.text = t
+            hfLog.cursorPosition = hfLog.length
+        }
+        function onRunningChanged() { if (Batch.running) hfLog.text = "" }
     }
 }
