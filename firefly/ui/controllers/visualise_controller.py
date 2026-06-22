@@ -99,6 +99,7 @@ class VisualiseController(QObject):
         self._cl_extras_dir = None
         self._cl_stem = None
         self._cl_present = False
+        self._cl_visible = True          # cluster overlay shown (toggle in LAYERS)
         self._cl_eps_nm = 50
         self._cl_min_samples = 8
         self._cl_point_size = (int(settings.get_float("visualise/cluster_point_size", 3))
@@ -359,6 +360,14 @@ class VisualiseController(QObject):
                         "colorHex": run["color"] if mode == "file" else pal.get(cls, "#aaaaaa"),
                         "motionClass": cls, "count": len(self._motion_pids.get(comp, ())),
                     })
+        # DBSCAN cluster overlay gets its own layer row (toggle to close it).
+        if self._cl_present:
+            layers.append({
+                "id": "clusters:main", "kind": "clusters", "name": "Clusters",
+                "file": "", "runColor": "",
+                "present": True, "visible": bool(self._cl_visible), "opacity": 1.0,
+                "colorHex": "#a371f7", "motionClass": "", "count": self._cl_count,
+            })
         # Background images are NOT track layers — they're chosen via the
         # Background dropdown above the LAYERS list, so they're excluded here.
         self._layers = layers
@@ -395,6 +404,10 @@ class VisualiseController(QObject):
         elif layer_id.startswith("bg:"):
             name = layer_id.split(":", 1)[1]
             self.selectBackground(name if on else "Off")
+        elif layer_id.startswith("clusters:"):
+            self._cl_visible = bool(on)
+            self._render_cluster_layer()      # renders if visible, clears if not
+            self._rebuild_layers()
 
     @Slot(str, float)
     def setLayerOpacity(self, layer_id: str, value: float):
@@ -792,9 +805,14 @@ class VisualiseController(QObject):
             if self._cl_present:
                 self._render_cluster_layer()
 
+    # "Motion" = colour each localisation by its own motion class.
+    # "Cluster motion" = colour each whole cluster by its DOMINANT motion class.
+    # "ID" = a distinct colour per cluster.
+    _CLUSTER_COLOR_MODES = ("Motion", "Cluster motion", "ID")
+
     @Property("QStringList", constant=True)
     def clusterColorModes(self):
-        return ["Motion", "ID"]
+        return list(self._CLUSTER_COLOR_MODES)
 
     @Property(str, notify=clusterChanged)
     def clusterColorMode(self):
@@ -802,7 +820,7 @@ class VisualiseController(QObject):
 
     @clusterColorMode.setter
     def clusterColorMode(self, mode):
-        if mode in ("Motion", "ID") and mode != self._cl_color_mode:
+        if mode in self._CLUSTER_COLOR_MODES and mode != self._cl_color_mode:
             self._cl_color_mode = mode
             self.clusterChanged.emit()
             if self._cl_present:
@@ -858,10 +876,13 @@ class VisualiseController(QObject):
             self._cl_stats_df = stats_df
             self._cl_extras_dir = extras
             self._cl_stem = stem
-            if self._cl_motion is None and self._cl_color_mode == "Motion":
+            if self._cl_motion is None and self._cl_color_mode in ("Motion", "Cluster motion"):
                 self._cl_color_mode = "ID"
+            self._cl_present = True
+            self._cl_visible = True          # new clusters load shown
             self._render_cluster_layer()
             self._update_cluster_counts()
+            self._rebuild_layers()           # surface the cluster layer row + toggle
             self.clusterChanged.emit()
             return True
         except Exception as exc:
@@ -873,14 +894,19 @@ class VisualiseController(QObject):
         if self._cl_xy_px is None:
             return
         v = self.ensureViewer()
+        # Closed from the LAYERS panel → drop the scatter item from the scene.
+        if not self._cl_visible:
+            try:    v.clear_points()
+            except Exception: pass
+            return
         import numpy as np
         ids = self._cl_labels.astype(np.int32)
         mode = self._cl_color_mode
-        if mode == "Motion" and self._cl_motion is None:
+        if mode in ("Motion", "Cluster motion") and self._cl_motion is None:
             mode = "ID"
         ys, xs = self._cl_xy_px[:, 0], self._cl_xy_px[:, 1]
         noise = ids == -1
-        if mode == "Motion":
+        if mode in ("Motion", "Cluster motion"):
             pal = self._palette()
 
             def rgba(hex_str, a):
@@ -888,7 +914,19 @@ class VisualiseController(QObject):
                 return (c[0], c[1], c[2], a)
             mcol = {cls: rgba(pal.get(cls, pal["Unknown"]), 0.85)
                     for cls in _MOTION_ORDER}
-            brushes = [mcol.get(str(m), mcol["Unknown"]) for m in self._cl_motion]
+            if mode == "Cluster motion":
+                # colour every loc in a cluster by that cluster's DOMINANT motion
+                from collections import Counter
+                dom = {}
+                for cid in np.unique(ids[ids >= 0]):
+                    ms = self._cl_motion[ids == cid]
+                    dom[int(cid)] = (Counter(str(m) for m in ms).most_common(1)[0][0]
+                                     if len(ms) else "Unknown")
+                brushes = [mcol["Unknown"] if c < 0
+                           else mcol.get(dom.get(int(c), "Unknown"), mcol["Unknown"])
+                           for c in ids]
+            else:
+                brushes = [mcol.get(str(m), mcol["Unknown"]) for m in self._cl_motion]
             for i in np.nonzero(noise)[0]:
                 brushes[int(i)] = (0.30, 0.30, 0.30, 0.45)
         else:
