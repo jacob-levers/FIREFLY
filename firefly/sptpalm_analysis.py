@@ -11,7 +11,14 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.6"
+__version__ = "2.76.7"
+# v2.76.7 — HYPER-FLY audit fixes: (HIGH) a memory-watchdog abort mid-wave no
+#           longer cancels the whole parallel batch + mislabels it "stopped by
+#           user" — completed files are kept, the events cleared, batch_done
+#           emitted (mirrors the serial path); failed tiles keep their error text
+#           visible; the tile max-projection no longer double-reads the file the
+#           worker is decoding; projection cache eviction + idempotency + a
+#           done-tile progress-regression guard + a drain race fix.
 # v2.76.6 — UI: post-analysis run-summary stats panel (animated); HYPER-FLY tiles
 #           show each file's max projection + a sweeping scanner; FIX Process log
 #           + minmass histogram never populating (wrong signal target); brighter

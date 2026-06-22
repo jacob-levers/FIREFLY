@@ -3976,14 +3976,33 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                      "batch instead.")
 
         if _hf_results is not None:
-            # HYPERFLY ran the whole batch.  Honour a user-cancel the same way
-            # the serial path does (emit 'stopped' instead of 'batch_done').
-            if cancel_event.is_set():
+            # HYPERFLY ran the whole batch.  Distinguish a memory-watchdog abort
+            # from a real user Stop the SAME way the serial loop does (below).
+            # The shared watchdog sets mem_abort BEFORE cancel_event, so a
+            # transient RAM dip during the K-file load surge (the exact spike the
+            # load-stagger + debounce are meant to ride out) must NOT be reported
+            # as "stopped by user" nor discard the files that already completed in
+            # the wave — clear the events, keep the partial results, and fall
+            # through to the normal batch_done summary.
+            if cancel_event.is_set() and mem_abort.is_set():
+                _log("\n  ⚠ HYPER-FLY wave aborted by the memory watchdog "
+                     "(insufficient free RAM) — completed files are kept; "
+                     "unfinished files in the wave were cancelled.")
+                mem_abort.clear()
+                cancel_event.clear()
+                try:
+                    import gc as _gc
+                    _gc.collect()
+                except Exception: pass
+                results = _hf_results
+                _serial_iter = []
+            elif cancel_event.is_set():
                 _log("\n── Batch stopped by user ──")
                 _put_reliable(msg_queue, (MsgKind.STOPPED, None))
                 return
-            results = _hf_results
-            _serial_iter = []
+            else:
+                results = _hf_results
+                _serial_iter = []
         else:
             _serial_iter = list(enumerate(params_list, 1))
 

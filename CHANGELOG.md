@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.76.7
+
+HYPER-FLY (parallel-batch) audit — memory-management + tile-rendering fixes.
+
+### Fixed
+
+- **(HIGH) A transient memory-watchdog abort during a HYPER-FLY wave cancelled the
+  entire parallel batch and reported it as "stopped by user."** The serial batch
+  loop treats a watchdog abort as skip-and-continue (it passes a separate
+  `mem_abort` Event to distinguish it from a real Stop), but the parallel return
+  path checked only `cancel_event` — so a brief RAM dip during the K-file load
+  surge (the exact spike the load-stagger + debounce exist to ride out) cancelled
+  every in-flight/queued file, **dropped the already-completed results**, and
+  showed a misleading "stopped by user". The parallel path now distinguishes the
+  two, keeps completed files, clears the events, and emits a normal `batch_done`.
+  (`firefly/firefly_worker.py`)
+- **Failed HYPER-FLY tiles hid their error message.** The v2.76.6 tile
+  error-reporting text was gated on `!hasFrame`, but a failed tile still loaded a
+  max-projection (setting `hasFrame`), so the error string was hidden for the
+  common case. Failed tiles no longer load a projection.
+  (`firefly/ui/controllers/hyperfly_controller.py`)
+- **The tile max-projection re-read the same multi-GB file the worker was
+  concurrently decoding** (double I/O over the network drive, bypassing the
+  load-stagger). The GUI now skips the read while the worker is still in the
+  Loading phase and retries once it's past (file warm in cache); live preview
+  frames usually pre-empt it entirely.
+
+### Changed
+
+- HYPER-FLY tile rendering hardening: per-stem projection cache is evicted on slot
+  reuse (memory stays O(n_concurrent)); projection apply is idempotent (no
+  redundant ~5 Hz QML re-fetches); a late progress tile can no longer regress a
+  finished tile's bar; and the off-thread projection-ready drain no longer races
+  the GUI swap (could strand a stem / drop a thumbnail).
+  (`firefly/ui/controllers/hyperfly_controller.py`)
+
 ## v2.76.6
 
 UI: a post-run stats panel, live HYPER-FLY tile previews, and two visibility
