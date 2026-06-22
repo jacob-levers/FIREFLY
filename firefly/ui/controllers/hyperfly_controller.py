@@ -203,6 +203,11 @@ class HyperflyController(QObject):
             return
         d = self._slots[slot]
         state = payload.get("state")
+        # Throttled pct/stage tiles travel a different (async) queue than the
+        # terminal done/failed tile, with no ordering guarantee — so a stale
+        # progress tile can land AFTER completion.  Don't let it regress a
+        # finished tile's bar back below 100 %.
+        was_terminal = d["state"] in ("done", "failed") and not state
         if state == "running":
             d["state"] = "running"; d["pct"] = 0; d["stage"] = ""; d["locs"] = 0
         elif state == "done":
@@ -212,15 +217,19 @@ class HyperflyController(QObject):
         elif state == "failed":
             d["state"] = "failed"
             d["error"] = str(payload.get("error") or "")[:300]
+        # Apply progress BEFORE the projection decision so the stage gate in
+        # _maybe_load_projection sees this tile's CURRENT phase (the "running"
+        # branch above just reset d["stage"]).
+        if not was_terminal:
+            if payload.get("pct") is not None:
+                d["pct"] = int(payload["pct"])
+            if payload.get("stage"):
+                d["stage"] = str(payload["stage"])
+            if payload.get("n_locs") is not None:
+                d["locs"] = int(payload["n_locs"])
         if payload.get("stem"):
             d["stem"] = str(payload["stem"])
             self._maybe_load_projection(slot, d["stem"])
-        if payload.get("pct") is not None:
-            d["pct"] = int(payload["pct"])
-        if payload.get("stage"):
-            d["stage"] = str(payload["stage"])
-        if payload.get("n_locs") is not None:
-            d["locs"] = int(payload["n_locs"])
         self._model.rowChanged(slot)
         self.aggregateChanged.emit()
 
@@ -258,8 +267,14 @@ class HyperflyController(QObject):
         for i, d in enumerate(self._slots):
             if d["state"] in ("idle", "done", "failed"):
                 old = d.get("file")
+                old_stem = d.get("stem")
                 if old is not None and self._file_slot.get(old) == i:
                     del self._file_slot[old]
+                # The grid never revisits a finished file's tile, so its cached
+                # projection thumbnail is dead weight from here on — evict it so
+                # the cache stays O(n_concurrent), not O(batch size).
+                if old_stem:
+                    self._proj_cache.pop(old_stem, None)
                 self._file_slot[f] = i
                 self._slots[i] = self._idle_slot()
                 self._slots[i]["file"] = f
@@ -274,11 +289,24 @@ class HyperflyController(QObject):
         frame streams).  Sampled read off-thread, cached per stem, GUI-applied."""
         if not stem or not (0 <= slot < len(self._slots)):
             return
-        if self._slots[slot].get("has_live"):
-            return                                 # live frames already cover it
+        d = self._slots[slot]
+        # Only a RUNNING tile gets a projection fallback: a failed tile must keep
+        # its error string visible (a frame sets hasFrame and the QML hides the
+        # error behind it), a done tile needs no new read, and live frames already
+        # cover a running tile that streams them.
+        if d.get("state") != "running" or d.get("has_live"):
+            return
         cached = self._proj_cache.get(stem)
         if cached is not None:
             self._apply_projection(slot, stem, cached)
+            return
+        # Don't read the file while the worker is still DECODING it (the Loading
+        # phase) — that double-reads the same multi-GB recording over the network
+        # drive, contending with the worker's gated load.  onTile re-invokes us
+        # ~5 Hz with the live stage, so we retry once the worker is past loading
+        # (file now warm in the OS page cache); by then a live preview frame has
+        # usually streamed and pre-empted us entirely.
+        if "load" in str(d.get("stage", "")).lower():
             return
         path = self._stem_paths.get(stem)
         if not path or stem in self._proj_inflight:
@@ -313,20 +341,30 @@ class HyperflyController(QObject):
         d = self._slots[slot]
         if d.get("has_live") or d.get("stem") != stem or img is None or img.isNull():
             return
+        if self._frames.get(slot) is img:
+            return                                 # already showing this exact image
         self._frames[slot] = img
         d["frame_token"] += 1
         self._model.rowChanged(slot)
 
     def _drain_proj(self):
-        if self._proj_ready:
-            pending, self._proj_ready = self._proj_ready, []
-            for stem, img in pending:
-                self._proj_inflight.discard(stem)
-                if img is not None and not img.isNull():
-                    self._proj_cache[stem] = img
-                    for i, d in enumerate(self._slots):
-                        if d.get("stem") == stem and not d.get("has_live"):
-                            self._apply_projection(i, stem, img)
+        # Drain in place (pop) rather than swapping the list reference: a worker
+        # thread's append + the GUI swap aren't atomic as a pair, so swapping
+        # could orphan a just-appended item (lost thumbnail + stem stuck in
+        # _proj_inflight).  pop() and append() are each atomic on one stable list.
+        pending = []
+        while self._proj_ready:
+            try:
+                pending.append(self._proj_ready.pop())
+            except IndexError:
+                break
+        for stem, img in pending:
+            self._proj_inflight.discard(stem)
+            if img is not None and not img.isNull():
+                self._proj_cache[stem] = img
+                for i, d in enumerate(self._slots):
+                    if d.get("stem") == stem and not d.get("has_live"):
+                        self._apply_projection(i, stem, img)
         if not self._proj_ready and not self._proj_inflight:
             self._proj_timer.stop()
 
