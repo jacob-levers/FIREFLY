@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.76.5
+
+UI quality-of-life: the in-app updater actually installs now, an update pill
+appears in the header, and the app opens on a clean slate.
+
+### Added
+
+- **In-app update install.** "Download & install" (Preferences ▸ Updates) now
+  downloads the verified installer for your OS, shows live download progress,
+  stages the swap-and-relaunch helper, and restarts into the new version —
+  instead of just opening the GitHub Releases page. Surfaces a clear warning if
+  the download can't be integrity-verified, there's no installer for the
+  platform, or you're running from source.
+- **Header update pill.** A pulsing "Update available" pill now appears top-right
+  when a newer release exists; clicking it opens Preferences ▸ Updates. The app
+  also performs a quiet update check on launch (honouring the existing
+  "Check for updates on launch" toggle), so the pill appears on its own — it
+  previously never showed because nothing triggered the check at startup.
+- **Analysis design card** — experimental-design summary + data-aware statistics
+  recommendations, ported from the legacy Analysis tab.
+- **HYPER-FLY tile error reporting** — a failed worker tile now shows the failure
+  reason instead of a bare "failed".
+
+### Changed
+
+- **Clean slate on launch.** The app no longer restores the previously loaded
+  single-analysis file (or output dir) on restart — it opens with nothing
+  loaded, matching the batch queue. A stale recording from a prior session can
+  no longer silently become the next run's input.
+
 ## v2.76.4
 
 Packaging — smaller onefile, faster build.

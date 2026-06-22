@@ -26,6 +26,9 @@ _RELEASES_PAGE = "https://github.com/jacob-levers/FIREFLY/releases"
 class UpdatesController(QObject):
     changed = Signal()
     checkingChanged = Signal()
+    installingChanged = Signal()           # installing / installError flipped
+    installProgressChanged = Signal()      # progress / status line advanced
+    quitForUpdate = Signal()               # app MUST quit so the helper can swap + relaunch
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -41,6 +44,18 @@ class UpdatesController(QObject):
         self._poll.setInterval(120)
         self._poll.timeout.connect(self._drain)
         self._MAX_TICKS = 100                      # ~12 s before giving up on a hung fetch
+
+        # ── in-app download+install state (same off-thread→GUI-drain pattern) ──
+        self._installing = False
+        self._inst_progress = 0.0                  # 0..1, or -1 = indeterminate
+        self._inst_status = ""
+        self._inst_error = ""
+        self._inst_state = ""                      # ""|downloading|installing|done|error (off-thread)
+        self._inst_err_msg = ""                    # written off-thread
+        self._inst_cancel = False
+        self._inst_poll = QTimer(self)
+        self._inst_poll.setInterval(100)
+        self._inst_poll.timeout.connect(self._drain_install)
 
     # ── read-only state for QML ──────────────────────────────────────────
     @Property(str, constant=True)
@@ -126,3 +141,101 @@ class UpdatesController(QObject):
     @Slot()
     def openReleasePage(self):
         QDesktopServices.openUrl(QUrl(self._url))
+
+    # ── in-app download + install ─────────────────────────────────────────
+    @Property(bool, notify=installingChanged)
+    def installing(self):
+        return self._installing
+
+    @Property(float, notify=installProgressChanged)
+    def installProgress(self):
+        return self._inst_progress            # 0..1, or -1 → indeterminate
+
+    @Property(str, notify=installProgressChanged)
+    def installStatus(self):
+        return self._inst_status
+
+    @Property(str, notify=installingChanged)
+    def installError(self):
+        return self._inst_error
+
+    @Slot()
+    def downloadAndInstall(self):
+        """Download the latest release's installer for this OS, verify it, stage
+        the swap-and-relaunch helper, then ask the app to quit.  Network + disk
+        work runs on a daemon thread; progress is drained on the GUI thread (the
+        same safe pattern as ``checkNow``) so no Qt signal is emitted off-thread."""
+        if self._installing:
+            return
+        from firefly import updater
+        if not updater.is_frozen():
+            self._inst_error = ("In-app update only works in the packaged app — "
+                                "you're running from source, so use 'git pull'.")
+            self.installingChanged.emit()
+            return
+        self._installing = True
+        self._inst_error = ""
+        self._inst_err_msg = ""
+        self._inst_cancel = False
+        self._inst_progress = -1.0            # indeterminate until the first byte
+        self._inst_status = "Preparing…"
+        self._inst_state = "downloading"
+        self.installingChanged.emit()
+        self.installProgressChanged.emit()
+        self._inst_poll.start()
+
+        def _work():
+            try:
+                from firefly import updater
+                rj = updater.fetch_latest_release(_API_URL)
+                rel = updater.parse_release(rj) if rj else {}
+                asset = rel.get("asset")
+                if not asset:
+                    raise RuntimeError(
+                        "The latest release has no installer for your platform. "
+                        "Use 'Release notes' to download it manually.")
+
+                def _prog(done, total):
+                    self._inst_progress = (done / total) if total else -1.0
+
+                def _status(msg):
+                    self._inst_status = str(msg)
+
+                def _cancel():
+                    return self._inst_cancel
+
+                self._inst_status = "Downloading…"
+                path = updater.download_asset(
+                    asset, progress_cb=_prog, status_cb=_status, cancel_cb=_cancel)
+                self._inst_status = "Installing…"
+                self._inst_state = "installing"
+                updater.apply_update(path)        # stages helper + spawns it, returns
+                self._inst_state = "done"          # GUI thread quits the app next tick
+            except Exception as exc:
+                self._inst_err_msg = str(exc)
+                self._inst_state = "error"
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @Slot()
+    def cancelInstall(self):
+        self._inst_cancel = True
+
+    def _drain_install(self):
+        # progress/status advance every tick while downloading/installing
+        self.installProgressChanged.emit()
+        st = self._inst_state
+        if st == "done":
+            self._inst_poll.stop()
+            self._inst_status = "Restarting…"
+            self.installProgressChanged.emit()
+            self.quitForUpdate.emit()          # app_qml quits → helper swaps + relaunches
+        elif st == "error":
+            self._inst_poll.stop()
+            self._installing = False
+            self._inst_progress = 0.0
+            self._inst_status = ""
+            self._inst_state = ""
+            self._inst_error = self._inst_err_msg or "Update failed."
+            self.installingChanged.emit()
+            self.installProgressChanged.emit()

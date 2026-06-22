@@ -875,10 +875,49 @@ Item {
                                 color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                                 maximumLineCount: 8; elide: Text.ElideRight
                             }
+                            // download progress (real in-app update)
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: Updates.installing
+                                spacing: sc.sp2
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 8; radius: 4; clip: true
+                                    color: pal.PANEL; border.width: 1; border.color: pal.BORDER
+                                    Rectangle {                       // determinate fill
+                                        height: parent.height; radius: 4
+                                        visible: Updates.installProgress >= 0
+                                        width: Math.max(0, Math.min(1, Updates.installProgress)) * parent.width
+                                        gradient: Gradient {
+                                            orientation: Gradient.Horizontal
+                                            GradientStop { position: 0.0; color: pal.SUCCESS }
+                                            GradientStop { position: 1.0; color: pal.ACC }
+                                        }
+                                        Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
+                                    }
+                                    IndeterminateShimmer { active: Updates.installing && Updates.installProgress < 0 }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp3
+                                    Text { Layout.fillWidth: true; text: Updates.installStatus || "Working…"
+                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                                    Text { visible: Updates.installProgress >= 0
+                                           text: Math.round(Updates.installProgress * 100) + "%"
+                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo" }
+                                }
+                            }
+                            // error (unverifiable download / no installer / from-source)
+                            Alert {
+                                Layout.fillWidth: true
+                                visible: Updates.installError !== ""
+                                severity: "warn"
+                                text: Updates.installError
+                            }
                             RowLayout {
                                 spacing: sc.sp3
+                                visible: !Updates.installing
                                 Button { variant: "primary"; text: "Download & install"; icon: "download"
-                                         onClicked: Updates.openReleasePage() }
+                                         onClicked: Updates.downloadAndInstall() }
                                 Button { variant: "ghost"; text: "Release notes"
                                          onClicked: Updates.openReleasePage() }
                             }

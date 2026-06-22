@@ -53,10 +53,16 @@ class ImportController(QObject):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self._s = settings
-        self._file = settings.get_str("analysis/file", "")
-        self._outdir = settings.get_str("analysis/outdir", "")
+        # Clean slate on every launch — do NOT restore the last input file /
+        # output dir.  The app should open with nothing loaded (parity with the
+        # batch queue, which also starts empty), so a stale recording from the
+        # previous session never silently becomes the next run's input.  The
+        # QSettings keys are still WRITTEN by the setters (harmless), just not
+        # read back at startup.
+        self._file = ""
+        self._outdir = ""
         # Output tracks the recording's folder until the user picks one explicitly.
-        self._output_explicit = settings.get_bool("analysis/output_explicit", False)
+        self._output_explicit = False
         self._fmt = ""
         self._frames = 0
         self._is_csv = False

@@ -13,6 +13,14 @@ Item {
     readonly property var pal: Theme.palette
     readonly property var sc: Theme.scale
 
+    // Quietly check GitHub for a newer release shortly after launch (honours the
+    // Preferences ▸ "Check for updates on launch" toggle).  This is what surfaces
+    // the header update pill + the Preferences banner without the user asking.
+    Timer {
+        running: true; interval: 1500; repeat: false
+        onTriggered: if (Settings.getBool("updates/auto_check", true)) Updates.checkNow()
+    }
+
     Rectangle {            // app canvas
         anchors.fill: parent
         color: pal.BG
@@ -58,6 +66,41 @@ Item {
                         Layout.leftMargin: sc.sp2
                     }
                     Item { Layout.fillWidth: true }
+                    // update-available pill → opens Preferences ▸ Updates
+                    Rectangle {
+                        id: updatePill
+                        visible: Updates.updateAvailable
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitHeight: 24
+                        implicitWidth: upPillRow.implicitWidth + sc.sp3 * 2
+                        radius: height / 2
+                        color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b,
+                                       upPillHov.hovered ? 0.22 : 0.14)
+                        border.width: 1
+                        border.color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.40)
+                        Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
+                        RowLayout {
+                            id: upPillRow
+                            anchors.centerIn: parent
+                            spacing: sc.sp2
+                            Rectangle {                         // pulsing status dot
+                                width: 7; height: 7; radius: 3.5; color: pal.ACC
+                                Layout.alignment: Qt.AlignVCenter
+                                SequentialAnimation on opacity {
+                                    running: Updates.updateAvailable && !Theme.reducedMotion
+                                    loops: Animation.Infinite
+                                    NumberAnimation { from: 1.0; to: 0.35; duration: 900; easing.type: Easing.InOutSine }
+                                    NumberAnimation { from: 0.35; to: 1.0; duration: 900; easing.type: Easing.InOutSine }
+                                }
+                            }
+                            Text {
+                                text: Updates.installing ? "Updating…" : "Update available"
+                                color: pal.ACC; font.pixelSize: sc.textXs; font.weight: Font.DemiBold
+                            }
+                        }
+                        HoverHandler { id: upPillHov; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: prefs.open() }
+                    }
                     IconButton { icon: "settings"; tip: "Preferences (⌘,)"; size: 28
                                  onClicked: prefs.open() }
                     // Home affordance (only in the main UI)

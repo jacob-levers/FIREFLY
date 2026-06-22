@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.4"
+__version__ = "2.76.5"
+# v2.76.5 — UI: real in-app update install + header update pill + auto-check on
+#           launch; clean-slate startup (no preloaded file); Analysis design card
+#           + HYPER-FLY tile error reporting.
 # v2.76.4 — packaging: drop bundled `*.tests.*` trees (~2,300 modules across
 #   pandas/scipy/sklearn/statsmodels/numpy) from the onefile via a no-tests
 #   collect_submodules filter — smaller .exe + faster build, no runtime change.
