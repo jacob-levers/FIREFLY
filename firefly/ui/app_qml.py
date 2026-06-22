@@ -21,6 +21,25 @@ try:
 except RuntimeError:
     pass  # already set
 
+# ── HTTPS / CA certificates ──────────────────────────────────────────────────
+# Frozen PyInstaller builds don't reliably ship a usable CA store, so HTTPS
+# certificate verification fails for EVERY request in the .app/.exe — which
+# SILENTLY breaks the auto-update check (fetch_latest_release returns {} → the UI
+# shows "Up to date") and the in-app update + CUDA-wheel downloads.  Point
+# Python's default HTTPS context at certifi's bundled cacert.pem so all urllib
+# HTTPS in this process verifies.  The Widgets entry (app_qt) did this; the QML
+# path doesn't import it, so do it here.  Harmless from source.
+try:
+    import ssl as _ssl
+    import certifi as _certifi
+    _ca = _certifi.where()
+    if _ca and os.path.isfile(_ca):
+        os.environ.setdefault("SSL_CERT_FILE", _ca)
+        _ssl._create_default_https_context = (
+            lambda *a, **k: _ssl.create_default_context(cafile=_ca))
+except Exception:
+    pass
+
 from PySide6 import QtWidgets
 from PySide6.QtCore import QUrl, Qt, QEvent, QObject, Signal, Slot
 from PySide6.QtGui import QDesktopServices

@@ -38,6 +38,7 @@ class UpdatesController(QObject):
         self._body = ""
         self._url = _RELEASES_PAGE
         self._last_checked = "never"
+        self._check_error = ""                     # non-empty → the check couldn't complete
         self._result = None                       # written off-thread, drained on GUI thread
         self._ticks = 0                            # drain ticks → bound the wait
         self._poll = QTimer(self)
@@ -86,6 +87,10 @@ class UpdatesController(QObject):
     def lastChecked(self):
         return self._last_checked
 
+    @Property(str, notify=changed)
+    def checkError(self):
+        return self._check_error        # non-empty → "couldn't check" (not "up to date")
+
     # ── actions ──────────────────────────────────────────────────────────
     @Slot()
     def checkNow(self):
@@ -101,9 +106,16 @@ class UpdatesController(QObject):
             try:
                 from firefly import updater
                 rj = updater.fetch_latest_release(_API_URL)
-                rel = updater.parse_release(rj) if rj else {}
-                newer = bool(rel.get("tag")) and updater.is_newer(rel["tag"], __version__)
-                payload = {"ok": True, "rel": rel, "newer": newer}
+                if not rj:
+                    payload = {"ok": False,
+                               "err": "Couldn't reach GitHub — check your network/proxy."}
+                elif rj.get("_rate_limited"):
+                    payload = {"ok": False,
+                               "err": "GitHub rate limit reached on this network — try again later."}
+                else:
+                    rel = updater.parse_release(rj)
+                    newer = bool(rel.get("tag")) and updater.is_newer(rel["tag"], __version__)
+                    payload = {"ok": True, "rel": rel, "newer": newer}
             except Exception as exc:
                 payload = {"ok": False, "err": str(exc)}
             # `self` may be mid-teardown; ignore if the attribute is already gone.
@@ -119,6 +131,7 @@ class UpdatesController(QObject):
                 self._poll.stop()
                 self._checking = False
                 self.checkingChanged.emit()
+                self._check_error = "Couldn't reach GitHub (timed out)."
                 self._last_checked = "check failed"
                 self.changed.emit()
             return
@@ -126,8 +139,9 @@ class UpdatesController(QObject):
         res, self._result = self._result, None
         self._checking = False
         self.checkingChanged.emit()
-        self._last_checked = "just now"
         if res.get("ok"):
+            self._check_error = ""
+            self._last_checked = "just now"
             rel = res.get("rel") or {}
             self._available = bool(res.get("newer"))
             if rel.get("tag"):
@@ -136,6 +150,10 @@ class UpdatesController(QObject):
                 self._body = rel["body"]
             if rel.get("html_url"):
                 self._url = rel["html_url"]
+        else:
+            # A failed fetch must NOT masquerade as "up to date".
+            self._check_error = res.get("err") or "Couldn't check for updates."
+            self._last_checked = "check failed"
         self.changed.emit()
 
     @Slot()
