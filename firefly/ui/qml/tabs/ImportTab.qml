@@ -573,7 +573,7 @@ Flickable {
                                 ? thumbImg.implicitWidth / thumbImg.implicitHeight : 1.6
                         Layout.preferredHeight: 150
                         Layout.preferredWidth: Math.round(Math.max(120, Math.min(300, 150 * ar)))
-                        radius: sc.radiusMd; color: "#05070a"
+                        radius: sc.radiusMd; color: pal.WELL
                         border.width: 1; border.color: pal.BORDER; clip: true
                         readonly property bool showLive: Process.running && Process.hasLiveFrame
                         Image {

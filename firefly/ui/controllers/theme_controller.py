@@ -13,8 +13,30 @@ from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
 from firefly.ui.ui_theme import _THEMES, _pick_startup_theme
 
 
+def _font_mult(label):
+    """UI font-size label ('Medium — 12px' / 'Small' / 'Large') → text multiplier
+    (relative to the 12px base)."""
+    import re
+    m = re.search(r"(\d+)\s*px", str(label or ""))
+    if m:
+        return max(0.7, min(1.6, int(m.group(1)) / 12.0))
+    lo = str(label or "").lower()
+    return 11 / 12 if "small" in lo else 14 / 12 if "large" in lo else 1.0
+
+
+def _density_mult(label):
+    """Interface-density label → spacing multiplier."""
+    lo = str(label or "").lower()
+    if "comfortable" in lo:
+        return 1.18
+    if "spacious" in lo:
+        return 1.32
+    return 1.0       # Compact (default)
+
+
 class ThemeController(QObject):
     changed = Signal()                       # active palette changed
+    scaleChanged = Signal()                  # font-size / density scale changed
 
     # Static scale tokens (2px grid; radii / shadow / type), from the design
     # system's tokens/*.css. Constant — only the colour palette switches.
@@ -67,6 +89,16 @@ class ThemeController(QObject):
         except Exception:
             pass
         self._sync_marker_accent()      # live-detection dots track the accent
+        # font-size + interface-density multipliers (Preferences ▸ Appearance).
+        # Live in the primary store (jacoblevers/FIREFLY), written by Settings.
+        self._fmult = 1.0
+        self._dmult = 1.0
+        try:
+            ps = QSettings("jacoblevers", "FIREFLY")
+            self._fmult = _font_mult(ps.value("ui/font_size", "Medium — 12px"))
+            self._dmult = _density_mult(ps.value("ui/density", "Compact"))
+        except Exception:
+            pass
 
     def _accent_def(self):
         for a in self._ACCENTS:
@@ -119,9 +151,34 @@ class ThemeController(QObject):
     def name(self):
         return self._name
 
-    @Property("QVariantMap", constant=True)
+    @Property("QVariantMap", notify=scaleChanged)
     def scale(self):
-        return dict(self._SCALE)
+        # Font size scales the type tokens; density scales the spacing tokens.
+        # Radii/weights/sidebarWidth stay fixed for visual consistency.
+        sc = dict(self._SCALE)
+        if self._fmult != 1.0 or self._dmult != 1.0:
+            for k, v in list(sc.items()):
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    continue
+                if k.startswith("text") or k.startswith("display"):
+                    sc[k] = max(1, round(v * self._fmult))
+                elif k.startswith("sp"):
+                    sc[k] = max(1, round(v * self._dmult))
+        return sc
+
+    @Slot(str)
+    def setFontSize(self, label):
+        m = _font_mult(label)
+        if abs(m - self._fmult) > 1e-6:
+            self._fmult = m
+            self.scaleChanged.emit()
+
+    @Slot(str)
+    def setDensity(self, label):
+        m = _density_mult(label)
+        if abs(m - self._dmult) > 1e-6:
+            self._dmult = m
+            self.scaleChanged.emit()
 
     @Property("QStringList", constant=True)
     def themes(self):

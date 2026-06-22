@@ -83,6 +83,12 @@ class VisualiseController(QObject):
         self._min_len = 1
         self._motion_mode = (settings.get_str("visualise/motion_colours", "Default")
                              if settings else "Default")
+        # Pick up the motion-class palette when changed from Preferences (so the
+        # colour-blind choice applies to an already-open viewer without restart).
+        try:
+            settings.changed.connect(self._on_settings_changed)
+        except Exception:
+            pass
         self._layers: list = []
         self._inspector: dict = {"mode": "none"}
         self._inspector_visible = False
@@ -545,6 +551,12 @@ class VisualiseController(QObject):
     @Property(str, notify=motionColourModeChanged)
     def motionColourMode(self):
         return self._motion_mode
+
+    def _on_settings_changed(self, key):
+        if str(key) == "visualise/motion_colours" and self._s is not None:
+            v = self._s.get_str("visualise/motion_colours", "Default")
+            if v in _MOTION_COLOUR_THEMES and v != self._motion_mode:
+                self.motionColourMode = v       # re-renders motion-coloured layers
 
     @motionColourMode.setter
     def motionColourMode(self, mode):

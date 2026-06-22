@@ -104,7 +104,7 @@ Item {
                     Layout.fillHeight: true
                     Layout.minimumHeight: 340
                     Layout.preferredHeight: Math.max(360, Math.min(540, root.height - 220))
-                    color: "#05070a"
+                    color: pal.WELL
                     clip: true
 
                     Item {
@@ -361,17 +361,17 @@ Item {
                             onPicked: (t) => Roi.cmap = t
                         }
 
-                        // detection threshold (minmass) preview + slider
+                        // detection-threshold (minmass) preview + slider
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
                             RowLayout {
                                 Layout.fillWidth: true
-                                PanelLabel { text: "DETECTIONS" }
+                                PanelLabel { text: "DETECTION PREVIEW" }
                                 Item { Layout.fillWidth: true }
                                 Text {
                                     visible: Roi.detectEnabled
                                     text: Roi.hasSpots ? (Roi.spotCount.toLocaleString(Qt.locale(), "f", 0) + " spots") : "0 spots"
-                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                                    color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
                                 }
                                 Switch {
                                     checked: Roi.detectEnabled
@@ -379,19 +379,31 @@ Item {
                                                         if (c) Roi.refreshSpots() }
                                 }
                             }
-                            Slider {
-                                Layout.fillWidth: true
+                            // explicitly labelled so it's clear this is the minmass
+                            // detection threshold (mirrors the sidebar's field name)
+                            ColumnLayout {
                                 visible: Roi.detectEnabled
-                                from: 0; to: 50; step: 0.25; decimals: 2
-                                value: Roi.detectMinmass
-                                onMoved: (v) => { Roi.detectMinmass = v; spotsDebounce.restart() }
-                                onCommitted: (v) => { Roi.detectMinmass = v; Roi.refreshSpots() }
-                            }
-                            Text {
-                                visible: Roi.detectEnabled
-                                Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                text: "Green circles = spots detected at this minmass. This sets the run's detection threshold."
-                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                                Layout.fillWidth: true; spacing: 2
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text { text: "Threshold (minmass)"; color: pal.TXT; font.pixelSize: sc.textXs }
+                                    Item { Layout.fillWidth: true }
+                                    Text { text: Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
+                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo" }
+                                }
+                                Slider {
+                                    Layout.fillWidth: true
+                                    showValue: false
+                                    from: 0; to: 50; step: 0.25; decimals: 2
+                                    value: Roi.detectMinmass
+                                    onMoved: (v) => { Roi.detectMinmass = v; spotsDebounce.restart() }
+                                    onCommitted: (v) => { Roi.detectMinmass = v; Roi.refreshSpots() }
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: "Green circles = spots detected at this threshold. Updates the sidebar's Detection ▸ Threshold (minmass) and the run."
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                                }
                             }
                         }
 

@@ -7,10 +7,12 @@ Widgets app so the two share settings. Keys mirror the Widgets app exactly
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QSettings, Slot
+from PySide6.QtCore import QObject, QSettings, Signal, Slot
 
 
 class SettingsController(QObject):
+    changed = Signal(str)       # a key was written via any setter → observers refresh
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._s = QSettings("jacoblevers", "FIREFLY")
@@ -23,6 +25,7 @@ class SettingsController(QObject):
     @Slot(str, "QVariant")
     def setValue(self, key, value):
         self._s.setValue(key, value)
+        self.changed.emit(str(key))
 
     @Slot()
     def sync(self):
@@ -56,3 +59,4 @@ class SettingsController(QObject):
 
     def set(self, key, value):
         self._s.setValue(key, value)
+        self.changed.emit(str(key))

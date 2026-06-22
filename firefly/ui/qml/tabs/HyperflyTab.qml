@@ -94,7 +94,7 @@ Flickable {
                 id: thumb
                 Layout.fillWidth: true
                 Layout.preferredHeight: 104
-                color: "#05070a"
+                color: pal.WELL
                 clip: true
                 Image {
                     anchors.fill: parent

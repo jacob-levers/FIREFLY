@@ -1,5 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC      // namespaced so it doesn't shadow the local
+                                    // SpinBox/Switch/Slider/Select components
 
 // One sidebar parameter, stacked label-over-control: bool fields keep the label
 // inline with a trailing Switch; combo / numeric fields put a small label above
@@ -16,6 +18,13 @@ Column {
     width: parent ? parent.width : implicitWidth
     spacing: sc.sp2                        // 4: label → control
     opacity: en ? 1.0 : 0.45
+
+    // hover tooltip from the schema (the field's help text)
+    readonly property string tip: (root.field && root.field.tooltip) ? root.field.tooltip : ""
+    HoverHandler { id: fieldHov }
+    QQC.ToolTip.text: root.tip
+    QQC.ToolTip.delay: 450
+    QQC.ToolTip.visible: root.tip !== "" && fieldHov.hovered
 
     // ── label (+ inline Switch for bool) ──────────────────────────────────
     RowLayout {

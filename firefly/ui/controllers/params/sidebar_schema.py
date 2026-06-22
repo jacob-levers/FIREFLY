@@ -41,7 +41,74 @@ def _f(section, key, kind, label, default, *, min=None, max=None, step=None,
             "default": default, "min": min, "max": max, "step": step,
             "decimals": decimals, "items": items or [], "suffix": suffix,
             "special": special, "enable": enable, "hyperfly": hyperfly,
-            "tooltip": tooltip, "slider": slider}
+            "tooltip": tooltip or _TOOLTIPS.get(key, ""), "slider": slider}
+
+
+# Hover help for every parameter (shown by FieldRow on hover).
+_TOOLTIPS = {
+    # Imaging
+    "analysis/override_px": "Override the pixel size read from the file's metadata.",
+    "analysis/pixel_size": "Camera pixel size in the sample plane (µm). Sets the spatial scale for D and all distances.",
+    "analysis/override_fi": "Override the frame interval read from the file's metadata.",
+    "analysis/frame_interval": "Time between frames (s). Sets the time scale for diffusion (D, α).",
+    "analysis/channel": "Which channel to analyse in a multi-channel CZI.",
+    # Preprocessing
+    "analysis/bg_method": "Background-subtraction method. Uniform Filter is ~1700× faster than Rolling Ball with similar results.",
+    "analysis/bg_radius": "Background estimation radius (px). Larger keeps more low-frequency structure; smaller flattens more aggressively.",
+    # Camera
+    "analysis/camera_gain": "Camera gain (e⁻/ADU). With QE, converts intensities to photons for a CRLB precision estimate.",
+    "analysis/camera_qe": "Quantum efficiency (0–1). Used with gain for the photon / localisation-precision estimate.",
+    "analysis/camera_bg_photons": "Mean background (photons/px) for the precision (CRLB) estimate.",
+    # Detection
+    "analysis/diameter": "Expected spot diameter in pixels (odd) — roughly the PSF size. Too small splits spots, too large merges them.",
+    "analysis/auto_minmass": "Auto-pick the detection threshold per file. Turn off to set a fixed minmass below.",
+    "analysis/minmass": "Minimum integrated brightness for a detection. Higher = fewer, brighter spots. Preview it in the ROI viewer.",
+    "analysis/minmass_sensitivity": "How aggressive the auto-threshold is. Strict = fewer false spots; Lenient = more detections.",
+    "analysis/minmass_max_false_track_rate": "Cap the estimated false-track rate when auto-thresholding (off = no cap).",
+    # Linking
+    "analysis/linker": "Algorithm that connects detections into trajectories across frames.",
+    "analysis/allow_merging": "Permit two tracks to merge into one (Full LAP linker only).",
+    "analysis/allow_splitting": "Permit one track to split into two (Full LAP linker only).",
+    "analysis/search_range": "Max distance (px) a particle can move between frames and still be linked.",
+    "analysis/auto_search_range": "Estimate the search range from the data instead of setting it by hand.",
+    "analysis/memory": "Frames a particle may disappear (blink/miss) and still rejoin the same track.",
+    "analysis/min_track_len": "Discard trajectories shorter than this many frames.",
+    "analysis/max_track_len": "Cap trajectory length (0 = no cap).",
+    # Diffusion & motion
+    "analysis/max_lagtime": "Largest lag (frames) used when building the MSD curve.",
+    "analysis/n_fit": "Number of initial MSD points fitted for D and α.",
+    "analysis/alpha_immobile": "Anomalous exponent α below this → classed Immobile.",
+    "analysis/alpha_confined": "α below this (and above immobile) → Confined.",
+    "analysis/alpha_directed": "α above this → Directed / super-diffusive.",
+    "analysis/mobile_d": "D threshold (µm²/s) separating mobile from immobile for the mobile-fraction metric.",
+    "analysis/jdd_components": "Number of diffusing populations fitted in the jump-distance distribution.",
+    "analysis/filter_d_enable": "Drop trajectories whose D falls outside the range below.",
+    "analysis/filter_d_min": "Minimum D (µm²/s) to keep a trajectory.",
+    "analysis/filter_d_max": "Maximum D (µm²/s) to keep a trajectory.",
+    # ROI
+    "analysis/roi_mode": "How the region of interest is defined for this run.",
+    "analysis/roi_auto_method": "Auto-threshold algorithm used to build the ROI mask.",
+    "analysis/roi_threshold": "Manual intensity threshold (0–1) for the ROI mask.",
+    "analysis/roi_mask_mode": "Which projection the ROI mask is thresholded on.",
+    "analysis/roi_bg_sigma": "Background-flattening σ applied before thresholding the ROI mask.",
+    # Drift
+    "analysis/drift_correct": "Correct sample drift (redundant cross-correlation) before linking.",
+    "analysis/drift_segment": "Frames per drift-estimation segment. Smaller tracks faster drift; larger is more robust.",
+    # Clustering
+    "analysis/cluster_eps_nm": "DBSCAN neighbourhood radius (nm) — the max gap within a cluster.",
+    "analysis/cluster_min_samples": "DBSCAN minimum localisations needed to seed a cluster.",
+    # Performance
+    "analysis/backend": "Detection engine. Auto picks the best available (GPU when present).",
+    "analysis/workers": "CPU worker processes for preprocessing / localisation.",
+    "analysis/chunk_size": "Frames processed per chunk (memory vs throughput trade-off).",
+    "performance/hyperfly": "Parallel multi-file batch mode on big workstations.",
+    "performance/hyperfly_max_files": "Cap concurrent files in HYPER-FLY (0 = auto).",
+    "performance/hyperfly_max_cores": "Cap cores used by HYPER-FLY (0 = all).",
+    "performance/hyperfly_max_ram": "Cap RAM (GB) for HYPER-FLY (0 = auto).",
+    "performance/hyperfly_load_slots": "Concurrent file loads in HYPER-FLY (0 = auto).",
+    "performance/hyperfly_gpu_slots": "Concurrent GPU detections in HYPER-FLY (0 = auto).",
+    "performance/czi_parallel_decode": "Decode CZI frames in parallel for a faster load.",
+}
 
 
 # enable predicates: {"key": other_key, "truthy": bool} or {"key": k, "eq": value}

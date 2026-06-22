@@ -15,7 +15,10 @@ Item {
     visible: opened || backdrop.opacity > 0.001 || panel.opacity > 0.001
     property bool opened: false
     property string section: "appearance"
-    property int rev: 0                         // bump → re-read Settings (Restore defaults)
+    property int rev: 0                         // bump → re-read Settings (Restore defaults + any live write)
+    // Any settings write bumps rev so the live preview + field bindings re-read
+    // immediately (this is what makes the Figures preview actually live).
+    Connections { target: Settings; function onChanged(key) { root.rev++ } }
     // Entrance 220ms / exit 160ms (reduce-motion → 0). §7.2
     readonly property int durIn:  Theme.reducedMotion ? 0 : 220
     readonly property int durOut: Theme.reducedMotion ? 0 : 160
@@ -475,7 +478,7 @@ Item {
                         implicitWidth: 170
                         model: root.densityOpts
                         currentIndex: (root.rev, Math.max(0, root.densityOpts.indexOf(Settings.getStr("ui/density", "Compact"))))
-                        onPicked: (t) => Settings.setValue("ui/density", t)
+                        onPicked: (t) => { Settings.setValue("ui/density", t); Theme.setDensity(t) }
                     }
                 }
                 PrefRow {
@@ -484,7 +487,7 @@ Item {
                         implicitWidth: 170
                         model: root.fontSizeOpts
                         currentIndex: (root.rev, Math.max(0, root.fontSizeOpts.indexOf(Settings.getStr("ui/font_size", "Medium — 12px"))))
-                        onPicked: (t) => Settings.setValue("ui/font_size", t)
+                        onPicked: (t) => { Settings.setValue("ui/font_size", t); Theme.setFontSize(t) }
                     }
                 }
             }
@@ -532,11 +535,11 @@ Item {
                     }
                     PrefRow {
                         label: "Motion-class palette"
-                        desc: "“Publication” swaps to the Okabe–Ito colour-blind-safe set."
-                        Select { implicitWidth: 170; enabled: false
-                                 model: [ (root.rev, Settings.getStr("figures/theme", "Dark")) === "Publication"
-                                          ? "Colour-blind safe" : "Standard" ]
-                                 currentIndex: 0 }
+                        desc: "Colour-blind safe uses the Okabe–Ito set in the Visualise viewer + legend. (Exported figures follow the figure theme — pick Publication there for colour-blind.)"
+                        Select { implicitWidth: 170
+                                 model: ["Default", "Colour-blind safe"]
+                                 currentIndex: (root.rev, Math.max(0, ["Default", "Colour-blind safe"].indexOf(Settings.getStr("visualise/motion_colours", "Default"))))
+                                 onPicked: (t) => Settings.setValue("visualise/motion_colours", t) }
                     }
                 }
                 Group {
@@ -676,7 +679,9 @@ Item {
                 Layout.alignment: Qt.AlignTop; spacing: sc.sp4
                 readonly property string figTheme: (root.rev, Settings.getStr("figures/theme", "Dark"))
                 readonly property string cmap: (root.rev, Settings.getStr("figures/proj_cmap", "Inferno"))
-                readonly property var motion: figTheme === "Publication" ? root.motionCb : root.motionStd
+                readonly property var motion: (figTheme === "Publication"
+                                               || (root.rev, Settings.getStr("visualise/motion_colours", "Default")) === "Colour-blind safe")
+                                              ? root.motionCb : root.motionStd
                 Rectangle {
                     Layout.fillWidth: true
                     radius: sc.radiusXl; color: pal.PANEL
@@ -953,13 +958,17 @@ Item {
                                        font.weight: Font.DemiBold }
                                 Text { text: "v" + Updates.version; color: pal.TXT_MUTED
                                        font.pixelSize: sc.textSm; font.family: "Menlo" }
-                                Badge { text: Updates.updateAvailable ? "Update available" : "Up to date"
-                                        tone: Updates.updateAvailable ? pal.ACC : pal.SUCCESS; dot: true }
+                                Badge { text: Updates.checkError !== "" ? "Couldn't check"
+                                              : Updates.updateAvailable ? "Update available" : "Up to date"
+                                        tone: Updates.checkError !== "" ? pal.WARN
+                                              : Updates.updateAvailable ? pal.ACC : pal.SUCCESS; dot: true }
                             }
                             Text {
-                                text: "Last checked " + Updates.lastChecked + " · channel "
-                                      + (root.rev, Settings.getStr("updates/channel", "Stable")).toLowerCase()
-                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                                text: Updates.checkError !== "" ? Updates.checkError
+                                      : ("Last checked " + Updates.lastChecked + " · channel "
+                                         + (root.rev, Settings.getStr("updates/channel", "Stable")).toLowerCase())
+                                color: Updates.checkError !== "" ? pal.WARN : pal.TXT_MUTED
+                                font.pixelSize: sc.textXs
                             }
                         }
                         Button {

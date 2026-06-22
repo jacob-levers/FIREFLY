@@ -27,6 +27,17 @@ class SidebarController(QObject):
         self._s = settings
         self._import = importc
         self._revision = 0
+        # Refresh when settings are written elsewhere (e.g. the ROI viewer's
+        # detection-threshold slider writes analysis/minmass) so the matching
+        # sidebar field updates instead of showing a stale value.
+        try:
+            settings.changed.connect(self._on_settings_changed)
+        except Exception:
+            pass
+
+    def _on_settings_changed(self, key):
+        if S.BY_KEY.get(str(key)) is not None:
+            self._bump(str(key))
 
     # ── sections / fields ────────────────────────────────────────────────
     @Property("QVariantList", constant=True)

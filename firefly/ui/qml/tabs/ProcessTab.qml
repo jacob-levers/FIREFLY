@@ -245,7 +245,7 @@ Flickable {
                             width: Math.max(1, Math.min(parent.width, parent.height * ar))
                             height: Math.max(1, Math.min(parent.height, parent.width / ar))
                             radius: sc.radiusMd
-                            color: "#05070a"
+                            color: pal.WELL
                             border.width: 1; border.color: pal.BORDER
                             clip: true
                             Image {
