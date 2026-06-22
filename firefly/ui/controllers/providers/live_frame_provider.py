@@ -16,12 +16,29 @@ from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 
+# Live-detection marker colour.  Tracks the user's chosen theme accent —
+# ThemeController calls set_marker_rgb() at startup and whenever the accent
+# changes — so the detection dots match the accent in Preferences.  Defaults to
+# the Luminous-blue accent for any render that happens before the theme loads.
+MARKER_RGB = (88, 166, 255)
+
+
+def set_marker_rgb(rgb) -> None:
+    """Set the live-detection marker colour (an (r, g, b) 0–255 triple)."""
+    global MARKER_RGB
+    try:
+        MARKER_RGB = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+    except Exception:
+        pass
+
+
 def render_frame(arr, xs=None, ys=None,
-                 marker_rgb=(57, 255, 110)) -> QImage:
+                 marker_rgb=None) -> QImage:
     """Render a float32 frame to an RGB QImage with robust contrast + detection
     markers.  ``xs``/``ys`` are detection centres in pixel coords (optional).
-    Markers are a bright spring-green (high contrast on the grayscale frame —
-    far more legible than the old accent-blue, which washed out over mid-grays)."""
+    ``marker_rgb`` defaults to the live theme accent (``MARKER_RGB``)."""
+    if marker_rgb is None:
+        marker_rgb = MARKER_RGB
     a = np.asarray(arr, dtype=np.float32)
     if a.ndim != 2 or a.size == 0:
         return QImage()

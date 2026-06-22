@@ -66,12 +66,24 @@ class ThemeController(QObject):
                 self._accent = a
         except Exception:
             pass
+        self._sync_marker_accent()      # live-detection dots track the accent
 
     def _accent_def(self):
         for a in self._ACCENTS:
             if a["name"] == self._accent:
                 return a
         return self._ACCENTS[0]
+
+    def _sync_marker_accent(self):
+        """Push the chosen accent colour to the live-detection marker so the
+        detection dots match the accent picked in Preferences."""
+        try:
+            from firefly.ui.controllers.providers import live_frame_provider
+            h = str(self._accent_def()["v"]).lstrip("#")
+            live_frame_provider.set_marker_rgb(
+                (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)))
+        except Exception:
+            pass
 
     # ── active palette (the 14 semantic colour tokens) ───────────────────
     @Property("QVariantMap", notify=changed)
@@ -99,6 +111,7 @@ class ThemeController(QObject):
                 s.setValue("ui/accent", name); s.sync()
             except Exception:
                 pass
+            self._sync_marker_accent()          # recolour detection dots to match
             self.accentChanged.emit()
             self.changed.emit()                 # repaint every palette binding live
 
