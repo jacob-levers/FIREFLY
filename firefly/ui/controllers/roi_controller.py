@@ -42,6 +42,8 @@ class RoiController(QObject):
     roiSettingsChanged = Signal()       # mode / method / threshold / mask mode / bg σ
     maskChanged = Signal()              # threshold-mask preview
     viewChanged = Signal()              # proj ↔ raw + frame scrub
+    detectChanged = Signal()            # detection on/off + minmass
+    spotsChanged = Signal()             # detected-spot overlay
 
     def __init__(self, store=None, settings=None, override_store=None, parent=None):
         super().__init__(parent)
@@ -75,6 +77,13 @@ class RoiController(QObject):
         self._mask = None               # green RGBA overlay QImage
         self._mask_token = 0
         self._mask_fraction = 0.0
+        # ── detection-threshold (minmass) preview ─────────────────────────
+        self._detect_on = False
+        self._minmass = (float(settings.get_float("analysis/minmass", 1.0))
+                         if settings else 1.0)
+        self._spots = None              # green detected-spot overlay QImage
+        self._spots_token = 0
+        self._spot_count = 0
         from firefly.ui.controllers.params.preview_loader import PREVIEW_CMAPS
         self._cmap = "Grayscale"
         if settings is not None:
@@ -281,6 +290,14 @@ class RoiController(QObject):
         self._mask_proj_mode = ""
         self._load_background(self._file)     # sets self._proj + n_frames, renders proj
         self._recompute_mask()
+        if self._s is not None:               # pick up the latest sidebar minmass
+            self._minmass = float(self._s.get_float("analysis/minmass", self._minmass))
+        self._spots = None
+        self._spots_token += 1
+        if self._detect_on:
+            self._recompute_spots()
+        self.detectChanged.emit()
+        self.spotsChanged.emit()
         self._draft = []
         existing = self._store.get(self._file) if self._store else None
         self._polys = [[(float(y), float(x)) for y, x in poly]
@@ -350,6 +367,8 @@ class RoiController(QObject):
             self._load_frame(self._frame_idx)
         self._render_display()
         self._recompute_mask()        # mask follows the displayed source (raw ↔ proj)
+        if self._detect_on:
+            self._recompute_spots()   # detections follow the displayed source too
         self.viewChanged.emit()
 
     @Property(int, notify=viewChanged)
@@ -377,6 +396,8 @@ class RoiController(QObject):
         if self._view_mode == "raw":
             self._load_frame(i)
             self._render_display()
+            # spots follow the frame too, but DEBOUNCED from QML (refreshSpots) —
+            # locate() per scrub tick would lag, like the mask.
         self.frameChanged.emit(i)
         self.viewChanged.emit()
 
@@ -556,6 +577,112 @@ class RoiController(QObject):
                 self.statusMessage.emit(f"ROI mask preview failed: {exc}")
         self._mask_token += 1
         self.maskChanged.emit()
+
+    # ── detection-threshold (minmass) preview ─────────────────────────────
+    # Runs the SAME detect path the analysis uses (preprocess + trackpy.locate)
+    # on the displayed frame so the user can see which spots a given minmass
+    # catches.  The slider writes through to the sidebar analysis/minmass (and
+    # turns auto-minmass off) so what you preview is what the run detects.
+    @Property(bool, notify=detectChanged)
+    def detectEnabled(self):
+        return self._detect_on
+
+    @detectEnabled.setter
+    def detectEnabled(self, on):
+        on = bool(on)
+        if on == self._detect_on:
+            return
+        self._detect_on = on
+        self.detectChanged.emit()
+        self._recompute_spots()
+
+    @Property(float, notify=detectChanged)
+    def detectMinmass(self):
+        return self._minmass
+
+    @detectMinmass.setter
+    def detectMinmass(self, v):
+        v = max(0.0, float(v))
+        if abs(v - self._minmass) < 1e-9:
+            return
+        self._minmass = v
+        if self._s is not None:                  # what you preview is what runs
+            self._s.set("analysis/minmass", v)
+            self._s.set("analysis/auto_minmass", False)
+        self.detectChanged.emit()
+        # spots NOT rebuilt here — QML debounces refreshSpots (locate is heavy)
+
+    @Property(int, notify=spotsChanged)
+    def spotToken(self):
+        return self._spots_token
+
+    @Property(bool, notify=spotsChanged)
+    def hasSpots(self):
+        return self._spots is not None and not self._spots.isNull()
+
+    @Property(int, notify=spotsChanged)
+    def spotCount(self):
+        return self._spot_count
+
+    def roi_spots_image(self):
+        return self._spots
+
+    @Slot()
+    def refreshSpots(self):
+        self._recompute_spots()
+
+    def _spots_qimage(self, h, w, xs, ys):
+        from PySide6.QtCore import QPointF, Qt as _Qt
+        from PySide6.QtGui import QImage, QPainter, QPen, QColor
+        img = QImage(int(w), int(h), QImage.Format.Format_ARGB32)
+        img.fill(0)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(57, 255, 110)); pen.setWidthF(1.3)   # match live-detection green
+        p.setPen(pen); p.setBrush(_Qt.NoBrush)
+        for x, y in zip(xs, ys):
+            p.drawEllipse(QPointF(float(x), float(y)), 4.0, 4.0)
+        p.end()
+        return img
+
+    def _recompute_spots(self):
+        """Detect spots on the displayed frame at the current minmass + render
+        them as a green-circle overlay (run-matching preprocess + trackpy)."""
+        self._spots = None
+        self._spot_count = 0
+        if self._detect_on:
+            src = self._mask_source()
+            if src is not None:
+                try:
+                    import numpy as np
+                    import trackpy as tp
+                    from firefly.analysis.fa_preprocess import preprocess_stack
+                    from firefly.ui.controllers.params.params_builder import BG_METHOD_MAP
+                    g = self._s
+                    diameter = int(g.get_float("analysis/diameter", 7)) if g else 7
+                    if diameter % 2 == 0:
+                        diameter += 1
+                    bg_radius = int(g.get_float("analysis/bg_radius", 10)) if g else 10
+                    bg_method = (BG_METHOD_MAP.get(g.get_str("analysis/bg_method",
+                                 "Uniform Filter"), "uniform_filter") if g else "uniform_filter")
+                    frame = np.asarray(src, dtype=np.float32)
+                    pp = preprocess_stack(frame[None], bg_radius=bg_radius,
+                                          bg_method=bg_method, workers=1, quiet=True)[0]
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        f = tp.locate(pp, diameter, minmass=float(self._minmass),
+                                      percentile=64)
+                    if f is not None and len(f):
+                        self._spot_count = int(len(f))
+                        self._spots = self._spots_qimage(
+                            frame.shape[0], frame.shape[1],
+                            f["x"].to_numpy(), f["y"].to_numpy())
+                except Exception as exc:
+                    self._spots = None
+                    self.statusMessage.emit(f"Detection preview failed: {exc}")
+        self._spots_token += 1
+        self.spotsChanged.emit()
 
     # ── per-file override indicator ───────────────────────────────────────
     @Slot(str, result=bool)

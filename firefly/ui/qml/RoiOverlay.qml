@@ -37,6 +37,7 @@ Item {
     }
     Timer { running: true; interval: 2800; onTriggered: root.scanning = false }
     Timer { id: maskDebounce; interval: 160; onTriggered: Roi.refreshMask() }
+    Timer { id: spotsDebounce; interval: 200; onTriggered: Roi.refreshSpots() }
 
     function saveRoi() {
         if (root.isPoly && Roi.canClose) Roi.closeDraft()
@@ -137,6 +138,17 @@ Item {
                             source: Roi.hasMask ? ("image://roimask/" + Roi.maskToken) : ""
                         }
 
+                        // detected-spot overlay (green circles at the current minmass)
+                        Image {
+                            anchors.fill: parent
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true; cache: false; asynchronous: true
+                            visible: Roi.detectEnabled && Roi.hasSpots
+                            opacity: visible ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
+                            source: Roi.hasSpots ? ("image://roispots/" + Roi.spotToken) : ""
+                        }
+
                         ScanLine { anchors.fill: parent; active: root.scanning }
 
                         Text {
@@ -231,9 +243,10 @@ Item {
                                 showValue: false
                                 from: 0; to: Math.max(1, Roi.nFrames - 1); step: 1; decimals: 0
                                 value: Roi.frameIndex
-                                // frame renders live; the (heavy) mask recompute
-                                // debounces so the threshold updates per frame
-                                onMoved: (v) => { Roi.setFrame(v); maskDebounce.restart() }
+                                // frame renders live; the (heavy) mask + detection
+                                // recomputes debounce so they update per frame
+                                onMoved: (v) => { Roi.setFrame(v); maskDebounce.restart()
+                                                  if (Roi.detectEnabled) spotsDebounce.restart() }
                             }
                             Text {
                                 text: (Roi.frameIndex + 1) + " / " + Roi.nFrames
@@ -346,6 +359,40 @@ Item {
                             model: Roi.cmaps
                             currentIndex: Math.max(0, Roi.cmaps.indexOf(Roi.cmap))
                             onPicked: (t) => Roi.cmap = t
+                        }
+
+                        // detection threshold (minmass) preview + slider
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PanelLabel { text: "DETECTIONS" }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    visible: Roi.detectEnabled
+                                    text: Roi.hasSpots ? (Roi.spotCount.toLocaleString(Qt.locale(), "f", 0) + " spots") : "0 spots"
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                                }
+                                Switch {
+                                    checked: Roi.detectEnabled
+                                    onToggled: (c) => { Roi.detectEnabled = c
+                                                        if (c) Roi.refreshSpots() }
+                                }
+                            }
+                            Slider {
+                                Layout.fillWidth: true
+                                visible: Roi.detectEnabled
+                                from: 0; to: 50; step: 0.25; decimals: 2
+                                value: Roi.detectMinmass
+                                onMoved: (v) => { Roi.detectMinmass = v; spotsDebounce.restart() }
+                                onCommitted: (v) => { Roi.detectMinmass = v; Roi.refreshSpots() }
+                            }
+                            Text {
+                                visible: Roi.detectEnabled
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: "Green circles = spots detected at this minmass. This sets the run's detection threshold."
+                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                            }
                         }
 
                         // polygon count + close shape

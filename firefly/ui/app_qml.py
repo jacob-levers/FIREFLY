@@ -170,6 +170,7 @@ def build_main_window(app: QtWidgets.QApplication):
     qw.engine().addImageProvider("comparefig", FigureImageProvider(comparec))
     qw.engine().addImageProvider("roibg", QImageProvider(roi.roi_image))
     qw.engine().addImageProvider("roimask", QImageProvider(roi.roi_mask_image))
+    qw.engine().addImageProvider("roispots", QImageProvider(roi.roi_spots_image))
     qw.engine().addImageProvider("hfworker", HfWorkerFrameProvider(hyperfly))
     qw.engine().addImageProvider("importthumb", QImageProvider(importc.thumb_image))
     qw.engine().addImageProvider("workspacefig", QImageProvider(workspace.figure_image))
