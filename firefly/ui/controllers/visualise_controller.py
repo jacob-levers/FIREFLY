@@ -900,7 +900,15 @@ class VisualiseController(QObject):
             self._cl_stats_df = stats_df
             self._cl_extras_dir = extras
             self._cl_stem = stem
-            if self._cl_motion is None and self._cl_color_mode in ("Motion", "Cluster motion"):
+            # Colour-by-motion needs per-track motion classes, which live in the
+            # run's trajectories/diffusion CSVs, NOT the cluster-labels file. If
+            # a cluster map is opened on its own, pull those siblings in so the
+            # scatter can actually be coloured by motion.
+            self._maybe_autoload_sibling_tracks(extras, stem)
+            # Only fall back to ID when there's genuinely no motion data anywhere
+            # (no motion column AND no run to derive it from).
+            if (self._cl_motion is None and not self._runs
+                    and self._cl_color_mode in ("Motion", "Cluster motion")):
                 self._cl_color_mode = "ID"
             self._cl_present = True
             self._cl_visible = True          # new clusters load shown
@@ -917,6 +925,27 @@ class VisualiseController(QObject):
             self.warn.emit("Couldn't load clusters",
                            f"{os.path.basename(run_dir)}:\n{exc}")
             return False
+
+    def _maybe_autoload_sibling_tracks(self, extras_dir: str, stem: str):
+        """When a cluster map is opened standalone, silently load the sibling
+        trajectories + diffusion CSVs (same run folder) so the cluster scatter
+        can be coloured by motion class.  The track overlay is loaded HIDDEN —
+        the user asked for the cluster map, so only the data is wanted, not the
+        track lines (they can be re-shown from the LAYERS panel)."""
+        if self._runs:
+            return                                # a run is already loaded
+        traj = os.path.join(extras_dir, f"{stem}_trajectories.csv")
+        if not os.path.isfile(traj):
+            return                                # standalone export, no tracks
+        diff = os.path.join(extras_dir, f"{stem}_diffusion_summary.csv")
+        try:
+            self.loadTracksPath(traj, diff if os.path.isfile(diff) else None)
+        except Exception:
+            return
+        for cls in list(self._class_visible):     # keep the view cluster-focused
+            self._class_visible[cls] = False
+            try:    self._viewer.set_class_visible(cls, False)
+            except Exception: pass
 
     _REAL_MOTION = frozenset(_MOTION_ORDER)   # MOTION_CLASS_ORDER + "Unknown"
 

@@ -42,33 +42,85 @@ class _AdditivePixmapItem(QtWidgets.QGraphicsPixmapItem):
         super().paint(painter, option, widget)
 
 
+def _group_points_np(xs, ys, brushes, size):
+    """Bucket points by colour, keeping the per-colour coordinate ARRAYS (so
+    paint() can cull to the viewport) plus a prebuilt full polygon per colour
+    for the zoomed-out path.  Returns ``([(QColor, gx, gy, QPolygonF)…], rect)``."""
+    n = xs.size
+    # rgba8 per point.  Fast vectorised path for the usual list-of-(r,g,b,a)
+    # float tuples (the cluster scatter — up to 250k); per-point _qcolor for
+    # QColor / hex-string / named-colour inputs.
+    if n and isinstance(brushes[0], (tuple, list, np.ndarray)):
+        rgba = np.clip(np.round(np.asarray(brushes, float) * 255.0),
+                       0, 255).astype(np.uint32)
+    else:
+        cols = [_qcolor(b) for b in brushes]
+        rgba = np.array([[c.red(), c.green(), c.blue(), c.alpha()]
+                         for c in cols], dtype=np.uint32)
+    key = (rgba[:, 0] << 24) | (rgba[:, 1] << 16) | (rgba[:, 2] << 8) | rgba[:, 3]
+    groups = []
+    for k in np.unique(key):
+        m = key == k
+        gx = xs[m]; gy = ys[m]
+        col = QtGui.QColor(int((k >> 24) & 255), int((k >> 16) & 255),
+                           int((k >> 8) & 255), int(k & 255))
+        poly = QtGui.QPolygonF([QPointF(float(a), float(b))
+                                for a, b in zip(gx, gy)])
+        groups.append((col, gx, gy, poly))
+    pad = max(1, int(size))
+    rect = QRectF(float(np.min(xs)) - pad, float(np.min(ys)) - pad,
+                  float(np.ptp(xs)) + 2 * pad, float(np.ptp(ys)) + 2 * pad)
+    return groups, rect
+
+
 class _PointsItem(QtWidgets.QGraphicsItem):
-    """Paints many coloured dots in a single item.  Points are grouped by
-    colour so each colour is one native ``drawPoints`` call — fast even for the
-    full localisation set."""
+    """Paints many coloured dots, grouped by colour (one ``drawPoints`` per
+    colour).  A single whole-field item is never culled by the view, so without
+    help every pan/zoom repaints ALL points (up to ~250k size-20 dots → very
+    laggy).  paint() therefore culls each colour group to the exposed viewport
+    rect, falling back to a prebuilt full polygon only when most of the field is
+    on screen."""
     def __init__(self, xs, ys, brushes, size):
         super().__init__()
         self._size = max(1, int(size))
-        self._groups, self._rect = group_points_by_color(xs, ys, brushes, self._size)
+        self._groups, self._rect = _group_points_np(xs, ys, brushes, self._size)
+        # Ask the view for a TIGHT exposedRect (the visible/dirty region) in
+        # paint() — without this flag it defaults to the full boundingRect and
+        # the viewport cull below can never engage.
+        self.setFlag(
+            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption,
+            True)
 
     def boundingRect(self):
         return self._rect
 
     def paint(self, painter, option, widget=None):
-        # AA off for the scatter: antialiasing every dot is the dominant repaint
-        # cost when the cache regenerates on zoom — up to one drawPoints group
-        # per cluster in "ID" mode (hundreds of groups, tens of thousands of
-        # points). The tails layer disables AA for the same reason.
+        # AA off for the scatter (same reason the tails layer disables it):
+        # antialiasing every dot dominates the repaint cost.
         aa = QtGui.QPainter.RenderHint.Antialiasing
         was = painter.testRenderHint(aa)
         painter.setRenderHint(aa, False)
-        for col, poly in self._groups:
+        exp = option.exposedRect
+        fr = self._rect
+        cull = (exp.isValid() and fr.width() > 0 and fr.height() > 0
+                and exp.width() * exp.height() < 0.5 * fr.width() * fr.height())
+        pad = float(self._size)
+        for col, gx, gy, full in self._groups:
             pen = QtGui.QPen(col)
             pen.setWidth(self._size)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             pen.setCosmetic(True)        # constant on-screen size while zooming
             painter.setPen(pen)
-            painter.drawPoints(poly)
+            if cull:
+                m = ((gx >= exp.left() - pad) & (gx <= exp.right() + pad)
+                     & (gy >= exp.top() - pad) & (gy <= exp.bottom() + pad))
+                if not m.any():
+                    continue
+                painter.drawPoints(QtGui.QPolygonF(
+                    [QPointF(float(a), float(b))
+                     for a, b in zip(gx[m], gy[m])]))
+            else:
+                painter.drawPoints(full)
         painter.setRenderHint(aa, was)
 
 
@@ -748,11 +800,10 @@ class FireflyViewer(QtWidgets.QWidget):
             brushes = [QtGui.QColor(120, 180, 255, 200)] * x.size
         item = _PointsItem(x, y, brushes, size)
         item.setZValue(20)
-        # Cache the (static) cluster scatter so it isn't re-drawn point-by-point
-        # on every playback frame — up to ~200k points otherwise re-paint each
-        # tick when the markers above force a full-field redraw.
-        item.setCacheMode(
-            QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
+        # No device-coordinate cache: the item culls to the viewport in paint(),
+        # so panning repaints only the newly-exposed strip and playback only the
+        # markers' small dirty regions.  (The cache silently disabled itself once
+        # zoomed in past its size limit, then repainted every point each event.)
         self._scene.addItem(item)
         self._point_item = item
         self._point_xy = np.column_stack([x, y])
