@@ -11,7 +11,12 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.10"
+__version__ = "2.76.11"
+# v2.76.11 — Cluster map, round 2: opening a cluster map on its own now auto-loads
+#           the sibling tracks/diffusion (hidden) so colour-by-motion actually
+#           shows Immobile/Confined/etc. instead of all three modes looking the
+#           same; navigation is genuinely smooth now (the scatter culls to the
+#           visible viewport — zoomed-in repaints ~130ms → <10ms).
 # v2.76.10 — Visualise cluster-map fixes: colour-by-motion now works (per-loc
 #           motion is re-derived from the loaded tracks when the analysis column
 #           is wholesale "Unmatched"); a cluster map opens standalone without

@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.76.11
+
+Cluster map, round 2 — colour-by-motion and navigation lag.
+
+### Fixed
+
+- **Colour by motion now shows motion classes for a standalone cluster map.**
+  Opening a cluster map on its own gave the viewer no motion data, so *Motion*,
+  *Cluster motion* and *ID* all fell back to the same per-cluster colours and
+  looked identical. Loading a cluster map now silently pulls in the sibling
+  trajectories + diffusion CSVs from the same run folder (the track overlay is
+  loaded **hidden** — re-show it from LAYERS), so the scatter colours by
+  Immobile / Confined / Brownian / Directed.
+- **Cluster-map navigation is no longer laggy.** A single whole-field scatter is
+  never culled by the view, so every pan/zoom repainted *all* points (up to
+  ~250k large dots). The scatter now culls to the visible viewport — zoomed-in
+  repaints dropped from ~130 ms to under 10 ms.
+
+### Notes
+
+- *Motion* colours each localisation by its own class; *Cluster motion* colours
+  each whole cluster by its dominant (most common) class; *ID* gives each cluster
+  a distinct colour. They differ only when motion data is present.
+
 ## v2.76.10
 
 Visualise cluster-map fixes.
