@@ -44,9 +44,14 @@ MOTION_COLORS = {
     "Directed": "#7ed321", "Unknown": "#aaaaaa",
 }
 
-# condition swatch palette (matches the design tokens)
-GROUP_COLORS = ["#58a6ff", "#f78166", "#56d364", "#27c0e8", "#f6a623", "#a371f7"]
-MAX_CONDITIONS = 6
+# condition swatch palette (matches the design tokens).  12 distinct hues so a
+# group × time-point design (one condition per cell — e.g. 3 groups × 3 time
+# points = 9) gets its own swatch up to the cap before the palette repeats.
+GROUP_COLORS = ["#58a6ff", "#f78166", "#56d364", "#27c0e8", "#f6a623", "#a371f7",
+                "#e05252", "#ec6cb9", "#d2a8ff", "#39c5cf", "#e3b341", "#7ee787"]
+# Raised 6 → 12 (matches the legacy Compare cap): conditions live in a scrollable
+# rail, so this is just a runaway guard, not a layout limit.
+MAX_CONDITIONS = 12
 
 
 # ── one loaded run folder ─────────────────────────────────────────────────
