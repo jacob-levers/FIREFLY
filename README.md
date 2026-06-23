@@ -24,9 +24,10 @@ the linking distance from the data. You can also **import and analyse
 localisation tables exported by other tools** (TrackMate, palmTRACER,
 Picasso, ThunderSTORM) — see [Analyse external localisations](#analyse-external-localisations).
 
-Built with Python + PySide6 + napari. Localisation runs on the GPU via
-PyTorch — NVIDIA CUDA on Windows/Linux, Apple MPS on macOS, picked
-automatically — and falls back to trackpy on CPU.
+Built with Python + PySide6 (Qt 6 / QML); the interactive viewers (Visualise
+tab + ROI editor) are bespoke QGraphicsView / QImage widgets — no napari.
+Localisation runs on the GPU via PyTorch — NVIDIA CUDA on Windows/Linux, Apple
+MPS on macOS, picked automatically — and falls back to trackpy on CPU.
 
 By Jacob Levers · macOS and Windows
 
@@ -75,21 +76,22 @@ release on the [Releases page](https://github.com/jacob-levers/FIREFLY/releases)
    time while antivirus scans the fresh binaries; later launches are quick.
 
 > **GPU acceleration on Windows:** the bundled `FIREFLY-Windows.exe`
-> ships **CPU-only** PyTorch. The CUDA-enabled torch wheel is ~2.5 GB
-> on its own and pushes the .exe past GitHub Releases' 2 GiB asset
-> cap, so we can't bundle it. If you have an NVIDIA GPU and want to
-> run the localiser on it, follow **"From source (advanced)"** below
-> and add the CUDA install step shown there. macOS Apple-Silicon
-> users already get MPS acceleration from the bundled torch — no
-> extra setup needed.
+> ships **CPU-only** PyTorch (the CUDA-enabled torch wheel is ~2.5 GB and
+> pushes the .exe past GitHub Releases' 2 GiB asset cap, so it can't be
+> bundled). If you have an NVIDIA GPU, open **Preferences → GPU
+> acceleration** and click **Install CUDA** — FIREFLY downloads the CUDA
+> torch build matched to your GPU + interpreter and prompts a restart, all
+> in-app. (Source installs can instead use the manual step under **"From
+> source (advanced)"** below.) macOS Apple-Silicon users already get MPS
+> acceleration from the bundled torch — no extra setup needed.
 
 ### Updating
 
 FIREFLY checks GitHub for new releases on launch. When one is available an
-**Update available** pill appears in the header — click it (or **File → Check
-for Updates…**, or **Preferences → Updates**) and choose **Update now**. The app
-downloads the new version, replaces itself, and restarts automatically — no need
-to re-download from the Releases page by hand. On macOS the first launch after an
+**Update available** pill appears in the header — click it (it jumps straight to
+**Preferences → Updates**) and choose **Download & install**. The app downloads
+the new version, replaces itself, and restarts automatically — no need to
+re-download from the Releases page by hand. On macOS the first launch after an
 update no longer needs the right-click → **Open** step. (Source installs update
 with `git pull`.)
 
@@ -107,9 +109,9 @@ cd FIREFLY
 
 **Windows** — double-click `Launch_FIREFLY.bat`.
 
-First launch opens a terminal showing pip installing PySide6, napari,
-PyTorch, scipy and friends (~3–8 minutes). The GUI starts automatically
-when the install finishes; subsequent launches skip the install and open
+First launch opens a terminal showing pip installing PySide6, PyTorch,
+scipy and friends (~3–8 minutes). The GUI starts automatically when the
+install finishes; subsequent launches skip the install and open
 immediately.
 
 **Enabling CUDA (Windows + NVIDIA GPU)**
@@ -123,7 +125,7 @@ finishes (still inside the project's virtual environment):
 pip install --upgrade --index-url https://download.pytorch.org/whl/cu124 "torch>=2.3,<3"
 ```
 
-Restart FIREFLY. The Analysis tab's backend dropdown will pick up
+Restart FIREFLY. The backend dropdown in the parameter sidebar will pick up
 CUDA automatically; `Backend: torch (device: cuda)` should appear in
 the log when a run starts. cu124 needs an NVIDIA driver ≥ R535
 (Aug 2023); for older drivers swap `cu124` for `cu121` or `cu118`.
@@ -138,14 +140,17 @@ The app opens on a welcome page with four action cards:
 |---|---|
 | **Analyse a sample** | Run the full pipeline on one `.czi` / `.tif` file |
 | **Batch a folder** | Process every file in a folder — in parallel on capable machines (HYPER-FLY) |
-| **Compare groups** | Overlay 2–6 analysis-output folders into one figure |
-| **Visualise tracks** | Open a previous run in an embedded napari viewer |
+| **Compare & analyse** | Drop 2–12 conditions into one live comparison — figure, stats and significance |
+| **Visualise tracks** | Open a previous run in the interactive track / cluster viewer |
 
 Once you pick a card the welcome page is replaced by the workflow tabs
-(**Import / Analysis / Compare / Results / Visualise / Re-process**) plus a
-sidebar of analysis parameters. (Figure styling now lives in **Preferences** —
-the cogwheel in the header.) The landing page is shown only at launch, not on
-every tab switch.
+(**Import / Process / Analysis / Visualise / HYPER-FLY**) plus a sidebar of
+analysis parameters. **Process** is the live run cockpit; **Analysis** is the
+merged comparison + results workspace (multi-condition figures, statistics and
+significance, updated live as you add data); **HYPER-FLY** is the parallel-batch
+dashboard (active only during a parallel batch). Figure styling lives in
+**Preferences** — the cogwheel in the header. The landing page is shown only at
+launch, not on every tab switch.
 
 ---
 
@@ -205,7 +210,7 @@ every tab switch.
   flows through a 60 FPS canvas with detected spots overlaid, so you can
   *watch* the pipeline at work.
 - **Preview viewer** — a **Preview viewer** button on the Import tab opens a
-  floating napari window for the selected file (single file or batch series),
+  floating preview window for the selected file (single file or batch series),
   keeping the tab itself uncluttered. Scrub frames, see detection circles
   colour-coded by integrated mass (turbo on log scale), toggle a
   bandpass-filtered view that shows what the detector actually sees, and
@@ -266,9 +271,10 @@ Four modes:
   440 DPI as you change settings.
 - PNG + optional vector PDF + per-panel PNG exports.
 
-### Compare mode
+### Compare & analyse
 
-- 2–6 groups of analysis-output folders.
+- 2–12 conditions (groups of analysis-output folders), optionally arranged
+  by time point for group × time-point designs.
 - Auto-selects t-test / Mann-Whitney / ANOVA / Kruskal-Wallis based on
   Shapiro-Wilk normality screening.
 - Per-replicate scatter dots overlaid on bar charts (when n ≥ 2).
@@ -301,7 +307,7 @@ Four modes:
 - **Time-elapsed counter** ticking at 1 Hz during runs (`MM:SS` /
   `H:MM:SS`).
 - **Interactive track inspector** on the Visualise tab — click a track
-  in the napari Tracks layer to see its particle ID, length, frame span,
+  in the viewer to see its particle ID, length, frame span,
   D, α, motion class, displacement, path length, straightness, mean mass.
 - **HYPER-FLY parallel batch** — on a large workstation (**≥ 32 cores and
   ≥ 192 GB RAM**) a folder batch fans out across several files at once in
@@ -406,23 +412,27 @@ another tool produced — no re-detection.
    several files in parallel processes with a live per-file tile dashboard;
    smaller machines process one file at a time.
 
-### Compare groups
+### Compare & analyse
 
-1. **Compare** tab — drag analysis-output folders into the group cards,
-   one card per condition (e.g. "Pre", "Post" / "WT", "KO", "Rescue").
-2. Style on the **Figures** tab: theme, which of the 10 comparison
-   panels to include, whether to also emit the multi-page PDF report.
-3. **Generate comparison** — figure + summary CSV + stats CSV + PDF
-   report land in the chosen output folder.
+1. **Analysis** tab — drop analysis-output folders into the condition cards,
+   one card per condition (e.g. "Pre", "Post" / "WT", "KO", "Rescue"); up to
+   **12** conditions, optionally grouped by time point. The figure, statistics
+   and significance update **live** as you add data — no Generate step needed.
+2. Pick the metric (track length, jump distance, dwell time, turning angle,
+   radial distribution, …) from the row of chips along the top; style figures
+   in **Preferences → Figures**.
+3. **Generate full report** writes the figure + summary CSV + stats CSV +
+   multi-page PDF report to the chosen output folder.
 
 ### Visualise tracks
 
-1. **Visualise** tab — click **Load analysis run…** and pick an output
-   folder.
-2. The original stack loads as an Image layer; trajectories as a Tracks
-   layer auto-coloured by motion class.
-3. Click any track to populate the **Track inspector** panel on the
-   right with that particle's stats.
+1. **Visualise** tab — click **Open run…** and pick an output folder (or
+   **Load cluster map…** to open a standalone DBSCAN cluster map).
+2. The original stack loads as the background; trajectories overlay as
+   tracks auto-coloured by motion class, with playback, fading tails and an
+   optional super-resolution layer. DBSCAN clusters can be coloured by motion
+   class or cluster ID and re-clustered live (eps / min-samples).
+3. Click any track or cluster to populate the inspector with its stats.
 
 ---
 
@@ -552,9 +562,9 @@ verdict. On macOS the **PyTorch (GPU)** backend uses Apple MPS and requires
 PyTorch ≥ 2.0 and a recent macOS; on older systems the resolver auto-falls
 back to trackpy.
 
-**Compare panels show "no data" placeholders**
+**Comparison panels show "no data" placeholders**
 → Older analysis folders (pre-v1.0.55) don't have every per-run JSON /
-CSV the Compare tab needs. Re-run the affected experiments to regenerate
+CSV the Analysis tab needs. Re-run the affected experiments to regenerate
 the full set.
 
 **Hard freeze during analysis**
@@ -587,9 +597,8 @@ Built on the shoulders of:
 - [scipy](https://scipy.org/), [scikit-learn](https://scikit-learn.org/) —
   statistics, DBSCAN
 - [matplotlib](https://matplotlib.org/) — figure rendering
-- [napari](https://napari.org/) +
-  [vispy](https://vispy.org/) — embedded image viewer
-- [PySide6 / Qt 6](https://www.qt.io/) — GUI
+- [PySide6 / Qt 6](https://www.qt.io/) — GUI + QML; the interactive viewers
+  are bespoke QGraphicsView / QImage widgets (numpy + matplotlib)
 - [PyTorch](https://pytorch.org/) — GPU localisation
 - [tifffile](https://github.com/cgohlke/tifffile),
   [aicspylibczi](https://github.com/AllenCellModeling/aicspylibczi) —
