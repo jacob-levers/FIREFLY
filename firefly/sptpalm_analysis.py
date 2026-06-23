@@ -11,7 +11,15 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.11"
+__version__ = "2.76.12"
+# v2.76.12 — UI: the update pill jumps to Preferences ▸ Updates; a restart prompt
+#           pops after a CUDA install; CUDA section padding; the landing screen is
+#           just the glow (no animation).  Cluster map, round 3: clicking a dot
+#           prefers a real cluster over noise and the click target scales with the
+#           dot size; the eps=500 crash is fixed (recluster realigns to the
+#           sub-sampled coords); a level-of-detail scatter caps the per-repaint
+#           work (~130 ms → <10 ms zoomed-in); a standalone cluster map pulls its
+#           motion data WITHOUT a track overlay (no stray track tails on zoom-in).
 # v2.76.11 — Cluster map, round 2: opening a cluster map on its own now auto-loads
 #           the sibling tracks/diffusion (hidden) so colour-by-motion actually
 #           shows Immobile/Confined/etc. instead of all three modes looking the

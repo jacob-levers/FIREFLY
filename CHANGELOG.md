@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.76.12
+
+Cluster-map round 3 + UI polish.
+
+### Fixed
+
+- **Clicking a cluster no longer resolves to noise.** Picking preferred the
+  nearest point *centre*, which could be an interspersed grey noise dot; it now
+  prefers a real cluster (and the click target scales with the dot size, so a
+  click anywhere on a big dot registers — not just the bullseye).
+- **Setting eps = 500 no longer crashes.** For a large eps `compute_clusters`
+  sub-samples the localisations to bound DBSCAN's memory; recluster now realigns
+  every per-loc array to the returned (sub-sampled) coordinates instead of
+  reading past the end of the shorter labels array.
+- **The cluster map is much smoother.** A level-of-detail scatter culls to the
+  viewport and never draws more than ~40k dots per repaint (the overlap makes
+  the decimation invisible) — zoomed-in repaints dropped from ~130 ms to under
+  10 ms, zoomed-out from ~280 ms to ~40 ms.
+- **No stray track tails on a standalone cluster map.** Opening a cluster map
+  pulls its motion data in as data only — no track overlay — so zooming in no
+  longer reveals track tails over the clusters.
+- **The update pill opens Preferences ▸ Updates** instead of the last-viewed
+  section.
+
+### Added
+
+- **A restart prompt after installing CUDA** — FIREFLY needs a fresh process to
+  load the GPU torch, so a modal now offers "Restart now" / "Later".
+
+### Changed
+
+- **More padding/spacing in the GPU (CUDA) section** of Preferences.
+- **The landing screen is just the soft side glow** — no moving particles.
+
 ## v2.76.11
 
 Cluster map, round 2 — colour-by-motion and navigation lag.
