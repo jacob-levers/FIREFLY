@@ -170,6 +170,7 @@ def build_main_window(app: QtWidgets.QApplication):
     # quit so the helper can replace the running bundle and relaunch it.
     updates.quitForUpdate.connect(app.quit)
     cuda = CudaController()        # Preferences ▸ GPU acceleration (CUDA installer)
+    cuda.quitForRestart.connect(app.quit)   # "Restart now" after a CUDA install
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle("FIREFLY")

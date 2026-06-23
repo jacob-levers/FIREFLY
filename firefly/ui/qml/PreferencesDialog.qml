@@ -26,7 +26,7 @@ Item {
     readonly property var pal: Theme.palette
     readonly property var sc: Theme.scale
 
-    function open() { opened = true }
+    function open(sec) { if (sec !== undefined && sec !== "") section = sec; opened = true }
     function close() { opened = false }
     // Hide the always-on-top native viewer/ROI island so it can't occlude this
     // dialog (e.g. over the Visualise tab's viewer).
@@ -815,6 +815,8 @@ Item {
                 title: "GPU backend"
                 RowLayout {
                     Layout.fillWidth: true; spacing: sc.sp4
+                    Layout.leftMargin: sc.sp5; Layout.rightMargin: sc.sp5
+                    Layout.bottomMargin: sc.sp5
                     Rectangle {
                         Layout.preferredWidth: 44; Layout.preferredHeight: 44; radius: sc.radius2xl
                         color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
@@ -851,7 +853,9 @@ Item {
                 visible: Cuda.checked && Cuda.supported && Cuda.gpuName !== ""
                 title: Cuda.installed ? "Update or remove" : "Install CUDA acceleration"
                 ColumnLayout {
-                    Layout.fillWidth: true; spacing: sc.sp3
+                    Layout.fillWidth: true; spacing: sc.sp4
+                    Layout.leftMargin: sc.sp5; Layout.rightMargin: sc.sp5
+                    Layout.bottomMargin: sc.sp5
                     Text {
                         Layout.fillWidth: true; wrapMode: Text.WordWrap
                         text: Cuda.installed
@@ -864,7 +868,7 @@ Item {
                     ColumnLayout {
                         Layout.fillWidth: true
                         visible: Cuda.busy
-                        spacing: sc.sp2
+                        spacing: sc.sp3
                         Rectangle {
                             Layout.fillWidth: true; implicitHeight: 8; radius: 4; clip: true
                             color: pal.PANEL; border.width: 1; border.color: pal.BORDER

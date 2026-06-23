@@ -99,7 +99,7 @@ Item {
                             }
                         }
                         HoverHandler { id: upPillHov; cursorShape: Qt.PointingHandCursor }
-                        TapHandler { onTapped: prefs.open() }
+                        TapHandler { onTapped: prefs.open("updates") }   // jump to Updates
                     }
                     IconButton { icon: "settings"; tip: "Preferences (⌘,)"; size: 28
                                  onClicked: prefs.open() }
@@ -149,6 +149,27 @@ Item {
     // Preferences modal + ⌘, shortcut.
     PreferencesDialog { id: prefs }
     Shortcut { sequence: StandardKey.Preferences; onActivated: prefs.open() }
+
+    // Restart prompt once a CUDA install finishes (the GPU torch only loads on a
+    // fresh process). Declared after Preferences so it layers above it.
+    Modal {
+        id: cudaRestart
+        title: "Restart to use the GPU"
+        Connections { target: Cuda; function onInstallCompleted() { cudaRestart.open() } }
+        Text {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
+            text: "CUDA acceleration is installed. FIREFLY needs to restart so detection "
+                + "runs on your GPU."
+            color: pal.TXT_MUTED; font.pixelSize: sc.textSm; lineHeight: 1.25
+        }
+        RowLayout {
+            Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp3
+            Item { Layout.fillWidth: true }
+            Button { variant: "secondary"; text: "Later"; onClicked: cudaRestart.close() }
+            Button { variant: "primary"; text: "Restart now"; icon: "refresh-cw"
+                     onClicked: { cudaRestart.close(); Cuda.restartNow() } }
+        }
+    }
 
     // ── landing page ─────────────────────────────────────────────────
     Component {

@@ -23,6 +23,8 @@ class CudaController(QObject):
     changed = Signal()             # gpu / installed / versions refreshed
     busyChanged = Signal()         # install/uninstall started or finished (+ error)
     progressChanged = Signal()     # download/extract progress or status advanced
+    installCompleted = Signal()    # a CUDA install finished OK → prompt a restart
+    quitForRestart = Signal()      # app should quit (a relaunch was staged first)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -180,6 +182,19 @@ class CudaController(QObject):
         self._cancel = True
 
     @Slot()
+    def restartNow(self):
+        """Best-effort relaunch: stage a fresh instance, then ask the app to
+        quit so the new process picks up the CUDA torch sidecar.  Falls back to
+        a plain quit if the relaunch can't be staged."""
+        import sys
+        from PySide6 import QtCore
+        try:
+            QtCore.QProcess.startDetached(sys.executable, sys.argv[1:])
+        except Exception:
+            pass
+        self.quitForRestart.emit()
+
+    @Slot()
     def uninstall(self):
         if self._busy:
             return
@@ -215,6 +230,7 @@ class CudaController(QObject):
                 self.busyChanged.emit()
                 self.progressChanged.emit()
                 self.refresh()
+                self.installCompleted.emit()   # → restart prompt in the UI
             elif st == "error":
                 self._busy = False
                 self._inst_state = ""
