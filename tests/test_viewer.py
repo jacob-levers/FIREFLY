@@ -72,6 +72,20 @@ def test_points_overlay_and_cluster_pick():
     assert v._point_xy is None
 
 
+def test_cluster_pick_tolerance_scales_with_point_size():
+    """A click anywhere on a big dot resolves — the auto tolerance scales with
+    the dot radius, not a fixed 8 px from the centre."""
+    v = _viewer()
+    v.set_points(np.array([50.0]), np.array([50.0]),
+                 ids=np.array([5]), brushes=["#0f0"], size=30)
+    assert v._point_size == 30
+    v._view.resetTransform()                       # identity → tol in scene units
+    # 12 units off-centre: inside a size-30 dot, OUTSIDE the old fixed 8 px tol
+    assert v.pick_at(62.0, 50.0) == ("cluster", 5)
+    # far away still misses
+    assert v.pick_at(110.0, 50.0) is None
+
+
 def test_track_pick_resolves_particle_id():
     v = _viewer()
     df = pd.DataFrame({

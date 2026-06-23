@@ -197,9 +197,18 @@ def pick_at(point_xy, point_ids, track_pick, class_visible, y, x, tol,
     px, py = float(x), float(y)
     if point_xy is not None and len(point_xy):
         d = np.hypot(point_xy[:, 0] - px, point_xy[:, 1] - py)
-        j = int(np.argmin(d))
-        if d[j] <= tol:
-            return ("cluster", int(point_ids[j]))
+        ids = np.asarray(point_ids)
+        within = d <= tol
+        if within.any():
+            # Prefer a real cluster (id >= 0) over an interspersed noise point:
+            # noise dots sit among the coloured ones, so the nearest CENTRE can
+            # be noise even when the click lands on a cluster dot.  Only return
+            # noise when no cluster point is within tolerance.
+            cl = within & (ids >= 0)
+            if cl.any():
+                gi = np.flatnonzero(cl)
+                return ("cluster", int(ids[gi[int(np.argmin(d[cl]))]]))
+            return ("cluster", int(ids[int(np.argmin(np.where(within, d, np.inf)))]))
     best_pid, best_d = None, np.inf
     for cls, (xy, pid) in track_pick.items():
         if not class_visible.get(cls, True) or not len(xy):

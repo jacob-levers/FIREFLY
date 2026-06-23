@@ -96,10 +96,13 @@ class VisualiseController(QObject):
         self._hud_tracks = 0
 
         # ── clusters ─────────────────────────────────────────────────────
-        self._cl_xy_um = None
+        self._cl_xy_um = None             # DISPLAYED loc coords (may be subsampled)
+        self._cl_xy_um_full = None        # full loc set — the input to every recluster
         self._cl_labels = None
         self._cl_motion = None
         self._cl_motion_tried_derive = False   # re-join cluster locs↔track motion once
+        self._motion_src = []             # [(traj_df, diff_df)] — data-only motion for
+                                          # a standalone cluster map (no track overlay)
         self._cl_xy_px = None
         self._cl_px_um = 1.0
         self._cl_stats_df = None
@@ -890,6 +893,8 @@ class VisualiseController(QObject):
             self._cl_xy_um = np.column_stack([
                 labels_df["x_um"].to_numpy(dtype=np.float32),
                 labels_df["y_um"].to_numpy(dtype=np.float32)])
+            self._cl_xy_um_full = self._cl_xy_um     # recluster always re-reads this
+
             self._cl_labels = labels_df["cluster_id"].to_numpy(dtype=np.int32)
             self._cl_motion = (labels_df["motion"].astype(str).to_numpy()
                                if "motion" in labels_df.columns else None)
@@ -902,12 +907,13 @@ class VisualiseController(QObject):
             self._cl_stem = stem
             # Colour-by-motion needs per-track motion classes, which live in the
             # run's trajectories/diffusion CSVs, NOT the cluster-labels file. If
-            # a cluster map is opened on its own, pull those siblings in so the
-            # scatter can actually be coloured by motion.
-            self._maybe_autoload_sibling_tracks(extras, stem)
+            # a cluster map is opened on its own, pull those siblings in AS DATA
+            # ONLY (no track overlay) so the scatter can be coloured by motion
+            # without cluttering the view with track tails.
+            self._load_motion_source(extras, stem)
             # Only fall back to ID when there's genuinely no motion data anywhere
-            # (no motion column AND no run to derive it from).
-            if (self._cl_motion is None and not self._runs
+            # (no motion column AND nothing to derive it from).
+            if (self._cl_motion is None and not self._runs and not self._motion_src
                     and self._cl_color_mode in ("Motion", "Cluster motion")):
                 self._cl_color_mode = "ID"
             self._cl_present = True
@@ -926,26 +932,27 @@ class VisualiseController(QObject):
                            f"{os.path.basename(run_dir)}:\n{exc}")
             return False
 
-    def _maybe_autoload_sibling_tracks(self, extras_dir: str, stem: str):
-        """When a cluster map is opened standalone, silently load the sibling
-        trajectories + diffusion CSVs (same run folder) so the cluster scatter
-        can be coloured by motion class.  The track overlay is loaded HIDDEN —
-        the user asked for the cluster map, so only the data is wanted, not the
-        track lines (they can be re-shown from the LAYERS panel)."""
-        if self._runs:
-            return                                # a run is already loaded
+    def _load_motion_source(self, extras_dir: str, stem: str):
+        """Load the sibling trajectories + diffusion CSVs as DATA ONLY (no track
+        overlay, no layer rows) so the cluster scatter can be coloured by motion
+        class.  The user opened a cluster map, not a run — a hidden track overlay
+        still surfaced its tails on zoom-in, so the motion data is kept entirely
+        separate from the viewer and used only by _derive_cluster_motion()."""
+        if self._runs or self._motion_src:
+            return                                # already have motion data
         traj = os.path.join(extras_dir, f"{stem}_trajectories.csv")
-        if not os.path.isfile(traj):
-            return                                # standalone export, no tracks
         diff = os.path.join(extras_dir, f"{stem}_diffusion_summary.csv")
+        if not (os.path.isfile(traj) and os.path.isfile(diff)):
+            return                                # standalone export, no tracks
         try:
-            self.loadTracksPath(traj, diff if os.path.isfile(diff) else None)
+            import pandas as pd
+            df = pd.read_csv(traj)
+            dd = pd.read_csv(diff)
+            if ({"x", "y", "particle"}.issubset(df.columns)
+                    and "motion" in getattr(dd, "columns", [])):
+                self._motion_src = [(df, dd)]
         except Exception:
-            return
-        for cls in list(self._class_visible):     # keep the view cluster-focused
-            self._class_visible[cls] = False
-            try:    self._viewer.set_class_visible(cls, False)
-            except Exception: pass
+            self._motion_src = []
 
     _REAL_MOTION = frozenset(_MOTION_ORDER)   # MOTION_CLASS_ORDER + "Unknown"
 
@@ -974,8 +981,8 @@ class VisualiseController(QObject):
         never make the colouring worse."""
         if self._has_real_motion():
             return                            # analysis column already usable
-        if (self._cl_motion_tried_derive or not self._runs
-                or self._cl_xy_um is None):
+        if (self._cl_motion_tried_derive or self._cl_xy_um is None
+                or (not self._runs and not self._motion_src)):
             return
         self._cl_motion_tried_derive = True
         derived = self._derive_cluster_motion()
@@ -990,8 +997,10 @@ class VisualiseController(QObject):
         import numpy as np, pandas as pd
         px = float(self._cl_px_um or 1.0) or 1.0
         frames = []
-        for run in self._runs:
-            df = run.get("df"); diff = run.get("diff")
+        # Loaded run overlays + the data-only motion source (a standalone cluster
+        # map) both contribute (frame, x, y) → motion rows.
+        sources = [(r.get("df"), r.get("diff")) for r in self._runs] + self._motion_src
+        for df, diff in sources:
             if (df is None or diff is None
                     or "motion" not in getattr(diff, "columns", [])
                     or not {"x", "y", "particle"}.issubset(getattr(df, "columns", []))):
@@ -1091,16 +1100,22 @@ class VisualiseController(QObject):
 
     @Slot()
     def recluster(self):
-        if self._cl_xy_um is None:
+        src = self._cl_xy_um_full if self._cl_xy_um_full is not None else self._cl_xy_um
+        if src is None:
             return
         import numpy as np
         import pandas as pd
         eps_nm = float(self._cl_eps_nm)
         try:
             from firefly.sptpalm_analysis import compute_clusters
-            locs = pd.DataFrame({"x": self._cl_xy_um[:, 0], "y": self._cl_xy_um[:, 1],
-                                 "frame": np.zeros(len(self._cl_xy_um), dtype=np.int32)})
-            labels, stats_df, _, _ = compute_clusters(
+            locs = pd.DataFrame({"x": src[:, 0], "y": src[:, 1],
+                                 "frame": np.zeros(len(src), dtype=np.int32)})
+            # compute_clusters SUB-SAMPLES for a large eps to bound the DBSCAN
+            # neighbour graph, so `labels` may be shorter than `src`.  cluster_xy
+            # is the coordinate array that actually aligns with `labels` — use it
+            # for every per-loc array or the overlay/pick/Counter paths read past
+            # the end and crash (this was the eps=500 crash).
+            labels, stats_df, _, cluster_xy = compute_clusters(
                 locs, pixel_size_um=1.0, eps_um=eps_nm / 1000.0,
                 min_samples=int(self._cl_min_samples))
         except Exception as exc:
@@ -1113,11 +1128,21 @@ class VisualiseController(QObject):
             self._cl_count = 0
             self.clusterChanged.emit()
             return
+        cxy = np.asarray(cluster_xy, dtype=np.float32)
+        px = float(self._cl_px_um or 1.0) or 1.0
         self._cl_labels = np.asarray(labels, dtype=np.int32)
+        self._cl_xy_um = cxy                                  # displayed set (aligned)
+        self._cl_xy_px = np.column_stack([cxy[:, 1] / px, cxy[:, 0] / px])
+        self._cl_motion = None                               # old per-loc motion no
+        self._cl_motion_tried_derive = False                 # longer aligns → re-derive
         self._cl_stats_df = stats_df
         self._render_cluster_layer()
         self._update_cluster_counts()
-        self._cl_status += f"  (eps={eps_nm:.0f} nm, min={self._cl_min_samples})"
+        note = ""
+        attrs = getattr(stats_df, "attrs", {}) or {}
+        if attrs.get("subsampled") and attrs.get("n_used_locs"):
+            note = f", subsampled to {int(attrs['n_used_locs']):,}"
+        self._cl_status += f"  (eps={eps_nm:.0f} nm, min={self._cl_min_samples}{note})"
         self.clusterChanged.emit()
 
     @Slot()

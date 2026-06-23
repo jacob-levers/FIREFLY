@@ -42,10 +42,18 @@ class _AdditivePixmapItem(QtWidgets.QGraphicsPixmapItem):
         super().paint(painter, option, widget)
 
 
+_SCATTER_CAP = 40_000          # max dots drawn per repaint (LOD; see _PointsItem)
+
+
+def _poly_xy(gx, gy):
+    return QtGui.QPolygonF([QPointF(float(a), float(b)) for a, b in zip(gx, gy)])
+
+
 def _group_points_np(xs, ys, brushes, size):
     """Bucket points by colour, keeping the per-colour coordinate ARRAYS (so
-    paint() can cull to the viewport) plus a prebuilt full polygon per colour
-    for the zoomed-out path.  Returns ``([(QColor, gx, gy, QPolygonF)…], rect)``."""
+    paint() can cull to the viewport) plus a DECIMATED overview polygon per
+    colour for the zoomed-out path.  Returns ``([(QColor, gx, gy, poly)…],
+    rect)`` where ``poly`` holds ≤ a fair share of ``_SCATTER_CAP`` points."""
     n = xs.size
     # rgba8 per point.  Fast vectorised path for the usual list-of-(r,g,b,a)
     # float tuples (the cluster scatter — up to 250k); per-point _qcolor for
@@ -58,15 +66,16 @@ def _group_points_np(xs, ys, brushes, size):
         rgba = np.array([[c.red(), c.green(), c.blue(), c.alpha()]
                          for c in cols], dtype=np.uint32)
     key = (rgba[:, 0] << 24) | (rgba[:, 1] << 16) | (rgba[:, 2] << 8) | rgba[:, 3]
+    # Global stride so the prebuilt overview never exceeds the cap — dots overlap
+    # heavily at full-field, so this is visually identical but far cheaper.
+    stride = max(1, int(np.ceil(n / _SCATTER_CAP)))
     groups = []
     for k in np.unique(key):
         m = key == k
         gx = xs[m]; gy = ys[m]
         col = QtGui.QColor(int((k >> 24) & 255), int((k >> 16) & 255),
                            int((k >> 8) & 255), int(k & 255))
-        poly = QtGui.QPolygonF([QPointF(float(a), float(b))
-                                for a, b in zip(gx, gy)])
-        groups.append((col, gx, gy, poly))
+        groups.append((col, gx, gy, _poly_xy(gx[::stride], gy[::stride])))
     pad = max(1, int(size))
     rect = QRectF(float(np.min(xs)) - pad, float(np.min(ys)) - pad,
                   float(np.ptp(xs)) + 2 * pad, float(np.ptp(ys)) + 2 * pad)
@@ -75,18 +84,17 @@ def _group_points_np(xs, ys, brushes, size):
 
 class _PointsItem(QtWidgets.QGraphicsItem):
     """Paints many coloured dots, grouped by colour (one ``drawPoints`` per
-    colour).  A single whole-field item is never culled by the view, so without
-    help every pan/zoom repaints ALL points (up to ~250k size-20 dots → very
-    laggy).  paint() therefore culls each colour group to the exposed viewport
-    rect, falling back to a prebuilt full polygon only when most of the field is
-    on screen."""
+    colour).  A single whole-field item is never culled by the view, so two LOD
+    tricks keep it smooth for ~250k size-20 dots: (1) paint() culls each group
+    to the exposed viewport rect (``ItemUsesExtendedStyleOption`` gives a tight
+    rect); (2) it never draws more than ``_SCATTER_CAP`` dots — a decimated
+    overview when most of the field is on screen, a strided subset of the
+    visible points when zoomed in.  Overlapping dots make the decimation
+    invisible; picking still uses the full arrays held by the viewer."""
     def __init__(self, xs, ys, brushes, size):
         super().__init__()
         self._size = max(1, int(size))
         self._groups, self._rect = _group_points_np(xs, ys, brushes, self._size)
-        # Ask the view for a TIGHT exposedRect (the visible/dirty region) in
-        # paint() — without this flag it defaults to the full boundingRect and
-        # the viewport cull below can never engage.
         self.setFlag(
             QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption,
             True)
@@ -105,7 +113,7 @@ class _PointsItem(QtWidgets.QGraphicsItem):
         cull = (exp.isValid() and fr.width() > 0 and fr.height() > 0
                 and exp.width() * exp.height() < 0.5 * fr.width() * fr.height())
         pad = float(self._size)
-        for col, gx, gy, full in self._groups:
+        for col, gx, gy, overview in self._groups:
             pen = QtGui.QPen(col)
             pen.setWidth(self._size)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -114,13 +122,16 @@ class _PointsItem(QtWidgets.QGraphicsItem):
             if cull:
                 m = ((gx >= exp.left() - pad) & (gx <= exp.right() + pad)
                      & (gy >= exp.top() - pad) & (gy <= exp.bottom() + pad))
-                if not m.any():
+                cnt = int(np.count_nonzero(m))
+                if cnt == 0:
                     continue
-                painter.drawPoints(QtGui.QPolygonF(
-                    [QPointF(float(a), float(b))
-                     for a, b in zip(gx[m], gy[m])]))
+                sx = gx[m]; sy = gy[m]
+                if cnt > _SCATTER_CAP:                       # cap visible dots too
+                    st = int(np.ceil(cnt / _SCATTER_CAP))
+                    sx = sx[::st]; sy = sy[::st]
+                painter.drawPoints(_poly_xy(sx, sy))
             else:
-                painter.drawPoints(full)
+                painter.drawPoints(overview)
         painter.setRenderHint(aa, was)
 
 
@@ -318,6 +329,7 @@ class FireflyViewer(QtWidgets.QWidget):
         self._point_item: _PointsItem | None = None
         self._point_xy = None
         self._point_ids = None
+        self._point_size = 0
         self._img_item: QtWidgets.QGraphicsPixmapItem | None = None
         # selectable background sources for the base layer
         self._maxproj_full = None             # full max projection (computed off-thread)
@@ -806,6 +818,7 @@ class FireflyViewer(QtWidgets.QWidget):
         # zoomed in past its size limit, then repainted every point each event.)
         self._scene.addItem(item)
         self._point_item = item
+        self._point_size = max(1, int(size))      # for a size-aware click tolerance
         self._point_xy = np.column_stack([x, y])
         self._point_ids = (np.asarray(ids).ravel() if ids is not None
                            else np.arange(x.size))
@@ -955,7 +968,10 @@ class FireflyViewer(QtWidgets.QWidget):
         ``("cluster", id)`` (points take priority) or ``("track", pid)`` for
         the nearest visible match within ``tol``, else ``None``."""
         if tol is None:
-            tol = self._data_tol()
+            # Scale the click tolerance to the dot RADIUS so a click anywhere on
+            # a big cluster dot resolves — a fixed 8 px from the centre means
+            # only the bullseye is clickable on a size-20 dot.
+            tol = self._data_tol(max(8.0, self._point_size * 0.5 + 6.0))
         return _pick_at_core(self._point_xy, self._point_ids, self._track_pick,
                              self._class_visible, y, x, tol,
                              track_frames=self._track_frames,

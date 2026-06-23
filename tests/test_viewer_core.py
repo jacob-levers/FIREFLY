@@ -94,3 +94,15 @@ def test_pick_at_points_priority_and_tracks():
     assert C.pick_at(pts, np.array([42]), tp, cv, 500, 500, tol=1.0) is None
     # hidden class is not pickable
     assert C.pick_at(None, None, tp, {"Brownian": False}, 0.0, 0.0, tol=1.0) is None
+
+
+def test_pick_at_prefers_cluster_over_noise():
+    # a noise point (-1) sits slightly closer to the click than a real cluster
+    # point, both within tol → the cluster must win (clicking a coloured dot
+    # shouldn't resolve to an interspersed noise point).
+    pts = np.array([[10.0, 10.0], [10.5, 10.5]])
+    ids = np.array([-1, 7])
+    assert C.pick_at(pts, ids, {}, {}, 10.1, 10.1, tol=2.0) == ("cluster", 7)
+    # only a noise point within tol → noise is returned
+    assert C.pick_at(np.array([[10.0, 10.0]]), np.array([-1]), {}, {},
+                     10.0, 10.0, tol=1.0) == ("cluster", -1)

@@ -188,8 +188,9 @@ def test_visualise_cluster_map_standalone_no_siblings(tmp_path):
 
 def test_visualise_cluster_map_autoloads_motion(tmp_path):
     """Opening a cluster map on its own pulls in the sibling trajectories +
-    diffusion (HIDDEN track overlay) so the scatter colours by motion — even
-    when the analysis 'motion' column is wholesale 'Unmatched'."""
+    diffusion as DATA ONLY (no track overlay) so the scatter colours by motion —
+    even when the analysis 'motion' column is wholesale 'Unmatched' — without
+    cluttering the view with track tails."""
     import os, numpy as np, pandas as pd
     from firefly.ui.controllers.visualise_controller import VisualiseController
     run = _make_run(tmp_path)
@@ -198,7 +199,7 @@ def test_visualise_cluster_map_autoloads_motion(tmp_path):
     diff = pd.read_csv(os.path.join(extras, "cell1_diffusion_summary.csv"))
     pmotion = {int(p): m for p, m in zip(diff["particle"], diff["motion"])}
     # cluster locs sit on the track locs (px size 1.0 → µm == px), every motion
-    # the worker sentinel — recovery must come from the auto-loaded tracks.
+    # the worker sentinel — recovery must come from the data-only motion source.
     pd.DataFrame({
         "loc_index": np.arange(len(traj)),
         "x_um": traj["x"].to_numpy(), "y_um": traj["y"].to_numpy(),
@@ -208,8 +209,10 @@ def test_visualise_cluster_map_autoloads_motion(tmp_path):
 
     c = VisualiseController()
     assert c.loadClustersFolder(run) is True       # ONLY the cluster map
-    assert c.hasContent and c.hasRun               # sibling tracks auto-loaded
-    assert all(not v for v in c._class_visible.values())   # …but track overlay hidden
+    assert c.hasContent and not c.hasRun           # no run / track overlay loaded
+    assert not c._runs                             # motion is data-only…
+    assert c._motion_src                           # …in the separate source
+    assert not c._viewer._track_items              # NO track overlay items exist
     # motion recovered + each loc matches its particle's class
     assert c._has_real_motion()
     assert [str(m) for m in c._cl_motion] == [pmotion[int(p)] for p in traj["particle"]]
@@ -241,6 +244,44 @@ def test_visualise_clusters_reuse_already_loaded_run(tmp_path):
     assert c.loadClustersFolder(run) is True
     assert len(c._runs) == 1                        # did NOT auto-load a 2nd run
     assert c._has_real_motion()
+
+
+def test_visualise_recluster_subsample_stays_aligned(tmp_path, monkeypatch):
+    """recluster must realign every per-loc array to the coords compute_clusters
+    returns — which are SUB-SAMPLED for a large eps.  Otherwise the overlay /
+    pick / dominant-motion paths read past the end of the shorter labels array
+    and crash (the eps=500 crash)."""
+    import numpy as np, pandas as pd
+    import firefly.sptpalm_analysis as sa
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    run = _make_run(tmp_path)
+    _add_cluster_labels(run)                      # 100 cluster locs
+    c = VisualiseController()
+    assert c.loadClustersFolder(run) is True
+    full_n = len(c._cl_xy_um_full)
+    assert full_n == 100
+
+    def fake_compute(locs, pixel_size_um=1.0, eps_um=0.05, min_samples=5, **kw):
+        k = 40                                    # pretend a big eps subsampled
+        xy = (locs[["x", "y"]].values[:k] * pixel_size_um).astype("float32")
+        labels = np.array([0] * 20 + [1] * 20, dtype=int)
+        stats = pd.DataFrame({"cluster_id": [0, 1]})
+        stats.attrs["subsampled"] = True
+        stats.attrs["n_used_locs"] = k
+        stats.attrs["eps_too_large"] = False
+        return labels, stats, None, xy
+    monkeypatch.setattr(sa, "compute_clusters", fake_compute)
+
+    c.clusterEpsNm = 500
+    c.recluster()
+    # all per-loc display arrays now share the subsampled length — no mismatch
+    assert len(c._cl_labels) == len(c._cl_xy_um) == len(c._cl_xy_px) == 40
+    assert len(c._cl_xy_um_full) == full_n        # full set preserved for next time
+    # rendering in every colour mode must not raise (the crash repro)
+    for mode in c.clusterColorModes:
+        c.clusterColorMode = mode
+        c._render_cluster_layer()
+    assert "subsampled to 40" in c.clusterStatus
 
 
 def test_visualise_superres_render(tmp_path):
