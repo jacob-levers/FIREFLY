@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.76.14
+
+### Fixed
+
+- **The Analysis tab's "Add condition" button still vanished at 6** — v2.76.13
+  raised the cap in the controller, but the button's visibility and the counter
+  were hardcoded to `6` in QML. Both now bind to a new `Analysis.maxConditions`
+  (= 12), so the button stays until 12 and the two can't drift apart again. The
+  home-screen "Compare & analyse" card now reads "2–12 conditions".
+
 ## v2.76.13
 
 ### Fixed
