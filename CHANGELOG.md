@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.76.15
+
+HYPER-FLY — remove tile scanner animation + smarter load staggering.
+
+### Changed
+
+- **Removed the sweeping "scanner" beam** that swept up and down over each
+  HYPER-FLY tile while running. (`firefly/ui/qml/tabs/HyperflyTab.qml`)
+- **Load staggering is now format-aware** and tuned for the single-link/network
+  case. Loading over one network/RDM link is bandwidth-bound and the pipe is
+  shared, so concurrent loads just split it — the only wins are keeping the wire
+  busy and starting each file's compute ASAP:
+  - **Uncompressed TIF → 1 concurrent load.** A single sequential read already
+    saturates a gigabit link and the trivial decode never stalls it; workers are
+    pre-spawned and block on the load gate, so the hand-off is gap-free — one
+    full-speed load back-to-back pins the wire *and* makes each file available as
+    early as physically possible (best for read-bound data).
+  - **Compressed CZI (JPEG-XR) → 2 concurrent loads,** so a second load fills the
+    CPU decode stalls that would otherwise idle the wire.
+  - Override per-run with `FIREFLY_HYPERFLY_LOAD_SLOTS` (raise it after staging to
+    fast local SSD, or on a high-latency mount). (`firefly/firefly_worker.py`)
+
 ## v2.76.14
 
 ### Fixed

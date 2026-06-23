@@ -3597,7 +3597,35 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         except Exception:
             _load_slots = 0
         if _load_slots <= 0:
-            _load_slots = max(2, total_cores // 16)   # auto: ~one load / 16 cores
+            # Auto: format-aware.  File loading over a single network/RDM link is
+            # bandwidth-bound, and that ONE pipe is shared — concurrent loads
+            # split it rather than add to it, so the batch read time is fixed by
+            # the wire no matter how many run at once.  The only wins from
+            # concurrency are keeping the wire 100% busy and starting each file's
+            # compute ASAP, so the right count depends on whether a single load
+            # can keep the wire full:
+            #   • Uncompressed TIF is READ-bound — one sequential read already
+            #     saturates the link and the trivial uint16->float32 decode never
+            #     stalls it.  Workers are pre-spawned and block on this gate, so
+            #     the hand-off is gap-free: a SINGLE load at full bandwidth,
+            #     back-to-back, pins the wire AND makes each file available as
+            #     early as physically possible (first at ~one-file-time, then one
+            #     more each file-time) → 1.
+            #   • Compressed CZI (JPEG-XR) is DECODE-bound — the CPU decompress
+            #     stalls the read, leaving the wire idle — so a 2nd overlapping
+            #     load fills those gaps → 2.
+            # Raise FIREFLY_HYPERFLY_LOAD_SLOTS after staging to fast local SSD
+            # (disk-speed loads DO scale with concurrency) or on a high-latency
+            # link (needs parallel streams to fill the bandwidth-delay product).
+            _any_compressed = False
+            for _p in params_list:
+                for _f in (_p.get("series_files") or [_p.get("file")]):
+                    if _f and os.path.splitext(str(_f))[1].lower() == ".czi":
+                        _any_compressed = True
+                        break
+                if _any_compressed:
+                    break
+            _load_slots = 2 if _any_compressed else 1
         _load_slots = max(1, min(int(_load_slots), K))
         load_sem = mgr.Semaphore(_load_slots)
         # Core budget a loading file may use while it holds a load slot.

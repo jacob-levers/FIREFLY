@@ -11,7 +11,12 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.14"
+__version__ = "2.76.15"
+# v2.76.15 — HYPER-FLY: remove the sweeping-scanner tile animation; load stagger
+#           is now format-aware — uncompressed TIF loads 1-at-a-time (read-bound:
+#           one full-speed read pins a gigabit/RDM link + each file processes
+#           ASAP), compressed CZI loads 2 (fills JPEG-XR decode stalls).  Override
+#           with FIREFLY_HYPERFLY_LOAD_SLOTS.
 # v2.76.14 — Analysis tab: actually expose the 12-condition cap to the UI — the
 #           "Add condition" button + counter were hardcoded to 6 in QML (so the
 #           v2.76.13 cap raise had no visible effect); both now bind to
