@@ -1557,6 +1557,10 @@ class AnalysisWorkspaceController(QObject):
     def conditionCount(self):
         return len(self._conditions)
 
+    @Property(int, constant=True)
+    def maxConditions(self):
+        return wd.MAX_CONDITIONS
+
     # ── experimental-design summary + stats recommendations (the "design &
     #    recommended settings" panel ported from the Widgets UI) ──────────────
     def _design_info(self):

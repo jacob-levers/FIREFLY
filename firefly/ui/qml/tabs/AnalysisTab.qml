@@ -939,7 +939,7 @@ Item {
     component ConditionsCard: WCard {
         Layout.fillWidth: true
         title: "Conditions"
-        count: Analysis.conditionCount + " / 6"
+        count: Analysis.conditionCount + " / " + Analysis.maxConditions
         headerRight: RowLayout {
             visible: Analysis.hasTimepointsSet
             spacing: 5
@@ -959,7 +959,7 @@ Item {
             }
             // Add condition — dashed, like the design
             Rectangle {
-                visible: Analysis.conditionCount < 6
+                visible: Analysis.conditionCount < Analysis.maxConditions
                 Layout.fillWidth: true; Layout.preferredHeight: 40
                 radius: 10; color: addCondHover.hovered ? Qt.rgba(0.345, 0.651, 1.0, 0.06) : "transparent"
                 DashedRect { anchors.fill: parent; radius: 10; stroke: pal.BORDER_HI }

@@ -217,7 +217,7 @@ Item {
                         model: [
                             { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0 },
                             { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0 },
-                            { icon: "git-compare", t: "Compare & analyse", d: "Drop 2–6 conditions into one live comparison — figure, stats and significance.", tab: 2 },
+                            { icon: "git-compare", t: "Compare & analyse", d: "Drop 2–12 conditions into one live comparison — figure, stats and significance.", tab: 2 },
                             { icon: "waypoints",   t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 3 }
                         ]
                         delegate: Tile {
