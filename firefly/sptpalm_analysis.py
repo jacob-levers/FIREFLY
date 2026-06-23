@@ -11,7 +11,10 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.12"
+__version__ = "2.76.13"
+# v2.76.13 — Analysis tab: raise the condition cap 6 → 12 (restores the legacy
+#           Compare limit for group × time-point designs) + extend the swatch
+#           palette to 12 distinct hues.
 # v2.76.12 — UI: the update pill jumps to Preferences ▸ Updates; a restart prompt
 #           pops after a CUDA install; CUDA section padding; the landing screen is
 #           just the glow (no animation).  Cluster map, round 3: clicking a dot

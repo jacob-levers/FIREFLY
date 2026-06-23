@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.76.13
+
+### Fixed
+
+- **The Analysis tab allowed only 6 conditions** — restored the cap to 12 (a
+  regression from the QML rewrite; the old Compare tab raised it to 12 for
+  group × time-point designs, e.g. 3 groups × 3 time points = 9). The condition
+  swatch palette is extended to 12 distinct hues so each gets its own colour.
+
 ## v2.76.12
 
 Cluster-map round 3 + UI polish.
