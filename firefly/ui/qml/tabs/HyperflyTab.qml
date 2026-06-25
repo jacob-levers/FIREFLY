@@ -67,7 +67,7 @@ Flickable {
         border.width: 1
         border.color: st === "running" ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.5)
                     : st === "done"    ? Qt.rgba(0.337, 0.827, 0.392, 0.45)
-                    : st === "failed"  ? pal.DANGER : pal.BORDER
+                    : st === "failed"  ? pal.STATUS_BAD : pal.BORDER
         Behavior on border.color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 250 } }
 
         // RAM-staggered spawn (fade + rise, i·90 ms apart)
@@ -112,14 +112,14 @@ Flickable {
                     height: 19; width: bRow.implicitWidth + sc.sp3 * 2
                     RowLayout {
                         id: bRow; anchors.centerIn: parent; spacing: sc.sp1
-                        StatusDot { tone: tile.st === "done" ? pal.SUCCESS
-                                          : tile.st === "failed" ? pal.DANGER
+                        StatusDot { tone: tile.st === "done" ? pal.STATUS_OK
+                                          : tile.st === "failed" ? pal.STATUS_BAD
                                           : tile.st === "running" ? pal.ACC : pal.TXT_MUTED
                                     pulsing: tile.st === "running" }
                         Text {
                             text: tile.st === "running" ? "Running" : tile.st === "done" ? "Done"
                                 : tile.st === "failed" ? "Failed" : "Idle"
-                            color: tile.st === "done" ? pal.SUCCESS : tile.st === "failed" ? pal.DANGER
+                            color: tile.st === "done" ? pal.STATUS_OK : tile.st === "failed" ? pal.STATUS_BAD
                                  : tile.st === "running" ? pal.ACC : pal.TXT_MUTED
                             font.pixelSize: 10; font.bold: true
                         }
@@ -139,7 +139,7 @@ Flickable {
                     anchors { right: parent.right; bottom: parent.bottom; margins: sc.sp2 }
                     visible: tile.st === "done"
                     Rectangle {
-                        width: 18; height: 18; radius: 9; color: pal.SUCCESS
+                        width: 18; height: 18; radius: 9; color: pal.STATUS_OK
                         Icon { anchors.centerIn: parent; name: "check"; size: 11; color: "#06140a" }
                     }
                 }
@@ -153,7 +153,7 @@ Flickable {
                     text: tile.st === "failed"
                           ? ((tile.item && tile.item.error) ? tile.item.error : "failed")
                           : tile.st === "idle" ? "idle" : "…"
-                    color: tile.st === "failed" ? pal.DANGER : pal.TXT_MUTED
+                    color: tile.st === "failed" ? pal.STATUS_BAD : pal.TXT_MUTED
                     font.pixelSize: tile.st === "failed" ? 10 : sc.textXs
                     font.family: tile.st === "failed" ? "Menlo" : Qt.application.font.family
                 }
@@ -174,7 +174,7 @@ Flickable {
                     Text {
                         text: tile.st === "done" ? "done" : tile.st === "failed" ? "failed"
                             : (tile.item && tile.item.stage) ? tile.item.stage + "…" : "—"
-                        color: tile.st === "done" ? pal.SUCCESS : tile.st === "failed" ? pal.DANGER : pal.ACC
+                        color: tile.st === "done" ? pal.STATUS_OK : tile.st === "failed" ? pal.STATUS_BAD : pal.ACC
                         font.pixelSize: 10; font.family: "Menlo"
                     }
                     Item { Layout.fillWidth: true }
@@ -190,7 +190,7 @@ Flickable {
                     Rectangle {
                         height: parent.height; radius: 3
                         width: Math.max(0, Math.min(1, (tile.item ? tile.item.pct : 0) / 100)) * parent.width
-                        color: tile.st === "done" ? pal.SUCCESS : pal.ACC
+                        color: tile.st === "done" ? pal.STATUS_OK : pal.ACC
                         Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 250; easing.type: Easing.OutCubic } }
                         IndeterminateShimmer { active: tile.st === "running" }
                     }
@@ -360,7 +360,7 @@ Flickable {
                                 Layout.alignment: Qt.AlignVCenter }
                     Text { text: n + " " + label; color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
                 }
-                Tally { swatch: pal.SUCCESS;   label: "done";    n: Hyperfly.done }
+                Tally { swatch: pal.STATUS_OK;   label: "done";    n: Hyperfly.done }
                 Tally { swatch: pal.ACC;       label: "running"; n: Hyperfly.runningCount }
                 Tally { swatch: pal.TXT_MUTED; label: "queued";  n: Hyperfly.queuedCount }
                 Item { Layout.fillWidth: true }

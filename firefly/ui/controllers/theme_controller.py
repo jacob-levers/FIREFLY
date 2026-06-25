@@ -99,6 +99,14 @@ class ThemeController(QObject):
             self._dmult = _density_mult(ps.value("ui/density", "Compact"))
         except Exception:
             pass
+        # colour-blind-safe status colours (HYPER-FLY tiles / significance stars).
+        # Tracks the Visualise motion-palette setting so red↔green status reads
+        # for everyone; cached so palette() needn't re-read QSettings each call.
+        try:
+            self._cb_status = (QSettings("jacoblevers", "FIREFLY").value(
+                "visualise/motion_colours", "Default") == "Colour-blind safe")
+        except Exception:
+            self._cb_status = False
 
     def _accent_def(self):
         for a in self._ACCENTS:
@@ -123,7 +131,19 @@ class ThemeController(QObject):
         pal = dict(_THEMES.get(self._name, _THEMES["Dark"]))
         a = self._accent_def()                  # apply the chosen accent over the theme
         pal["ACC"], pal["ACC_HOVER"], pal["ACC_PRESSED"] = a["v"], a["h"], a["p"]
+        # Status tokens for indicators (HYPER-FLY done/failed, significance stars).
+        # Okabe–Ito bluish-green / vermillion under colour-blind-safe, else the
+        # theme's SUCCESS/DANGER.  (Status also carries a text label, so colour is
+        # supplementary — this just removes the red↔green reliance.)
+        pal["STATUS_OK"]  = "#009e73" if self._cb_status else pal["SUCCESS"]
+        pal["STATUS_BAD"] = "#d55e00" if self._cb_status else pal["DANGER"]
         return pal
+
+    @Slot(bool)
+    def setStatusColourblind(self, on):
+        if bool(on) != self._cb_status:
+            self._cb_status = bool(on)
+            self.changed.emit()
 
     # ── accent (independent colour axis) ─────────────────────────────────
     @Property("QVariantList", constant=True)

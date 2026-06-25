@@ -520,9 +520,9 @@ Item {
                                     Text { text: modelData.stat + (modelData.eta ? "  ·  " + modelData.eta : "")
                                            color: pal.TXT_MUTED; font.pixelSize: 10; font.family: "Menlo" }
                                 }
-                                Text { text: modelData.p; color: modelData.sig ? pal.SUCCESS : pal.TXT_MUTED
+                                Text { text: modelData.p; color: modelData.sig ? pal.STATUS_OK : pal.TXT_MUTED
                                        font.pixelSize: 11; font.family: "Menlo" }
-                                Text { text: modelData.stars; color: modelData.sig ? pal.SUCCESS : root.faint
+                                Text { text: modelData.stars; color: modelData.sig ? pal.STATUS_OK : root.faint
                                        font.pixelSize: 12; font.bold: true; Layout.preferredWidth: 26
                                        horizontalAlignment: Text.AlignRight }
                             }
@@ -909,8 +909,8 @@ Item {
                             Text { Layout.fillWidth: true; text: modelData.label; color: pal.TXT; font.pixelSize: 11; elide: Text.ElideRight }
                             Text { text: modelData.delta + " · " + modelData.mag; color: modelData.magColor; font.pixelSize: 10; font.family: "Menlo" }
                         }
-                        Text { text: modelData.p; color: modelData.sig ? pal.SUCCESS : pal.TXT_MUTED; font.pixelSize: 11; font.family: "Menlo" }
-                        Text { text: modelData.stars; color: modelData.sig ? pal.SUCCESS : root.faint; font.pixelSize: 12; font.bold: true; Layout.preferredWidth: 26; horizontalAlignment: Text.AlignRight }
+                        Text { text: modelData.p; color: modelData.sig ? pal.STATUS_OK : pal.TXT_MUTED; font.pixelSize: 11; font.family: "Menlo" }
+                        Text { text: modelData.stars; color: modelData.sig ? pal.STATUS_OK : root.faint; font.pixelSize: 12; font.bold: true; Layout.preferredWidth: 26; horizontalAlignment: Text.AlignRight }
                     }
                 }
             }
@@ -1015,7 +1015,16 @@ Item {
                             Text { text: modelData.name; color: pal.TXT; font.pixelSize: 11 }
                             Icon {
                                 name: "x"; size: 12; color: root.faint
-                                TapHandler { onTapped: Analysis.removeTimepoint(modelData.name) }
+                                TapHandler {
+                                    onTapped: {
+                                        var nm = modelData.name
+                                        confirmDelete.title = "Remove timepoint?"
+                                        confirmDelete.message = "Remove the “" + nm + "” timepoint? Conditions assigned to it become unassigned."
+                                        confirmDelete.confirmText = "Remove timepoint"
+                                        confirmDelete.action = function() { Analysis.removeTimepoint(nm) }
+                                        confirmDelete.open()
+                                    }
+                                }
                             }
                         }
                     }
@@ -1113,7 +1122,17 @@ Item {
                 Icon {
                     name: "x"; size: 14; color: root.faint
                     opacity: Analysis.conditionCount > 2 ? 1 : 0.35
-                    TapHandler { enabled: Analysis.conditionCount > 2; onTapped: Analysis.removeCondition(gr.cond.id) }
+                    TapHandler {
+                        enabled: Analysis.conditionCount > 2
+                        onTapped: {
+                            var cid = gr.cond.id
+                            confirmDelete.title = "Remove condition?"
+                            confirmDelete.message = "Remove “" + gr.cond.name + "” and unassign its run folders? This can't be undone."
+                            confirmDelete.confirmText = "Remove condition"
+                            confirmDelete.action = function() { Analysis.removeCondition(cid) }
+                            confirmDelete.open()
+                        }
+                    }
                 }
             }
             // timepoint selector
@@ -1523,4 +1542,7 @@ Item {
         Timer { id: toastTimer; interval: 1600; onTriggered: toast.opacity = 0 }
         Connections { target: Analysis; function onToast(msg) { tlabel.text = msg; toast.opacity = 1; toastTimer.restart() } }
     }
+
+    // ════ destructive-action confirmation ════
+    ConfirmModal { id: confirmDelete }
 }

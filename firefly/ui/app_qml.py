@@ -147,6 +147,11 @@ def build_main_window(app: QtWidgets.QApplication):
     theme = ThemeController()
     appc = AppController()
     settings = SettingsController()
+    # Keep the theme's colour-blind status tokens in sync with the Visualise
+    # motion-palette setting (live, when toggled in Preferences).
+    settings.changed.connect(lambda k: theme.setStatusColourblind(
+        settings.get_str("visualise/motion_colours", "Default") == "Colour-blind safe")
+        if k == "visualise/motion_colours" else None)
     importc = ImportController(settings)
     roi_store = RoiStore()
     roi_override = RoiOverrideStore()     # per-file ROI-settings overrides (viewer)
