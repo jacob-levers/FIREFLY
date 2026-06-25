@@ -1,8 +1,9 @@
 import QtQuick
 import QtQuick.Controls
 
-// Themed single-line text field: raised input fill, hairline border that turns
-// accent on focus (the design system's focus cue).
+// Themed single-line text field: raised input fill, border that thickens to a
+// 2px accent ring on focus (the design system's focus cue — visible for
+// keyboard navigation, not just a hairline tint).
 TextField {
     id: root
     readonly property var pal: Theme.palette
@@ -20,8 +21,9 @@ TextField {
     background: Rectangle {
         radius: sc.radiusSm
         color: pal.PANEL_ALT
-        border.width: 1
+        border.width: root.activeFocus ? 2 : 1
         border.color: root.activeFocus ? pal.ACC : pal.BORDER
         Behavior on border.color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
+        Behavior on border.width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
     }
 }

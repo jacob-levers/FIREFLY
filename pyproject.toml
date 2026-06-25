@@ -21,7 +21,7 @@ dependencies = [
     "matplotlib",
     "scikit-image",
     "trackpy",
-    "numba>=0.60",
+    "numba>=0.61",
     "joblib",
     "tqdm",
     "czifile",

@@ -48,8 +48,8 @@ def test_live_numbers_appear_with_two_ready_conditions(tmp_path):
 
 def test_metric_switch_rescopes_everything(tmp_path):
     c, ids = _ctrl_with_two_conditions(tmp_path)
-    c.setMetric("mob")
-    assert c.metric == "mob"
+    c.setMetric("mob_immob")                      # scroller selects export PANEL keys
+    assert c.metric == "mob_immob"
     assert "Mobile fraction" in c.methods
     assert c.statsRows[0]["err"] == ""           # ± only shown for D
 
@@ -122,9 +122,9 @@ def test_recommend_and_presets_roundtrip(tmp_path):
     c, ids = _ctrl_with_two_conditions(tmp_path)
     c.applyRecommended()
     assert c.cfg["test"] in ("Mann–Whitney U", "Kruskal–Wallis")
-    c.setMetric("conf")
+    c.setMetric("radial_dist")                   # panel keys, not scalar metric ids
     c.savePreset()
     assert len(c.presets) == 1
-    c.setMetric("D")
+    c.setMetric("logd_dist")
     c.loadPreset(c.presets[0]["name"])
-    assert c.metric == "conf"
+    assert c.metric == "radial_dist"
