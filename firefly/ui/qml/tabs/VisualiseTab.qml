@@ -131,7 +131,7 @@ Item {
                                     required property string modelData
                                     readonly property bool active: Vis.motionColourMode === modelData
                                     Layout.fillWidth: true; implicitHeight: 26; radius: sc.radiusMd
-                                    color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
+                                    color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
                                     border.width: 1; border.color: active ? pal.ACC : pal.BORDER
                                     Text { anchors.centerIn: parent
                                            text: modelData === "Colour-blind safe" ? "CB-safe" : modelData
@@ -154,7 +154,7 @@ Item {
                                     required property string modelData
                                     readonly property bool active: Vis.colourBy === modelData
                                     Layout.fillWidth: true; implicitHeight: 26; radius: sc.radiusMd
-                                    color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
+                                    color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
                                     border.width: 1; border.color: active ? pal.ACC : pal.BORDER
                                     Text { anchors.centerIn: parent; text: modelData
                                            color: active ? pal.ACC : pal.TXT_MUTED; font.pixelSize: sc.textXs }
@@ -207,7 +207,7 @@ Item {
                                     readonly property bool active: Vis.clusterColorMode === modelData
                                     implicitWidth: cbLabel.implicitWidth + sc.sp3 * 2   // fit the label
                                     implicitHeight: 24; radius: sc.radiusMd
-                                    color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
+                                    color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
                                     border.width: 1; border.color: active ? pal.ACC : pal.BORDER
                                     Text { id: cbLabel; anchors.centerIn: parent; text: modelData
                                            color: active ? pal.ACC : pal.TXT_MUTED; font.pixelSize: sc.textXs }
@@ -270,7 +270,7 @@ Item {
                                     readonly property bool on_: Vis.expMotionMask[modelData] === true
                                     implicitWidth: glyph.implicitWidth + sc.sp4 * 2; implicitHeight: 24
                                     radius: sc.radiusMd
-                                    color: on_ ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
+                                    color: on_ ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
                                     border.width: 1; border.color: on_ ? pal.ACC : pal.BORDER
                                     Text { id: glyph; anchors.centerIn: parent; text: modelData
                                            color: on_ ? pal.ACC : pal.TXT_MUTED; font.pixelSize: sc.textXs }

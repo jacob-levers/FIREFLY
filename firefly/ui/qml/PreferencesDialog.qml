@@ -637,7 +637,7 @@ Item {
                                     radius: height / 2                 // pill
                                     // named presets read as filled buttons; All/None
                                     // are lighter utility actions; active = accent.
-                                    color: modelData.active ? Qt.rgba(0.345, 0.651, 1.0, 0.18)
+                                    color: modelData.active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.18)
                                            : pHov.hovered ? pal.PANEL_ALT
                                            : modelData.util ? "transparent" : pal.PANEL_ALT
                                     border.width: 1
@@ -660,7 +660,7 @@ Item {
                                 delegate: Rectangle {
                                     implicitHeight: 24; implicitWidth: cTxt.implicitWidth + sc.sp4
                                     radius: 6
-                                    color: modelData.on ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
+                                    color: modelData.on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
                                     border.width: 1; border.color: modelData.on ? pal.ACC : pal.BORDER
                                     Text { id: cTxt; anchors.centerIn: parent; text: modelData.label
                                            color: modelData.on ? pal.ACC : pal.TXT_MUTED; font.pixelSize: 10 }

@@ -40,9 +40,9 @@ Rectangle {
             Layout.alignment: Qt.AlignVCenter
             width: 38; height: 38
             radius: sc.radius2xl
-            color: Qt.rgba(0.345, 0.651, 1.0, hov.hovered ? 0.16 : 0.10)
+            color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, hov.hovered ? 0.16 : 0.10)
             border.width: 1
-            border.color: Qt.rgba(0.345, 0.651, 1.0, 0.22)
+            border.color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.22)
             Behavior on color { ColorAnimation { duration: root.dur } }
             Icon { anchors.centerIn: parent; name: root.icon; color: pal.ACC; size: 20 }
         }

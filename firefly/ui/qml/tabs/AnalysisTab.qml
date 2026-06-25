@@ -173,9 +173,9 @@ Item {
                                     var ra = Math.max(0, Math.min(1, (metricFlick.width - _vx) / 72));
                                     return Math.min(la, ra);
                                 }
-                                color: on ? Qt.rgba(0.345, 0.651, 1.0, 0.12) : pal.PANEL
+                                color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12) : pal.PANEL
                                 border.width: 1
-                                border.color: on ? Qt.rgba(0.345, 0.651, 1.0, 0.5) : pal.BORDER
+                                border.color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.5) : pal.BORDER
                                 RowLayout {
                                     id: ml
                                     anchors.centerIn: parent
@@ -240,10 +240,15 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            RowLayout {
+            GridLayout {
                 id: bodyRow
                 width: bodyFlick.width
-                spacing: sc.sp8
+                // Stack the two columns below ~880 px so neither gets squeezed —
+                // mirrors the responsive pattern on the Process / Results tabs.
+                columns: width < 880 ? 1 : 2
+                readonly property bool stacked: columns === 1
+                columnSpacing: sc.sp8
+                rowSpacing: sc.sp8
 
                 // ── LEFT: live readout ──
                 ColumnLayout {
@@ -292,10 +297,12 @@ Item {
                 //    able to swallow the whole row in the empty state.
                 ColumnLayout {
                     Layout.alignment: Qt.AlignTop
-                    Layout.fillWidth: false
-                    Layout.preferredWidth: Math.round(bodyRow.width * 0.34)
-                    Layout.minimumWidth: 360
-                    Layout.maximumWidth: 580
+                    // Full width when stacked; ~34% (clamped 360–580) side-by-side.
+                    Layout.fillWidth: bodyRow.stacked
+                    Layout.preferredWidth: bodyRow.stacked ? bodyRow.width
+                                                           : Math.round(bodyRow.width * 0.34)
+                    Layout.minimumWidth: bodyRow.stacked ? 0 : 360
+                    Layout.maximumWidth: bodyRow.stacked ? bodyRow.width : 580
                     spacing: root.gGap
                     ConditionsCard {}
                     DesignCard {}
@@ -609,8 +616,8 @@ Item {
                             readonly property bool on: index === Analysis.panelCondIdx
                             implicitWidth: pcrow.implicitWidth + sc.sp3 * 2; implicitHeight: 24
                             radius: height / 2
-                            color: on ? Qt.rgba(0.345, 0.651, 1.0, 0.12) : pal.PANEL_ALT
-                            border.width: 1; border.color: on ? Qt.rgba(0.345, 0.651, 1.0, 0.5) : pal.BORDER
+                            color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12) : pal.PANEL_ALT
+                            border.width: 1; border.color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.5) : pal.BORDER
                             RowLayout {
                                 id: pcrow; anchors.centerIn: parent; spacing: 5
                                 Rectangle { width: 8; height: 8; radius: 2; color: modelData.color }
@@ -642,7 +649,7 @@ Item {
                         Text { text: Analysis.panelHeroName; color: pal.TXT; font.pixelSize: 13; font.bold: true }
                         Rectangle {
                             implicitWidth: pcat.implicitWidth + sc.sp2 * 2; implicitHeight: 18; radius: 999
-                            color: Qt.rgba(0.345, 0.651, 1.0, 0.12)
+                            color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
                             Text { id: pcat; anchors.centerIn: parent; text: Analysis.panelHeroCat; color: pal.ACC; font.pixelSize: 10; font.bold: true; font.capitalization: Font.AllUppercase }
                         }
                         Item { Layout.fillWidth: true }
@@ -665,8 +672,8 @@ Item {
                                     readonly property bool on: index === Analysis.panelReplicateIdx
                                     implicitWidth: Math.min(150, rlbl.implicitWidth + sc.sp3 * 2); implicitHeight: 22
                                     radius: height / 2
-                                    color: on ? Qt.rgba(0.345, 0.651, 1.0, 0.12) : pal.PANEL_ALT
-                                    border.width: 1; border.color: on ? Qt.rgba(0.345, 0.651, 1.0, 0.5) : pal.BORDER
+                                    color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12) : pal.PANEL_ALT
+                                    border.width: 1; border.color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.5) : pal.BORDER
                                     Text { id: rlbl; anchors.fill: parent; anchors.leftMargin: sc.sp3; anchors.rightMargin: sc.sp3
                                            verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter
                                            text: (index + 1) + ". " + modelData.label
@@ -961,7 +968,7 @@ Item {
             Rectangle {
                 visible: Analysis.conditionCount < Analysis.maxConditions
                 Layout.fillWidth: true; Layout.preferredHeight: 40
-                radius: 10; color: addCondHover.hovered ? Qt.rgba(0.345, 0.651, 1.0, 0.06) : "transparent"
+                radius: 10; color: addCondHover.hovered ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.06) : "transparent"
                 DashedRect { anchors.fill: parent; radius: 10; stroke: pal.BORDER_HI }
                 RowLayout {
                     anchors.centerIn: parent; spacing: 7
@@ -1052,7 +1059,7 @@ Item {
         // DropTarget reaction: border→accent + 1% scale-up + faint fill while a
         // folder is dragged over; a SUCCESS flash when one lands.
         readonly property bool dragOver: cardDrop.containsDrag
-        color: dragOver ? Qt.rgba(0.345, 0.651, 1.0, 0.06) : root.cSunken
+        color: dragOver ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.06) : root.cSunken
         radius: 10
         border.width: dragOver ? 2 : 1
         border.color: dragOver ? pal.ACC : pal.BORDER
@@ -1172,7 +1179,7 @@ Item {
             Rectangle {
                 Layout.fillWidth: true; Layout.preferredHeight: 40
                 radius: 8
-                color: cardDrop.containsDrag ? Qt.rgba(0.345, 0.651, 1.0, 0.10) : "transparent"
+                color: cardDrop.containsDrag ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.10) : "transparent"
                 DashedRect {
                     anchors.fill: parent; radius: 8
                     stroke: cardDrop.containsDrag ? pal.ACC : pal.BORDER_HI
@@ -1483,7 +1490,7 @@ Item {
                             readonly property bool on_: Analysis.cfg[modelData.k] === true
                             implicitHeight: 26; implicitWidth: ccTxt.implicitWidth + sc.sp5 * 2
                             radius: height / 2                     // pill
-                            color: on_ ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
+                            color: on_ ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
                             border.width: 1; border.color: on_ ? pal.ACC : pal.BORDER
                             Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
                             Text { id: ccTxt; anchors.centerIn: parent; text: modelData.t

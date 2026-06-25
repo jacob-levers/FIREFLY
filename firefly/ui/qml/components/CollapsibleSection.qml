@@ -62,7 +62,7 @@ Item {
                         Layout.preferredWidth: 22
                         Layout.preferredHeight: 22
                         radius: sc.radiusLg          // 6
-                        color: Qt.rgba(0.345, 0.651, 1.0, 0.14)   // ACC @ 14%
+                        color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14)   // ACC @ 14%
                         Icon { anchors.centerIn: parent; name: root.icon
                                color: pal.ACC; size: 13 }
                     }

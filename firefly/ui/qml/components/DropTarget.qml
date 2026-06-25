@@ -16,7 +16,7 @@ Rectangle {
     readonly property var sc: Theme.scale
 
     radius: sc.radiusLg
-    color: dragActive ? Qt.rgba(0.345, 0.651, 1.0, 0.06) : pal.PANEL
+    color: dragActive ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.06) : pal.PANEL
     border.width: dragActive ? 2 : 1
     border.color: dragActive ? pal.ACC : pal.BORDER
     scale: dragActive ? 1.01 : 1.0

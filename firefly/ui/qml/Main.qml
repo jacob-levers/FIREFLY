@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC
 import "components"
 import "tabs"
 
@@ -149,6 +150,21 @@ Item {
     // Preferences modal + ⌘, shortcut.
     PreferencesDialog { id: prefs }
     Shortcut { sequence: StandardKey.Preferences; onActivated: prefs.open() }
+
+    // ── global keyboard shortcuts ────────────────────────────────────────
+    // ⌘1…⌘5 jump to a tab; ⌘↵ starts/stops a run (Qt maps "Ctrl" → ⌘ on macOS).
+    // Gated to the main UI with no full-window modal (Preferences / ROI editor) up.
+    readonly property bool shortcutsLive: App.page === "main" && !prefs.opened && !Roi.editing
+    Shortcut { sequence: "Ctrl+1"; enabled: root.shortcutsLive; onActivated: App.setTab(0) }
+    Shortcut { sequence: "Ctrl+2"; enabled: root.shortcutsLive; onActivated: App.setTab(1) }
+    Shortcut { sequence: "Ctrl+3"; enabled: root.shortcutsLive; onActivated: App.setTab(2) }
+    Shortcut { sequence: "Ctrl+4"; enabled: root.shortcutsLive; onActivated: App.setTab(3) }
+    Shortcut { sequence: "Ctrl+5"; enabled: root.shortcutsLive; onActivated: App.setTab(4) }
+    Shortcut {
+        sequences: ["Ctrl+Return", "Ctrl+Enter"]
+        enabled: root.shortcutsLive
+        onActivated: Process.running ? Process.stop() : Process.start()
+    }
 
     // Restart prompt once a CUDA install finishes (the GPU torch only loads on a
     // fresh process). Declared after Preferences so it layers above it.
@@ -309,6 +325,10 @@ Item {
                                         Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
                                     }
                                     TapHandler { onTapped: App.setTab(index) }
+                                    HoverHandler { id: tabHov; cursorShape: Qt.PointingHandCursor }
+                                    QQC.ToolTip.text: "⌘" + (index + 1)
+                                    QQC.ToolTip.delay: 600
+                                    QQC.ToolTip.visible: tabHov.hovered
                                 }
                             }
                         }

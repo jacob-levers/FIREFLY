@@ -32,7 +32,7 @@ Item {
         height: 30
         anchors.verticalCenter: parent.verticalCenter
         radius: sc.radiusLg
-        color: Qt.rgba(0.345, 0.651, 1.0, 0.14)      // ACC @ 14%
+        color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14)      // ACC @ 14%
         border.width: 1
         border.color: pal.ACC
         Behavior on x     { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160; easing.type: Easing.OutCubic } }

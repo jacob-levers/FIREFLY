@@ -181,7 +181,7 @@ Flickable {
         implicitHeight: bodyCol.implicitHeight * collapse
         clip: true
         radius: sc.radiusMd
-        color: st === "running" ? Qt.rgba(0.345, 0.651, 1.0, 0.06) : "transparent"
+        color: st === "running" ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.06) : "transparent"
         border.width: 1
         border.color: st === "running" ? pal.ACC : (rowHov.hovered ? pal.BORDER_HI : pal.BORDER)
         Behavior on border.color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
@@ -354,7 +354,7 @@ Flickable {
                     readonly property bool active: root.batchMode === modelData.b
                     implicitWidth: pillRow.implicitWidth + sc.sp6 * 2
                     implicitHeight: 34; radius: sc.radiusLg
-                    color: active ? Qt.rgba(0.345, 0.651, 1.0, 0.14) : pal.PANEL_ALT
+                    color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
                     border.width: 1; border.color: active ? pal.ACC : pal.BORDER
                     RowLayout {
                         id: pillRow; anchors.centerIn: parent; spacing: sc.sp2
@@ -398,7 +398,7 @@ Flickable {
             }
             Rectangle {                              // hover/drag fill
                 anchors.fill: parent; radius: sc.radiusXl
-                color: dropArea.containsDrag ? Qt.rgba(0.345, 0.651, 1.0, 0.06) : "transparent"
+                color: dropArea.containsDrag ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.06) : "transparent"
             }
             RowLayout {
                 anchors.fill: parent
@@ -407,8 +407,8 @@ Flickable {
                 Rectangle {
                     id: dropChip
                     width: 48; height: 48; radius: sc.radiusLg
-                    color: Qt.rgba(0.345, 0.651, 1.0, 0.12)
-                    border.width: 1; border.color: Qt.rgba(0.345, 0.651, 1.0, 0.22)
+                    color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
+                    border.width: 1; border.color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.22)
                     Icon { anchors.centerIn: parent; name: "arrow-up-right"
                            rotation: -45; color: pal.ACC; size: 22 }
                     // gentle "breathing" while a file is dragged over the zone
@@ -721,7 +721,7 @@ Flickable {
                     }
                     Rectangle {
                         anchors.fill: parent; radius: sc.radiusXl
-                        color: queueDrop.containsDrag ? Qt.rgba(0.345, 0.651, 1.0, 0.06) : "transparent"
+                        color: queueDrop.containsDrag ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.06) : "transparent"
                     }
                     RowLayout {
                         anchors.centerIn: parent; spacing: sc.sp3

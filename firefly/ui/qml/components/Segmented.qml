@@ -37,7 +37,7 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 radius: root.solid ? height / 2 : 6
-                color: on ? (root.solid ? pal.ACC : Qt.rgba(0.345, 0.651, 1.0, 0.14))
+                color: on ? (root.solid ? pal.ACC : Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14))
                           : "transparent"
                 Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
                 RowLayout {

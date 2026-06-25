@@ -65,7 +65,7 @@ Flickable {
         clip: true
         color: pal.PANEL
         border.width: 1
-        border.color: st === "running" ? Qt.rgba(0.345, 0.651, 1.0, 0.5)
+        border.color: st === "running" ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.5)
                     : st === "done"    ? Qt.rgba(0.337, 0.827, 0.392, 0.45)
                     : st === "failed"  ? pal.DANGER : pal.BORDER
         Behavior on border.color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 250 } }

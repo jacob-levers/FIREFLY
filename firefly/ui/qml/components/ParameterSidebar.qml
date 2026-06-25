@@ -19,7 +19,7 @@ ColumnLayout {
         Rectangle {                              // tinted icon-chip
             Layout.preferredWidth: 24; Layout.preferredHeight: 24
             radius: sc.radiusLg
-            color: Qt.rgba(0.345, 0.651, 1.0, 0.14)   // ACC @ 14%
+            color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14)   // ACC @ 14%
             Icon { anchors.centerIn: parent; name: "sliders-horizontal"
                    size: 14; color: pal.ACC }
         }

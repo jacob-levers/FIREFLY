@@ -86,7 +86,7 @@ Item {
                 width: parent.width + 6; height: width; radius: width / 2
                 color: "transparent"
                 border.width: 2
-                border.color: Qt.rgba(0.345, 0.651, 1.0,
+                border.color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b,
                                       (ma.pressed || hov.hovered) ? 0.35 : 0.0)
                 Behavior on border.color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 120 } }
             }

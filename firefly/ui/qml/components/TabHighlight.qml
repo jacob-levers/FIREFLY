@@ -27,7 +27,7 @@ Rectangle {
     width:  target ? target.width : 0
     height: target ? target.height : 30
     radius: Theme.scale.radiusLg
-    color:  Qt.rgba(0.345, 0.651, 1.0, 0.14)   // ACC @ 14%
+    color:  Qt.rgba(Theme.palette.ACC.r, Theme.palette.ACC.g, Theme.palette.ACC.b, 0.14)   // ACC @ 14%
     border.width: 1
     border.color: Theme.palette.ACC
 
