@@ -2035,7 +2035,8 @@ def compare_groups(groups,
         # was hardened against.  Paths run through _win_long_path so a >260-char
         # Windows path (OneDrive/RDM) doesn't fail the writes.  (#23)
         try:
-            summary_df.to_csv(_win_long_path(csv_path), index=False)
+            from firefly.analysis.fa_io import atomic_to_csv
+            atomic_to_csv(summary_df, _win_long_path(csv_path), index=False)
             print(f"  Saved: {csv_path}")
         except Exception as _e:
             print(f"  WARN: comparison summary CSV save failed: {_e}")

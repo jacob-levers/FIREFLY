@@ -2089,10 +2089,11 @@ class AnalysisWorkspaceController(QObject):
             self.toast.emit("No statistics to export yet")
             return
         import csv
+        from firefly.analysis.fa_io import atomic_write   # stdlib-only; cheap
         metric = self._metric_obj()
         path = os.path.join(self._export_dir(), "firefly_comparison_stats.csv")
         try:
-            with open(path, "w", newline="") as fh:
+            with atomic_write(path, "w", newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(["# metric", metric.label, metric.unit])
                 w.writerow(["# test", self._cfg["test"], "correction",
