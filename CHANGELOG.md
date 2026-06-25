@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.76.16
+
+A polish & hardening pass.
+
+### Added
+
+- **Keyboard shortcuts** — ⌘1…⌘5 jump to a tab, ⌘↵ starts/stops a run (hover a
+  tab to see its shortcut).
+- **Confirmation before destructive removes** — removing a condition or a
+  timepoint in the Analysis tab now asks first (frequent, reversible removes like
+  a queued series stay one-click).
+- **Colour-blind-safe status indicators** — HYPER-FLY worker status and the
+  Analysis significance stars use an Okabe–Ito palette when "Colour-blind safe"
+  is selected.
+
+### Fixed
+
+- **The accent picker now recolours everything** — 33 spots hardcoded the default
+  blue, so hovers / selected pills / drag-over fills ignored a non-default
+  accent. They now follow the chosen accent.
+- **The Analysis tab no longer squeezes on narrow windows** — the figures /
+  conditions columns stack vertically below 880px.
+- **Atomic output-CSV writes** — exports (Analysis stats, comparison summary,
+  per-run trajectory/diffusion CSVs) are written to a temp file then swapped in,
+  so a disk-full or crash mid-write can't leave a truncated file.
+- **Stronger input focus ring** for keyboard navigation.
+- Internal: fixed 2 stale tests, removed the orphaned CompareTab, bumped the
+  numba floor to 0.61.
+
 ## v2.76.15
 
 HYPER-FLY — remove tile scanner animation + smarter load staggering.

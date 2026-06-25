@@ -11,7 +11,15 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.15"
+__version__ = "2.76.16"
+# v2.76.16 — Polish & hardening pass: keyboard shortcuts (⌘1–5 tabs, ⌘↵ run);
+#           Analysis tab collapses to one column on narrow windows; the accent
+#           picker now recolours every hover/pill/drag-fill (33 hardcoded-blue
+#           literals fixed); confirm before removing a condition / timepoint;
+#           colour-blind-safe HYPER-FLY status + significance stars; stronger
+#           input focus rings; atomic output-CSV writes (no truncated files on
+#           disk-full).  Plus: fixed 2 stale tests, removed dead CompareTab,
+#           numba floor bumped to 0.61.
 # v2.76.15 — HYPER-FLY: remove the sweeping-scanner tile animation; load stagger
 #           is now format-aware — uncompressed TIF loads 1-at-a-time (read-bound:
 #           one full-speed read pins a gigabit/RDM link + each file processes
