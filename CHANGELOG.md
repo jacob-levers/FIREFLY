@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.76.20
+
+### Fixed
+
+- **The "Batch a folder" home-screen card now opens the Import tab in batch
+  mode** instead of single-analysis mode (it previously only switched tabs).
+- **ROI-viewer threshold now syncs to the left sidebar in single analysis.**
+  In single mode the viewer's Threshold / mask mode / auto method / background σ
+  edits *are* the run's ROI, so they now write through to the sidebar field and
+  it updates live. In batch mode those edits stay a per-file override and never
+  move the shared sidebar default — as intended. (Single-vs-batch was a tab-local
+  flag nothing else could see; it's now shared controller state.)
+
 ## v2.76.19
 
 ### Fixed
