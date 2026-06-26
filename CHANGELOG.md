@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.76.21
+
+### Added
+
+- **Corrupt / unreadable files are now flagged before processing.** Loading a
+  recording that can't be opened (corrupt, truncated, or zero-frame) shows a
+  clear "Couldn't read this file — it may be corrupt or incomplete" warning in
+  the Import preview and disables Start, instead of the misleading "No preview
+  for this file type". In batch mode, an unreadable file gets a warning badge on
+  its row when the series is expanded — so a bad file is visible in the queue
+  rather than only surfacing when the run fails.
+- **The Update-behaviour preferences now actually work.** The **update channel**
+  (Stable / Pre-release) drives what the check + install fetch from GitHub;
+  **Notify about pre-releases** surfaces a newer beta on the Stable channel
+  without changing the install target; and **Download in the background**
+  pre-fetches the verified installer so the update card offers an instant
+  "Restart & install". (The non-functional "Nightly" channel was removed — there
+  are no nightly builds to install.)
+
+### Fixed
+
+- **The Preferences dialog now has rounded corners** on all four sides (the
+  full-bleed title bar and footer were painting square corners over the rounded
+  panel).
+
 ## v2.76.20
 
 ### Fixed
