@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.17"
+__version__ = "2.76.18"
+# v2.76.18 — Async loading polish: super-resolution render and batch folder-scan
+#           now run off the GUI thread, so the UI no longer freezes on a big
+#           render / large or network folder.  The Render button shows a spinning
+#           "Rendering…"; the Import queue shows "Scanning folder…" + shimmer.
 # v2.76.17 — Atomic CSV writes extended across the analysis core (per-run extras,
 #           CLI, circular stats, PALM-Tracer export) so an interrupted write can't
 #           leave a truncated file; a failed HYPER-FLY tile now opens the full,

@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.76.18
+
+### Changed
+
+- **The UI no longer freezes during a super-resolution render.** The render
+  (a Gaussian density map over up to ~100k localisations) runs off the GUI
+  thread now; the Render button shows a spinning "Rendering…" and disables while
+  it works.
+- **Folder scanning no longer freezes the UI.** Scanning a batch folder (which
+  probes every file to flag corrupt ones) runs off-thread — the Import queue
+  shows "Scanning folder…" with shimmer placeholders instead of locking up on a
+  large or network folder.
+
 ## v2.76.17
 
 ### Fixed
