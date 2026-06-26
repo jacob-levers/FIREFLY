@@ -38,6 +38,9 @@ Item {
 
             // ── header ───────────────────────────────────────────────
             Rectangle {
+                // The landing carries its own branding in the left rail + a floating
+                // gear, so the app chrome header only shows in the main UI.
+                visible: App.page === "main"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 52
                 color: pal.PANEL
@@ -187,67 +190,219 @@ Item {
         }
     }
 
-    // ── landing page ─────────────────────────────────────────────────
+    // ── landing page (two-column "Localiser" design) ─────────────────
     Component {
         id: landingPage
         Item {
-            LandingBackdrop { anchors.fill: parent }      // glow + drifting dots
+            id: landing
+            // Curated recent highlights (real versions / dates / summaries).
+            readonly property var rupdates: [
+                { v: "v2.76.25", d: "26 Jun 2026", s: "Live progress while a full report is generated." },
+                { v: "v2.76.24", d: "26 Jun 2026", s: "Single analysis shows the combined multi-file series." },
+                { v: "v2.76.22", d: "26 Jun 2026", s: "Auto-minmass runs now replay exactly." }
+            ]
+            readonly property var actions: [
+                { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0, batch: false },
+                { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0, batch: true },
+                { icon: "git-compare", t: "Compare & analyse", d: "Drop 2–12 conditions into one live comparison — figure, stats, significance.", tab: 2, batch: undefined },
+                { icon: "waypoints",   t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 3, batch: undefined }
+            ]
+            function _go(a) {
+                if (a.batch !== undefined) Import.setBatchMode(a.batch)
+                App.enterMain(a.tab)
+            }
 
-            ColumnLayout {
-                anchors.centerIn: parent
-                width: Math.min(1040, parent.width - 80)
-                spacing: sc.sp3
+            RowLayout {
+                anchors.fill: parent
+                spacing: 0
 
-                RowLayout {                                // eyebrow + microscope
-                    Layout.alignment: Qt.AlignHCenter
-                    spacing: sc.sp2
-                    Icon { name: "microscope"; color: pal.WARN; size: 13 }
-                    Text {
-                        text: "FLUORESCENCE INFERENCE & RECONSTRUCTION ENGINE"
-                        color: pal.WARN
-                        font.pixelSize: sc.textXs; font.bold: true
-                        font.letterSpacing: 2.0
+                // ── left rail: branding + recent updates over the field ──
+                Rectangle {
+                    Layout.preferredWidth: 444
+                    Layout.fillHeight: true
+                    color: pal.BG
+                    clip: true
+                    MoleculeField { anchors.fill: parent; active: App.page === "landing" }
+                    Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+                                width: 1; color: pal.BORDER }
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 32
+                        spacing: 0
+
+                        RowLayout {                          // eyebrow
+                            spacing: 7
+                            Icon { name: "microscope"; size: 12; color: pal.WARN }
+                            Text { text: "SINGLE-PARTICLE TRACKING · PALM"; color: pal.WARN
+                                   font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.8 }
+                        }
+                        RowLayout {                          // wordmark
+                            Layout.topMargin: 16; spacing: 0
+                            Text { text: "FIRE"; color: pal.TXT; font.pixelSize: 52
+                                   font.weight: Font.ExtraBold; font.letterSpacing: 0.5 }
+                            Text { text: "FLY"; color: pal.ACC; font.pixelSize: 52
+                                   font.weight: Font.ExtraBold; font.letterSpacing: 0.5 }
+                        }
+                        Text {                               // tagline
+                            Layout.topMargin: 16; Layout.maximumWidth: 330
+                            wrapMode: Text.WordWrap; lineHeight: 1.5; textFormat: Text.StyledText
+                            text: "Localise, link and analyse single fluorescent molecules in "
+                                  + "<font face='Menlo'>.czi</font> / <font face='Menlo'>.tif</font> stacks."
+                            color: pal.TXT_MUTED; font.pixelSize: 14
+                        }
+
+                        Item { Layout.fillHeight: true }     // flexible spacer
+
+                        ColumnLayout {                       // recent updates log
+                            Layout.fillWidth: true; spacing: 0
+                            RowLayout {
+                                Layout.bottomMargin: 13; spacing: 7
+                                Icon { name: "history"; size: 13; color: pal.WARN }
+                                Text { text: "RECENT UPDATES"; color: pal.WARN
+                                       font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.0 }
+                            }
+                            Repeater {
+                                model: landing.rupdates
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    required property int index
+                                    readonly property bool last: index === landing.rupdates.length - 1
+                                    Layout.fillWidth: true
+                                    spacing: 11
+                                    Item {                   // timeline gutter (height tracks the body)
+                                        Layout.preferredWidth: 9
+                                        Layout.alignment: Qt.AlignTop
+                                        Layout.preferredHeight: rbody.implicitHeight + (last ? 0 : 14)
+                                        Rectangle {          // connector down to the next dot
+                                            visible: !last
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            y: 13; width: 1
+                                            height: Math.max(0, parent.height - 13); color: pal.BORDER
+                                        }
+                                        Rectangle {          // ring chip (active items)
+                                            visible: !last
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            y: 2; width: 13; height: 13; radius: 6.5
+                                            color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
+                                        }
+                                        Rectangle {          // dot
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            y: 5; width: 7; height: 7; radius: 3.5
+                                            color: last ? pal.TXT_MUTED : pal.ACC
+                                        }
+                                    }
+                                    ColumnLayout {           // item body
+                                        id: rbody
+                                        Layout.fillWidth: true
+                                        Layout.alignment: Qt.AlignTop
+                                        Layout.bottomMargin: last ? 0 : 14
+                                        spacing: 3
+                                        RowLayout {
+                                            spacing: 6
+                                            Text { text: modelData.v; color: pal.TXT; font.family: "Menlo"
+                                                   font.pixelSize: 12; font.weight: Font.DemiBold }
+                                            Text { text: modelData.d; color: pal.TXT_MUTED; font.pixelSize: 10 }
+                                        }
+                                        Text { text: modelData.s; color: pal.TXT_MUTED
+                                               Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                               font.pixelSize: 12; lineHeight: 1.4 }
+                                    }
+                                }
+                            }
+                        }
+                        Text { Layout.topMargin: 14; text: "By Jacob Levers"
+                               color: pal.TXT_MUTED; font.pixelSize: 11 }
                     }
                 }
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    horizontalAlignment: Text.AlignHCenter
-                    text: "What would you like to do?"
-                    color: pal.TXT
-                    font.pixelSize: sc.displayMd; font.bold: true
-                }
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    horizontalAlignment: Text.AlignHCenter
-                    text: "Single-particle tracking PALM · localise, link, and analyse single molecules."
-                    color: pal.TXT_MUTED
-                    font.pixelSize: sc.textLg
-                    bottomPadding: sc.sp4
-                }
-                GridLayout {
+
+                // ── right column: the four workflows ─────────────────
+                Item {
                     Layout.fillWidth: true
-                    columns: 2
-                    columnSpacing: sc.sp6
-                    rowSpacing: sc.sp6
-                    Repeater {
-                        model: [
-                            { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0, batch: false },
-                            { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0, batch: true },
-                            { icon: "git-compare", t: "Compare & analyse", d: "Drop 2–12 conditions into one live comparison — figure, stats and significance.", tab: 2 },
-                            { icon: "waypoints",   t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 3 }
-                        ]
-                        delegate: Tile {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            icon: modelData.icon
-                            title: modelData.t
-                            desc: modelData.d
-                            // the two Import cards preset single vs batch mode
-                            onClicked: { if (modelData.batch !== undefined) Import.setBatchMode(modelData.batch);
-                                         App.enterMain(modelData.tab) }
+                    Layout.fillHeight: true
+                    ColumnLayout {
+                        anchors.left: parent.left; anchors.leftMargin: 48
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(600, parent.width - 96)
+                        spacing: 0
+                        Text { text: "START SOMETHING"; color: pal.TXT_MUTED
+                               font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.76 }
+                        Text { Layout.topMargin: 6; Layout.bottomMargin: 22
+                               text: "What would you like to do?"; color: pal.TXT
+                               font.pixelSize: 30; font.bold: true }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 10
+                            Repeater {
+                                model: landing.actions
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    implicitHeight: arRow.implicitHeight + 16 * 2
+                                    radius: 10
+                                    color: arHov.hovered ? pal.PANEL_ALT : pal.PANEL
+                                    border.width: 1
+                                    border.color: arHov.hovered ? pal.ACC : pal.BORDER
+                                    Behavior on color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 140 } }
+                                    Behavior on border.color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 140 } }
+                                    transform: Translate {
+                                        y: arHov.hovered ? -2 : 0
+                                        Behavior on y { NumberAnimation { duration: Theme.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic } }
+                                    }
+                                    RowLayout {
+                                        id: arRow
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 18; anchors.rightMargin: 18
+                                        spacing: 15
+                                        Rectangle {              // icon chip
+                                            Layout.alignment: Qt.AlignVCenter
+                                            width: 46; height: 46; radius: 10
+                                            color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
+                                            border.width: 1
+                                            border.color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.22)
+                                            Icon { anchors.centerIn: parent; name: modelData.icon; size: 21; color: pal.ACC }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true; spacing: 2
+                                            Text { text: modelData.t; color: pal.TXT
+                                                   font.pixelSize: 15; font.bold: true }
+                                            Text { text: modelData.d; color: pal.TXT_MUTED
+                                                   Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                                   font.pixelSize: 12 }
+                                        }
+                                        Icon { name: "chevron-right"; size: 18; color: pal.TXT_MUTED }
+                                    }
+                                    HoverHandler { id: arHov; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: landing._go(modelData) }
+                                }
+                            }
                         }
                     }
                 }
+            }
+
+            // ── floating top-right: update pill + Preferences gear ───
+            RowLayout {
+                z: 11
+                anchors { top: parent.top; right: parent.right; topMargin: 14; rightMargin: 14 }
+                spacing: sc.sp2
+                Rectangle {
+                    visible: Updates.updateAvailable
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitHeight: 26; implicitWidth: lupRow.implicitWidth + sc.sp3 * 2
+                    radius: height / 2
+                    color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, lupHov.hovered ? 0.22 : 0.14)
+                    border.width: 1; border.color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.40)
+                    RowLayout {
+                        id: lupRow; anchors.centerIn: parent; spacing: sc.sp2
+                        Rectangle { width: 7; height: 7; radius: 3.5; color: pal.ACC }
+                        Text { text: Updates.installing ? "Updating…" : "Update available"
+                               color: pal.ACC; font.pixelSize: sc.textXs; font.weight: Font.DemiBold }
+                    }
+                    HoverHandler { id: lupHov; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: prefs.open("updates") }
+                }
+                IconButton { icon: "settings"; tip: "Preferences (⌘,)"; size: 28
+                             onClicked: prefs.open() }
             }
         }
     }
