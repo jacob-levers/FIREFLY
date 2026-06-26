@@ -21,7 +21,7 @@ except Exception:
 
 # Per-concern section order + icons (icons from the bundled Lucide set).
 SECTIONS = [
-    {"key": "imaging",       "title": "Imaging metadata",      "icon": "sliders-horizontal"},
+    {"key": "imaging",       "title": "Imaging metadata",      "icon": "microscope"},
     {"key": "preprocessing", "title": "Preprocessing",          "icon": "layers"},
     {"key": "camera",        "title": "Camera calibration",     "icon": "image"},
     {"key": "detection",     "title": "Detection",              "icon": "scan-search"},
