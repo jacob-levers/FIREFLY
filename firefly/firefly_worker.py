@@ -36,6 +36,7 @@ import traceback
 # block since it pulls in no torch.  MsgKind is the one source of truth for the
 # worker→GUI message-queue kinds emitted throughout this module.
 from firefly.analysis.fa_enums import MsgKind
+from firefly.analysis.fa_io import atomic_to_csv, atomic_write   # stdlib-only
 from firefly.analysis.fa_constants import (
     DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S)
 
@@ -1769,7 +1770,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             locs, drift_df = correct_drift(
                 locs, n_seg_frames=int(p.get("drift_segment", 500)))
-            drift_df.to_csv(
+            atomic_to_csv(drift_df, 
                 os.path.join(extras_dir, f"{stem}_drift.csv"), index=False)
             _log(f"  Drift correction applied  |  saved {stem}_drift.csv")
         except Exception as exc:
@@ -2135,7 +2136,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                                    .reset_index(names="lag_frame"))
             else:
                 emsd_out = emsd_df
-            emsd_out.to_csv(
+            atomic_to_csv(emsd_out, 
                 os.path.join(extras_dir, f"{stem}_ensemble_msd.csv"),
                 index=False)
             extras_saved.append("ensemble MSD")
@@ -2184,7 +2185,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _log(f"  WARN: VACF save failed: {exc}")
     try:
         if dwell_df is not None and len(dwell_df):
-            dwell_df.to_csv(
+            atomic_to_csv(dwell_df, 
                 os.path.join(extras_dir, f"{stem}_dwell_times.csv"),
                 index=False)
             extras_saved.append("dwell times")
@@ -2193,7 +2194,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     try:
         if ta is not None and len(ta) > 0:
             import pandas as _pd
-            _pd.DataFrame({"turning_angle_deg": ta}).to_csv(
+            atomic_to_csv(_pd.DataFrame({"turning_angle_deg": ta}),
                 os.path.join(extras_dir, f"{stem}_turning_angles.csv"),
                 index=False)
             extras_saved.append("turning angles")
@@ -2259,7 +2260,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     ])
                 cs_df = _pd.DataFrame(
                     cs_items, columns=["statistic", "value"])
-                cs_df.to_csv(
+                atomic_to_csv(cs_df, 
                     os.path.join(extras_dir,
                                  f"{stem}_circular_statistics.csv"),
                     index=False)
@@ -2302,7 +2303,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _log(f"  WARN: turning-angles save failed: {exc}")
     try:
         if mf is not None and len(mf):
-            mf.to_csv(
+            atomic_to_csv(mf, 
                 os.path.join(extras_dir, f"{stem}_mobile_fraction.csv"),
                 index=False)
             extras_saved.append("mobile fraction")
@@ -2310,7 +2311,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _log(f"  WARN: mobile-fraction save failed: {exc}")
     try:
         if cluster_stats_df is not None and len(cluster_stats_df):
-            cluster_stats_df.to_csv(
+            atomic_to_csv(cluster_stats_df, 
                 os.path.join(extras_dir, f"{stem}_cluster_stats.csv"),
                 index=False)
             extras_saved.append("cluster stats")
@@ -2380,7 +2381,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 _log(f"  NOTE: cluster ↔ motion join skipped "
                      f"({exc_join}) — saving cluster_labels without "
                      f"motion column.")
-            _pd.DataFrame({
+            atomic_to_csv(_pd.DataFrame({
                 "loc_index": _np.arange(len(cluster_labels),
                                          dtype=_np.int64),
                 "x_um":      _np.asarray(cluster_xy[:, 0],
@@ -2390,7 +2391,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "cluster_id": _np.asarray(cluster_labels,
                                            dtype=_np.int32),
                 "motion":    motion_per_loc,
-            }).to_csv(
+            }),
                 os.path.join(extras_dir, f"{stem}_cluster_labels.csv"),
                 index=False)
             extras_saved.append("cluster labels")

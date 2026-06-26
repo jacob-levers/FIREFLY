@@ -268,6 +268,7 @@ from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm, _dim_size,
                                            safe_process_workers,
                                            DEFAULT_PIXEL_SIZE_UM,
                                            DEFAULT_FRAME_INTERVAL_S)
+from firefly.analysis.fa_io import atomic_to_csv
 
 
 tp.quiet()
@@ -666,7 +667,7 @@ def main():
         out = args.output_dir or os.path.join(args.input, "run_summaries.csv")
         if os.path.isdir(out):
             out = os.path.join(out, "run_summaries.csv")
-        df.to_csv(out, index=False)
+        atomic_to_csv(df, out, index=False)
         groups = ", ".join(sorted(map(str, df["group"].unique())))
         print(f"Aggregated {len(df)} run(s) across [{groups}] -> {out}")
         return
@@ -791,12 +792,12 @@ def main():
     for df, suffix in [(locs,"localisations"), (tracks,"trajectories"),
                        (diff_df,"diffusion_summary")]:
         path = os.path.join(out_dir, f"{stem}_{suffix}.csv")
-        df.to_csv(path, index=False)
+        atomic_to_csv(df, path, index=False)
         print(f"  {suffix:<25} -> {path}")
 
     emsd_out  = emsd_df.to_frame("msd_um2").reset_index(names="lag_frame")
     emsd_path = os.path.join(out_dir, f"{stem}_ensemble_msd.csv")
-    emsd_out.to_csv(emsd_path, index=False)
+    atomic_to_csv(emsd_out, emsd_path, index=False)
     print(f"  ensemble_msd              -> {emsd_path}")
 
     fig_path = os.path.join(out_dir, f"{stem}_sptpalm_figure.png")

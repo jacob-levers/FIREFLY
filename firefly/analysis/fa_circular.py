@@ -5,6 +5,7 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 from __future__ import annotations
 
 import pandas as pd
+from firefly.analysis.fa_io import atomic_to_csv
 
 import numpy as np
 import matplotlib
@@ -1154,7 +1155,7 @@ def save_comparison_circular_statistics(groups_angles, *,
             lead = [c for c in ("group", "n_angles", "n_replicates")
                     if c in pg_df.columns]
             pg_df = pg_df[lead + [c for c in pg_df.columns if c not in lead]]
-            pg_df.to_csv(pg_path, index=False)
+            atomic_to_csv(pg_df, pg_path, index=False)
 
             # 2) Per-replicate scalars — one row per (group, replicate).
             rep_rows = []
@@ -1169,9 +1170,9 @@ def save_comparison_circular_statistics(groups_angles, *,
                         "rbar":   rs[i] if i < len(rs) else None,
                         "mu_deg": ms[i] if i < len(ms) else None,
                     })
-            pd.DataFrame(rep_rows, columns=["group", "replicate",
-                                            "kappa", "rbar", "mu_deg"]
-                         ).to_csv(rep_path, index=False)
+            atomic_to_csv(pd.DataFrame(rep_rows, columns=["group", "replicate",
+                                            "kappa", "rbar", "mu_deg"]),
+                          rep_path, index=False)
 
             # 3) Between-group per-replicate tests — uniform schema.
             test_rows = []
@@ -1230,7 +1231,7 @@ def save_comparison_circular_statistics(groups_angles, *,
                           "hedges_g_ci_low", "hedges_g_ci_high", "note"]
             tdf = pd.DataFrame(test_rows)
             tdf = tdf.reindex(columns=[c for c in tests_cols if c in tdf.columns])
-            tdf.to_csv(tests_path, index=False)
+            atomic_to_csv(tdf, tests_path, index=False)
 
             for p in (pg_path, rep_path, tests_path):
                 print(f"  Saved: {p}")

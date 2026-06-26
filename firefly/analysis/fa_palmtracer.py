@@ -12,6 +12,7 @@ from firefly.analysis.fa_diffusion import (compute_msd_and_fit, compute_jdd,
                           MOBILE_D_THRESHOLD_DEFAULT)
 
 import json
+from firefly.analysis.fa_io import atomic_to_csv, atomic_write
 import os
 import numpy as np
 import pandas as pd
@@ -370,13 +371,13 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True):
         import json as _json
         extras_dir = os.path.join(folder, "firefly_extras")
         os.makedirs(extras_dir, exist_ok=True)
-        diff_df.to_csv(
+        atomic_to_csv(diff_df, 
             os.path.join(extras_dir, f"{stem}_diffusion_summary.csv"), index=False)
-        tracks.to_csv(
+        atomic_to_csv(tracks, 
             os.path.join(extras_dir, f"{stem}_trajectories.csv"), index=False)
-        locs.to_csv(
+        atomic_to_csv(locs, 
             os.path.join(extras_dir, f"{stem}_localisations.csv"), index=False)
-        emsd_df.to_csv(
+        atomic_to_csv(emsd_df, 
             os.path.join(extras_dir, f"{stem}_ensemble_msd.csv"), index=False)
         with open(os.path.join(extras_dir, f"{stem}_params.json"), "w") as _fp:
             _json.dump({
@@ -395,13 +396,13 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True):
                 _json.dump(_to_jsonable(jdd) if "_to_jsonable" in globals() else jdd,
                            _fp, indent=2, default=str)
         if dwell_df is not None and len(dwell_df):
-            dwell_df.to_csv(
+            atomic_to_csv(dwell_df, 
                 os.path.join(extras_dir, f"{stem}_dwell_times.csv"), index=False)
         if ta_deg is not None and len(ta_deg):
-            pd.DataFrame({"turning_angle_deg": ta_deg}).to_csv(
+            atomic_to_csv(pd.DataFrame({"turning_angle_deg": ta_deg}),
                 os.path.join(extras_dir, f"{stem}_turning_angles.csv"), index=False)
         if mobile_frac_df is not None and len(mobile_frac_df):
-            mobile_frac_df.to_csv(
+            atomic_to_csv(mobile_frac_df, 
                 os.path.join(extras_dir, f"{stem}_mobile_fraction.csv"), index=False)
       except Exception:
         # Caching is best-effort — never fail the load over a write error
@@ -626,7 +627,7 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
     # ── 1. locPALMTracer.csv ─────────────────────────────────────────────
     n_loc = len(locs)
     loc_path = _os.path.join(out_dir, f"{stem}_locPALMTracer.csv")
-    with open(loc_path, "w", newline="") as fh:
+    with atomic_write(loc_path, "w", newline="") as fh:
         w = _csv.writer(fh)
         w.writerow(["Width", "Height", "nb_Planes", "nb_Points",
                     "Pixel_Size(um)", "Frame_Duration(s)",
@@ -658,7 +659,7 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
     pid_to_new = {int(p): i + 1 for i, p in enumerate(pid_order)}
     n_tracks   = len(pid_to_new)
 
-    with open(tr_path, "w", newline="") as fh:
+    with atomic_write(tr_path, "w", newline="") as fh:
         w = _csv.writer(fh)
         w.writerow(["Width", "Height", "nb_Planes", "nb_Tracks",
                     "Pixel_Size(um)", "Frame_Duration(s)",
@@ -700,7 +701,7 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
     mob_ratio = (mobile_n / immob_n) if immob_n else _np.nan
 
     d1_path = _os.path.join(out_dir, f"{stem}_trcPALMTracer-1-D.csv")
-    with open(d1_path, "w", newline="") as fh:
+    with atomic_write(d1_path, "w", newline="") as fh:
         w = _csv.writer(fh)
         w.writerow([f"#Diffusion Coef in um2/s; Linear fit performed on the "
                     f"first points of trajectories"])
@@ -722,7 +723,7 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
             w.writerow(row)
 
     dA_path = _os.path.join(out_dir, f"{stem}_trcPALMTracer-AllROI-D.csv")
-    with open(dA_path, "w", newline="") as fh:
+    with atomic_write(dA_path, "w", newline="") as fh:
         w = _csv.writer(fh)
         w.writerow([f"#Diffusion Coef in um2/s; Linear fit performed on the "
                     f"first points of trajectories"])
@@ -740,7 +741,7 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
 
     # ── 4 & 6. MSD files (jagged: one column per surviving lag) ──────────
     def _write_msd(path):
-        with open(path, "w", newline="") as fh:
+        with atomic_write(path, "w", newline="") as fh:
             w = _csv.writer(fh)
             w.writerow(["#MSD(DeltaT) in um2"])
             w.writerow([f"#Pixel size= {pixel_size_um}um ; Frame rate= "
