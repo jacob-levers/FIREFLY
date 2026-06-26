@@ -37,7 +37,7 @@ class BatchSeriesModel(QAbstractListModel):
 
     _ROLES = ["key", "name", "fileCount", "selState", "checked", "open",
               "status", "progress", "hasRoi", "roiLabel", "framesTotal",
-              "sizeStr", "primaryPath", "parts", "removing"]
+              "hasUnreadable", "sizeStr", "primaryPath", "parts", "removing"]
 
     def __init__(self, owner: "BatchController"):
         super().__init__(owner)
@@ -109,6 +109,7 @@ class BatchController(QObject):
         self._open = set()                # series keys with the drawer expanded
         self._removing = set()            # series keys mid collapse-out animation
         self._frames = {}                 # file abspath → frame count (lazy)
+        self._unreadable = set()          # file abspaths that couldn't be read (probed lazily)
         self._running = False
         self._progress = 0
         self._status = ""
@@ -213,6 +214,7 @@ class BatchController(QObject):
         self._open = set()
         self._removing = set()
         self._frames = {}
+        self._unreadable = set()
 
     # ── series → row dicts ────────────────────────────────────────────────
     def _row_dict(self, s):
@@ -228,6 +230,7 @@ class BatchController(QObject):
                    for i in checked_idx if 0 <= i < n)
         rows = [{"name": p["name"], "sizeStr": p["sizeStr"],
                  "frames": self._frames.get(p["path"], 0),
+                 "unreadable": p["path"] in self._unreadable,
                  "checked": i in checked_idx}
                 for i, p in enumerate(parts)]
         return {"key": k, "name": s["name"], "fileCount": s["fileCount"],
@@ -236,6 +239,7 @@ class BatchController(QObject):
                 "progress": self._cur_progress if status == "running" else 0,
                 "hasRoi": self._has_roi(s), "roiLabel": self._roi_label(s),
                 "framesTotal": ftot,
+                "hasUnreadable": any(p["path"] in self._unreadable for p in parts),
                 "sizeStr": s.get("sizeStr", ""), "primaryPath": s["primary"],
                 "parts": rows, "removing": k in self._removing}
 
@@ -378,11 +382,17 @@ class BatchController(QObject):
             return
         from firefly.ui.controllers.params.preview_loader import quick_frame_count
         for p in self._series[i]["parts"]:
-            if p["path"] not in self._frames:
-                low = p["path"].lower()
-                self._frames[p["path"]] = (
-                    0 if low.endswith((".csv", ".txt", ".tsv"))
-                    else quick_frame_count(p["path"]))
+            path = p["path"]
+            if path not in self._frames:
+                is_csv = path.lower().endswith((".csv", ".txt", ".tsv"))
+                n = 0 if is_csv else quick_frame_count(path)
+                self._frames[path] = n
+                # a non-CSV recording that yields no frames couldn't be read —
+                # flag it so a corrupt file is visible in the queue before the run
+                if not is_csv and n <= 0:
+                    self._unreadable.add(path)
+                else:
+                    self._unreadable.discard(path)
 
     # ── add / remove / clear ──────────────────────────────────────────────
     def _append(self, new_series):
@@ -505,6 +515,7 @@ class BatchController(QObject):
         self._open = set()
         self._removing = set()
         self._frames = {}
+        self._unreadable = set()
         self._series_status = {}
         self._model.reset()
         self.seriesChanged.emit()

@@ -70,6 +70,7 @@ class ImportController(QObject):
         self._frames = 0
         self._is_csv = False
         self._size_str = ""
+        self._read_error = ""             # non-empty → file couldn't be read (corrupt?)
         # External-CSV options (shown only for localisation-table input): the
         # source-format preset (persisted) and an optional background image (kept
         # per-session — it's tied to the current recording, so a new file clears it).
@@ -226,6 +227,17 @@ class ImportController(QObject):
     def hasFile(self):
         return bool(self._file) and os.path.isfile(self._file)
 
+    # Non-empty when the selected recording couldn't be read (corrupt / truncated
+    # / wrong contents) — surfaced up-front so the user isn't told "no preview for
+    # this type" or left to discover it only when the run fails.
+    @Property(str, notify=probeChanged)
+    def readError(self):
+        return self._read_error
+
+    @Property(bool, notify=probeChanged)
+    def hasReadError(self):
+        return bool(self._read_error)
+
     # ── output ───────────────────────────────────────────────────────────
     # The output folder auto-follows the recording's directory; it only stops
     # tracking once the user picks an output explicitly (Browse).
@@ -275,6 +287,7 @@ class ImportController(QObject):
 
     def _probe(self):
         self._fmt, self._frames, self._is_csv, self._size_str = "", 0, False, ""
+        self._read_error = ""
         p = self._file
         if p and os.path.isfile(p):
             try:    self._size_str = _human_size(os.path.getsize(p))
@@ -288,8 +301,15 @@ class ImportController(QObject):
                     import tifffile
                     with tifffile.TiffFile(p) as t:
                         self._frames = len(t.pages)
+                    # a TIFF that opens but has no image frames is unusable
+                    if self._frames <= 0:
+                        self._read_error = ("This TIFF has no image frames — "
+                                            "it may be corrupt or incomplete.")
                 except Exception:
-                    pass
+                    # opening/parsing failed: don't mislabel a corrupt file as an
+                    # unsupported type — say plainly it couldn't be read
+                    self._read_error = ("Couldn't read this file — it may be "
+                                        "corrupt or incomplete.")
             elif ext == ".czi":
                 self._fmt = "CZI"
                 try:
@@ -299,7 +319,8 @@ class ImportController(QObject):
                     if "T" in dims:
                         self._frames = int(czi.size[dims.index("T")])
                 except Exception:
-                    pass
+                    self._read_error = ("Couldn't read this file — it may be "
+                                        "corrupt or incomplete.")
         self.probeChanged.emit()
         self._render_thumb()
 

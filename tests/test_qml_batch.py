@@ -120,3 +120,22 @@ def test_batch_csv_series_gets_csv_source(tmp_path):
     p = c._build_params_list()[0]
     assert p["source"] == "external_csv"          # derived from the .csv fpath
     assert "series_files" not in p                # CSVs don't get the image series list
+
+
+def test_batch_flags_unreadable_file(tmp_path):
+    """A corrupt/empty recording is flagged in the queue once its series is
+    probed, so it's visible before the batch runs (not only when the run fails)."""
+    np = pytest.importorskip("numpy")
+    tifffile = pytest.importorskip("tifffile")
+    from firefly.ui.controllers.batch_controller import BatchController
+    tifffile.imwrite(str(tmp_path / "good.tif"), np.zeros((3, 8, 8), np.uint16))
+    _touch(os.path.join(tmp_path, "bad.tif"))         # 0-byte → can't be read
+    c = BatchController(FakeSettings(), FakeImport())
+    c.scan(str(tmp_path)); _wait_scan(c)
+    for s in c.series:                                # expand → probes frames
+        c.setOpen(s["key"], True)
+    rows = {s["key"]: s for s in c.series}
+    assert rows["good"]["hasUnreadable"] is False
+    assert rows["good"]["parts"][0]["unreadable"] is False
+    assert rows["bad"]["hasUnreadable"] is True
+    assert rows["bad"]["parts"][0]["unreadable"] is True

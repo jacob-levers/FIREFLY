@@ -281,6 +281,13 @@ Flickable {
                           + srow.item.sizeStr
                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
                 }
+                RowLayout {                     // unreadable warning (a probed file couldn't be read)
+                    visible: srow.item.hasUnreadable
+                    spacing: sc.sp1
+                    Icon { name: "triangle-alert"; size: 11; color: pal.DANGER }
+                    Text { text: "Unreadable"; color: pal.DANGER
+                           font.pixelSize: sc.textXs; font.bold: true }
+                }
                 Text {                          // status chip
                     text: srow.st === "running" ? (srow.item.progress + "%")
                         : srow.st === "done" ? "Done" : srow.st === "error" ? "Failed"
@@ -323,15 +330,20 @@ Flickable {
                                 state: modelData.checked ? "on" : "off"
                                 onClicked: Batch.setFileChecked(srow.item.key, index, !modelData.checked)
                             }
-                            Icon { name: "image"; size: 13; color: pal.TXT_MUTED }
+                            Icon { name: modelData.unreadable ? "triangle-alert" : "image"; size: 13
+                                   color: modelData.unreadable ? pal.DANGER : pal.TXT_MUTED }
                             Text { text: modelData.name
-                                   color: modelData.checked ? pal.TXT : pal.TXT_MUTED
+                                   color: modelData.unreadable ? pal.DANGER
+                                          : modelData.checked ? pal.TXT : pal.TXT_MUTED
                                    font.pixelSize: sc.textXs; font.family: "Menlo"
                                    elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredWidth: 0 }
-                            Text { text: (modelData.frames > 0
-                                          ? modelData.frames.toLocaleString(Qt.locale(), "f", 0) + " fr · " : "")
-                                         + modelData.sizeStr
-                                   color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo" }
+                            Text { text: modelData.unreadable
+                                         ? ("can't read · " + modelData.sizeStr)
+                                         : ((modelData.frames > 0
+                                            ? modelData.frames.toLocaleString(Qt.locale(), "f", 0) + " fr · " : "")
+                                            + modelData.sizeStr)
+                                   color: modelData.unreadable ? pal.DANGER : pal.TXT_MUTED
+                                   font.pixelSize: sc.textXs; font.family: "Menlo" }
                         }
                     }
                 }
@@ -592,14 +604,23 @@ Flickable {
                             opacity: thumbBox.showLive ? 1 : (status === Image.Ready ? 1 : 0)
                             Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 200; easing.type: Easing.OutCubic } }
                         }
-                        Text {
+                        ColumnLayout {
                             anchors.centerIn: parent
                             visible: !thumbBox.showLive && !Import.hasThumb
                             width: parent.width - sc.sp6 * 2
-                            horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
-                            text: Import.hasFile ? "No preview for this file type"
-                                                 : "Pick a recording to preview it here"
-                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                            spacing: sc.sp2
+                            Icon { visible: Import.hasReadError; Layout.alignment: Qt.AlignHCenter
+                                   name: "triangle-alert"; size: 20; color: pal.DANGER }
+                            Text {
+                                Layout.fillWidth: true
+                                horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                                // a corrupt/unreadable file is NOT an unsupported type — say so
+                                text: Import.hasReadError ? Import.readError
+                                      : Import.hasFile ? "No preview for this file type"
+                                                       : "Pick a recording to preview it here"
+                                color: Import.hasReadError ? pal.DANGER : pal.TXT_MUTED
+                                font.pixelSize: sc.textXs
+                            }
                         }
                         Rectangle {                          // corner status chip
                             visible: thumbBox.showLive || Import.hasThumb
@@ -801,6 +822,8 @@ Flickable {
         }
         Alert { visible: root.batchMode && Batch.generateError !== ""; Layout.fillWidth: true
                 severity: "warn"; text: Batch.generateError }
+        Alert { visible: !root.batchMode && Import.hasReadError; Layout.fillWidth: true
+                severity: "danger"; text: Import.readError }
 
         // ── start / stop ──────────────────────────────────────────────
         RowLayout {
@@ -809,7 +832,8 @@ Flickable {
             Button {
                 visible: !root.batchMode
                 variant: "primary"; text: "Start analysis"; icon: "play"
-                enabled: Import.hasFile && !Process.running
+                // block the run on a file we already know can't be read
+                enabled: Import.hasFile && !Import.hasReadError && !Process.running
                 onClicked: { App.setTab(1); Process.start(); }
             }
             Button {
@@ -824,9 +848,11 @@ Flickable {
                 text: root.batchMode
                       ? (Batch.canRun || Batch.running ? "Processes the queued series."
                                                        : "Pick a folder and queue series.")
-                      : (Import.hasFile ? "Runs on the Analysis tab."
-                                        : "Pick an input file to begin.")
-                color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                      : (Import.hasReadError ? "This file can't be read — pick another."
+                         : Import.hasFile ? "Runs on the Analysis tab."
+                                          : "Pick an input file to begin.")
+                color: Import.hasReadError && !root.batchMode ? pal.DANGER : pal.TXT_MUTED
+                font.pixelSize: sc.textXs
                 Layout.alignment: Qt.AlignVCenter
             }
         }
