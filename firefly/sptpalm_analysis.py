@@ -11,7 +11,12 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.18"
+__version__ = "2.76.19"
+# v2.76.19 — Visualise load/export failures no longer fail silently — a broken
+#           run folder, corrupt cluster map, or failed export now shows an error
+#           toast (Vis.warn was emitted into the void).  Found by an error-handling
+#           audit; the rest of the unhappy paths were already robust.  Also a big
+#           internal dead-code sweep (orphaned Compare/Results controllers).
 # v2.76.18 — Async loading polish: super-resolution render and batch folder-scan
 #           now run off the GUI thread, so the UI no longer freezes on a big
 #           render / large or network folder.  The Render button shows a spinning

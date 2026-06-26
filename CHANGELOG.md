@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.76.19
+
+### Fixed
+
+- **Visualise load/export failures no longer fail silently.** Loading a broken
+  run folder, a corrupt or absent cluster map, or a failed export now shows an
+  error toast with the reason — previously the warning was emitted but never
+  displayed, so the load just silently did nothing. (The only genuine gap an
+  error-handling audit of 7 unhappy-path scenarios turned up — the rest, e.g.
+  the 3-stage Stop, atomic writes, malformed-import guards, zero-result runs and
+  CUDA-install cleanup, were already robust.)
+
 ## v2.76.18
 
 ### Changed
