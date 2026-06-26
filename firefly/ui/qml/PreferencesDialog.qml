@@ -699,16 +699,23 @@ Item {
                         spacing: sc.sp3
                         Text { text: "LIVE PREVIEW"; color: pal.TXT_MUTED; font.pixelSize: 10
                                font.bold: true; font.letterSpacing: 1.0 }
-                        Rectangle {                 // framed sample figure
+                        Rectangle {                 // framed sample figure (themed)
                             Layout.fillWidth: true; Layout.preferredHeight: 150
                             radius: sc.radiusSm; clip: true
-                            color: previewCol.figTheme === "Light" ? "#ffffff" : "#000000"
+                            // match the panel's own figure background so the
+                            // letterbox border blends with the render
+                            color: previewCol.figTheme === "Dark" ? "#0d1117" : "#ffffff"
                             border.width: 1; border.color: pal.BORDER
                             Image {
                                 anchors.fill: parent; anchors.margins: 4
                                 fillMode: Image.PreserveAspectFit; smooth: true
-                                sourceSize: Qt.size(300, 200)
-                                source: "assets/figures/panel_A.png"
+                                sourceSize: Qt.size(300, 300)
+                                // a real render per theme — Light/Publication get a
+                                // white-background figure, Dark a dark one
+                                source: "assets/figures/panel_A_"
+                                        + (previewCol.figTheme === "Light" ? "light"
+                                           : previewCol.figTheme === "Publication" ? "publication"
+                                           : "dark") + ".png"
                             }
                         }
                         Canvas {                    // colormap gradient strip
@@ -729,7 +736,8 @@ Item {
                             Text { text: previewCol.cmap; color: pal.TXT_MUTED
                                    font.pixelSize: sc.textXs; font.family: "Menlo" }
                             Item { Layout.fillWidth: true }
-                            Text { text: Settings.get("figures/dpi", 150) + " DPI"; color: pal.TXT_MUTED
+                            Text { text: (root.rev, Settings.get("figures/dpi", 150)) + " DPI"
+                                   color: pal.TXT_MUTED
                                    font.pixelSize: sc.textXs; font.family: "Menlo" }
                         }
                         Rectangle { Layout.fillWidth: true; height: 1; color: pal.BORDER }
