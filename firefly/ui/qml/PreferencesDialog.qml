@@ -216,6 +216,9 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 46
                 color: pal.PANEL
+                // round the top corners to match the panel; square where it
+                // meets the body below
+                radius: sc.radius2xl; bottomLeftRadius: 0; bottomRightRadius: 0
                 Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
                             height: 1; color: pal.BORDER }
                 RowLayout {
@@ -353,6 +356,9 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 56
                 color: pal.PANEL
+                // round the bottom corners to match the panel; square at the top
+                // where it meets the body above
+                radius: sc.radius2xl; topLeftRadius: 0; topRightRadius: 0
                 Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top }
                             height: 1; color: pal.BORDER }
                 RowLayout {
