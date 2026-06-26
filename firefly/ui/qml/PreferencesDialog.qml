@@ -271,7 +271,7 @@ Item {
                                 required property var modelData
                                 readonly property bool active: root.section === modelData.id
                                 Layout.fillWidth: true
-                                implicitHeight: 44
+                                Layout.preferredHeight: 44     // fixed → uniform row pitch
                                 radius: sc.radiusLg
                                 color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
                                               : (navHov.hovered ? pal.PANEL_ALT : "transparent")
@@ -289,14 +289,18 @@ Item {
                                     anchors.leftMargin: sc.sp4; anchors.rightMargin: sc.sp3
                                     spacing: sc.sp3
                                     Rectangle {
-                                        width: 26; height: 26; radius: 7
+                                        Layout.preferredWidth: 26; Layout.preferredHeight: 26
+                                        Layout.alignment: Qt.AlignVCenter
+                                        radius: 7
                                         color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.16)
                                                       : pal.PANEL_ALT
                                         Icon { anchors.centerIn: parent; name: modelData.icon; size: 14
                                                color: active ? pal.ACC : pal.TXT_MUTED }
                                     }
                                     ColumnLayout {
-                                        Layout.fillWidth: true; spacing: 0
+                                        Layout.fillWidth: true
+                                        Layout.alignment: Qt.AlignVCenter
+                                        spacing: 0
                                         Text { text: modelData.label
                                                color: active ? pal.TXT : pal.TXT_MUTED
                                                font.pixelSize: sc.textMd; font.weight: Font.DemiBold }
