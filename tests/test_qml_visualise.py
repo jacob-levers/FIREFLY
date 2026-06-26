@@ -285,12 +285,20 @@ def test_visualise_recluster_subsample_stays_aligned(tmp_path, monkeypatch):
 
 
 def test_visualise_superres_render(tmp_path):
+    import time
     from firefly.ui.controllers.visualise_controller import VisualiseController
     c = VisualiseController()
     c.loadRunFolder(_make_run(tmp_path))
     c.srPixelNm = 30
     c.renderSuperres()
-    assert c.hasSuperresRender
+    assert c.srRendering                      # render kicked off on a worker thread
+    # async: pump the event loop until the off-thread render drains in
+    for _ in range(300):
+        _app.processEvents()
+        if c.hasSuperresRender:
+            break
+        time.sleep(0.01)
+    assert c.hasSuperresRender and not c.srRendering
     assert "Super-resolution" in c.backgroundOptions
 
 

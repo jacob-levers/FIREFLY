@@ -230,10 +230,15 @@ Item {
                                  onCommitted: (t) => { var v = parseInt(t); if (!isNaN(v)) Vis.srBlurNm = v } }
                         RowLayout {
                             width: parent.width; spacing: sc.sp2
-                            Button { variant: "primary"; text: "Render"; Layout.fillWidth: true
+                            Button { variant: "primary"; Layout.fillWidth: true
+                                     icon: Vis.srRendering ? "refresh-cw" : "sparkles"
+                                     spin: Vis.srRendering
+                                     text: Vis.srRendering ? "Rendering…" : "Render"
+                                     enabled: !Vis.srRendering
                                      onClicked: Vis.renderSuperres() }
                             Button { variant: "secondary"; text: "Save PNG"; Layout.fillWidth: true
-                                     enabled: Vis.hasSuperresRender; onClicked: Vis.saveSuperres() }
+                                     enabled: Vis.hasSuperresRender && !Vis.srRendering
+                                     onClicked: Vis.saveSuperres() }
                         }
                         Text { width: parent.width; text: Vis.srStatus; color: pal.TXT_MUTED
                                font.pixelSize: sc.textXs; wrapMode: Text.WordWrap }

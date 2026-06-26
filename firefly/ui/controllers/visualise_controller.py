@@ -19,6 +19,7 @@ to viewer.py with no behaviour change.
 from __future__ import annotations
 
 import os
+import threading
 
 from PySide6 import QtGui, QtWidgets
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
@@ -122,6 +123,11 @@ class VisualiseController(QObject):
         self._sr_nm = 20
         self._sr_blur = 20
         self._sr_status = ""
+        self._sr_rendering = False       # super-res render runs off-thread
+        self._sr_result = None           # (status, img, x, y, sr_nm) written off-thread
+        self._sr_poll = QTimer(self)     # drains the result on the GUI thread
+        self._sr_poll.setInterval(30)
+        self._sr_poll.timeout.connect(self._drain_superres)
         # ── track explorer ───────────────────────────────────────────────
         self._exp_df = None
         self._exp_filtered = None
@@ -1240,24 +1246,55 @@ class VisualiseController(QObject):
     def hasSuperresRender(self):
         return self._sr_img is not None
 
+    @Property(bool, notify=srChanged)
+    def srRendering(self):
+        return self._sr_rendering
+
     @Slot()
     def renderSuperres(self):
-        import numpy as np
         df = self._tracks_df
         if df is None or not len(df) or not {"x", "y"} <= set(df.columns):
             self._sr_status = "Load a run or trajectories first."
             self.srChanged.emit()
             return
-        from firefly.analysis.fa_render import render_superres
+        if self._sr_rendering:
+            return
+        # render_superres is a Gaussian density map over up to ~10⁵ locs — it
+        # blocks for a noticeable beat, so compute it off the GUI thread and
+        # apply the result to the viewer on the GUI thread via the drain timer.
         px = float(self._cl_px_um or 1.0)
         sr_nm = float(self._sr_nm)
+        blur = float(self._sr_blur)
         x, y = df["x"].to_numpy(), df["y"].to_numpy()
-        try:
-            img = render_superres(x, y, px, sr_nm=sr_nm, blur_nm=float(self._sr_blur))
-        except Exception as exc:
-            self._sr_status = f"Render failed: {exc}"
+        self._sr_rendering = True
+        self._sr_status = "Rendering…"
+        self._sr_result = None
+        self.srChanged.emit()
+        self._sr_poll.start()
+
+        def _work():
+            try:
+                from firefly.analysis.fa_render import render_superres
+                img = render_superres(x, y, px, sr_nm=sr_nm, blur_nm=blur)
+                self._sr_result = ("ok", img, x, y, sr_nm)
+            except Exception as exc:
+                self._sr_result = ("err", str(exc))
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _drain_superres(self):
+        """GUI-thread: apply the off-thread render result to the viewer."""
+        import numpy as np
+        r = self._sr_result
+        if r is None:
+            return
+        self._sr_result = None
+        self._sr_poll.stop()
+        self._sr_rendering = False
+        if r[0] == "err":
+            self._sr_status = f"Render failed: {r[1]}"
             self.srChanged.emit()
             return
+        _, img, x, y, sr_nm = r
         self._sr_img = img
         # Derive the data-px-per-super-res-px scale from the ACTUAL rendered
         # image vs the localisations' extent, so the overlay is correct even when
