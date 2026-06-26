@@ -122,20 +122,30 @@ def test_batch_csv_series_gets_csv_source(tmp_path):
     assert "series_files" not in p                # CSVs don't get the image series list
 
 
-def test_batch_flags_unreadable_file(tmp_path):
-    """A corrupt/empty recording is flagged in the queue once its series is
-    probed, so it's visible before the batch runs (not only when the run fails)."""
+def _wait_probe(c, timeout=5.0):
+    """Background probe-all runs off-thread — pump until it settles."""
+    import time
+    t0 = time.time()
+    while c.probing and time.time() - t0 < timeout:
+        _app.processEvents()
+        time.sleep(0.01)
+    _app.processEvents()
+
+
+def test_batch_flags_unreadable_file_eagerly(tmp_path):
+    """A corrupt/empty recording is flagged in the queue by the background probe
+    WITHOUT the user expanding its series — so a bad file is visible up front,
+    not only when the run fails."""
     np = pytest.importorskip("numpy")
     tifffile = pytest.importorskip("tifffile")
     from firefly.ui.controllers.batch_controller import BatchController
     tifffile.imwrite(str(tmp_path / "good.tif"), np.zeros((3, 8, 8), np.uint16))
     _touch(os.path.join(tmp_path, "bad.tif"))         # 0-byte → can't be read
     c = BatchController(FakeSettings(), FakeImport())
-    c.scan(str(tmp_path)); _wait_scan(c)
-    for s in c.series:                                # expand → probes frames
-        c.setOpen(s["key"], True)
+    c.scan(str(tmp_path)); _wait_scan(c); _wait_probe(c)   # NO expand
     rows = {s["key"]: s for s in c.series}
     assert rows["good"]["hasUnreadable"] is False
     assert rows["good"]["parts"][0]["unreadable"] is False
     assert rows["bad"]["hasUnreadable"] is True
     assert rows["bad"]["parts"][0]["unreadable"] is True
+    assert c.unreadableCount == 1                      # top-level signal for the footer

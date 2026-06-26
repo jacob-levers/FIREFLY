@@ -16,6 +16,7 @@ ROI-badge animations survive a selection change without a full Repeater rebuild.
 from __future__ import annotations
 
 import os
+import queue
 import threading
 
 from PySide6 import QtWidgets
@@ -84,6 +85,7 @@ class BatchController(QObject):
     seriesChanged = Signal()
     folderChanged = Signal()
     scanningChanged = Signal()
+    probingChanged = Signal()
     runningChanged = Signal()
     progressChanged = Signal()
     statusChanged = Signal()
@@ -128,6 +130,19 @@ class BatchController(QObject):
         self._scan_poll = QTimer(self)    # drains the scan result on the GUI thread
         self._scan_poll.setInterval(30)
         self._scan_poll.timeout.connect(self._drain_scan)
+
+        # Background "probe all" — frame counts + readability for every queued
+        # file, so the collapsed rows flag unreadable files WITHOUT the user
+        # expanding each series.  Cheap metadata reads, off the GUI thread; rows
+        # refresh progressively as results land.  A generation counter supersedes
+        # an in-flight probe when the queue changes (rescan / add / clear).
+        self._probing = False
+        self._probe_done = False
+        self._probe_gen = 0
+        self._probe_q: "queue.Queue" = queue.Queue()
+        self._probe_poll = QTimer(self)
+        self._probe_poll.setInterval(150)
+        self._probe_poll.timeout.connect(self._drain_probe)
 
     # ── folder + scan ────────────────────────────────────────────────────
     @Property(QObject, constant=True)
@@ -202,10 +217,81 @@ class BatchController(QObject):
         self._model.reset()
         self.scanningChanged.emit()
         self.seriesChanged.emit()
+        self._start_probe_all()           # eagerly flag unreadable files in the queue
 
     @Property(bool, notify=scanningChanged)
     def scanning(self):
         return self._scanning
+
+    @Property(bool, notify=probingChanged)
+    def probing(self):
+        return self._probing
+
+    # ── background probe-all (frame counts + readability) ─────────────────
+    def _start_probe_all(self):
+        """Probe every queued file's frame count + readability off the GUI
+        thread, so the queue flags unreadable files (and shows frame totals)
+        without the user expanding each series.  Supersedes any in-flight probe
+        via a generation counter; results land progressively."""
+        self._probe_gen += 1
+        gen = self._probe_gen
+        self._probe_poll.stop()
+        try:                                   # drop any stale queued results
+            while True:
+                self._probe_q.get_nowait()
+        except queue.Empty:
+            pass
+        paths = [p["path"] for s in self._series for p in s.get("parts", [])
+                 if p["path"] not in self._frames]
+        if not paths:
+            if self._probing:
+                self._probing = False
+                self.probingChanged.emit()
+            return
+        self._probing = True
+        self.probingChanged.emit()
+        self._probe_poll.start()
+
+        def _work():
+            from firefly.ui.controllers.params.preview_loader import quick_frame_count
+            for path in paths:
+                if self._probe_gen != gen:     # superseded → bail
+                    return
+                is_csv = path.lower().endswith((".csv", ".txt", ".tsv"))
+                try:
+                    n = 0 if is_csv else quick_frame_count(path)
+                except Exception:
+                    n = 0
+                self._probe_q.put((gen, path, int(n), (not is_csv and n <= 0)))
+            self._probe_q.put((gen, None, 0, False))     # sentinel: done
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _drain_probe(self):
+        """GUI thread: fold probe results into _frames / _unreadable + refresh."""
+        got = done = False
+        try:
+            while True:
+                g, path, n, bad = self._probe_q.get_nowait()
+                if g != self._probe_gen:       # stale (superseded probe) → skip
+                    continue
+                if path is None:
+                    done = True
+                    continue
+                self._frames[path] = n
+                if bad:
+                    self._unreadable.add(path)
+                else:
+                    self._unreadable.discard(path)
+                got = True
+        except queue.Empty:
+            pass
+        if got:
+            self._model.allChanged()
+            self.seriesChanged.emit()
+        if done:
+            self._probe_poll.stop()
+            self._probing = False
+            self.probingChanged.emit()
 
     def _reset_selection(self):
         """Default-select every constituent file of every series."""
@@ -296,6 +382,13 @@ class BatchController(QObject):
     def allFilesSelected(self):
         tot = sum(len(s.get("parts", [])) for s in self._series)
         return tot > 0 and self.selectedFileCount == tot
+
+    @Property(int, notify=seriesChanged)
+    def unreadableCount(self):
+        """How many queued files couldn't be read — a top-level signal so a bad
+        file is visible without expanding every series."""
+        return sum(1 for s in self._series for p in s.get("parts", [])
+                   if p["path"] in self._unreadable)
 
     @Property(bool, notify=seriesChanged)
     def allExpanded(self):
@@ -415,6 +508,7 @@ class BatchController(QObject):
             self._checked_files[s["key"]] = set(range(len(s["parts"])))
         self._model.endInsertRows()
         self.seriesChanged.emit()
+        self._start_probe_all()           # probe the newly-added files too
         return len(to_add)
 
     @Slot()
@@ -510,6 +604,11 @@ class BatchController(QObject):
 
     @Slot()
     def clear(self):
+        self._probe_gen += 1              # cancel any in-flight probe
+        self._probe_poll.stop()
+        if self._probing:
+            self._probing = False
+            self.probingChanged.emit()
         self._series = []
         self._checked_files = {}
         self._open = set()

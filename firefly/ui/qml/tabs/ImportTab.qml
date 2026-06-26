@@ -796,6 +796,18 @@ Flickable {
                               + " files selected · <b>" + Batch.seriesCount + "</b> series"
                         color: pal.TXT_MUTED; font.pixelSize: sc.textSm
                     }
+                    Text {                          // background file-check progress
+                        visible: Batch.probing
+                        text: "· checking files…"
+                        color: pal.TXT_MUTED; font.pixelSize: sc.textSm
+                    }
+                    RowLayout {                     // unreadable count (a bad file in the queue)
+                        visible: Batch.unreadableCount > 0
+                        spacing: sc.sp1
+                        Icon { name: "triangle-alert"; size: 12; color: pal.DANGER }
+                        Text { text: "· " + Batch.unreadableCount + " unreadable"
+                               color: pal.DANGER; font.pixelSize: sc.textSm; font.bold: true }
+                    }
                     Item { Layout.fillWidth: true }
                     Button { variant: "secondary"; text: "Clear"; icon: "rotate-ccw"
                              enabled: !Batch.running; onClicked: Batch.clear() }
