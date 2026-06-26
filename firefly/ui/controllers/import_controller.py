@@ -45,6 +45,7 @@ class ImportController(QObject):
     overridePxChanged = Signal()
     overrideFiChanged = Signal()
     probeChanged = Signal()
+    seriesFilesChanged = Signal()
     thumbChanged = Signal()
     previewCmapChanged = Signal()
     csvPresetChanged = Signal()
@@ -71,6 +72,13 @@ class ImportController(QObject):
         self._is_csv = False
         self._size_str = ""
         self._read_error = ""             # non-empty → file couldn't be read (corrupt?)
+        # When the picked file is part of a multi-file series, single analysis
+        # auto-combines the siblings (load_file with files=None).  Surface the
+        # exact list the run will load.  Probed synchronously on file-pick — it's
+        # only the siblings of ONE recording (a handful of metadata reads), and a
+        # background thread here would capture `self` and could destroy the
+        # controller (+ its QTimer) from the worker thread on teardown.
+        self._series_files = []           # [{name, path, frames}], primary first
         # External-CSV options (shown only for localisation-table input): the
         # source-format preset (persisted) and an optional background image (kept
         # per-session — it's tied to the current recording, so a new file clears it).
@@ -322,7 +330,45 @@ class ImportController(QObject):
                     self._read_error = ("Couldn't read this file — it may be "
                                         "corrupt or incomplete.")
         self.probeChanged.emit()
+        self._probe_series(p, self._is_csv)
         self._render_thumb()
+
+    # ── multi-file series (single analysis auto-combines siblings) ────────
+    def _probe_series(self, path, is_csv):
+        """Discover the sibling files single analysis will auto-combine (the same
+        ``_find_tif_series`` / ``_find_czi_series`` the run uses) + their frame
+        counts, and publish them for the Import tab.  Only a genuine multi-file
+        series (>1 file) is shown."""
+        rows = []
+        ext = os.path.splitext(path or "")[1].lower()
+        if (not is_csv and ext in (".tif", ".tiff", ".czi")
+                and path and os.path.isfile(path)):
+            try:
+                from firefly.analysis.fa_loaders import (_find_tif_series,
+                                                         _find_czi_series)
+                from firefly.ui.controllers.params.preview_loader import quick_frame_count
+                files = (_find_czi_series(path) if ext == ".czi"
+                         else _find_tif_series(path))
+                if files and len(files) > 1:
+                    rows = [{"name": os.path.basename(f), "path": f,
+                             "frames": int(quick_frame_count(f))} for f in files]
+            except Exception:
+                rows = []
+        if rows or self._series_files:
+            self._series_files = rows
+            self.seriesFilesChanged.emit()
+
+    @Property("QVariantList", notify=seriesFilesChanged)
+    def seriesFiles(self):
+        return list(self._series_files)
+
+    @Property(int, notify=seriesFilesChanged)
+    def seriesCount(self):
+        return len(self._series_files)
+
+    @Property(int, notify=seriesFilesChanged)
+    def seriesFrameTotal(self):
+        return int(sum(r.get("frames", 0) for r in self._series_files))
 
     def _render_thumb(self):
         """Compute the recording's max-intensity projection (a cheap sampled

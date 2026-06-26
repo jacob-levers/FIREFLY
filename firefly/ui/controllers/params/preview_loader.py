@@ -53,7 +53,21 @@ def quick_frame_count(path) -> int:
         if ext in (".tif", ".tiff"):
             import tifffile
             with tifffile.TiffFile(path) as t:
-                return len(t.pages)
+                # len(t.pages) UNDERCOUNTS contiguous / ImageJ-hyperstack TIFFs,
+                # which tifffile stores as a single IFD describing an N-frame block
+                # (so len(pages)==1 for an N-frame stack).  Take the frame count
+                # from the series shape (product of the non-YX dims) and fall back
+                # to the page count.
+                pages = len(t.pages)
+                frames = pages
+                try:
+                    shp = t.series[0].shape
+                    if len(shp) >= 3:
+                        import numpy as _np
+                        frames = int(_np.prod(shp[:-2]))
+                except Exception:
+                    pass
+                return max(frames, pages)
         if ext == ".czi":
             from aicspylibczi import CziFile
             czi = CziFile(path)

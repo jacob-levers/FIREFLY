@@ -484,6 +484,55 @@ Flickable {
             onBrowse: Import.browseOutDir()
         }
 
+        // ── multi-file series (single analysis auto-combines these) ───
+        Rectangle {
+            visible: !root.batchMode && Import.seriesCount > 1
+            Layout.fillWidth: true
+            implicitHeight: visible ? seriesCol.implicitHeight + sc.sp5 * 2 : 0
+            radius: sc.radiusXl; color: pal.PANEL
+            border.width: 1; border.color: pal.BORDER
+            ColumnLayout {
+                id: seriesCol
+                x: sc.sp5; y: sc.sp5; width: parent.width - sc.sp5 * 2
+                spacing: sc.sp3
+                RowLayout {
+                    Layout.fillWidth: true; spacing: sc.sp3
+                    Rectangle {
+                        width: 40; height: 40; radius: sc.radiusLg
+                        color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12)
+                        border.width: 1; border.color: Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.22)
+                        Icon { anchors.centerIn: parent; name: "layers"; color: pal.ACC; size: 19 }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true; Layout.preferredWidth: 0; spacing: 0
+                        Text { text: "Multi-file series"; color: pal.TXT
+                               font.pixelSize: sc.textMd; font.weight: Font.DemiBold }
+                        Text { text: Import.seriesCount + " files combined into one recording  ·  "
+                                     + Import.seriesFrameTotal.toLocaleString(Qt.locale(), "f", 0) + " frames"
+                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: pal.BORDER }
+                Repeater {
+                    model: Import.seriesFiles
+                    delegate: RowLayout {
+                        required property var modelData
+                        required property int index
+                        Layout.fillWidth: true; Layout.preferredHeight: 24; spacing: sc.sp3
+                        Text { text: "" + (index + 1); color: pal.TXT_MUTED
+                               font.pixelSize: sc.textXs; font.family: "Menlo"; Layout.preferredWidth: 16 }
+                        Icon { name: "image"; size: 13; color: pal.TXT_MUTED }
+                        Text { text: modelData.name; color: pal.TXT
+                               font.pixelSize: sc.textXs; font.family: "Menlo"
+                               elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredWidth: 0 }
+                        Text { text: modelData.frames > 0
+                                     ? modelData.frames.toLocaleString(Qt.locale(), "f", 0) + " fr" : ""
+                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo" }
+                    }
+                }
+            }
+        }
+
         // ── external-CSV options (localisation table only) ────────────
         ColumnLayout {
             visible: !root.batchMode && Import.isCsv

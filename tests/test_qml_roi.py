@@ -161,3 +161,33 @@ def test_import_batch_mode_drives_roi_viewer():
     assert roi._batch_mode is True
     importc.setBatchMode(False)
     assert roi._batch_mode is False
+
+
+# ── single analysis surfaces the auto-combined multi-file series ──────────────
+def test_import_shows_combined_series(tmp_path):
+    """Single analysis auto-combines a split recording; the Import tab now lists
+    exactly the files the run will load (the same _find_tif_series detection),
+    with the combined frame total — sister-channel files excluded."""
+    np = pytest.importorskip("numpy")
+    tifffile = pytest.importorskip("tifffile")
+    from firefly.ui.controllers.import_controller import ImportController
+    tifffile.imwrite(str(tmp_path / "cellA.tif"),         np.zeros((3, 8, 8), np.uint16))
+    tifffile.imwrite(str(tmp_path / "cellA-file002.tif"), np.zeros((2, 8, 8), np.uint16))
+    tifffile.imwrite(str(tmp_path / "cellA_green.tif"),   np.zeros((9, 8, 8), np.uint16))  # sister → excluded
+
+    c = ImportController(_RecSettings())
+    c.filePath = str(tmp_path / "cellA-file002.tif")        # pick a non-primary part
+    names = [r["name"] for r in c.seriesFiles]
+    assert names == ["cellA.tif", "cellA-file002.tif"]      # ordered, sister excluded
+    assert c.seriesCount == 2
+    assert c.seriesFrameTotal == 5                          # 3 + 2 (combined total)
+
+
+def test_import_lone_file_has_no_series(tmp_path):
+    np = pytest.importorskip("numpy")
+    tifffile = pytest.importorskip("tifffile")
+    from firefly.ui.controllers.import_controller import ImportController
+    tifffile.imwrite(str(tmp_path / "solo.tif"), np.zeros((6, 8, 8), np.uint16))
+    c = ImportController(_RecSettings())
+    c.filePath = str(tmp_path / "solo.tif")
+    assert c.seriesCount == 0                               # no series → nothing to show
