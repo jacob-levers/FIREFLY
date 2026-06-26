@@ -216,7 +216,7 @@ class HyperflyController(QObject):
             d["tracks"] = int(payload.get("n_tracks") or d["tracks"])
         elif state == "failed":
             d["state"] = "failed"
-            d["error"] = str(payload.get("error") or "")[:300]
+            d["error"] = str(payload.get("error") or "")[:8000]
         # Apply progress BEFORE the projection decision so the stage gate in
         # _maybe_load_projection sees this tile's CURRENT phase (the "running"
         # branch above just reset d["stage"]).

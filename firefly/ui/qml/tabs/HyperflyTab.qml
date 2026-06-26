@@ -156,6 +156,16 @@ Flickable {
                     color: tile.st === "failed" ? pal.STATUS_BAD : pal.TXT_MUTED
                     font.pixelSize: tile.st === "failed" ? 10 : sc.textXs
                     font.family: tile.st === "failed" ? "Menlo" : Qt.application.font.family
+                    // click a failed tile to read the full (untruncated) error
+                    HoverHandler { id: errHov; enabled: tile.st === "failed"
+                                   cursorShape: Qt.PointingHandCursor }
+                    TapHandler {
+                        enabled: tile.st === "failed" && tile.item && tile.item.error
+                        onTapped: { errModal.detail = tile.item.error; errModal.open() }
+                    }
+                    ToolTip.text: "Click to see the full error"
+                    ToolTip.delay: 600
+                    ToolTip.visible: tile.st === "failed" && errHov.hovered
                 }
             }
 
@@ -416,5 +426,29 @@ Flickable {
             hfLog.cursorPosition = hfLog.length
         }
         function onRunningChanged() { if (Batch.running) hfLog.text = "" }
+    }
+
+    // ── full worker-error detail (click a failed tile) ───────────────────
+    Modal {
+        id: errModal
+        title: "Worker error"
+        property string detail: ""
+        Flickable {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(340, errText.implicitHeight + sc.sp3)
+            contentHeight: errText.implicitHeight; clip: true
+            ScrollBar.vertical: ScrollBar {}
+            TextEdit {
+                id: errText; width: parent.width
+                readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
+                text: errModal.detail
+                color: pal.TXT; font.family: "Menlo"; font.pixelSize: sc.textXs
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true; spacing: sc.sp3
+            Item { Layout.fillWidth: true }
+            Button { variant: "primary"; text: "Close"; onClicked: errModal.close() }
+        }
     }
 }
