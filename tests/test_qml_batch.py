@@ -11,6 +11,16 @@ from PySide6 import QtWidgets                            # noqa: E402
 _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+def _wait_scan(c, timeout=3.0):
+    """Folder scan runs off-thread now — pump the loop until it drains in."""
+    import time
+    t0 = time.time()
+    while c.scanning and time.time() - t0 < timeout:
+        _app.processEvents()
+        time.sleep(0.005)
+    _app.processEvents()
+
+
 def _touch(p):
     open(p, "w").close()
 
@@ -70,7 +80,7 @@ def test_batch_controller_scan_and_select(tmp_path):
     for n in ("c1.tif", "c2.tif", "c3.tif"):
         _touch(os.path.join(tmp_path, n))
     c = BatchController(FakeSettings(), FakeImport())
-    c.scan(str(tmp_path))
+    c.scan(str(tmp_path)); _wait_scan(c)
     keys = {s["key"] for s in c.series}
     assert keys == {"c1", "c2", "c3"}
     assert all(s["checked"] for s in c.series)        # all selected by default
@@ -89,7 +99,7 @@ def test_batch_params_list_overrides(tmp_path):
     _touch(os.path.join(tmp_path, "cellA-file001.tif"))
     _touch(os.path.join(tmp_path, "cellB.tif"))
     c = BatchController(FakeSettings(), FakeImport())
-    c.scan(str(tmp_path))
+    c.scan(str(tmp_path)); _wait_scan(c)
     plist = c._build_params_list()
     assert len(plist) == 2
     by_stem = {p["stem_override"]: p for p in plist}
@@ -106,7 +116,7 @@ def test_batch_csv_series_gets_csv_source(tmp_path):
     from firefly.ui.controllers.batch_controller import BatchController
     _touch(os.path.join(tmp_path, "locs1.csv"))
     c = BatchController(FakeSettings(), FakeImport())
-    c.scan(str(tmp_path))
+    c.scan(str(tmp_path)); _wait_scan(c)
     p = c._build_params_list()[0]
     assert p["source"] == "external_csv"          # derived from the .csv fpath
     assert "series_files" not in p                # CSVs don't get the image series list

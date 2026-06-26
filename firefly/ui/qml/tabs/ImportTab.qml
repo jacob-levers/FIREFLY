@@ -733,8 +733,20 @@ Flickable {
                     }
                 }
 
+                // scanning a folder off-thread → shimmer placeholders so the UI
+                // never freezes on a big / slow (network) folder
+                ColumnLayout {
+                    visible: Batch.scanning
+                    Layout.fillWidth: true; spacing: sc.sp2
+                    Text { text: "Scanning folder…"; color: pal.TXT_MUTED; font.pixelSize: sc.textSm }
+                    Repeater {
+                        model: 3
+                        Skeleton { Layout.fillWidth: true; Layout.preferredHeight: 40; radius: sc.radiusMd }
+                    }
+                }
+
                 Text {
-                    visible: Batch.seriesCount === 0
+                    visible: Batch.seriesCount === 0 && !Batch.scanning
                     text: Batch.folder ? "No analysable files found in this folder."
                                        : "Pick a source folder, add files, or drop them above."
                     color: pal.TXT_MUTED; font.pixelSize: sc.textSm

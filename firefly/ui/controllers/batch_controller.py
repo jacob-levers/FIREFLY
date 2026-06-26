@@ -16,10 +16,11 @@ ROI-badge animations survive a selection change without a full Repeater rebuild.
 from __future__ import annotations
 
 import os
+import threading
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import (Property, QAbstractListModel, QByteArray, QModelIndex,
-                            QObject, Qt, QUrl, Signal, Slot)
+                            QObject, Qt, QTimer, QUrl, Signal, Slot)
 
 from firefly.analysis.fa_enums import MsgKind
 from firefly.ui.controllers.params import batch_scan
@@ -82,6 +83,7 @@ class BatchSeriesModel(QAbstractListModel):
 class BatchController(QObject):
     seriesChanged = Signal()
     folderChanged = Signal()
+    scanningChanged = Signal()
     runningChanged = Signal()
     progressChanged = Signal()
     statusChanged = Signal()
@@ -120,6 +122,11 @@ class BatchController(QObject):
         self._cur_progress = 0            # running series' progress %
         self._session = RunSession(self)
         self._model = BatchSeriesModel(self)
+        self._scanning = False            # folder scan runs off-thread (it probes
+        self._scan_result = None          # files, so it's I/O-bound)
+        self._scan_poll = QTimer(self)    # drains the scan result on the GUI thread
+        self._scan_poll.setInterval(30)
+        self._scan_poll.timeout.connect(self._drain_scan)
 
     # ── folder + scan ────────────────────────────────────────────────────
     @Property(QObject, constant=True)
@@ -161,15 +168,43 @@ class BatchController(QObject):
 
     @Slot()
     def rescan(self):
-        try:
-            self._series = batch_scan.scan_series(self._folder, self._recursive)
-        except Exception as exc:
+        if self._scanning or not self._folder:
+            return
+        folder, recursive = self._folder, self._recursive
+        self._scanning = True
+        self._scan_result = None
+        self.scanningChanged.emit()
+        self._scan_poll.start()
+
+        def _work():
+            try:
+                self._scan_result = ("ok", batch_scan.scan_series(folder, recursive))
+            except Exception as exc:
+                self._scan_result = ("err", str(exc))
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _drain_scan(self):
+        """GUI-thread: apply the off-thread folder-scan result to the model."""
+        r = self._scan_result
+        if r is None:
+            return
+        self._scan_result = None
+        self._scan_poll.stop()
+        self._scanning = False
+        if r[0] == "err":
             self._series = []
-            self.logLine.emit(f"Scan failed: {exc}")
+            self.logLine.emit(f"Scan failed: {r[1]}")
+        else:
+            self._series = r[1]
         self._reset_selection()
         self._series_status = {}
         self._model.reset()
+        self.scanningChanged.emit()
         self.seriesChanged.emit()
+
+    @Property(bool, notify=scanningChanged)
+    def scanning(self):
+        return self._scanning
 
     def _reset_selection(self):
         """Default-select every constituent file of every series."""
