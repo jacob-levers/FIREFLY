@@ -120,6 +120,9 @@ class VisualiseController(QObject):
         self._cl_status = ""
         # ── super-resolution ─────────────────────────────────────────────
         self._sr_img = None
+        self._field_px = None            # (H, W) of the loaded camera frame, so the
+                                         # super-res canvas matches the full field
+                                         # (not just the localisations' bounding box)
         self._sr_nm = 20
         self._sr_blur = 20
         self._sr_status = ""
@@ -192,6 +195,7 @@ class VisualiseController(QObject):
         summary from ``firefly_extras/``.  Ports VisualiseMixin._ws_load_run_
         folder's headless resolution (descends a single-run parent folder)."""
         import json
+        self._field_px = None            # reset; set again only if this run has a stack
         try:
             extras = os.path.join(run_dir, "firefly_extras")
             if not os.path.isdir(extras):
@@ -257,6 +261,14 @@ class VisualiseController(QObject):
             self.statusMessage.emit(f"Loading {os.path.basename(path)}…")
             stack, _, _ = load_file(path, channel=0)
             self.ensureViewer().set_stack(stack)
+            # remember the camera field size so a super-res render fills the same
+            # extent as the Raw movie / Max projection backgrounds
+            try:
+                import numpy as _np
+                s = _np.asarray(stack)
+                self._field_px = (int(s.shape[-2]), int(s.shape[-1]))
+            except Exception:
+                self._field_px = None
             self._after_background_change()
             self.statusMessage.emit(f"Loaded {len(stack):,} frames")
         except Exception as exc:
@@ -1265,6 +1277,7 @@ class VisualiseController(QObject):
         px = float(self._cl_px_um or 1.0)
         sr_nm = float(self._sr_nm)
         blur = float(self._sr_blur)
+        field = self._field_px               # full camera frame, when a stack is loaded
         x, y = df["x"].to_numpy(), df["y"].to_numpy()
         self._sr_rendering = True
         self._sr_status = "Rendering…"
@@ -1275,8 +1288,9 @@ class VisualiseController(QObject):
         def _work():
             try:
                 from firefly.analysis.fa_render import render_superres
-                img = render_superres(x, y, px, sr_nm=sr_nm, blur_nm=blur)
-                self._sr_result = ("ok", img, x, y, sr_nm)
+                img = render_superres(x, y, px, sr_nm=sr_nm, blur_nm=blur,
+                                      field_px=field)
+                self._sr_result = ("ok", img, x, y, sr_nm, field)
             except Exception as exc:
                 self._sr_result = ("err", str(exc))
         threading.Thread(target=_work, daemon=True).start()
@@ -1294,18 +1308,25 @@ class VisualiseController(QObject):
             self._sr_status = f"Render failed: {r[1]}"
             self.srChanged.emit()
             return
-        _, img, x, y, sr_nm = r
+        _, img, x, y, sr_nm, field = r
         self._sr_img = img
-        # Derive the data-px-per-super-res-px scale from the ACTUAL rendered
-        # image vs the localisations' extent, so the overlay is correct even when
-        # render_superres caps a huge canvas (and regardless of the pixel size).
+        # Map the rendered image back to CAMERA-px coordinates so it overlays the
+        # other backgrounds 1:1.  When rendered to the full field the canvas starts
+        # at the origin and spans the whole frame; otherwise it covers just the
+        # localisations' bounding box.  Scale is derived from the ACTUAL image size
+        # so it's correct even when render_superres caps a huge canvas.
         h, w = img.shape[0], img.shape[1]
-        xext = float(np.nanmax(x) - np.nanmin(x))
-        yext = float(np.nanmax(y) - np.nanmin(y))
-        scale = max(xext / max(1, w), yext / max(1, h), 1e-6)
+        if field is not None:
+            H, W = int(field[0]), int(field[1])
+            scale = max(W / max(1, w), H / max(1, h), 1e-6)
+            translate = (0.0, 0.0)
+        else:
+            xext = float(np.nanmax(x) - np.nanmin(x))
+            yext = float(np.nanmax(y) - np.nanmin(y))
+            scale = max(xext / max(1, w), yext / max(1, h), 1e-6)
+            translate = (float(np.nanmin(y)), float(np.nanmin(x)))
         try:
-            self.ensureViewer().set_superres(
-                img, scale=scale, translate=(float(np.nanmin(y)), float(np.nanmin(x))))
+            self.ensureViewer().set_superres(img, scale=scale, translate=translate)
         except Exception as exc:
             self._sr_status = f"Layer add failed: {exc}"
             self.srChanged.emit()

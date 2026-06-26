@@ -303,7 +303,11 @@ def test_visualise_superres_render(tmp_path):
     from firefly.ui.controllers.visualise_controller import VisualiseController
     c = VisualiseController()
     c.loadRunFolder(_make_run(tmp_path))
-    c.srPixelNm = 30
+    # With a stack/field loaded, the super-res canvas spans the full camera frame
+    # (so it overlays the other backgrounds 1:1) instead of just the localisations'
+    # bounding box — the fix for the render looking tiny next to the Max projection.
+    c._field_px = (24, 48)                     # simulate a loaded 24×48 (H×W) frame
+    c.srPixelNm = 100                          # coarse → tiny render (keep the test light)
     c.renderSuperres()
     assert c.srRendering                      # render kicked off on a worker thread
     # async: pump the event loop until the off-thread render drains in
@@ -314,6 +318,11 @@ def test_visualise_superres_render(tmp_path):
         time.sleep(0.01)
     assert c.hasSuperresRender and not c.srRendering
     assert "Super-resolution" in c.backgroundOptions
+    # full-field canvas → image aspect matches the camera frame W/H (128/64 = 2),
+    # placed at the origin (overlays the projection), not the data bbox
+    img = c._sr_img
+    assert abs(img.shape[1] / img.shape[0] - 128 / 64) < 0.1
+    assert c.ensureViewer()._sr[2] == (0.0, 0.0)
 
 
 def test_visualise_explorer_filters(tmp_path):
