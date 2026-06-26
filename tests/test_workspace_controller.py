@@ -128,3 +128,20 @@ def test_recommend_and_presets_roundtrip(tmp_path):
     c.setMetric("logd_dist")
     c.loadPreset(c.presets[0]["name"])
     assert c.metric == "radial_dist"
+
+
+def test_report_progress_drain():
+    """compare_groups' progress_cb writes (done,total,msg) off-thread; the GUI
+    drain turns it into a determinate bar during loading and an indeterminate one
+    while the engine renders the rest."""
+    c = AnalysisWorkspaceController(settings=None)
+    # mid-load → determinate fraction + the per-folder message
+    c._report_prog_raw = (3, 12, "Loading: cellA")
+    c._drain_report_progress()
+    assert abs(c.reportProgress - 0.25) < 1e-6
+    assert "Loading: cellA" in c.reportStatus and "(3/12)" in c.reportStatus
+    # everything loaded (done == total) → indeterminate while it renders + writes
+    c._report_prog_raw = (12, 12, "Computing scalars and rendering...")
+    c._drain_report_progress()
+    assert c.reportProgress == -1.0
+    assert "Computing" in c.reportStatus

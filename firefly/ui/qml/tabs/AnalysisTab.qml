@@ -592,6 +592,40 @@ Item {
                     Button { variant: "secondary"; icon: "folder-open"; tip: "Open output folder"; onClicked: Analysis.openOutputFolder() }
                 }
             }
+
+            // report progress — real %, from compare_groups' progress_cb (loading
+            // every replicate folder), then indeterminate while it renders + writes
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: Analysis.reportBusy
+                spacing: sc.sp1
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 6; radius: 3; clip: true
+                    color: pal.PANEL_ALT; border.width: 1; border.color: pal.BORDER
+                    Rectangle {                       // determinate fill (load phase)
+                        visible: Analysis.reportProgress >= 0
+                        height: parent.height; radius: 3
+                        width: Math.max(0, Math.min(1, Analysis.reportProgress)) * parent.width
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: pal.SUCCESS }
+                            GradientStop { position: 1.0; color: pal.ACC }
+                        }
+                        Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
+                    }
+                    IndeterminateShimmer { active: Analysis.reportBusy && Analysis.reportProgress < 0 }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: sc.sp2
+                    Text { Layout.fillWidth: true
+                           text: Analysis.reportStatus || "Working…"
+                           color: pal.TXT_MUTED; font.pixelSize: 11; elide: Text.ElideRight }
+                    Text { visible: Analysis.reportProgress >= 0
+                           text: Math.round(Analysis.reportProgress * 100) + "%"
+                           color: pal.TXT_MUTED; font.pixelSize: 11; font.family: "Menlo" }
+                }
+            }
         }
     }
 

@@ -553,6 +553,14 @@ class AnalysisWorkspaceController(QObject):
         self._pending_report: dict | None = None
         self._report_busy = False
         self._last_report_dir = ""
+        # real report progress (compare_groups calls progress_cb(done,total,msg)
+        # off-thread; we stash the latest tuple and drain it on the GUI thread)
+        self._report_progress = -1.0       # 0..1, or -1 → indeterminate
+        self._report_status = ""
+        self._report_prog_raw = None       # written off-thread by progress_cb
+        self._report_prog_poll = QTimer(self)
+        self._report_prog_poll.setInterval(80)
+        self._report_prog_poll.timeout.connect(self._drain_report_progress)
         # live engine figure: ONE all-panels compare_groups render is sliced into
         # every panel (titles stripped so the narrow-cell slices stay clean), so
         # the ~9s compute is paid once and switching panels is then instant.
@@ -1187,6 +1195,10 @@ class AnalysisWorkspaceController(QObject):
             stats_config=self._stats_config(),
         )
         self._report_busy = True
+        self._report_progress = 0.0
+        self._report_status = "Starting…"
+        self._report_prog_raw = None
+        self._report_prog_poll.start()
         self.reportChanged.emit()
         ref = weakref.ref(self)
 
@@ -1196,13 +1208,41 @@ class AnalysisWorkspaceController(QObject):
                 c._pending_report = result
                 c._reportRendered.emit()
 
+        def progress(done, total, msg):
+            # off-thread: stash only (weakref so the worker never keeps the
+            # controller alive / destroys it from this thread)
+            c = ref()
+            if c is not None:
+                c._report_prog_raw = (int(done), int(total), str(msg))
+
+        kwargs["progress_cb"] = progress
         self._report_job = _ReportJob(kwargs, deliver)
         self._report_job.start()
+
+    def _drain_report_progress(self):
+        raw = self._report_prog_raw
+        if raw is None:
+            return
+        self._report_prog_raw = None
+        done, total, msg = raw
+        # determinate through the load phase (show the folder count — more concrete
+        # than a %); once everything's loaded the engine renders for a while with no
+        # further callbacks → indeterminate
+        if total and done < total:
+            self._report_progress = done / total
+            self._report_status = f"{msg}  ({done}/{total})"
+        else:
+            self._report_progress = -1.0
+            self._report_status = msg
+        self.reportChanged.emit()
 
     def _on_report_rendered(self):
         r = self._pending_report or {}
         self._pending_report = None
         self._report_busy = False
+        self._report_prog_poll.stop()
+        self._report_progress = -1.0
+        self._report_status = ""
         self.reportChanged.emit()
         if r.get("ok"):
             self._last_report_dir = r.get("dir", "")
@@ -1216,6 +1256,14 @@ class AnalysisWorkspaceController(QObject):
     @Property(bool, notify=reportChanged)
     def reportBusy(self):
         return self._report_busy
+
+    @Property(float, notify=reportChanged)
+    def reportProgress(self):
+        return self._report_progress      # 0..1 during load, -1 → indeterminate
+
+    @Property(str, notify=reportChanged)
+    def reportStatus(self):
+        return self._report_status
 
     @Property(str, notify=reportChanged)
     def lastReportDir(self):
