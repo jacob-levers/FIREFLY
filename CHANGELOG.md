@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.76.28 — 27 Jun 2026
+
+### Changed
+
+- **The home screen's "Recent updates" now tracks the changelog automatically.**
+  Instead of a hand-maintained list, the landing parses the bundled CHANGELOG and
+  shows the newest three releases (version, date, summary) — so it stays current
+  with every release on its own, offline.
+
 ## v2.76.27 — 27 Jun 2026
 
 ### Fixed
