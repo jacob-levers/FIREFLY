@@ -162,20 +162,17 @@ class EmbedController(QObject):
     @Slot(bool)
     def setModalOpen(self, on: bool):
         """Hide the always-on-top island while a QML modal/popup is up so it
-        isn't occluded; restore on close."""
+        isn't occluded; restore on close — but only to where it BELONGS.  A blind
+        re-show let the Visualise viewer 'escape' onto whatever tab you'd switched
+        to before closing the modal (e.g. open Preferences on Visualise, close it
+        on Import → the viewer reappeared over Import)."""
         self._modal = bool(on)
         if self._modal:
             self.hideIslands()
-        elif self._active != "none":
-            w = self._widget()
-            if w is not None:
-                w.setGeometry(self._rect)
-                w.show()
-                w.raise_()
-            if self._hud is not None and self._active == "viewer":
-                self._hud.setGeometry(self._rect)
-                self._hud.show()
-                self._hud.raise_()
+        elif self._active == "viewer":
+            self._sync_viewer_visibility()   # tab + content gated → no escape
+        elif self._active == "roi":
+            self.showIsland("roi")           # ROI editor is its own modal overlay
 
     # ── tab / page visibility ────────────────────────────────────────────
     @Slot(int, str)
