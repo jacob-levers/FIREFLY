@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.76.24
+
+### Added
+
+- **Single analysis now shows the multi-file series it will combine.** When the
+  file you pick is part of a split recording (palmTRACER `-fileNNN`, ImageJ `(N)`,
+  CZI companions), the Import tab lists every file the run will auto-combine, with
+  per-file frame counts and the combined total — the exact set the loader uses,
+  sister-channel files excluded.
+
+### Fixed
+
+- **Corrupt files inside a single-analysis series are now flagged.** A part with no
+  readable frames shows "can't read", the header shows an "N unreadable" count, and
+  Start analysis is blocked — since the combined run loads every sibling, a corrupt
+  part would otherwise fail mid-run. (Frame counts are also now correct for
+  contiguous / ImageJ-hyperstack TIFFs, which were undercounted.)
+- **The Visualise viewer no longer escapes onto other tabs.** Closing a modal (e.g.
+  Preferences) on a non-Visualise tab re-showed the native viewer over that tab;
+  it's now restored only where it belongs.
+- **Super-resolution renders to the full camera field.** It was sized to the
+  localisations' bounding box, so with a stack loaded it appeared tiny and
+  mis-scaled next to the Raw / Max-projection backgrounds; it now overlays them 1:1.
+- **The Figures live preview reflects the chosen theme + DPI.** Picking Light /
+  Publication now shows a real light-themed sample figure (not a dark one on a white
+  card), and the DPI readout updates live.
+
 ## v2.76.23
 
 ### Fixed
