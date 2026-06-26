@@ -139,6 +139,71 @@ def fetch_latest_release(api_url: str, timeout: float = 6.0) -> dict:
         return {}
 
 
+def fetch_releases(api_url: str, timeout: float = 6.0) -> "list | dict":
+    """GET the GitHub *releases list* (newest-first), used to resolve the update
+    channel.  Returns a list of release-JSON dicts, ``[]`` on any failure, or the
+    ``{"_rate_limited": True, "_reset": <epoch>}`` marker on a rate limit (same
+    semantics as :func:`fetch_latest_release`).
+
+    The ``/releases/latest`` endpoint only ever returns the newest NON-prerelease
+    by GitHub's definition, so it can't see betas — the Pre-release channel and
+    "notify about pre-releases" need this list endpoint instead."""
+    try:
+        req = urllib.request.Request(
+            api_url,
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "FIREFLY-app"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            blob = resp.read()
+        data = json.loads(blob)
+        return data if isinstance(data, list) else []
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 429):
+            try:
+                hdrs = exc.headers or {}
+                rem = hdrs.get("X-RateLimit-Remaining")
+                reset = hdrs.get("X-RateLimit-Reset")
+                if rem == "0" or hdrs.get("Retry-After"):
+                    try:
+                        reset_epoch = int(reset) if reset else 0
+                    except (TypeError, ValueError):
+                        reset_epoch = 0
+                    return {"_rate_limited": True, "_reset": reset_epoch}
+            except Exception:
+                pass
+        return []
+    except Exception:
+        return []
+
+
+def pick_release(releases: "list",
+                 include_prerelease: bool) -> Optional[dict]:
+    """From a GitHub releases list, return the newest installable release JSON
+    (highest version tag), skipping drafts and — unless ``include_prerelease`` —
+    prereleases.  ``None`` if the list is empty or nothing qualifies.
+
+    Chooses by parsed version, not list order, so an out-of-order or
+    re-published release can't pick a stale "latest"."""
+    if not isinstance(releases, list):
+        return None
+    best = None
+    best_ver = None
+    for r in releases:
+        if not isinstance(r, dict):
+            continue
+        if r.get("draft"):
+            continue
+        if r.get("prerelease") and not include_prerelease:
+            continue
+        tag = r.get("tag_name") or ""
+        if not tag:
+            continue
+        ver = parse_version(tag)
+        if best_ver is None or ver > best_ver:
+            best_ver, best = ver, r
+    return best
+
+
 def select_asset(release_json: dict,
                  asset_name: Optional[str]) -> Optional[dict]:
     """Find the named asset in a release JSON; return

@@ -72,7 +72,7 @@ Item {
     readonly property var formatOpts: ["PDF (vector)", "PNG", "SVG", "TIFF"]
     readonly property var densityOpts: ["Compact", "Comfortable"]
     readonly property var fontSizeOpts: ["Small — 11px", "Medium — 12px", "Large — 14px"]
-    readonly property var channelOpts: ["Stable", "Pre-release", "Nightly"]
+    readonly property var channelOpts: ["Stable", "Pre-release"]
     readonly property var logdLabels: ["Faceted (per-replicate)", "Ridgeline", "Overlaid KDEs", "Violins + points"]
     readonly property var logdValues: ["faceted", "ridgeline", "overlaid", "violin"]
 
@@ -1059,12 +1059,50 @@ Item {
                             RowLayout {
                                 spacing: sc.sp3
                                 visible: !Updates.installing
-                                Button { variant: "primary"; text: "Download & install"; icon: "download"
-                                         onClicked: Updates.downloadAndInstall() }
+                                Button {
+                                    variant: "primary"
+                                    // when the background pre-fetch has already staged
+                                    // a verified installer, install is instant
+                                    text: Updates.updateDownloaded ? "Restart & install" : "Download & install"
+                                    icon: Updates.updateDownloaded ? "refresh-cw" : "download"
+                                    onClicked: Updates.downloadAndInstall()
+                                }
                                 Button { variant: "ghost"; text: "Release notes"
                                          onClicked: Updates.openReleasePage() }
+                                Item { Layout.fillWidth: true }
+                                RowLayout {
+                                    visible: Updates.updateDownloaded; spacing: sc.sp1
+                                    Icon { name: "circle-check"; size: 13; color: pal.SUCCESS }
+                                    Text { text: "Downloaded"; color: pal.SUCCESS
+                                           font.pixelSize: sc.textXs }
+                                }
                             }
                         }
+                    }
+                }
+                Rectangle {                        // pre-release notice (notify-only)
+                    Layout.fillWidth: true; color: "transparent"
+                    visible: Updates.prereleaseAvailable
+                    implicitHeight: visible ? preRow.implicitHeight + sc.sp4 * 2 : 0
+                    Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top }
+                                height: 1; color: pal.BORDER }
+                    RowLayout {
+                        id: preRow
+                        anchors.fill: parent
+                        anchors.leftMargin: sc.sp5; anchors.rightMargin: sc.sp5
+                        anchors.topMargin: sc.sp4; anchors.bottomMargin: sc.sp4
+                        spacing: sc.sp3
+                        Icon { name: "sparkles"; size: 16; color: pal.WARN }
+                        ColumnLayout {
+                            Layout.fillWidth: true; Layout.preferredWidth: 0; spacing: 0
+                            Text { text: "Pre-release " + Updates.prereleaseTag + " is available"
+                                   color: pal.TXT; font.pixelSize: sc.textSm; font.weight: Font.DemiBold }
+                            Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                   text: "You're on the Stable channel, so this beta won't be installed automatically."
+                                   color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                        }
+                        Button { variant: "ghost"; text: "Release notes"
+                                 onClicked: Updates.openPrereleasePage() }
                     }
                 }
             }
@@ -1078,7 +1116,7 @@ Item {
                 }
                 PrefRow {
                     label: "Update channel"
-                    desc: "Pre-release surfaces betas; nightly tracks the dev branch."
+                    desc: "Pre-release offers beta builds before they're promoted to stable."
                     Select { implicitWidth: 170; model: root.channelOpts
                              currentIndex: (root.rev, Math.max(0, root.channelOpts.indexOf(Settings.getStr("updates/channel", "Stable"))))
                              onPicked: (t) => Settings.setValue("updates/channel", t) }

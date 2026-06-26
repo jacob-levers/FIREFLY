@@ -165,7 +165,7 @@ def build_main_window(app: QtWidgets.QApplication):
     hyperfly = HyperflyController()       # live parallel-batch (HYPER-FLY) dashboard
     batchc = BatchController(settings, importc, roi_store=roi_store,
                              override_store=roi_override, hyperfly=hyperfly)
-    updates = UpdatesController()
+    updates = UpdatesController(settings)
     # In-app update: once the swap-and-relaunch helper is staged, the app MUST
     # quit so the helper can replace the running bundle and relaunch it.
     updates.quitForUpdate.connect(app.quit)
