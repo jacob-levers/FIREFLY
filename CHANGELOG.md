@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.26
+
+### Changed
+
+- **Redesigned home screen.** The landing is now a two-column layout: a left rail
+  with the FIRE·FLY wordmark, tagline and a "Recent updates" timeline over an
+  animated single-molecule field (drifting emitters, nebula glow, detection
+  crosshairs — pauses under reduce-motion), and a right column with the four
+  workflows as full-width action rows. A floating gear opens Preferences.
+
+### Fixed
+
+- **The selected metric pill in the Analysis tab keeps its outline** — the
+  scroll-fade no longer dims the active pill's border to nothing.
+- **"Imaging metadata" has its own icon** (a microscope) instead of sharing the
+  parameter-panel header glyph.
+
 ## v2.76.25
 
 ### Added
