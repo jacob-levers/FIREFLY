@@ -408,4 +408,44 @@ Item {
             }
         }
     }
+
+    // ── Visualise warning toast (load / export failures, etc.) ──────────
+    // Vis.warn(title, message) used to be emitted into the void — wire it to a
+    // dismissible, error-toned toast so a broken run folder / corrupt cluster
+    // map / failed export no longer fails silently.
+    Rectangle {
+        id: visWarn
+        z: 9999
+        anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter; bottomMargin: sc.sp5 }
+        visible: opacity > 0; opacity: 0
+        width: Math.min(root.width - sc.sp16, 460)
+        implicitHeight: vwRow.implicitHeight + sc.sp4 * 2
+        color: pal.PANEL_ALT; radius: sc.radiusMd; border.width: 1; border.color: pal.DANGER
+        Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 200 } }
+        transform: Translate {
+            y: visWarn.opacity > 0 ? 0 : 12
+            Behavior on y { NumberAnimation { duration: Theme.reducedMotion ? 0 : 200; easing.type: Easing.OutCubic } }
+        }
+        RowLayout {
+            id: vwRow
+            x: sc.sp5; y: sc.sp4; width: parent.width - sc.sp5 * 2; spacing: sc.sp3
+            Icon { name: "triangle-alert"; size: 16; color: pal.DANGER; Layout.alignment: Qt.AlignTop }
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: 1
+                Text { id: vwTitle; color: pal.TXT; font.pixelSize: sc.textSm; font.weight: Font.DemiBold
+                       Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                Text { id: vwMsg; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                       Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            }
+        }
+        Timer { id: vwTimer; interval: 6000; onTriggered: visWarn.opacity = 0 }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: visWarn.opacity = 0 }
+        Connections {
+            target: Vis
+            function onWarn(title, msg) {
+                vwTitle.text = title; vwMsg.text = msg
+                visWarn.opacity = 1; vwTimer.restart()
+            }
+        }
+    }
 }

@@ -284,6 +284,20 @@ def test_visualise_recluster_subsample_stays_aligned(tmp_path, monkeypatch):
     assert "subsampled to 40" in c.clusterStatus
 
 
+def test_visualise_broken_load_emits_warn(tmp_path):
+    """A broken run folder / cluster map must surface a warn(title, message) —
+    Main.qml wires it to an error toast, so the load no longer fails silently."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController()
+    seen = []
+    c.warn.connect(lambda t, m: seen.append((t, m)))
+    assert c.loadRunFolder(str(tmp_path / "nope")) is False          # no firefly_extras
+    assert c.loadClustersFolder(str(tmp_path / "nope")) is False
+    titles = [t for t, _ in seen]
+    assert "Load failed" in titles and "Couldn't load clusters" in titles
+    assert all(m for _, m in seen)                                   # each carries a reason
+
+
 def test_visualise_superres_render(tmp_path):
     import time
     from firefly.ui.controllers.visualise_controller import VisualiseController
