@@ -191,3 +191,25 @@ def test_import_lone_file_has_no_series(tmp_path):
     c = ImportController(_RecSettings())
     c.filePath = str(tmp_path / "solo.tif")
     assert c.seriesCount == 0                               # no series → nothing to show
+
+
+def test_import_flags_corrupt_series_part(tmp_path):
+    """A corrupt PART of a single-analysis series is flagged unreadable (and blocks
+    Start), even when the file you picked is fine — the combined run would fail on
+    the bad part."""
+    np = pytest.importorskip("numpy")
+    tifffile = pytest.importorskip("tifffile")
+    from firefly.ui.controllers.import_controller import ImportController
+    tifffile.imwrite(str(tmp_path / "rec.tif"),         np.zeros((3, 8, 8), np.uint16))
+    open(str(tmp_path / "rec-file002.tif"), "w").close()           # 0-byte → corrupt part
+    tifffile.imwrite(str(tmp_path / "rec-file003.tif"), np.zeros((4, 8, 8), np.uint16))
+
+    c = ImportController(_RecSettings())
+    c.filePath = str(tmp_path / "rec.tif")                         # the picked file is fine
+    rows = {r["name"]: r for r in c.seriesFiles}
+    assert c.seriesCount == 3
+    assert rows["rec.tif"]["unreadable"] is False
+    assert rows["rec-file002.tif"]["unreadable"] is True           # the corrupt part
+    assert c.seriesUnreadableCount == 1
+    assert c.seriesFrameTotal == 7                                 # 3 + 0 + 4 (readable only)
+    assert c.hasReadError is True                                  # blocks Start analysis

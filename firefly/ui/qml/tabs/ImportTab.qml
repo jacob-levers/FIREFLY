@@ -509,7 +509,10 @@ Flickable {
                                font.pixelSize: sc.textMd; font.weight: Font.DemiBold }
                         Text { text: Import.seriesCount + " files combined into one recording  ·  "
                                      + Import.seriesFrameTotal.toLocaleString(Qt.locale(), "f", 0) + " frames"
-                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                                     + (Import.seriesUnreadableCount > 0
+                                        ? "  ·  " + Import.seriesUnreadableCount + " unreadable" : "")
+                               color: Import.seriesUnreadableCount > 0 ? pal.DANGER : pal.TXT_MUTED
+                               font.pixelSize: sc.textXs }
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: pal.BORDER }
@@ -521,13 +524,17 @@ Flickable {
                         Layout.fillWidth: true; Layout.preferredHeight: 24; spacing: sc.sp3
                         Text { text: "" + (index + 1); color: pal.TXT_MUTED
                                font.pixelSize: sc.textXs; font.family: "Menlo"; Layout.preferredWidth: 16 }
-                        Icon { name: "image"; size: 13; color: pal.TXT_MUTED }
-                        Text { text: modelData.name; color: pal.TXT
+                        Icon { name: modelData.unreadable ? "triangle-alert" : "image"; size: 13
+                               color: modelData.unreadable ? pal.DANGER : pal.TXT_MUTED }
+                        Text { text: modelData.name
+                               color: modelData.unreadable ? pal.DANGER : pal.TXT
                                font.pixelSize: sc.textXs; font.family: "Menlo"
                                elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredWidth: 0 }
-                        Text { text: modelData.frames > 0
-                                     ? modelData.frames.toLocaleString(Qt.locale(), "f", 0) + " fr" : ""
-                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo" }
+                        Text { text: modelData.unreadable ? "can't read"
+                                     : (modelData.frames > 0
+                                        ? modelData.frames.toLocaleString(Qt.locale(), "f", 0) + " fr" : "")
+                               color: modelData.unreadable ? pal.DANGER : pal.TXT_MUTED
+                               font.pixelSize: sc.textXs; font.family: "Menlo" }
                     }
                 }
             }

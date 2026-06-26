@@ -350,13 +350,25 @@ class ImportController(QObject):
                 files = (_find_czi_series(path) if ext == ".czi"
                          else _find_tif_series(path))
                 if files and len(files) > 1:
-                    rows = [{"name": os.path.basename(f), "path": f,
-                             "frames": int(quick_frame_count(f))} for f in files]
+                    rows = []
+                    for f in files:
+                        # series files are always images → 0 frames means the
+                        # part couldn't be read (corrupt / truncated)
+                        n = int(quick_frame_count(f))
+                        rows.append({"name": os.path.basename(f), "path": f,
+                                     "frames": n, "unreadable": n <= 0})
             except Exception:
                 rows = []
         if rows or self._series_files:
             self._series_files = rows
             self.seriesFilesChanged.emit()
+        # A corrupt PART dooms the combined run (load_file reads every sibling),
+        # so surface it like the picked-file read error — Alert + Start disabled —
+        # unless the picked file already flagged one.
+        if any(r.get("unreadable") for r in rows) and not self._read_error:
+            self._read_error = ("One or more files in this recording can't be read "
+                                "— it may be corrupt or incomplete.")
+            self.probeChanged.emit()
 
     @Property("QVariantList", notify=seriesFilesChanged)
     def seriesFiles(self):
@@ -369,6 +381,10 @@ class ImportController(QObject):
     @Property(int, notify=seriesFilesChanged)
     def seriesFrameTotal(self):
         return int(sum(r.get("frames", 0) for r in self._series_files))
+
+    @Property(int, notify=seriesFilesChanged)
+    def seriesUnreadableCount(self):
+        return sum(1 for r in self._series_files if r.get("unreadable"))
 
     def _render_thumb(self):
         """Compute the recording's max-intensity projection (a cheap sampled
