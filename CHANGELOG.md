@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.25
+
+### Added
+
+- **A real progress bar while generating a full report.** "Generate full report"
+  now shows a progress bar that fills as it loads each replicate folder
+  ("Loading: <folder> (3/12)"), then an indeterminate shimmer with "Computing
+  scalars and rendering…" while it renders the panels and writes the PDF — so a
+  large comparison no longer looks frozen.
+
+### Fixed
+
+- **The Figures live preview recolours when you change the projection colormap.**
+  It previously only updated the gradient strip + label; the sample figure now
+  re-renders in the chosen colormap (Inferno / Hot / Viridis / Plasma / Greys) for
+  each theme.
+
 ## v2.76.24
 
 ### Added
