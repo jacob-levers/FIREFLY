@@ -89,3 +89,31 @@ def test_preset_builtin_tag_stripped(tmp_path, monkeypatch):
     pc.refresh()
     pc.load("seed")
     assert sb.get("analysis/diameter") == 15   # applied; tag ignored, no crash
+
+
+# ── manifest replay pins the resolved auto-minmass threshold ──────────────────
+def test_manifest_replay_pins_auto_minmass():
+    from firefly.ui.controllers.params.sidebar_controller import SidebarController
+    sb = SidebarController(FakeSettings())
+    manifest = {
+        "firefly_version": "9.9.9", "created_at": "2026-01-01T00:00:00",
+        "resolved_minmass": 0.6671899791370938,
+        "widget_state": {"analysis/auto_minmass": True, "analysis/minmass": 1.0,
+                         "analysis/diameter": 7},
+    }
+    sb._apply_manifest(manifest, "run_manifest.json")
+    assert sb.get("analysis/auto_minmass") is False                 # auto pinned off
+    assert abs(float(sb.get("analysis/minmass")) - 0.6671899791370938) < 1e-9
+    assert int(sb.get("analysis/diameter")) == 7                    # rest of state still applied
+
+
+def test_manifest_replay_manual_run_not_pinned():
+    from firefly.ui.controllers.params.sidebar_controller import SidebarController
+    sb = SidebarController(FakeSettings())
+    manifest = {                                       # a manual run: nothing to pin
+        "resolved_minmass": None,
+        "widget_state": {"analysis/auto_minmass": False, "analysis/minmass": 0.5},
+    }
+    sb._apply_manifest(manifest, "m")
+    assert sb.get("analysis/auto_minmass") is False
+    assert abs(float(sb.get("analysis/minmass")) - 0.5) < 1e-9      # left untouched

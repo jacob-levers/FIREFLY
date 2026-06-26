@@ -347,13 +347,18 @@ class QueueLogStream:
 #  CORE PIPELINE (shared by single-file and batch entry points)
 # ══════════════════════════════════════════════════════════════════════════════
 def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
-                        params: dict) -> str:
+                        params: dict, resolved_minmass=None) -> str:
     """Write a `<stem>_run_manifest.json` file alongside the run outputs.
     The manifest captures everything needed to reproduce the run:
       • full parameters (worker-format kwargs + widget-state for the GUI)
       • input file path + SHA-256 checksum
       • FIREFLY version, git SHA (if available), host info
       • timestamp + output directory
+      • ``resolved_minmass`` — the detection threshold an *auto-minmass* run
+        actually resolved to (None for manual / CSV runs).  The auto-threshold
+        SEARCH has a small sampled component, so replaying it can land on a
+        slightly different value; recording the resolved threshold lets the
+        replay pin it (auto off) and reproduce the run exactly.
     """
     import datetime as _dt
     import hashlib
@@ -444,7 +449,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
                      if k != "widget_state"}
 
     manifest = {
-        "schema_version":   2,
+        "schema_version":   3,
         "firefly_version":  _firefly_version(),
         "git_sha":          _git_sha(),
         "created_at":       _dt.datetime.now().isoformat(timespec="seconds"),
@@ -460,6 +465,10 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
         },
         "output_dir":    out_dir,
         "stem":          stem,
+        # The auto-resolved detection threshold (None for manual / CSV runs) —
+        # replay pins this so an auto-minmass run reproduces exactly.
+        "resolved_minmass": (float(resolved_minmass)
+                             if resolved_minmass is not None else None),
         "parameters":    worker_params,
         "widget_state":  _jsonify(widget_state),
     }
@@ -2513,7 +2522,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     manifest_path = ""
     try:
         manifest_path = _write_run_manifest(
-            out_dir=out_dir, stem=stem, fpath=fpath, params=p)
+            out_dir=out_dir, stem=stem, fpath=fpath, params=p,
+            resolved_minmass=(float(minmass_arg)
+                              if (p.get("auto_minmass", False)
+                                  and minmass_arg is not None) else None))
         _log(f"  Saved (root): {os.path.basename(manifest_path)}")
     except Exception as e:
         _log(f"  WARN: manifest write failed: {e}")

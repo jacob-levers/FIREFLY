@@ -33,11 +33,27 @@ def test_manifest_records_determinism(tmp_path, monkeypatch):
     path = fw._write_run_manifest(out_dir=str(tmp_path), stem="stack",
                                   fpath=str(f), params={"diameter": 7})
     m = json.load(open(path, encoding="utf-8"))
-    assert m["schema_version"] == 2
+    assert m["schema_version"] == 3
     assert "determinism" in m
     det = m["determinism"]
     assert det["requested"] is True
     assert "numpy_version" in det and det["numpy_version"]
+
+
+def test_manifest_records_resolved_minmass(tmp_path):
+    """An auto-minmass run records the threshold it resolved to, so a replay can
+    pin it; a manual run records None."""
+    import firefly.firefly_worker as fw
+    f = tmp_path / "stack.tif"
+    f.write_bytes(b"x")
+    auto = json.load(open(fw._write_run_manifest(
+        out_dir=str(tmp_path), stem="a", fpath=str(f),
+        params={"auto_minmass": True}, resolved_minmass=0.667), encoding="utf-8"))
+    assert auto["resolved_minmass"] == 0.667
+    manual = json.load(open(fw._write_run_manifest(
+        out_dir=str(tmp_path), stem="b", fpath=str(f),
+        params={"auto_minmass": False}), encoding="utf-8"))
+    assert manual["resolved_minmass"] is None
 
 
 def test_manifest_determinism_unset(tmp_path, monkeypatch):

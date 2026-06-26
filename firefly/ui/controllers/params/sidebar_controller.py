@@ -146,7 +146,33 @@ class SidebarController(QObject):
             QtWidgets.QMessageBox.critical(
                 None, "Couldn't load manifest", str(exc))
             return
+        self._apply_manifest(manifest, os.path.basename(path))
+
+    def _apply_manifest(self, manifest, label=""):
+        """Apply a parsed manifest to the sidebar (split out so it's testable
+        without a file dialog)."""
+        import os
         self.applyState(manifest.get("widget_state") or {})
+
+        # Pin an auto-minmass run's resolved threshold so the replay is exact.
+        # An auto-minmass run re-runs the per-file threshold SEARCH on replay,
+        # and that search's sampled spurious-rate estimate can land on a slightly
+        # different value run-to-run; replaying with the threshold the original
+        # run actually resolved (auto off) removes that, so the reproduction is
+        # deterministic.  Only applies to schema≥3 manifests from auto runs.
+        pinned = None
+        rmm = manifest.get("resolved_minmass")
+        ws = manifest.get("widget_state") or {}
+        if rmm is not None and bool(ws.get("analysis/auto_minmass")):
+            try:
+                pinned = float(rmm)
+            except (TypeError, ValueError):
+                pinned = None
+        if pinned is not None:
+            self._write("analysis/auto_minmass", False)
+            self._write("analysis/minmass", pinned)
+            self._bump("")
+
         if self._import is not None:
             inp = (manifest.get("input") or {}).get("path", "") or ""
             if inp and os.path.isfile(inp):
@@ -156,8 +182,10 @@ class SidebarController(QObject):
                 self._import.outDir = outd
         v = manifest.get("firefly_version", "?")
         when = manifest.get("created_at", "?")
-        self.manifestLoaded.emit(
-            f"Loaded {os.path.basename(path)}  ·  FIREFLY {v}, {when}")
+        msg = f"Loaded {label}  ·  FIREFLY {v}, {when}"
+        if pinned is not None:
+            msg += f"  ·  pinned auto-threshold {pinned:.4g} for an exact replay"
+        self.manifestLoaded.emit(msg)
 
     @Slot(str, result=bool)
     def isEnabled(self, key):
