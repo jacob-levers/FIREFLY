@@ -22,6 +22,19 @@ THEMES = {
     "light":       dict(BG="#ffffff", TXT="#24292f", font="sans-serif"),
     "publication": dict(BG="#ffffff", TXT="#000000", font="DejaVu Sans"),
 }
+# Projection colormaps offered in Preferences (PreferencesDialog cmapOpts).  The
+# matplotlib name mirrors fa_figure._cmap_map — note Greys is theme-dependent
+# (Greys for Light/Publication, Greys_r for Dark) so the bright filament reads
+# correctly on each background.
+CMAPS = ["Inferno", "Hot", "Viridis", "Plasma", "Greys"]
+
+
+def _mpl_cmap(option, theme):
+    if option == "Greys":
+        return "Greys" if theme in ("light", "publication") else "Greys_r"
+    return option.lower()
+
+
 PX_UM = 0.15873
 DEST = os.path.join("firefly", "ui", "qml", "assets", "figures")
 
@@ -49,14 +62,14 @@ def make_projection(n=256, seed=7):
     return img
 
 
-def render(theme, img, out):
+def render(theme, cmap_option, img, out):
     th = THEMES[theme]
     plt.rcParams.update({"font.family": th["font"]})
     fig = plt.figure(figsize=(3.0, 3.0), dpi=150, facecolor=th["BG"])
     ax = fig.add_axes([0.16, 0.13, 0.80, 0.78])
     ax.set_facecolor(th["BG"])
-    ax.imshow(img, cmap="inferno", origin="lower", extent=[0, 256, 0, 256],
-              vmax=np.percentile(img, 99.3))
+    ax.imshow(img, cmap=_mpl_cmap(cmap_option, theme), origin="lower",
+              extent=[0, 256, 0, 256], vmax=np.percentile(img, 99.3))
     ax.set_title("Max Projection", color=th["TXT"], fontsize=9, loc="left",
                  fontweight="bold")
     ax.set_xlabel("X (%.5g um/px)" % PX_UM, color=th["TXT"], fontsize=7)
@@ -64,9 +77,15 @@ def render(theme, img, out):
     ax.tick_params(colors=th["TXT"], labelsize=6)
     for s in ax.spines.values():
         s.set_color(th["TXT"])
+    # white scalebar with a dark halo so it stays visible on any colormap /
+    # background (e.g. light-theme Greys is near-white where the bar sits)
+    import matplotlib.patheffects as pe
+    halo = [pe.withStroke(linewidth=3, foreground="black")]
     bar_px = 5.0 / PX_UM
-    ax.plot([20, 20 + bar_px], [18, 18], color="white", lw=2)
-    ax.text(20, 26, "5 µm", color="white", fontsize=6)
+    bar, = ax.plot([20, 20 + bar_px], [18, 18], color="white", lw=2.5)
+    bar.set_path_effects(halo)
+    txt = ax.text(20, 26, "5 µm", color="white", fontsize=6)
+    txt.set_path_effects([pe.withStroke(linewidth=1.5, foreground="black")])
     fig.savefig(out, facecolor=th["BG"], dpi=150)
     plt.close(fig)
 
@@ -75,9 +94,10 @@ def main():
     img = make_projection()
     os.makedirs(DEST, exist_ok=True)
     for theme in THEMES:
-        out = os.path.join(DEST, "panel_A_%s.png" % theme)
-        render(theme, img, out)
-        print("wrote", out)
+        for cmap in CMAPS:
+            out = os.path.join(DEST, "panel_A_%s_%s.png" % (theme, cmap.lower()))
+            render(theme, cmap, img, out)
+            print("wrote", out)
 
 
 if __name__ == "__main__":

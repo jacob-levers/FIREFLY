@@ -710,12 +710,16 @@ Item {
                                 anchors.fill: parent; anchors.margins: 4
                                 fillMode: Image.PreserveAspectFit; smooth: true
                                 sourceSize: Qt.size(300, 300)
-                                // a real render per theme — Light/Publication get a
-                                // white-background figure, Dark a dark one
+                                // a real render per theme AND projection colormap —
+                                // Light/Publication get a white-background figure,
+                                // Dark a dark one; the cmap recolours the projection
                                 source: "assets/figures/panel_A_"
                                         + (previewCol.figTheme === "Light" ? "light"
                                            : previewCol.figTheme === "Publication" ? "publication"
-                                           : "dark") + ".png"
+                                           : "dark")
+                                        + "_" + (root.cmapStops[previewCol.cmap]
+                                                 ? previewCol.cmap.toLowerCase() : "inferno")
+                                        + ".png"
                             }
                         }
                         Canvas {                    // colormap gradient strip
