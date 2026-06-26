@@ -162,6 +162,11 @@ Item {
                                 // coords; the resting first pill stays crisp.
                                 readonly property real _vx: x - metricFlick.contentX
                                 opacity: {
+                                    // the active pill stays fully crisp — otherwise the
+                                    // edge-fade dimmed its subtle border to nothing while
+                                    // the bold text stayed readable, so it looked like the
+                                    // selected pill had lost its outline.
+                                    if (on) return 1.0;
                                     // left: stay crisp until the pill's RIGHT (trailing)
                                     // edge reaches the METRIC label, then fade as it
                                     // slides under — so the pill doesn't vanish while
@@ -173,9 +178,9 @@ Item {
                                     var ra = Math.max(0, Math.min(1, (metricFlick.width - _vx) / 72));
                                     return Math.min(la, ra);
                                 }
-                                color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.12) : pal.PANEL
+                                color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.16) : pal.PANEL
                                 border.width: 1
-                                border.color: on ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.5) : pal.BORDER
+                                border.color: on ? pal.ACC : pal.BORDER
                                 RowLayout {
                                     id: ml
                                     anchors.centerIn: parent
