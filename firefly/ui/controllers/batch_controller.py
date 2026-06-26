@@ -442,6 +442,11 @@ class BatchController(QObject):
         self.seriesChanged.emit()
 
     # ── expand / collapse ─────────────────────────────────────────────────
+    # Expanding a drawer is now a pure visibility toggle — frame counts and the
+    # unreadable flag are filled in by the background probe (_start_probe_all,
+    # kicked off on scan / add), so neither setOpen nor expandAll blocks the GUI
+    # thread reading file metadata.  "Expand all" on a big queue used to freeze
+    # while it probed every file inline.
     @Slot(str, bool)
     def setOpen(self, key, on):
         i = self._index_of(key)
@@ -449,7 +454,6 @@ class BatchController(QObject):
             return
         if on:
             self._open.add(key)
-            self._probe_frames(key)
         else:
             self._open.discard(key)
         self._model.rowChanged(i)
@@ -457,35 +461,9 @@ class BatchController(QObject):
 
     @Slot(bool)
     def expandAll(self, on):
-        if on:
-            self._open = {s["key"] for s in self._series}
-            for s in self._series:
-                self._probe_frames(s["key"])
-        else:
-            self._open = set()
+        self._open = {s["key"] for s in self._series} if on else set()
         self._model.allChanged()
         self.seriesChanged.emit()
-
-    def _probe_frames(self, key):
-        """Fill in (cache) the metadata frame counts for one series' files.
-        Cheap (no pixel reads) and only a handful of files per series, so it's
-        fine to run on the click that expands the drawer."""
-        i = self._index_of(key)
-        if i < 0:
-            return
-        from firefly.ui.controllers.params.preview_loader import quick_frame_count
-        for p in self._series[i]["parts"]:
-            path = p["path"]
-            if path not in self._frames:
-                is_csv = path.lower().endswith((".csv", ".txt", ".tsv"))
-                n = 0 if is_csv else quick_frame_count(path)
-                self._frames[path] = n
-                # a non-CSV recording that yields no frames couldn't be read —
-                # flag it so a corrupt file is visible in the queue before the run
-                if not is_csv and n <= 0:
-                    self._unreadable.add(path)
-                else:
-                    self._unreadable.discard(path)
 
     # ── add / remove / clear ──────────────────────────────────────────────
     def _append(self, new_series):
