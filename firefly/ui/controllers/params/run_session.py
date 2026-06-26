@@ -3,7 +3,7 @@
 Generalises the spawn + 33 ms ``msg_queue`` drain + ``MsgKind`` re-emission +
 three-stage Stop (cooperative → SIGTERM 5s → SIGKILL 3s) + dead-process recovery
 + cleanup that AnalysisController ported from the Widgets ``_drain_msg_queue``.
-CompareController composes one of these instead of duplicating ~150 lines; the
+BatchController composes one of these instead of duplicating ~150 lines; the
 caller registers per-kind callbacks so the same machinery drives any worker
 entry point (run_analysis, run_comparison, …).
 

@@ -1,9 +1,8 @@
 """Pure formatters for a FIREFLY comparison ``{stem}_results.json`` snapshot.
 
-Extracted verbatim from ``ui_results.py`` so the Widgets ``_ResultsView`` and the
-QML ``ResultsController`` share ONE implementation of the metric ordering,
-p-value / number formatting, effect-size phrasing, and plain-language verdicts —
-no logic fork.  No Qt; unit-testable in isolation.
+Pure metric ordering, p-value / number formatting, effect-size phrasing, and
+plain-language verdicts for the Analysis-tab workspace controller (the merged
+Compare + Results view).  No Qt; unit-testable in isolation.
 """
 from __future__ import annotations
 

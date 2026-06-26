@@ -795,7 +795,6 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
     except Exception as _e:
         log(f"  WARN: PALM-Tracer CSV save skipped ({_e})")
     try:
-        from firefly.analysis.fa_io import atomic_to_csv
         if diff_df is not None:
             atomic_to_csv(diff_df, os.path.join(extras_dir, f"{stem}_diffusion_summary.csv"), index=False)
         if emsd_df is not None:

@@ -61,8 +61,6 @@ from firefly.ui.controllers.analysis_controller import AnalysisController
 from firefly.ui.controllers.visualise_controller import VisualiseController
 from firefly.ui.controllers.roi_controller import RoiController
 from firefly.ui.controllers.embed_controller import EmbedController
-from firefly.ui.controllers.results_controller import ResultsController
-from firefly.ui.controllers.compare_controller import CompareController
 from firefly.ui.controllers.workspace.workspace_controller import AnalysisWorkspaceController
 from firefly.ui.controllers.params.sidebar_controller import SidebarController
 from firefly.ui.controllers.preset_controller import PresetController
@@ -74,7 +72,6 @@ from firefly.ui.controllers.cuda_controller import CudaController
 from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
 from firefly.ui.controllers.providers.icon_provider import IconImageProvider
 from firefly.ui.controllers.providers.live_frame_provider import LiveFrameProvider
-from firefly.ui.controllers.providers.figure_image_provider import FigureImageProvider
 from firefly.ui.controllers.providers.qimage_provider import QImageProvider
 from firefly.ui.controllers.workspace.workspace_panel_provider import WorkspacePanelProvider
 # Read the version WITHOUT importing sptpalm_analysis — that module imports
@@ -160,8 +157,6 @@ def build_main_window(app: QtWidgets.QApplication):
     visualise = VisualiseController(settings, importc)
     roi = RoiController(roi_store, settings, override_store=roi_override)
     embed = EmbedController()
-    results = ResultsController()
-    comparec = CompareController(settings, results=results)
     # merged live Compare + Results workspace (the new "Analysis" tab); the old
     # run cockpit keeps its AnalysisController but is now exposed as "Process".
     workspace = AnalysisWorkspaceController(settings)
@@ -191,8 +186,6 @@ def build_main_window(app: QtWidgets.QApplication):
     qw = QQuickWidget(stage)
     qw.engine().addImageProvider("icon", IconImageProvider(_ICONS_DIR))
     qw.engine().addImageProvider("liveframe", LiveFrameProvider(analysis))
-    qw.engine().addImageProvider("resultfig", FigureImageProvider(results))
-    qw.engine().addImageProvider("comparefig", FigureImageProvider(comparec))
     qw.engine().addImageProvider("roibg", QImageProvider(roi.roi_image))
     qw.engine().addImageProvider("roimask", QImageProvider(roi.roi_mask_image))
     qw.engine().addImageProvider("roispots", QImageProvider(roi.roi_spots_image))
@@ -210,8 +203,6 @@ def build_main_window(app: QtWidgets.QApplication):
     ctx.setContextProperty("Vis", visualise)
     ctx.setContextProperty("Roi", roi)
     ctx.setContextProperty("Embed", embed)
-    ctx.setContextProperty("Results", results)
-    ctx.setContextProperty("Compare", comparec)
     ctx.setContextProperty("Sidebar", sidebar)
     ctx.setContextProperty("Preset", presets)
     ctx.setContextProperty("Batch", batchc)
@@ -267,12 +258,6 @@ def build_main_window(app: QtWidgets.QApplication):
     # tab's max-projection thumbnail (both read the shared 'ui/preview_cmap').
     roi.cmapChanged.connect(importc.refreshPreviewColour)
 
-    # A finished comparison loads its snapshot into the Results tab + jumps there.
-    def _on_results_ready(rj):
-        results.loadFromFile(rj)
-        appc.setTab(3)
-    comparec.resultsReady.connect(_on_results_ready)
-
     # ── Crash reporter ───────────────────────────────────────────────────
     # The Widgets app installs this; the QML entrypoint never did, so uncaught
     # exceptions (incl. on worker threads) left no report.  Feed the reporter a
@@ -312,7 +297,7 @@ def build_main_window(app: QtWidgets.QApplication):
     # Keep controllers + widgets referenced on the window so Python doesn't GC
     # them while QML still binds to them (and the islands while they're hidden).
     win._firefly_ctx = (theme, appc, settings, importc, analysis, visualise,
-                        roi, embed, results, comparec, sidebar, presets, batchc,
+                        roi, embed, sidebar, presets, batchc,
                         updates, cuda, qw, hud, viewer_w, resizer, crash_ui)
     return win, qw
 
