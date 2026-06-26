@@ -33,6 +33,13 @@ class AppController(QObject):
     def tabs(self):
         return list(TABS)
 
+    @Property("QVariantList", constant=True)
+    def recentUpdates(self):
+        """The landing's "Recent updates" timeline, parsed from the bundled
+        CHANGELOG (newest 3) so it tracks releases automatically."""
+        from firefly.ui.changelog import recent_updates
+        return recent_updates(3)
+
     @Slot(int)
     def enterMain(self, tab: int):
         if 0 <= tab < len(TABS) and tab != self._tab:

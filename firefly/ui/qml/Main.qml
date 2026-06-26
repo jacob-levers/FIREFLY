@@ -195,12 +195,8 @@ Item {
         id: landingPage
         Item {
             id: landing
-            // Curated recent highlights (real versions / dates / summaries).
-            readonly property var rupdates: [
-                { v: "v2.76.25", d: "26 Jun 2026", s: "Live progress while a full report is generated." },
-                { v: "v2.76.24", d: "26 Jun 2026", s: "Single analysis shows the combined multi-file series." },
-                { v: "v2.76.22", d: "26 Jun 2026", s: "Auto-minmass runs now replay exactly." }
-            ]
+            // Recent highlights, parsed live from the bundled CHANGELOG.
+            readonly property var rupdates: App.recentUpdates
             readonly property var actions: [
                 { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0, batch: false },
                 { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0, batch: true },
@@ -256,6 +252,7 @@ Item {
 
                         ColumnLayout {                       // recent updates log
                             Layout.fillWidth: true; spacing: 0
+                            visible: landing.rupdates.length > 0
                             RowLayout {
                                 Layout.bottomMargin: 13; spacing: 7
                                 Icon { name: "history"; size: 13; color: pal.WARN }
@@ -300,11 +297,11 @@ Item {
                                         spacing: 3
                                         RowLayout {
                                             spacing: 6
-                                            Text { text: modelData.v; color: pal.TXT; font.family: "Menlo"
+                                            Text { text: modelData.version; color: pal.TXT; font.family: "Menlo"
                                                    font.pixelSize: 12; font.weight: Font.DemiBold }
-                                            Text { text: modelData.d; color: pal.TXT_MUTED; font.pixelSize: 10 }
+                                            Text { text: modelData.date; color: pal.TXT_MUTED; font.pixelSize: 10 }
                                         }
-                                        Text { text: modelData.s; color: pal.TXT_MUTED
+                                        Text { text: modelData.summary; color: pal.TXT_MUTED
                                                Layout.fillWidth: true; wrapMode: Text.WordWrap
                                                font.pixelSize: 12; lineHeight: 1.4 }
                                     }

@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.76.27
+## v2.76.27 — 27 Jun 2026
 
 ### Fixed
 
@@ -9,7 +9,7 @@
   with short subtitles (Appearance, Figures) sat noticeably further from their
   icons than rows with long ones (Glossary). Every label now starts at the same x.
 
-## v2.76.26
+## v2.76.26 — 27 Jun 2026
 
 ### Changed
 
@@ -26,7 +26,7 @@
 - **"Imaging metadata" has its own icon** (a microscope) instead of sharing the
   parameter-panel header glyph.
 
-## v2.76.25
+## v2.76.25 — 26 Jun 2026
 
 ### Added
 

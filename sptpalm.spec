@@ -209,6 +209,11 @@ datas += [("firefly/cuda_installer.py",   "firefly")]
 if os.path.isfile(os.path.join(SPECPATH, "assets", "icon.png")):
     datas += [(os.path.join(SPECPATH, "assets", "icon.png"), "assets")]
 
+# Bundle CHANGELOG.md so the landing's "Recent updates" timeline can read it
+# from sys._MEIPASS/CHANGELOG.md in the frozen app (firefly.ui.changelog).
+if os.path.isfile(os.path.join(SPECPATH, "CHANGELOG.md")):
+    datas += [(os.path.join(SPECPATH, "CHANGELOG.md"), ".")]
+
 # Bundle the real-data figure-preview panel thumbnails (shown in
 # Preferences -> Figure defaults) so the preview works in the frozen app.
 _preview_panels = os.path.join(SPECPATH, "firefly", "ui", "assets",
