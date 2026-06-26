@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.76.23
+
+### Fixed
+
+- **"Expand all" in the batch queue is no longer slow.** It was reading every
+  file's frame count on the GUI thread (seconds per file on a network drive),
+  freezing the UI for the whole sweep. Expanding is now an instant visibility
+  toggle; the counts fill in from the background probe.
+
 ## v2.76.22
 
 ### Added
