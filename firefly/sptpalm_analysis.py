@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.16"
+__version__ = "2.76.17"
+# v2.76.17 — Atomic CSV writes extended across the analysis core (per-run extras,
+#           CLI, circular stats, PALM-Tracer export) so an interrupted write can't
+#           leave a truncated file; a failed HYPER-FLY tile now opens the full,
+#           selectable error on click (was truncated to 300 chars).
 # v2.76.16 — Polish & hardening pass: keyboard shortcuts (⌘1–5 tabs, ⌘↵ run);
 #           Analysis tab collapses to one column on narrow windows; the accent
 #           picker now recolours every hover/pill/drag-fill (33 hardcoded-blue

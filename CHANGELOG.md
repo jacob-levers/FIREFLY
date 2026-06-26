@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.17
+
+### Fixed
+
+- **Atomic output writes across the analysis core** — the per-run extras
+  (ensemble MSD, dwell times, turning angles, cluster stats, mobile fraction,
+  cluster labels, drift), the CLI pipeline, the circular-stats CSVs and the
+  PALM-Tracer-format export now write to a temp file then swap it in, so an
+  interrupted write (disk full / crash) can't leave a truncated CSV that a
+  downstream loader half-reads. (Extends the v2.76.16 helper to ~26 more sites.)
+
+### Changed
+
+- **HYPER-FLY: read the full worker error.** A failed tile's error was truncated
+  to 300 characters with no way to see the rest — click a failed tile to open the
+  full, selectable/scrollable error (handy for bug reports).
+
 ## v2.76.16
 
 A polish & hardening pass.
