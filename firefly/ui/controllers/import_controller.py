@@ -49,10 +49,13 @@ class ImportController(QObject):
     previewCmapChanged = Signal()
     csvPresetChanged = Signal()
     bgImagePathChanged = Signal()
+    batchModeChanged = Signal()
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self._s = settings
+        self._batch_mode = False        # Import tab: single (False) vs batch (True);
+                                        # shared so the landing card + ROI viewer agree
         # Clean slate on every launch — do NOT restore the last input file /
         # output dir.  The app should open with nothing loaded (parity with the
         # batch queue, which also starts empty), so a stale recording from the
@@ -83,6 +86,17 @@ class ImportController(QObject):
     def _current_cmap(self):
         c = self._s.get_str("ui/preview_cmap", "Grayscale")
         return c if c in _PREVIEW_CMAPS else "Grayscale"
+
+    # ── single / batch mode (shared with the landing card + ROI viewer) ──
+    @Property(bool, notify=batchModeChanged)
+    def batchMode(self):
+        return self._batch_mode
+
+    @Slot(bool)
+    def setBatchMode(self, on):
+        if bool(on) != self._batch_mode:
+            self._batch_mode = bool(on)
+            self.batchModeChanged.emit()
 
     # ── input file ───────────────────────────────────────────────────────
     @Property(str, notify=filePathChanged)

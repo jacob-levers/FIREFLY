@@ -100,3 +100,64 @@ def test_roi_controller_cancel_reverts(tmp_path):
     c.cancel()                              # discard → revert to stored
     assert not c.editing
     assert c.getPolygons() == [[[1.0, 2.0], [3.0, 4.0], [5.0, 1.0]]]
+
+
+class _RecSettings:
+    """Recording in-memory settings (never touches real QSettings)."""
+    def __init__(self): self.d = {}
+    def get_str(self, k, d=""): return self.d.get(k, d)
+    def get_float(self, k, d=0.0): return float(self.d.get(k, d))
+    def get_bool(self, k, d=False): return self.d.get(k, d)
+    def set(self, k, v): self.d[k] = v
+    def sync(self): pass
+
+
+def test_roi_viewer_single_mode_mirrors_sidebar_default():
+    """Single analysis: ROI-viewer edits write through to the global sidebar
+    default so the left-hand Threshold field reflects them."""
+    from firefly.ui.controllers.roi_store import RoiStore
+    from firefly.ui.controllers.roi_controller import RoiController
+    s = _RecSettings()
+    c = RoiController(RoiStore(), s)        # default = single mode
+    assert c._batch_mode is False
+    c.threshold = 0.222
+    c.maskMode = "Mean"
+    c.autoMethod = "Otsu"
+    c.bgSigma = 3.0
+    c.roiMode = "Manual threshold"
+    assert abs(s.d["analysis/roi_threshold"] - 0.222) < 1e-9
+    assert s.d["analysis/roi_mask_mode"] == "Mean"
+    assert s.d["analysis/roi_auto_method"] == "Otsu"
+    assert abs(s.d["analysis/roi_bg_sigma"] - 3.0) < 1e-9
+    assert s.d["analysis/roi_mode"] == "Manual threshold"
+
+
+def test_roi_viewer_batch_mode_keeps_per_file_override():
+    """Batch: ROI-viewer edits stay a per-file override and must NOT move the
+    shared sidebar default."""
+    from firefly.ui.controllers.roi_store import RoiStore
+    from firefly.ui.controllers.roi_controller import RoiController
+    s = _RecSettings()
+    s.set("analysis/roi_threshold", 0.030)   # the sidebar default
+    c = RoiController(RoiStore(), s)
+    c.setBatchMode(True)
+    c.threshold = 0.444                       # tweak the per-file value in the viewer
+    assert s.d["analysis/roi_threshold"] == 0.030, "batch must not move the default"
+    assert abs(c.threshold - 0.444) < 1e-9    # but the viewer value still updates
+
+
+def test_import_batch_mode_drives_roi_viewer():
+    """ImportController.batchMode (set by the landing card / mode toggle) flips
+    the ROI viewer's single/batch behaviour through the app wiring."""
+    from firefly.ui.controllers.import_controller import ImportController
+    from firefly.ui.controllers.roi_store import RoiStore
+    from firefly.ui.controllers.roi_controller import RoiController
+    s = _RecSettings()
+    importc = ImportController(s)
+    roi = RoiController(RoiStore(), s)
+    importc.batchModeChanged.connect(lambda: roi.setBatchMode(importc.batchMode))
+    assert importc.batchMode is False
+    importc.setBatchMode(True)
+    assert roi._batch_mode is True
+    importc.setBatchMode(False)
+    assert roi._batch_mode is False

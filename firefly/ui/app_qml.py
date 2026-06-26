@@ -258,6 +258,12 @@ def build_main_window(app: QtWidgets.QApplication):
     # tab's max-projection thumbnail (both read the shared 'ui/preview_cmap').
     roi.cmapChanged.connect(importc.refreshPreviewColour)
 
+    # Single vs batch: in single mode the ROI viewer's edits mirror into the
+    # sidebar default; in batch they stay a per-file override.  Keep the viewer
+    # in step with the Import tab / landing-card mode toggle.
+    importc.batchModeChanged.connect(lambda: roi.setBatchMode(importc.batchMode))
+    roi.setBatchMode(importc.batchMode)
+
     # ── Crash reporter ───────────────────────────────────────────────────
     # The Widgets app installs this; the QML entrypoint never did, so uncaught
     # exceptions (incl. on worker threads) left no report.  Feed the reporter a

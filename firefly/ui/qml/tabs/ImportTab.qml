@@ -9,7 +9,9 @@ import "../components"
 // Bound to ImportController / BatchController.
 Flickable {
     id: root
-    property bool batchMode: false
+    // single (false) vs batch (true) — controller-owned so it survives tab
+    // reloads and the landing "Batch a folder" card can preset it
+    readonly property bool batchMode: Import.batchMode
     readonly property var pal: Theme.palette
     readonly property var sc: Theme.scale
     contentWidth: width
@@ -363,7 +365,7 @@ Flickable {
                                font.pixelSize: sc.textSm; font.bold: active }
                     }
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                onClicked: root.batchMode = modelData.b }
+                                onClicked: Import.setBatchMode(modelData.b) }
                 }
             }
         }

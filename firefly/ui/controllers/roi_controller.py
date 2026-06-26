@@ -54,6 +54,8 @@ class RoiController(QObject):
         self._store = store             # per-file polygon store
         self._ovr = override_store      # per-file roi-settings override store
         self._s = settings
+        self._batch_mode = False        # single: viewer edits mirror into the
+                                        # sidebar default; batch: per-file override
         self._file = ""
         self._image = None              # QImage currently displayed (proj or raw)
         self._proj = None               # cached MAX projection (display in proj view)
@@ -443,6 +445,22 @@ class RoiController(QObject):
     def maskModes(self):
         return ["Max", "Blink density", "Mean", "Sum"]
 
+    @Slot(bool)
+    def setBatchMode(self, on):
+        """Single vs batch.  Single mode mirrors viewer ROI edits into the
+        global sidebar default (the run uses that default for the one file);
+        batch mode keeps them as a per-file override that must not move the
+        shared default.  Driven by ImportController.batchMode."""
+        self._batch_mode = bool(on)
+
+    def _push_default(self, key, value):
+        """Mirror a viewer ROI edit into the global sidebar setting — single
+        mode only.  In batch the viewer is a per-file override (RoiOverrideStore)
+        and must NOT touch the shared default."""
+        if self._batch_mode or self._s is None:
+            return
+        self._s.set(key, value)
+
     @Property(str, notify=roiSettingsChanged)
     def roiMode(self):
         return self._roi_mode
@@ -453,6 +471,7 @@ class RoiController(QObject):
         if v == self._roi_mode:
             return
         self._roi_mode = v
+        self._push_default("analysis/roi_mode", v)
         self.roiSettingsChanged.emit()
         self._recompute_mask()
 
@@ -466,6 +485,7 @@ class RoiController(QObject):
         if v == self._auto_method:
             return
         self._auto_method = v
+        self._push_default("analysis/roi_auto_method", v)
         self.roiSettingsChanged.emit()
         self._recompute_mask()
 
@@ -481,6 +501,7 @@ class RoiController(QObject):
         self._mask_mode = v
         self._mask_proj = None          # force the mask projection to rebuild
         self._mask_proj_mode = ""
+        self._push_default("analysis/roi_mask_mode", v)
         self.roiSettingsChanged.emit()
         self._recompute_mask()
 
@@ -494,6 +515,7 @@ class RoiController(QObject):
         if abs(v - self._threshold) < 1e-9:
             return
         self._threshold = v
+        self._push_default("analysis/roi_threshold", v)
         self.roiSettingsChanged.emit()
         # mask NOT rebuilt here — QML debounces refreshMask (DoG+morphology is heavy)
 
@@ -507,6 +529,7 @@ class RoiController(QObject):
         if abs(v - self._bg_sigma) < 1e-9:
             return
         self._bg_sigma = v
+        self._push_default("analysis/roi_bg_sigma", v)
         self.roiSettingsChanged.emit()
         # debounced (refreshMask) like threshold
 

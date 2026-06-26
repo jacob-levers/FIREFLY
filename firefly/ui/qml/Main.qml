@@ -231,8 +231,8 @@ Item {
                     rowSpacing: sc.sp6
                     Repeater {
                         model: [
-                            { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0 },
-                            { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0 },
+                            { icon: "scan-search", t: "Analyse a sample", d: "Run the full pipeline on one .czi / .tif file.", tab: 0, batch: false },
+                            { icon: "layers",      t: "Batch a folder",   d: "Process every file in a folder — in parallel on capable machines.", tab: 0, batch: true },
                             { icon: "git-compare", t: "Compare & analyse", d: "Drop 2–12 conditions into one live comparison — figure, stats and significance.", tab: 2 },
                             { icon: "waypoints",   t: "Visualise tracks", d: "Open a previous run in the interactive viewer.", tab: 3 }
                         ]
@@ -242,7 +242,9 @@ Item {
                             icon: modelData.icon
                             title: modelData.t
                             desc: modelData.d
-                            onClicked: App.enterMain(modelData.tab)
+                            // the two Import cards preset single vs batch mode
+                            onClicked: { if (modelData.batch !== undefined) Import.setBatchMode(modelData.batch);
+                                         App.enterMain(modelData.tab) }
                         }
                     }
                 }
