@@ -301,10 +301,20 @@ Item {
                                         Layout.fillWidth: true
                                         Layout.alignment: Qt.AlignVCenter
                                         spacing: 0
+                                        // fillWidth + explicit left-align so the text
+                                        // never falls back to a centred default (which
+                                        // shifted some rows' labels right of others)
                                         Text { text: modelData.label
+                                               Layout.fillWidth: true
+                                               horizontalAlignment: Text.AlignLeft
+                                               elide: Text.ElideRight
                                                color: active ? pal.TXT : pal.TXT_MUTED
                                                font.pixelSize: sc.textMd; font.weight: Font.DemiBold }
-                                        Text { text: modelData.sub; color: pal.TXT_MUTED
+                                        Text { text: modelData.sub
+                                               Layout.fillWidth: true
+                                               horizontalAlignment: Text.AlignLeft
+                                               elide: Text.ElideRight
+                                               color: pal.TXT_MUTED
                                                font.pixelSize: 11 }
                                     }
                                 }
