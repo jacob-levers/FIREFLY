@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.76.27
+
+### Fixed
+
+- **Settings nav labels are now consistently left-aligned.** The menu text was
+  being centred within its column based on the (variable) subtitle length, so rows
+  with short subtitles (Appearance, Figures) sat noticeably further from their
+  icons than rows with long ones (Glossary). Every label now starts at the same x.
+
 ## v2.76.26
 
 ### Changed
