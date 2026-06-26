@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.76.22
+
+### Added
+
+- **Auto-minmass runs now replay exactly.** A run that auto-picks its detection
+  threshold records the resolved value in its manifest, and loading that manifest
+  pins it (replays with the chosen threshold, auto off) instead of re-running the
+  per-file search — so the reproduction is deterministic by construction rather
+  than relying on the search landing on the same value. Manual runs are
+  unaffected, and the status line notes when a threshold was pinned.
+
+### Changed
+
+- **Unreadable files are now flagged in the batch queue without expanding each
+  series.** A background pass probes every queued file after a scan, so corrupt /
+  unreadable recordings show a "⚠ Unreadable" badge on their (collapsed) rows on
+  their own, with a top-level "N unreadable" count in the footer. Still advisory —
+  it never blocks Start batch.
+
 ## v2.76.21
 
 ### Added
