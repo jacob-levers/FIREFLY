@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.76.29 — 27 Jun 2026
+
+### Fixed
+
+- **More accurate particle tracking in sparse data.** The default (Kalman)
+  linker measured a track's gap tolerance by the number of frames that contained
+  detections, not by the actual frame number — so when intermediate frames were
+  empty it could bridge an arbitrarily long gap and over-merge separate
+  trajectories, inflating track lengths and biasing the diffusion estimate. It
+  now gates the gap by true frame number (matching the other linkers) and
+  predicts across a gap by the correct number of frames. Contiguous data is
+  unaffected. Surfaced by a full mathematical audit of the analysis core — which
+  validated the rest of the pipeline (MSD, D/α, JDD, drift, clustering,
+  circular and comparison statistics, and the unit conversions) as correct.
+
+### Added
+
+- **Real-world units shown next to the analysis parameters.** Frame- and
+  pixel-based settings now display what they actually mean, live: Max lag-time
+  and MSD fit points show the seconds they span on the MSD curve, Memory and
+  Drift segment show seconds, Search range shows µm and Diameter shows nm — so
+  you can see what the graph will cover without doing the arithmetic.
+
+### Changed
+
+- **A lighter, GPU-accelerated home-screen animation.** The landing's molecule
+  field makes far fewer per-frame allocations and renders on the GPU, and now
+  pauses completely whenever FIREFLY isn't the active app — so it no longer uses
+  the CPU or battery while you're working in another window.
+
 ## v2.76.28 — 27 Jun 2026
 
 ### Changed
