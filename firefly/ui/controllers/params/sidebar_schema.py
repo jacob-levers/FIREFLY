@@ -260,6 +260,21 @@ FIELDS = [
 BY_KEY = {f["key"]: f for f in FIELDS}
 
 
+# Fields whose raw value (frames / pixels) has a real-world derived readout,
+# shown live beside the control so the user sees what the analysis/graph uses:
+#   "time" → value × frame_interval, in seconds (e.g. the MSD-curve extent)
+#   "fit"  → like "time" but clamped to max_lagtime (the fit window length)
+#   "um"   → value × pixel_size, in µm        "nm" → value × pixel_size, in nm
+DERIVED = {
+    "analysis/max_lagtime":   "time",
+    "analysis/n_fit":         "fit",
+    "analysis/memory":        "time",
+    "analysis/drift_segment": "time",
+    "analysis/search_range":  "um",
+    "analysis/diameter":      "nm",
+}
+
+
 def hyperfly_machine_eligible() -> bool:
     """Big-machine gate (mirrors the Widgets HYPER-FLY visibility): ≥32 cores
     AND ≥192 GB RAM."""

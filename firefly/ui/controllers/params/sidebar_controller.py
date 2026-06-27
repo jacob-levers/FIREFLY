@@ -187,6 +187,34 @@ class SidebarController(QObject):
             msg += f"  ·  pinned auto-threshold {pinned:.4g} for an exact replay"
         self.manifestLoaded.emit(msg)
 
+    @Slot(str, result=str)
+    def derivedHint(self, key):
+        """Live real-units readout for a frame/pixel-based field — e.g. a lag-time
+        in frames shown as seconds, so the user can see what the MSD curve spans.
+        Recomputes off the CURRENT frame-interval / pixel-size (also sidebar
+        fields), so it tracks edits to either.  Empty for non-derived fields or
+        when the relevant scale isn't set."""
+        kind = S.DERIVED.get(key)
+        if kind is None:
+            return ""
+        try:
+            v = float(self.get(key))
+        except (TypeError, ValueError):
+            return ""
+        if kind in ("time", "fit"):
+            dt = float(self.get("analysis/frame_interval") or 0.0)
+            if dt <= 0.0:
+                return ""
+            if kind == "fit":          # the fit is clamped to the MSD curve length
+                v = min(v, float(self.get("analysis/max_lagtime") or v))
+            return f"{v * dt:.3g} s"
+        px = float(self.get("analysis/pixel_size") or 0.0)
+        if px <= 0.0:
+            return ""
+        if kind == "nm":
+            return f"{v * px * 1000.0:.0f} nm"
+        return f"{v * px:.3g} µm"
+
     @Slot(str, result=bool)
     def isEnabled(self, key):
         f = S.BY_KEY.get(key)

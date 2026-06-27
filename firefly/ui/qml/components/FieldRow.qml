@@ -39,6 +39,18 @@ Column {
             Layout.preferredWidth: 0
             elide: Text.ElideRight
         }
+        // live real-units readout (e.g. a lag-time in frames shown as seconds) so
+        // the user sees what the analysis / MSD curve actually uses
+        Text {
+            readonly property string hint: (Sidebar.revision,
+                                            Sidebar.derivedHint(root.field.key))
+            visible: hint !== ""
+            text: hint
+            color: pal.ACC
+            font.pixelSize: sc.textXs
+            font.weight: Font.DemiBold
+            Layout.alignment: Qt.AlignVCenter
+        }
         Loader {
             active: root.isBool; visible: root.isBool
             sourceComponent: switchC
