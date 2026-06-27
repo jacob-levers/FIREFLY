@@ -20,6 +20,7 @@ Item {
     property real _lastSpawn: 0
     // emitter colours: luminous blue, detection cyan, near-white
     readonly property var _pal: [[88, 166, 255], [39, 192, 232], [230, 237, 243]]
+    readonly property var _palStr: ["rgb(88,166,255)", "rgb(39,192,232)", "rgb(230,237,243)"]
     // nebula colours from the inferno ramp
     readonly property var _bp: [[147, 38, 103], [221, 81, 58], [246, 166, 35], [66, 10, 104]]
 
@@ -29,12 +30,14 @@ Item {
         var w = width, h = height;
         if (w <= 0 || h <= 0) { _parts = []; _blobs = []; _marks = []; return; }
         var P = [];
-        for (var i = 0; i < 52; i++)
+        for (var i = 0; i < 52; i++) {
+            var ci = (_rand() * _pal.length) | 0;
             P.push({ x: _rand() * w, y: _rand() * h,
                      r: 0.6 + _rand() * 2.1,
                      vx: _rand() - 0.5, vy: _rand() - 0.5,
                      ph: _rand() * 6.28, tw: 0.5 + _rand() * 1.4,
-                     c: _pal[(_rand() * _pal.length) | 0] });
+                     ci: ci, c: _pal[ci] });
+        }
         _parts = P;
         var B = [];
         for (var j = 0; j < 4; j++)
@@ -82,6 +85,9 @@ Item {
     Canvas {
         id: cv
         anchors.fill: parent
+        // GPU-backed canvas for the continuously-animated field (falls back to the
+        // image target automatically under the software backend / tests)
+        renderTarget: Canvas.FramebufferObject
         onPaint: {
             var ctx = getContext("2d");
             ctx.clearRect(0, 0, width, height);
@@ -97,18 +103,32 @@ Item {
                 ctx.fillStyle = g;
                 ctx.beginPath(); ctx.arc(o.x, o.y, o.R, 0, 6.2832); ctx.fill();
             }
-            // emitters (soft glow + crisp core, twinkling)
+            // emitters (soft glow + crisp core, twinkling).  Build ONE unit
+            // glow gradient per colour for the whole frame and reuse it for every
+            // particle via the canvas transform (the gradient is mapped by the CTM
+            // at fill time) — was 52 createRadialGradient() calls per frame.
+            var ug = [];
+            for (i = 0; i < root._pal.length; i++) {
+                var pc = root._pal[i];
+                var gg = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+                gg.addColorStop(0, "rgba(" + pc[0] + "," + pc[1] + "," + pc[2] + ",0.45)");
+                gg.addColorStop(1, "rgba(" + pc[0] + "," + pc[1] + "," + pc[2] + ",0)");
+                ug.push(gg);
+            }
             for (i = 0; i < root._parts.length; i++) {
                 o = root._parts[i];
                 var a = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * o.tw + o.ph));
-                g = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.r * 6);
-                g.addColorStop(0, "rgba(" + o.c[0] + "," + o.c[1] + "," + o.c[2] + "," + (0.45 * a) + ")");
-                g.addColorStop(1, "rgba(" + o.c[0] + "," + o.c[1] + "," + o.c[2] + ",0)");
-                ctx.fillStyle = g;
-                ctx.beginPath(); ctx.arc(o.x, o.y, o.r * 6, 0, 6.2832); ctx.fill();
-                ctx.fillStyle = "rgba(" + o.c[0] + "," + o.c[1] + "," + o.c[2] + "," + a + ")";
+                var R = o.r * 6;
+                ctx.globalAlpha = a;                 // twinkle (× the 0.45 glow base)
+                ctx.save();
+                ctx.translate(o.x, o.y); ctx.scale(R, R);
+                ctx.fillStyle = ug[o.ci];
+                ctx.beginPath(); ctx.arc(0, 0, 1, 0, 6.2832); ctx.fill();
+                ctx.restore();
+                ctx.fillStyle = root._palStr[o.ci]; // crisp core
                 ctx.beginPath(); ctx.arc(o.x, o.y, o.r, 0, 6.2832); ctx.fill();
             }
+            ctx.globalAlpha = 1;
             // detection crosshairs (corner brackets, fade in/out)
             for (i = 0; i < root._marks.length; i++) {
                 o = root._marks[i];
