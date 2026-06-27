@@ -218,7 +218,8 @@ Item {
                     Layout.fillHeight: true
                     color: pal.BG
                     clip: true
-                    MoleculeField { anchors.fill: parent; active: App.page === "landing" }
+                    MoleculeField { anchors.fill: parent
+                                    active: App.page === "landing" && App.appActive }
                     Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
                                 width: 1; color: pal.BORDER }
 
