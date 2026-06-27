@@ -50,6 +50,41 @@ def test_kalman_preserves_identity_through_crossing():
         assert np.all(dx > 0) or np.all(dx < 0), "identity swapped at crossing"
 
 
+def test_kalman_gap_closing_horizon():
+    # Frames 6..9 are entirely empty, so the gap (5 -> 10) spans 5 frames.  The
+    # coast must be gated by frame NUMBER, not by present-frame iteration count;
+    # otherwise the lone next-present-frame iteration reads the gap as 1 and the
+    # tracker bridges it regardless of max_gap.  Mirrors the NN/LAP horizon tests.
+    f = list(range(0, 6)) + list(range(10, 16))
+    df = pd.DataFrame({"frame": f, "x": [20.0] * 12, "y": [20.0] * 12})
+    assert link_trajectories_kalman(df, 5, max_gap=12, min_len=2)["particle"].nunique() == 1
+    assert link_trajectories_kalman(df, 5, max_gap=2, min_len=2)["particle"].nunique() == 2
+
+
+def test_kalman_rejects_impossible_empty_frame_jump():
+    # Detections at frames 0,1,2 then nothing until frame 100.  With max_gap=2 the
+    # 98-frame void must NOT be bridged into one particle (would otherwise inflate
+    # track length and corrupt the downstream MSD/diffusion estimate).
+    df = pd.DataFrame({"frame": [0, 1, 2, 100], "x": [0.0, 1.0, 2.0, 100.0],
+                       "y": [0.0, 0.0, 0.0, 0.0]})
+    out = link_trajectories_kalman(df, search_range=5, max_gap=2, min_len=2)
+    assert int(out["frame"].max()) == 2
+    for _pid, g in out.groupby("particle"):
+        assert 100 not in set(g["frame"].astype(int))
+
+
+def test_kalman_coasts_within_gap_with_correct_prediction():
+    # A particle moving at v=1px/frame blinks off for frames 3,4 and reappears at
+    # frame 5 exactly where constant velocity predicts (x=5).  With max_gap>=3 it
+    # must re-link as ONE track — proving the predict step advances by the true
+    # frame gap (dt=3), not a single step (which would predict x=3 and miss it).
+    df = pd.DataFrame({"frame": [0, 1, 2, 5], "x": [0.0, 1.0, 2.0, 5.0],
+                       "y": [0.0, 0.0, 0.0, 0.0]})
+    out = link_trajectories_kalman(df, search_range=2.0, max_gap=3, min_len=2)
+    assert out["particle"].nunique() == 1
+    assert set(out["frame"].astype(int)) == {0, 1, 2, 5}
+
+
 def test_simple_lap_alias_matches_lap():
     df = _three_static_tracks()
     a = link_trajectories_simple_lap(df, search_range=5, max_gap=3, min_len=2)

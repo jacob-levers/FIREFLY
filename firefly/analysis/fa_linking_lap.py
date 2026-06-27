@@ -477,6 +477,17 @@ _F = np.array([[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], float)
 _H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], float)
 
 
+def _F_dt(dt):
+    """Constant-velocity state transition propagated over `dt` frames.
+
+    Reduces to `_F` at dt=1, so contiguous (gapless) tracking is unchanged; a
+    multi-frame coast across empty frames advances the predicted position by the
+    true number of frames rather than a single step.
+    """
+    return np.array([[1, 0, dt, 0], [0, 1, 0, dt],
+                     [0, 0, 1, 0], [0, 0, 0, 1]], float)
+
+
 def link_trajectories_kalman(locs: pd.DataFrame, search_range: float = 5.0,
                              max_gap: int = 12, min_len: int = 2,
                              q_vel: float = 0.05, r_meas: float = 0.25,
@@ -509,23 +520,38 @@ def link_trajectories_kalman(locs: pd.DataFrame, search_range: float = 5.0,
     I4 = np.eye(4)
     sr2 = float(search_range) ** 2
 
-    # each track: dict(state(4,), P(4,4), missed:int, pts:list[int])
+    # each track: dict(state(4,), P(4,4), cf:int, lf:int, pts:list[int])
     tracks: list[dict] = []
     active: list[dict] = []
 
-    def _birth(j_global):
+    def _birth(j_global, f):
         st = np.array([x[j_global], y[j_global], 0.0, 0.0])
         P = np.diag([float(r_meas), float(r_meas), p0_vel, p0_vel])
-        t = {"state": st, "P": P, "missed": 0, "pts": [int(j_global)]}
+        # cf = frame the state currently represents (drives the predict step);
+        # lf = last MATCHED frame (drives the coast gate).  Both are tracked by
+        # true frame NUMBER, not the loop-iteration count, so empty frames
+        # (absent from `uframes`) cannot silently bridge an arbitrary gap.
+        t = {"state": st, "P": P, "cf": int(f), "lf": int(f),
+             "pts": [int(j_global)]}
         tracks.append(t); active.append(t)
 
     for f in uframes:
-        det = idx_by_frame[int(f)]
+        f = int(f)
+        # Expire tracks whose last MATCH is now more than max_gap frames back,
+        # BEFORE they predict-and-match here — a constant-velocity prediction can
+        # otherwise leap an arbitrarily large empty-frame gap and match anyway.
+        if active:
+            active[:] = [t for t in active if (f - t["lf"]) <= max_gap]
+        det = idx_by_frame[f]
         if active:
             preds = np.empty((len(active), 2))
             for k, t in enumerate(active):
-                t["state"] = _F @ t["state"]
-                t["P"] = _F @ t["P"] @ _F.T + Q
+                dt = f - t["cf"]               # true frames since last propagation
+                if dt > 0:
+                    F = _F_dt(dt)
+                    t["state"] = F @ t["state"]
+                    t["P"] = F @ t["P"] @ F.T + dt * Q   # noise accrues over the gap
+                    t["cf"] = f
                 preds[k] = t["state"][:2]
             if len(det):
                 dz = np.stack([x[det], y[det]], axis=1)
@@ -545,18 +571,16 @@ def link_trajectories_kalman(locs: pd.DataFrame, search_range: float = 5.0,
                     K = t["P"] @ _H.T @ np.linalg.inv(S)
                     t["state"] = t["state"] + K @ (z - _H @ t["state"])
                     t["P"] = (I4 - K @ _H) @ t["P"]
-                    t["missed"] = 0; t["pts"].append(int(det[j])); used[j] = True
+                    t["lf"] = f; t["pts"].append(int(det[j])); used[j] = True
                     still.append(t)
                 else:
-                    t["missed"] += 1
-                    if t["missed"] <= max_gap:
-                        still.append(t)        # coast (prediction kept)
+                    still.append(t)            # coast (pruned next frame if stale)
             active[:] = still
             for j in np.where(~used)[0]:
-                _birth(int(det[j]))
+                _birth(int(det[j]), f)
         else:
             for j in det:
-                _birth(int(j))
+                _birth(int(j), f)
 
     labels = np.full(len(df), -1, dtype=np.int64)
     pid = 0
