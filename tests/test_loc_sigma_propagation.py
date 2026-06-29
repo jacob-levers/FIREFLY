@@ -33,8 +33,20 @@ def test_attach_loc_sigma_sources():
     (× px, gain-corrected), trackpy ep, camera CRLB — and NaN otherwise, with the
     columns ALWAYS present."""
     import firefly.firefly_worker as fw
-    from firefly.bench.metrics import crlb_sigma_nm
     px = 0.1
+
+    def crlb_sigma_nm(photons, bg_photons, psf_sigma_px, pixel_size_um):
+        # Mortensen-2010 Eq.54 Gaussian-PSF lateral CRLB (nm) — the reference the
+        # worker's _crlb_sigma_nm_vec mirrors (vendored here so the test needs no
+        # external benchmark package).
+        a = 1.0
+        sa2 = psf_sigma_px ** 2 + a * a / 12.0
+        if photons <= 0:
+            return float("nan")
+        tau = 2.0 * np.pi * sa2 * max(bg_photons, 1e-9) / (photons * a * a)
+        var_px = (sa2 / photons) * (1.0 + 4.0 * tau
+                                    + np.sqrt(max(2.0 * tau / (1.0 + 4.0 * tau), 0.0)))
+        return float(np.sqrt(var_px) * pixel_size_um * 1000.0)
 
     mle = pd.DataFrame({"x": [1.0], "y": [1.0], "frame": [0], "mass": [100.0],
                         "loc_sigma_x_px": [0.02], "loc_sigma_y_px": [0.03]})

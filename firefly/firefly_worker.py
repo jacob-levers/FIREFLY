@@ -124,9 +124,9 @@ def _pos_float(v):
 
 
 def _crlb_sigma_nm_vec(photons, bg_photons, psf_sigma_px, pixel_size_um):
-    """Vectorised Mortensen-2010 Eq. 54 Gaussian-PSF lateral CRLB (nm).  Mirrors
-    firefly.bench.metrics.crlb_sigma_nm (production must not import the dev/bench
-    package); kept in lock-step with it.  NaN where photons ≤ 0."""
+    """Vectorised Mortensen-2010 Eq. 54 Gaussian-PSF lateral CRLB (nm).  Standard
+    reference precision floor, kept self-contained (no external benchmark
+    dependency).  NaN where photons ≤ 0."""
     import numpy as _np
     s = float(psf_sigma_px)
     sa2 = s * s + 1.0 / 12.0                       # finite-pixel-corrected var (px²)

@@ -42,7 +42,7 @@ def test_palmtracer_loaders_emit_expected_columns():
 
 def test_sa_reproduces_palmtracer_tracks_and_not_worse_than_nn():
     from firefly.analysis.fa_linking import link_trajectories
-    from firefly.bench.metrics import tracking_isbi
+    from _isbi_helper import tracking_isbi
     loc, gt = _load_window()
     with contextlib.redirect_stdout(io.StringIO()):
         sa = link_trajectories(loc.copy(), search_range=2, memory=5, min_len=5,
