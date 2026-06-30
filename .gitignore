@@ -13,6 +13,13 @@ build/
 tools/calibrate_torch_vs_trackpy.py
 tools/compare_overlay_plots.py
 tools/compare_to_palmtracer.py
+# More dev-only tooling — kept local, not on the repo / not shipped.
+# gen_preview_panels regenerates the Preferences preview PNGs; calibrate_atrous
+# derived the live _ATROUS_K_SIGMA=2.0 (the constant stays in the code);
+# StyleGuide is an unused component gallery that was bloating the bundle.
+tools/gen_preview_panels.py
+scripts/calibrate_atrous.py
+firefly/ui/qml/components/StyleGuide.qml
 
 # Local agent / session data
 .claude/
