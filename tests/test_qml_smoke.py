@@ -126,7 +126,7 @@ def test_visualise_tab_qml_loads_without_errors():
     from firefly.ui.app_qml import build_main_window, _QML_DIR
     win, qw = build_main_window(_app)
     for rel in (("tabs", "ImportTab.qml"), ("tabs", "VisualiseTab.qml"),
-                ("tabs", "ProcessTab.qml"),
+                ("tabs", "ProcessTab.qml"), ("tabs", "HyperflyTab.qml"),
                 ("HudOverlay.qml",), ("RoiOverlay.qml",),
                 ("components", "ParameterSidebar.qml"), ("PreferencesDialog.qml",)):
         comp = QQmlComponent(qw.engine(),

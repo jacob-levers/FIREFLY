@@ -44,6 +44,14 @@ Flickable {
             Badge { text: root.statusText; tone: root.statusTone; dot: false
                     Layout.alignment: Qt.AlignVCenter }
             Item { Layout.fillWidth: true }
+            ProgressRing {
+                value: Process.progress / 100
+                size: 30
+                thickness: 3
+                tone: root.statusTone
+                visible: Process.running
+                Layout.alignment: Qt.AlignVCenter
+            }
             RowLayout {
                 spacing: sc.sp2
                 visible: Process.running || Process.elapsed !== "00:00"
@@ -288,9 +296,19 @@ Flickable {
                         Icon { name: "zap"; size: 14; color: pal.TXT_MUTED }
                         Text { text: "Localisation mass"; color: pal.TXT; font.pixelSize: sc.textSm; font.bold: true }
                         Item { Layout.fillWidth: true }
-                        Text {
-                            text: hist.total > 0 ? hist.total.toLocaleString(Qt.locale(), "f", 0) + " spots" : ""
-                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                        RowLayout {
+                            visible: hist.total > 0
+                            spacing: sc.sp1
+                            Odometer {
+                                value: hist.total
+                                digits: Math.max(3, String(hist.total).length)
+                                pixelSize: sc.textXs
+                            }
+                            Text {
+                                text: "spots"; color: pal.TXT_MUTED
+                                font.pixelSize: sc.textXs
+                                Layout.alignment: Qt.AlignVCenter
+                            }
                         }
                     }
                     Canvas {
@@ -430,6 +448,34 @@ Flickable {
                         }
                     }
                     Meter { label: "CPU";  iconName: "cpu";          value: Process.cpuPercent }
+                    // CPU-over-time trend — buffers the already-live cpuPercent (no backend change)
+                    Item {
+                        id: cpuTrend
+                        width: meters.width
+                        implicitHeight: spark.height
+                        property var samples: []
+                        Sparkline {
+                            id: spark
+                            x: 44 + sc.sp4          // align under the bar, past the label column
+                            width: meters.width - x
+                            height: 26
+                            tone: pal.ACC
+                            points: cpuTrend.samples
+                        }
+                        Connections {
+                            target: Process
+                            function onResourcesChanged() {
+                                if (!Process.running) return
+                                var s = cpuTrend.samples.slice()
+                                s.push(Math.max(0, Math.min(1, Process.cpuPercent / 100)))
+                                if (s.length > 60) s.shift()   // ~1 min window at 1 Hz
+                                cpuTrend.samples = s            // reassign → requestPaint
+                            }
+                            function onRunningChanged() {
+                                if (Process.running) { cpuTrend.samples = []; spark.play() }
+                            }
+                        }
+                    }
                     Meter { label: "RAM";  iconName: "memory-stick"; value: Process.memPercent }
                     Meter { label: "GPU";  iconName: "zap";          value: Process.gpuPercent
                             valueText: Process.gpuText }
@@ -459,11 +505,22 @@ Flickable {
                 spacing: sc.sp3
                 RowLayout {
                     Layout.fillWidth: true
-                    Icon {
-                        name: Process.resultSeverity === "ok" ? "circle-check"
-                            : Process.resultSeverity === "error" ? "triangle-alert"
-                            : "info"
-                        size: 16; color: root.statusTone
+                    Item {
+                        Layout.preferredWidth: 16; Layout.preferredHeight: 16
+                        Layout.alignment: Qt.AlignVCenter
+                        CheckDraw {
+                            anchors.centerIn: parent
+                            size: 16
+                            tone: pal.SUCCESS
+                            visible: Process.resultSeverity === "ok"
+                            on: Process.resultSeverity === "ok"
+                        }
+                        Icon {
+                            anchors.centerIn: parent
+                            visible: Process.resultSeverity !== "ok"
+                            name: Process.resultSeverity === "error" ? "triangle-alert" : "info"
+                            size: 16; color: root.statusTone
+                        }
                     }
                     Text {
                         text: Process.resultHeadline

@@ -286,14 +286,18 @@ Item {
                         }
                     }
 
-                    // comparison / panels view — ONE Loader that swaps its
-                    // sourceComponent.  Two separate Loaders left a ghost-height
-                    // inactive Loader in the column after toggling views, which
-                    // pushed the figure down with a blank gap above it.
-                    Loader {
-                        active: Analysis.enough
+                    // comparison / panels view — SlideStack crossfades the two
+                    // body views in-place (slide:0 = FIREFLY default; the views
+                    // share this LEFT-column frame, side panels live on the right).
+                    // active+visible reproduce the old `active: Analysis.enough`
+                    // gate so it collapses (no ghost height) for the empty state.
+                    SlideStack {
                         Layout.fillWidth: true
-                        sourceComponent: Analysis.view === "panels" ? panelsView : comparisonView
+                        visible: Analysis.enough
+                        active: Analysis.enough
+                        index: Analysis.view === "panels" ? 1 : 0
+                        slide: 0
+                        views: [comparisonView, panelsView]
                     }
                 }
 
@@ -398,10 +402,15 @@ Item {
                                 }
                             }
                         }
-                        // paired line plot
-                        PairedPlot {
+                        // paired line plot — fades + zoom-settles in when the
+                        // paired series arrive (matches the image branch's reveal)
+                        Reveal {
                             anchors.fill: parent; anchors.margins: sc.sp4
                             visible: Analysis.paired
+                            ready: Analysis.paired && Analysis.pairedSeries.length > 0
+                            PairedPlot {
+                                anchors.fill: parent
+                            }
                         }
                         Text {
                             anchors.centerIn: parent
@@ -678,7 +687,19 @@ Item {
                             cornerRadius: 0
                             source: Analysis.hasPanel ? ("image://workspacepanel/hero/" + Analysis.panelToken) : ""
                         }
-                        Text { anchors.centerIn: parent; visible: !Analysis.hasPanel; text: "Rendering…"; color: root.faint; font.pixelSize: sc.textSm }
+                        Column {
+                            anchors.centerIn: parent
+                            visible: !Analysis.hasPanel
+                            spacing: sc.sp2
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Rendering…"; color: root.faint; font.pixelSize: sc.textSm
+                            }
+                            LoadingDots {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                tone: root.faint
+                            }
+                        }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: pal.BORDER }
                     // hero caption

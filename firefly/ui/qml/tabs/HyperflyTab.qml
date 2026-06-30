@@ -65,10 +65,20 @@ Flickable {
         clip: true
         color: pal.PANEL
         border.width: 1
-        border.color: st === "running" ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.5)
-                    : st === "done"    ? Qt.rgba(0.337, 0.827, 0.392, 0.45)
-                    : st === "failed"  ? pal.STATUS_BAD : pal.BORDER
+        border.color: st === "done"    ? Qt.rgba(0.337, 0.827, 0.392, 0.45)
+                    : st === "failed"  ? pal.STATUS_BAD
+                    : st === "running" ? "transparent" : pal.BORDER
         Behavior on border.color { ColorAnimation { duration: Theme.reducedMotion ? 0 : 250 } }
+
+        // traveling accent border marks the live worker (FlowBorder owns the
+        // running outline; degrades to a static border under reduce-motion)
+        FlowBorder {
+            anchors.fill: parent
+            radius: tile.radius
+            active: tile.st === "running"
+            visible: tile.st === "running"
+            z: 2
+        }
 
         // RAM-staggered spawn (fade + rise, i·90 ms apart)
         opacity: 0
@@ -244,9 +254,12 @@ Flickable {
                         Layout.fillWidth: true
                         Text { text: "Overall progress"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
                         Item { Layout.fillWidth: true }
-                        Text {
-                            text: Hyperfly.done + " / " + Hyperfly.total + " series · " + Hyperfly.overallPct + "%"
-                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                        DeltaFlash {
+                            value: Hyperfly.done            // pulses SUCCESS each time a series completes
+                            Text {
+                                text: Hyperfly.done + " / " + Hyperfly.total + " series · " + Hyperfly.overallPct + "%"
+                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                            }
                         }
                     }
                     Rectangle {

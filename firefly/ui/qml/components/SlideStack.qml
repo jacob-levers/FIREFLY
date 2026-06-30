@@ -23,10 +23,18 @@ Item {
     property var views: []          // array of Component
     property int _prev: index
     property int slide: 0           // px horizontal travel; 0 = pure fade (FIREFLY default)
+    property bool active: true      // gate instantiation (mirrors a Loader.active)
+
+    // Size to the loaded view so SlideStack also works inside a content-sized
+    // layout (e.g. a ColumnLayout). A parent that anchors-fills SlideStack — the
+    // documented tab-content use — overrides these, so that case is unaffected.
+    implicitWidth: ld.implicitWidth
+    implicitHeight: ld.implicitHeight
 
     Loader {
         id: ld
         anchors.fill: parent
+        active: root.active
         sourceComponent: root.views.length > root.index ? root.views[root.index] : null
         opacity: 1
         transform: Translate { id: tr; x: 0 }

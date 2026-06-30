@@ -431,12 +431,21 @@ Item {
                     anchors.fill: parent
                     anchors.rightMargin: 1
                     contentWidth: width
-                    contentHeight: paramCol.implicitHeight + sc.sp8
+                    contentHeight: edgeDock.implicitHeight + sc.sp8
                     clip: true
-                    ParameterSidebar {
-                        id: paramCol
+                    // the parameter dock slides in from the left edge + fades
+                    // whenever it becomes active (entering Import / Process)
+                    EdgePanel {
+                        id: edgeDock
+                        edge: "left"
+                        active: dock.shown                       // existing state, no new signal
                         x: sc.sp4; y: sc.sp5
                         width: parent.width - sc.sp4 * 2
+                        implicitHeight: paramCol.implicitHeight   // pin height (childrenRect would clip a width-bound child)
+                        ParameterSidebar {
+                            id: paramCol
+                            width: edgeDock.width
+                        }
                     }
                 }
             }
