@@ -1400,20 +1400,9 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     roi_sister_suffix = str(p.get("roi_sister_suffix", "_green")).strip()
     roi_sister_path: "str | None" = None
     if not external_csv and roi_sister_suffix:
-        try:
-            _base = os.path.splitext(os.path.basename(fpath))[0]
-            # palmTRACER series: strip `-fileNNN` so the suffix sits
-            # against the bare root name (`<root>_green.tif`).
-            import re as _re
-            _root = _re.sub(r"-file\d+$", "", _base, flags=_re.IGNORECASE)
-            for _ext in (".tif", ".tiff"):
-                _cand = os.path.join(os.path.dirname(fpath),
-                                      f"{_root}{roi_sister_suffix}{_ext}")
-                if os.path.isfile(_cand):
-                    roi_sister_path = _cand
-                    break
-        except Exception:
-            roi_sister_path = None
+        # Shared with the ROI-viewer preview so both agree on WHICH file.
+        from firefly.analysis.fa_roi import find_sister_roi_path as _find_sister
+        roi_sister_path = _find_sister(fpath, roi_sister_suffix)
     # Promote to active mode if user explicitly picked "sister" OR if
     # auto-detect is on and we found a file.
     if roi_mode == "sister":
@@ -1453,81 +1442,20 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             roi_source_label = None
 
             # ── Sister TIFF ROI (microscope export, e.g. _green.tif) ─
+            # Shared with the ROI-viewer preview (fa_roi.build_sister_roi_mask)
+            # so what you see in the viewer is exactly what the run includes.
             if roi_mode == "sister" and roi_sister_path is not None:
-                try:
-                    import tifffile as _tf
-                    with _tf.TiffFile(roi_sister_path) as _t:
-                        _arr = _t.asarray()
-                    # Multi-frame → max projection so static ROI
-                    # outlines come through regardless of which frame
-                    # the microscope saved them on.
-                    if _arr.ndim == 3:
-                        _arr = _arr.max(axis=0)
-                    elif _arr.ndim > 3:
-                        # Squeeze leading singleton dims, then max-project.
-                        _arr = _np.squeeze(_arr)
-                        if _arr.ndim == 3:
-                            _arr = _arr.max(axis=0)
-                    # Resize / check shape matches the analysis stack.
-                    if mean_proj is not None and _arr.shape != mean_proj.shape:
-                        _log(f"  WARN: sister ROI image shape "
-                             f"{_arr.shape} ≠ stack shape "
-                             f"{mean_proj.shape} — skipping ROI.")
-                    else:
-                        # Robust mask logic: if the image is already
-                        # mostly zeros (i.e. a binary/labelled
-                        # segmentation), treat non-zero as inside.
-                        # Otherwise it's a grayscale fluorescence
-                        # channel — auto-threshold with Li.
-                        _nonzero_frac = float(
-                            (_arr > 0).sum()) / float(_arr.size or 1)
-                        if _nonzero_frac < 0.4:
-                            roi_mask = _arr > 0
-                            roi_source_label = (
-                                f"Sister TIFF · "
-                                f"{os.path.basename(roi_sister_path)} "
-                                f"(non-zero mask)")
-                            _log(f"  Sister ROI "
-                                 f"({os.path.basename(roi_sister_path)}): "
-                                 f"non-zero pixel mask, "
-                                 f"{100.0 * roi_mask.mean():.1f}% of frame")
-                        else:
-                            # Grayscale — normalise + Li threshold via
-                            # the existing pipeline so we benefit from
-                            # its bg-subtraction and morphology.
-                            try:
-                                _arrf = _arr.astype(_np.float32)
-                                _mn, _mx = float(_arrf.min()), float(_arrf.max())
-                                if _mx > _mn:
-                                    _arrf = (_arrf - _mn) / (_mx - _mn)
-                                roi_mask, _info = build_roi_mask_advanced(
-                                    _arrf,
-                                    threshold=None,
-                                    threshold_method="li",
-                                    bg_sigma=float(p.get("roi_bg_sigma", 25.0)),
-                                    mode_hint="mean")
-                                roi_source_label = (
-                                    f"Sister TIFF · "
-                                    f"{os.path.basename(roi_sister_path)} "
-                                    f"(Li threshold)")
-                                _log(f"  Sister ROI "
-                                     f"({os.path.basename(roi_sister_path)}): "
-                                     f"Li-threshold mask, "
-                                     f"{100.0 * roi_mask.mean():.1f}% of frame")
-                            except Exception as _exc:
-                                _log(f"  WARN: sister ROI Li threshold "
-                                     f"failed — {_exc}.  Falling back to "
-                                     f"non-zero mask.")
-                                roi_mask = _arr > 0
-                                roi_source_label = (
-                                    f"Sister TIFF · "
-                                    f"{os.path.basename(roi_sister_path)} "
-                                    f"(non-zero mask)")
-                except Exception as _exc:
-                    _log(f"  WARN: could not load sister ROI image "
-                         f"{roi_sister_path}: {_exc}.  Continuing "
-                         f"without ROI.")
-                    roi_mask = None
+                from firefly.analysis.fa_roi import (
+                    build_sister_roi_mask as _sister_mask)
+                _tgt = mean_proj.shape if mean_proj is not None else None
+                roi_mask, _note = _sister_mask(
+                    roi_sister_path, target_shape=_tgt,
+                    bg_sigma=float(p.get("roi_bg_sigma", 25.0)))
+                if roi_mask is not None:
+                    roi_source_label = f"Sister TIFF · {_note}"
+                    _log(f"  Sister ROI: {_note}")
+                else:
+                    _log(f"  WARN: sister ROI {_note} — continuing without ROI.")
 
             if roi_mode == "polygon":
                 # User-drawn polygon ROI.  `roi_polygon` is a list of

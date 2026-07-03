@@ -20,6 +20,7 @@ Item {
     readonly property bool isAuto:   Roi.roiMode === "Auto threshold"
     readonly property bool isManual: Roi.roiMode === "Manual threshold"
     readonly property bool isThresh: isAuto || isManual
+    readonly property bool isSister: Roi.roiMode === "Sister TIFF"
 
     // small uppercase section label used throughout the control panel
     component PanelLabel: Text {
@@ -126,13 +127,14 @@ Item {
                             onPaintedWidthChanged: canvas.requestPaint()
                         }
 
-                        // threshold-mask overlay (auto / manual) — constant across
-                        // frames, so scrubbing shows which particles it selects
+                        // ROI mask overlay (auto / manual threshold OR sister
+                        // TIFF) — constant across frames, so scrubbing shows
+                        // which particles the region keeps
                         Image {
                             anchors.fill: parent
                             fillMode: Image.PreserveAspectFit
                             smooth: false; cache: false; asynchronous: true
-                            visible: root.isThresh && Roi.hasMask
+                            visible: (root.isThresh || root.isSister) && Roi.hasMask
                             opacity: visible ? 1 : 0
                             Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
                             source: Roi.hasMask ? ("image://roimask/" + Roi.maskToken) : ""
@@ -216,7 +218,7 @@ Item {
                             height: cornlbl.implicitHeight + sc.sp1 * 2
                             Text { id: cornlbl; anchors.centerIn: parent
                                    text: Roi.frameLabel
-                                         + (root.isThresh && Roi.hasMask
+                                         + ((root.isThresh || root.isSister) && Roi.hasMask
                                             ? "  ·  ROI " + (Roi.maskFraction * 100).toFixed(1) + "%" : "")
                                    color: pal.TXT; font.pixelSize: sc.textXs; font.family: "Menlo" }
                         }
@@ -295,6 +297,11 @@ Item {
                                   ? "Click the image to trace a region (Close shape for more). Saved for THIS file only."
                                   : root.isThresh
                                   ? "Green mask = the threshold ROI. Scrub raw frames to see which particles it keeps. Saved for THIS file only."
+                                  : root.isSister
+                                  ? (Roi.hasMask
+                                     ? "Green mask = the sister-image ROI FIREFLY will keep.  " + Roi.sisterStatus
+                                     : (Roi.sisterStatus || "Looking for a companion ROI image…")
+                                       + "  The whole frame is analysed unless a sister image is found.")
                                   : Roi.roiMode === "None"
                                   ? "Analyse the whole frame for this file (no region)."
                                   : "ROI loaded from a companion file for this file."

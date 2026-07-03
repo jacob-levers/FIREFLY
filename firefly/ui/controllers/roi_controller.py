@@ -79,6 +79,9 @@ class RoiController(QObject):
         self._mask = None               # green RGBA overlay QImage
         self._mask_token = 0
         self._mask_fraction = 0.0
+        # ── sister-TIFF ROI preview (mode "Sister TIFF") ──────────────────
+        self._sister_path = ""          # detected companion ROI image
+        self._sister_status = ""        # provenance ("name · Li threshold …") or reason
         # ── detection-threshold (minmass) preview ─────────────────────────
         self._detect_on = False
         self._minmass = (float(settings.get_float("analysis/minmass", 1.0))
@@ -554,6 +557,20 @@ class RoiController(QObject):
     def roi_mask_image(self):
         return self._mask
 
+    # ── sister-TIFF ROI status (drives the viewer caption in Sister mode) ──
+    @Property(bool, notify=maskChanged)
+    def sisterFound(self):
+        return bool(self._sister_path)
+
+    @Property(str, notify=maskChanged)
+    def sisterName(self):
+        import os
+        return os.path.basename(self._sister_path) if self._sister_path else ""
+
+    @Property(str, notify=maskChanged)
+    def sisterStatus(self):
+        return self._sister_status
+
     def _mask_projection(self):
         """The projection the mask is thresholded on, per the mask mode (Max ≈
         the display projection; Mean/Sum re-reduced; Blink falls back to Max)."""
@@ -576,12 +593,21 @@ class RoiController(QObject):
         return self._mask_projection()
 
     def _recompute_mask(self):
-        """(Re)build the green threshold-mask overlay for the auto/manual modes
-        by calling the analysis core's mask builder on the mask projection."""
+        """(Re)build the green ROI overlay.  Threshold modes call the analysis
+        core's mask builder on the mask projection; Sister-TIFF mode loads +
+        thresholds the companion image via the SAME fa_roi helper the run uses,
+        so the preview is exactly what the analysis includes."""
         self._mask = None
         self._mask_fraction = 0.0
+        self._sister_path = ""
+        self._sister_status = ""
         from firefly.ui.controllers.params.params_builder import ROI_MODE_MAP
         mode = ROI_MODE_MAP.get(self._roi_mode, "none")
+        if mode == "sister":
+            self._recompute_sister_mask()
+            self._mask_token += 1
+            self.maskChanged.emit()
+            return
         proj = self._mask_source()
         if proj is not None and mode in ("auto", "manual"):
             try:
@@ -600,6 +626,35 @@ class RoiController(QObject):
                 self.statusMessage.emit(f"ROI mask preview failed: {exc}")
         self._mask_token += 1
         self.maskChanged.emit()
+
+    def _recompute_sister_mask(self):
+        """Preview the Sister-TIFF ROI: locate the companion image and build its
+        mask with the SAME fa_roi helpers the analysis run uses, so the green
+        overlay is exactly the region FIREFLY will keep.  Sets self._mask +
+        self._sister_path/_sister_status (the latter drives the viewer caption)."""
+        if not self._file:
+            return
+        suffix = (self._s.get_str("analysis/roi_sister_suffix", "_green")
+                  if self._s else "_green")
+        from firefly.analysis.fa_roi import (find_sister_roi_path,
+                                             build_sister_roi_mask)
+        path = find_sister_roi_path(self._file, suffix)
+        if not path:
+            self._sister_status = (f"No sister image (…{suffix}.tif) "
+                                   f"beside this file")
+            return
+        self._sister_path = path
+        target = self._proj.shape if self._proj is not None else None
+        try:
+            mask, note = build_sister_roi_mask(
+                path, target_shape=target, bg_sigma=float(self._bg_sigma))
+        except Exception as exc:
+            self._sister_status = f"Sister ROI failed: {exc}"
+            return
+        if mask is not None:
+            self._mask = _green_mask_qimage(mask)
+            self._mask_fraction = float(mask.mean())
+        self._sister_status = note      # provenance on success, reason on skip
 
     # ── detection-threshold (minmass) preview ─────────────────────────────
     # Runs the SAME detect path the analysis uses (preprocess + trackpy.locate)

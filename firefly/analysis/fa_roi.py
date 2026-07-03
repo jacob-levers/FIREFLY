@@ -370,6 +370,95 @@ def build_roi_mask_advanced(projection,
     return mask.astype(bool, copy=False), info
 
 
+def find_sister_roi_path(fpath, suffix="_green"):
+    """Locate a microscope-exported *sister* ROI image next to ``fpath``.
+
+    Looks for ``<dir>/<root><suffix>.tif`` (or ``.tiff``) where ``<root>`` is the
+    recording's stem with a trailing palmTRACER ``-fileNNN`` stripped, so the
+    suffix sits against the bare root name (``<root>_green.tif``).
+
+    Returns the absolute path or ``None``. Single source of truth for both the
+    analysis worker and the ROI-viewer preview so they always agree on the file.
+    """
+    import os
+    import re
+    suffix = str(suffix or "").strip()
+    if not fpath or not suffix:
+        return None
+    try:
+        base = os.path.splitext(os.path.basename(fpath))[0]
+        root = re.sub(r"-file\d+$", "", base, flags=re.IGNORECASE)
+        for ext in (".tif", ".tiff"):
+            cand = os.path.join(os.path.dirname(fpath), f"{root}{suffix}{ext}")
+            if os.path.isfile(cand):
+                return cand
+    except Exception:
+        return None
+    return None
+
+
+def build_sister_roi_mask(sister_path, target_shape=None, bg_sigma=25.0):
+    """Build a bool ROI mask from a sister ROI image (e.g. ``_green.tif``).
+
+    Replicates the run-time logic so the ROI-viewer preview is identical to what
+    the analysis actually includes:
+
+    * multi-frame stacks are max-projected (a static outline survives whichever
+      frame the microscope saved it on);
+    * if ``target_shape`` is given and the (projected) image doesn't match it,
+      the ROI is skipped;
+    * a *mostly-zero* image (< 40 % non-zero) is treated as a binary/labelled
+      segmentation — non-zero pixels are inside;
+    * otherwise it's a grayscale fluorescence channel — normalise to [0, 1] and
+      Li-threshold via :func:`build_roi_mask_advanced` (``mode_hint="mean"``);
+      on failure, fall back to the non-zero mask.
+
+    Returns ``(mask | None, note)`` where ``note`` is a short human-readable
+    provenance / reason string (used for the worker log and the viewer status).
+    """
+    import os
+    import numpy as _np
+    name = os.path.basename(sister_path)
+    try:
+        import tifffile as _tf
+        with _tf.TiffFile(sister_path) as _t:
+            arr = _t.asarray()
+    except Exception as exc:
+        return None, f"could not load {name}: {exc}"
+
+    # Multi-frame → max projection; squeeze leading singleton dims first.
+    if arr.ndim == 3:
+        arr = arr.max(axis=0)
+    elif arr.ndim > 3:
+        arr = _np.squeeze(arr)
+        if arr.ndim == 3:
+            arr = arr.max(axis=0)
+    if arr.ndim != 2:
+        return None, f"{name}: unexpected shape {tuple(arr.shape)}"
+
+    if target_shape is not None and tuple(arr.shape) != tuple(target_shape):
+        return None, (f"{name}: shape {tuple(arr.shape)} ≠ stack "
+                      f"{tuple(target_shape)} — skipped")
+
+    nonzero_frac = float((arr > 0).sum()) / float(arr.size or 1)
+    if nonzero_frac < 0.4:
+        mask = arr > 0
+        return mask, f"{name} · non-zero mask ({100.0 * mask.mean():.1f}% of frame)"
+
+    try:
+        arrf = arr.astype(_np.float32)
+        mn, mx = float(arrf.min()), float(arrf.max())
+        if mx > mn:
+            arrf = (arrf - mn) / (mx - mn)
+        mask, _info = build_roi_mask_advanced(
+            arrf, threshold=None, threshold_method="li",
+            bg_sigma=float(bg_sigma), mode_hint="mean")
+        return mask, f"{name} · Li threshold ({100.0 * mask.mean():.1f}% of frame)"
+    except Exception as exc:
+        mask = arr > 0
+        return mask, f"{name} · non-zero mask (Li failed: {exc})"
+
+
 def apply_roi_mask(locs, mask):
     """
     Filter a localisations DataFrame to keep only points inside the ROI mask.

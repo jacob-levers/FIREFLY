@@ -353,7 +353,8 @@ from firefly.analysis.fa_preprocess import (_preprocess_fast, _preprocess_rollin
                            preprocess_stack, auto_threshold)
 from firefly.analysis.fa_drift import correct_drift
 from firefly.analysis.fa_roi import (build_roi_mask_mean, build_roi_mask_perframe,
-                    build_roi_mask, build_roi_mask_advanced, apply_roi_mask)
+                    build_roi_mask, build_roi_mask_advanced, apply_roi_mask,
+                    find_sister_roi_path, build_sister_roi_mask)
 
 
 
