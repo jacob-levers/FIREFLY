@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.76.30 — 4 Jul 2026
+
+### Added
+
+- **See the Sister-TIFF ROI in the Preview & ROI viewer.** Choosing "Sister TIFF"
+  as the ROI mode now draws the green include-region — the exact area FIREFLY will
+  keep — the same way the threshold modes do, with its coverage percentage and a
+  caption naming the companion image (or telling you none was found next to the
+  file). The preview is built with the same code as the analysis run, so what you
+  see is what gets analysed.
+
+- **Polished, reduce-motion-safe animation across the app.** The run cockpit,
+  HYPER-FLY dashboard and Analysis tab gained subtle motion that makes state easier
+  to read: a circular run-progress ring and a rolling localisation counter, a live
+  CPU-over-time sparkline, a success check-mark that draws itself on, a travelling
+  accent border on the running worker tile, and gentle reveals as figures and
+  panels land. All of it honours the reduce-motion setting.
+
+### Changed
+
+- **Internal cleanup.** Removed unused UI components and dead files, and shared the
+  sister-TIFF ROI logic between the viewer and the analysis run. No change to
+  analysis results.
+
 ## v2.76.29 — 27 Jun 2026
 
 ### Fixed
