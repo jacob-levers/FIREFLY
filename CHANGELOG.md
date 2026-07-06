@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.76.31 — 6 Jul 2026
+
+### Fixed
+
+- **A sister ROI image is now only used when you ask for it.** When a companion ROI
+  image (e.g. `<recording>_green.tif`) sat next to your file, FIREFLY could silently
+  use it *instead of* the ROI mode you had selected (Auto / Manual / None), with no
+  way to turn that off — so a Manual-threshold run could quietly use the sister
+  image. A sister image is now used only when you explicitly choose "Sister TIFF" as
+  the ROI mode; every other choice is honoured exactly as set. (If you have earlier
+  results from a run made next to such a file, they may have used the sister ROI.)
+
+- **A very long sister-image name no longer overflows the ROI mask preview.** The
+  `*_roi_mask.png` title now puts the coverage on its own line and shortens an
+  over-long filename, so the "% of frame" and projection details stay visible.
+
+### Changed
+
+- **The run cockpit's CPU meter is back to a simple bar.** Removed the live
+  CPU-over-time trend graph; CPU now shows the same compact bar as RAM / GPU / VRAM.
+
 ## v2.76.30 — 4 Jul 2026
 
 ### Added
@@ -13,10 +34,10 @@
 
 - **Polished, reduce-motion-safe animation across the app.** The run cockpit,
   HYPER-FLY dashboard and Analysis tab gained subtle motion that makes state easier
-  to read: a circular run-progress ring and a rolling localisation counter, a live
-  CPU-over-time sparkline, a success check-mark that draws itself on, a travelling
-  accent border on the running worker tile, and gentle reveals as figures and
-  panels land. All of it honours the reduce-motion setting.
+  to read: a circular run-progress ring and a rolling localisation counter, a
+  success check-mark that draws itself on, a travelling accent border on the
+  running worker tile, and gentle reveals as figures and panels land. All of it
+  honours the reduce-motion setting.
 
 ### Changed
 
