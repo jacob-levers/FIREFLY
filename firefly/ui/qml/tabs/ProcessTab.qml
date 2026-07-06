@@ -448,34 +448,6 @@ Flickable {
                         }
                     }
                     Meter { label: "CPU";  iconName: "cpu";          value: Process.cpuPercent }
-                    // CPU-over-time trend — buffers the already-live cpuPercent (no backend change)
-                    Item {
-                        id: cpuTrend
-                        width: meters.width
-                        implicitHeight: spark.height
-                        property var samples: []
-                        Sparkline {
-                            id: spark
-                            x: 44 + sc.sp4          // align under the bar, past the label column
-                            width: meters.width - x
-                            height: 26
-                            tone: pal.ACC
-                            points: cpuTrend.samples
-                        }
-                        Connections {
-                            target: Process
-                            function onResourcesChanged() {
-                                if (!Process.running) return
-                                var s = cpuTrend.samples.slice()
-                                s.push(Math.max(0, Math.min(1, Process.cpuPercent / 100)))
-                                if (s.length > 60) s.shift()   // ~1 min window at 1 Hz
-                                cpuTrend.samples = s            // reassign → requestPaint
-                            }
-                            function onRunningChanged() {
-                                if (Process.running) { cpuTrend.samples = []; spark.play() }
-                            }
-                        }
-                    }
                     Meter { label: "RAM";  iconName: "memory-stick"; value: Process.memPercent }
                     Meter { label: "GPU";  iconName: "zap";          value: Process.gpuPercent
                             valueText: Process.gpuText }
