@@ -227,6 +227,19 @@ _POSTPROC_LINK_DEFAULTS = {
 }
 
 
+def _ellipsize(text, limit=56):
+    """Middle-ellipsise a display string so an over-long ROI source (e.g. a very
+    long sister-TIFF filename) can't overflow a figure title and push the metrics
+    off the edge.  Short strings pass through unchanged; the head and tail are
+    kept so the source stays recognisable (``"Sister TIFF · aaa…zzz.tif"``)."""
+    s = str(text)
+    if len(s) <= limit or limit < 4:
+        return s
+    head = (limit - 1) // 2
+    tail = (limit - 1) - head
+    return s[:head] + "…" + s[-tail:]
+
+
 def _safe_put(q, item):
     """Non-blocking emit for high-volume log / progress messages.
 
@@ -1647,12 +1660,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                         # image — "{bg_label}" alone read as if a mean-projection
                         # threshold made the ROI even when a sister TIFF did.
                         _pct = 100.0 * float(roi_mask.mean())
+                        # Put the coverage metrics on their OWN second line, and
+                        # middle-ellipsise the ROI source, so a very long sister-
+                        # TIFF filename can never push the metrics off the title.
                         if mode_hint is not None and info is not None:
                             # Intensity-threshold ROI — full provenance, and name
                             # the projection it thresholded explicitly.
                             title = (
                                 f"ROI applied — {mode_hint.capitalize()} "
-                                f"projection threshold  |  "
+                                f"projection threshold\n"
                                 f"σ_bg={bg_sigma:.0f}, "
                                 f"t={info['threshold']:.3f}, "
                                 f"{100.0 * info['fraction']:.1f}% of frame"
@@ -1660,14 +1676,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                         else:
                             # Sister-TIFF / polygon / ImageJ ROI — name the
                             # source; the projection is just the display backdrop.
-                            _src = roi_source_label or (
+                            _src = _ellipsize(roi_source_label or (
                                 "Polygon" if roi_mode == "polygon"
-                                else "ROI")
+                                else "ROI"))
                             title = (
-                                f"ROI applied — {_src}  |  "
+                                f"ROI applied — {_src}\n"
                                 f"{_pct:.1f}% of frame  (bg: {bg_label})"
                             )
-                        ax.set_title(title, color="#e6edf3", fontsize=9)
+                        ax.set_title(title, color="#e6edf3", fontsize=9, wrap=True)
                         ax.set_xticks([]); ax.set_yticks([])
                         for sp in ax.spines.values():
                             sp.set_edgecolor("#30363d")

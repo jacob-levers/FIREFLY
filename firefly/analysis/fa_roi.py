@@ -443,7 +443,7 @@ def build_sister_roi_mask(sister_path, target_shape=None, bg_sigma=25.0):
     nonzero_frac = float((arr > 0).sum()) / float(arr.size or 1)
     if nonzero_frac < 0.4:
         mask = arr > 0
-        return mask, f"{name} · non-zero mask ({100.0 * mask.mean():.1f}% of frame)"
+        return mask, f"{name} · non-zero mask"
 
     try:
         arrf = arr.astype(_np.float32)
@@ -453,7 +453,7 @@ def build_sister_roi_mask(sister_path, target_shape=None, bg_sigma=25.0):
         mask, _info = build_roi_mask_advanced(
             arrf, threshold=None, threshold_method="li",
             bg_sigma=float(bg_sigma), mode_hint="mean")
-        return mask, f"{name} · Li threshold ({100.0 * mask.mean():.1f}% of frame)"
+        return mask, f"{name} · Li threshold"
     except Exception as exc:
         mask = arr > 0
         return mask, f"{name} · non-zero mask (Li failed: {exc})"

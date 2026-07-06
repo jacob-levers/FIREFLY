@@ -13,11 +13,26 @@ import pytest
 
 from firefly.firefly_worker import (
     _safe_put, _put_reliable, _atomic_write_json, _postproc_calibration,
-    _postproc_linking_params, _POSTPROC_LINK_DEFAULTS,
+    _postproc_linking_params, _POSTPROC_LINK_DEFAULTS, _ellipsize,
 )
 from firefly.analysis.fa_constants import (
     DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S,
 )
+
+
+def test_ellipsize_bounds_long_roi_source():
+    # Short strings pass through untouched (the common case).
+    short = "Sister TIFF · cell_green.tif · Li threshold"
+    assert _ellipsize(short, 56) == short
+
+    # A pathologically long sister-TIFF name is bounded so it can't push the
+    # roi_mask.png title metrics off the edge, while staying recognisable.
+    long_name = "Sister TIFF · " + ("a_really_long_microscope_export_name" * 3) + "_green.tif"
+    out = _ellipsize(long_name, 56)
+    assert len(out) <= 56
+    assert "…" in out
+    assert out.startswith("Sister TIFF · ")   # head kept
+    assert out.endswith("_green.tif")          # tail (extension) kept
 
 
 def test_safe_put_drops_on_full_without_blocking():
