@@ -79,7 +79,60 @@ def is_windows() -> bool:
 
 class DownloadError(RuntimeError):
     """Raised when a download ultimately fails — all retries exhausted, a
-    permanent HTTP error (4xx), validation failure, or user cancel."""
+    permanent HTTP error (4xx), validation failure, or user cancel.
+
+    ``terminal=True`` marks a failure that re-downloading cannot fix (e.g. the
+    OS denied the final rename into place), so ``download_file`` stops instead of
+    burning its whole retry budget re-fetching the file for nothing."""
+
+    def __init__(self, *args, terminal: bool = False):
+        super().__init__(*args)
+        self.terminal = terminal
+
+
+def _finalize_download(part_path: str, dest_path: str, *, tries: int = 8) -> None:
+    """Move the completed ``.part`` onto the final path, retrying past a
+    transient Windows file lock.
+
+    On Windows, a freshly-written ``.exe`` (or a leftover previous one already at
+    the destination) is routinely held open for a beat by Defender's on-write
+    scan, so ``os.replace`` fails with ``[WinError 5] Access is denied``.  A scan
+    of a large installer can take several seconds, so retry with backoff (~0.5 →
+    8 s, ~30 s total) to ride it out.  If it STILL fails, the cause is a
+    persistent lock or a security policy (e.g. AppLocker blocking ``.exe`` in
+    AppData) that re-downloading won't fix → raise a *terminal* error so the
+    caller fails fast and tells the user to install by hand."""
+    delay = 0.5
+    last = None
+    for i in range(1, tries + 1):
+        try:
+            os.replace(part_path, dest_path)
+            return
+        except OSError as exc:
+            last = exc
+            _log(f"  finalize attempt {i}/{tries} failed ({exc})"
+                 + (f"; retry in {delay:.1f}s (Windows/Defender file lock?)"
+                    if i < tries else ""))
+            if i >= tries:
+                break
+            time.sleep(delay)
+            delay = min(delay * 2, 8.0)
+    raise DownloadError(
+        f"Couldn't save the update to disk — the operating system denied "
+        f"access to the file after {tries} tries ({last}).  This is almost "
+        f"always antivirus or a security policy (e.g. AppLocker) blocking the "
+        f"installer; nothing was changed.  Download the installer manually from "
+        f"the Releases page instead.",
+        terminal=True)
+
+
+# Backoff schedule (seconds) between retries.  Indexed by (attempt-1) and
+# clamped to the last entry.  Deliberately stretches to ~30 s so a transient
+# server-side 5xx burst — e.g. GitHub's release-download edge returning HTTP
+# 504 for a minute or two right after a large asset is published — is ridden
+# out instead of erroring.  A 504 comes back in ~0.2 s, so the wall-clock cost
+# of an extra retry is almost entirely the backoff itself.
+_RETRY_BACKOFFS = (2, 5, 10, 20, 30, 30)
 
 
 # Backoff schedule (seconds) between retries.  Indexed by (attempt-1) and
@@ -141,8 +194,8 @@ def download_file(url: str,
                 return
         except DownloadError as exc:
             _m = str(exc).lower()
-            if "cancel" in _m or "http 4" in _m:
-                raise                          # user cancel / permanent 4xx
+            if getattr(exc, "terminal", False) or "cancel" in _m or "http 4" in _m:
+                raise                          # user cancel / permanent 4xx / terminal
             _log(f"  parallel download failed ({exc}); single-stream fallback")
         except Exception as exc:
             _log(f"  parallel download error "
@@ -161,10 +214,11 @@ def download_file(url: str,
                            timeout=timeout, read_stall_s=read_stall_s)
             return
         except DownloadError as exc:
-            # User-cancel + permanent server errors (4xx) propagate
-            # immediately — don't burn retries on a 404 or a cancel.
+            # User-cancel + permanent server errors (4xx) + terminal failures
+            # (e.g. the OS denied the final rename) propagate immediately —
+            # don't burn retries re-downloading when a retry can't help.
             msg = str(exc).lower()
-            if "cancel" in msg or "http 4" in msg:
+            if getattr(exc, "terminal", False) or "cancel" in msg or "http 4" in msg:
                 raise
             last_exc = exc
             _log(f"  attempt {attempt}/{max_attempts} failed: {exc}")
@@ -376,15 +430,10 @@ def _download_once(url: str,
                     "Downloaded file failed validation (unexpected format "
                     "— an intercepting proxy may have returned an error "
                     "page).  Try again on a different network.")
-        # 3) Atomic rename — only if every earlier check passed.
-        try:
-            os.replace(part_path, dest_path)
-        except OSError as exc:
-            # Most common on Windows: Defender has the .part open for
-            # scanning.  Wait a beat and retry once.
-            _log(f"  rename failed ({exc}); retrying after 1s (Defender scan?)")
-            time.sleep(1.0)
-            os.replace(part_path, dest_path)
+        # 3) Atomic finalize — only if every earlier check passed.  Retries a
+        #    transient Windows file lock (Defender scanning the fresh .exe) and
+        #    fails TERMINALLY if the OS keeps denying access (AV / policy).
+        _finalize_download(part_path, dest_path)
     except urllib.error.HTTPError as exc:
         progress_state["should_abort"] = True
         code = getattr(exc, "code", 0)
@@ -533,10 +582,10 @@ def _download_parallel(url: str,
             futs = [ex.submit(_fetch, i, s, e) for i, s, e in ranges]
             for f in concurrent.futures.as_completed(futs):
                 f.result()                   # raises on segment failure
-    except DownloadError:
+    except DownloadError as exc:
         stop_poll.set(); _cleanup()
-        if state["cancel"]:
-            raise                            # user cancel → propagate
+        if state["cancel"] or getattr(exc, "terminal", False):
+            raise                            # user cancel / terminal → propagate
         return False
     except Exception:
         stop_poll.set(); _cleanup()
@@ -579,10 +628,8 @@ def _download_parallel(url: str,
     if progress_cb is not None:
         try:    progress_cb(total, total)
         except Exception: pass
-    try:
-        os.replace(part_path, dest_path)
-    except OSError:
-        time.sleep(1.0)
-        os.replace(part_path, dest_path)
+    # Same robust finalize as the single-stream path — ride out a transient
+    # Windows file lock, fail terminally if the OS keeps denying access.
+    _finalize_download(part_path, dest_path)
     _log(f"  ✓ parallel download complete: {total/1e6:.0f} MB")
     return True
