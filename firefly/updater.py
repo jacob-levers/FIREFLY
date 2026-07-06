@@ -483,18 +483,20 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
     """Batch helper that waits for ``pid`` to exit, then **safely** swaps
     ``target_exe`` for ``new_exe`` and relaunches.
 
-    Hardened to mirror the macOS path so a failed update can never strand the
-    user with a broken install:
-      * back up the current exe to ``<target>.bak`` first;
-      * copy the new exe in (retrying past Defender's transient file lock);
-      * **verify** the copy landed intact — both its byte size AND its SHA-256
-        (via ``certutil``) must match the source, so a copy that AV/the
-        filesystem corrupted while keeping the size is caught too (the cause of
-        the "decompression -3" / "failed to load python3xx.dll" bootloader
-        errors);
-      * if the copy fails, is short, or its hash differs, **restore the backup**
-        so the working version stays in place, and reveal the new exe so the
-        user can finish by hand;
+    No backup of the old exe is kept.  Instead of copying the new build straight
+    over the target (which, if it failed or was AV-mangled mid-copy, would strand
+    a broken install and needed a ``.bak`` to restore), it **stages then swaps**:
+      * copy the new exe to ``<target>.new`` (retrying past Defender's transient
+        file lock);
+      * **verify** the staged copy — both its byte size AND its SHA-256 (via
+        ``certutil``) must match the source, catching a copy that AV/the
+        filesystem corrupted while keeping the size (the cause of the
+        "decompression -3" / "failed to load python3xx.dll" bootloader errors);
+      * only then **rename** ``<target>.new`` over the target — a fast, same-
+        folder move, so the working old build stays untouched until that final
+        step.  If the copy, verify, or rename fails, the target is left as the
+        (still-working) old build and the new exe is revealed so the user can
+        finish by hand — no backup required;
       * on success, relaunch with a **ready-marker handshake**.  FIRST, clear
         the inherited PyInstaller one-file markers (`_MEIPASS2` / `_PYI_*`):
         this helper is spawned by the running frozen app, so it inherits the
@@ -507,12 +509,7 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
         fresh exe, so the first extraction can take minutes; the helper clears
         stale _MEI dirs, then waits for the app to signal its window is up for
         as long as the process stays alive (it never kills a still-extracting
-        bootloader), and keeps the .bak if no signal arrives within the cap;
-      * once the relaunch signals ready (and the copy was already SHA-256
-        verified), the new exe is provably good — so the ``.bak`` is **deleted**
-        rather than left cluttering the folder.  It is only kept if a check
-        fails (restored backup) or the relaunch never signals ready, so a
-        manual rollback is still possible exactly when it might be needed.
+        bootloader).
     """
     # Read pid/exe/target/log from the POSITIONAL ARGS the Popen call already
     # passes (%~1..%~4 — the tilde strips surrounding quotes), NOT by
@@ -525,7 +522,7 @@ set "PID=%~1"
 set "NEWEXE=%~2"
 set "TARGET=%~3"
 set "LOG=%~4"
-set "BACKUP=%TARGET%.bak"
+set "STAGED=%TARGET%.new"
 echo [firefly-update] waiting for pid %PID% to exit >>"%LOG%" 2>&1
 set /a WAITED=0
 :waitloop
@@ -541,49 +538,68 @@ if !WAITED! GEQ 8 (
 ping -n 2 127.0.0.1 >NUL
 goto waitloop
 :gone
-echo [firefly-update] backing up current exe -^> "%BACKUP%" >>"%LOG%" 2>&1
-copy /Y "%TARGET%" "%BACKUP%" >>"%LOG%" 2>&1
+rem ── Stage the new exe next to the target, verify it, then swap by a fast
+rem    same-folder rename.  No backup of the old exe is kept: the target is only
+rem    touched by a rename of an ALREADY-verified file, so a failed or AV-mangled
+rem    copy leaves the working old build in place (until the final rename).
+del "%STAGED%" >NUL 2>&1
 set /a TRIES=0
-:replace
-copy /Y "%NEWEXE%" "%TARGET%" >>"%LOG%" 2>&1
+:stage
+copy /Y "%NEWEXE%" "%STAGED%" >>"%LOG%" 2>&1
 if errorlevel 1 (
   set /a TRIES+=1
   if !TRIES! LSS 20 (
     ping -n 2 127.0.0.1 >NUL
-    goto replace
+    goto stage
   )
-  echo [firefly-update] replace failed after !TRIES! tries; restoring backup >>"%LOG%" 2>&1
-  copy /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1
+  echo [firefly-update] staging copy failed after !TRIES! tries; target untouched >>"%LOG%" 2>&1
+  del "%STAGED%" >NUL 2>&1
   start "" explorer.exe /select,"%NEWEXE%"
   goto end
 )
 set "SRCSIZE="
 set "DSTSIZE="
 for %%A in ("%NEWEXE%") do set "SRCSIZE=%%~zA"
-for %%A in ("%TARGET%") do set "DSTSIZE=%%~zA"
+for %%A in ("%STAGED%") do set "DSTSIZE=%%~zA"
 if not "!SRCSIZE!"=="!DSTSIZE!" (
-  echo [firefly-update] size mismatch src=!SRCSIZE! dst=!DSTSIZE!; restoring backup >>"%LOG%" 2>&1
-  copy /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1
+  echo [firefly-update] staged size mismatch src=!SRCSIZE! dst=!DSTSIZE!; target untouched >>"%LOG%" 2>&1
+  del "%STAGED%" >NUL 2>&1
   start "" explorer.exe /select,"%NEWEXE%"
   goto end
 )
-rem ── Content check: the copied exe's SHA-256 must match the (already
+rem ── Content check: the staged exe's SHA-256 must match the (already
 rem    GitHub-verified) source.  Catches a copy that AV/the filesystem mangled
 rem    while keeping the size — the cause of "decompression -3" at launch.
 rem    Best-effort: if certutil is unavailable, fall back to the size check.
 set "SRCHASH="
 set "DSTHASH="
 for /f "skip=1 delims=" %%H in ('certutil -hashfile "%NEWEXE%" SHA256 2^>NUL') do if not defined SRCHASH set "SRCHASH=%%H"
-for /f "skip=1 delims=" %%H in ('certutil -hashfile "%TARGET%" SHA256 2^>NUL') do if not defined DSTHASH set "DSTHASH=%%H"
+for /f "skip=1 delims=" %%H in ('certutil -hashfile "%STAGED%" SHA256 2^>NUL') do if not defined DSTHASH set "DSTHASH=%%H"
 set "SRCHASH=!SRCHASH: =!"
 set "DSTHASH=!DSTHASH: =!"
 if defined SRCHASH if defined DSTHASH if /i not "!SRCHASH!"=="!DSTHASH!" (
-  echo [firefly-update] CONTENT hash mismatch - copy was corrupted; restoring backup >>"%LOG%" 2>&1
-  copy /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1
+  echo [firefly-update] staged content hash mismatch - copy corrupted; target untouched >>"%LOG%" 2>&1
+  del "%STAGED%" >NUL 2>&1
   start "" explorer.exe /select,"%NEWEXE%"
   goto end
 )
-echo [firefly-update] swap verified (size + SHA-256) >>"%LOG%" 2>&1
+echo [firefly-update] staged copy verified (size + SHA-256) >>"%LOG%" 2>&1
+rem ── Swap by rename (fast, same folder); retry past a transient lock ────────
+set /a TRIES=0
+:swap
+move /Y "%STAGED%" "%TARGET%" >>"%LOG%" 2>&1
+if errorlevel 1 (
+  set /a TRIES+=1
+  if !TRIES! LSS 20 (
+    ping -n 2 127.0.0.1 >NUL
+    goto swap
+  )
+  echo [firefly-update] swap rename failed after !TRIES! tries; target untouched >>"%LOG%" 2>&1
+  del "%STAGED%" >NUL 2>&1
+  start "" explorer.exe /select,"%NEWEXE%"
+  goto end
+)
+echo [firefly-update] swap complete (size + SHA-256 verified) >>"%LOG%" 2>&1
 rem ── Clear inherited PyInstaller one-file bootloader markers ───────────────
 rem THE root cause of the recurring "Failed to load Python DLL python3xx.dll —
 rem The specified module could not be found" on relaunch:  this .bat was
@@ -611,8 +627,8 @@ rem (2) wiping ALL _MEI* dirs WHILE the new instance was extracting into one.
 rem So now we clear stale _MEI dirs EXACTLY ONCE -- AFTER the old app exited
 rem and BEFORE launching, so nothing live is touched -- launch ONCE, and NEVER
 rem kill the launched process (a slow extraction is healthy).  We wait only to
-rem tidy up the .bak after a confirmed-good start; if no ready signal arrives
-rem in a generous window we just stop waiting and KEEP the .bak for rollback.
+rem confirm a good start; if no ready signal arrives in a generous window we
+rem just stop waiting (the new build was SHA-256-verified before the swap).
 set "BUNDLE=%LOCALAPPDATA%\\FIREFLY\\bundle"
 set "MARKER=%~dp0firefly_relaunch_ok.marker"
 del "%MARKER%" >NUL 2>&1
@@ -630,19 +646,16 @@ set /a WAITM=0
 if exist "%MARKER%" goto ready
 ping -n 3 127.0.0.1 >NUL
 set /a WAITM+=1
-rem ~300 x 3s ~= 15 min.  NEVER kill the process -- just stop waiting and keep
-rem the .bak so the user can roll back manually if the new build won't start.
+rem ~300 x 3s ~= 15 min.  NEVER kill the process -- just stop waiting.  The new
+rem build was SHA-256-verified before the swap, so a slow first extraction is
+rem normal and there is no backup to clean up.
 if !WAITM! LSS 300 goto waitmarker
-echo [firefly-update] no ready signal in ~15 min; kept "%BACKUP%" for manual rollback >>"%LOG%" 2>&1
+echo [firefly-update] no ready signal in ~15 min (build was verified before swap) >>"%LOG%" 2>&1
 del "%MARKER%" >NUL 2>&1
 goto end
 :ready
-rem Launched cleanly AND the copy was already SHA-256-verified, so the new exe
-rem is provably good -- delete the backup instead of leaving it cluttering the
-rem folder (e.g. a visible FIREFLY.exe.bak on the user's Desktop).
 del "%MARKER%" >NUL 2>&1
-del "%BACKUP%" >NUL 2>&1
-echo [firefly-update] update complete + verified; removed backup >>"%LOG%" 2>&1
+echo [firefly-update] update complete + verified >>"%LOG%" 2>&1
 :end
 del "%~f0"
 """
