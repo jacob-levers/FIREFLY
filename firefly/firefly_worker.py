@@ -1354,8 +1354,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # an unknown value now logs + falls back to 'none' instead of silently
     # threading a bogus string through the dispatch below).  Kept as a string so
     # the existing branch logic is unchanged.
-    roi_mode_user = ROIMode.parse(p.get("roi_mode", "none"), log=_log).value
-    roi_mode = roi_mode_user
+    roi_mode = ROIMode.parse(p.get("roi_mode", "none"), log=_log).value
     roi_from_imagej = False                      # set when a sibling ImageJ ROI
                                                  # is what produced the polygon
     if p.get("roi_polygon"):
@@ -1391,35 +1390,22 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                  "found — analysing the whole image.")
             roi_mode = "none"
 
-    # Auto-detect a microscope-exported sister ROI image (e.g.
-    # `<base>_green.tif`).  When `roi_mode == "auto_sister"` we ONLY use
-    # the sister TIFF, falling back to no-ROI if missing.  When
-    # `roi_mode` is something else but `roi_sister_autodetect` is on AND
-    # the dropdown is in "none"/"auto"/"manual" mode, we'll still check
-    # for a sister file and prefer it over the intensity-based modes.
+    # Sister ROI image (a microscope-exported companion, e.g. `<base>_green.tif`).
+    # Used ONLY when the user explicitly selects "Sister TIFF" — an Auto / Manual /
+    # Polygon / None choice is NEVER silently overridden with it.  (Detection is
+    # shared with the ROI-viewer preview via fa_roi.find_sister_roi_path so both
+    # agree on which file is the sister.)
     roi_sister_suffix = str(p.get("roi_sister_suffix", "_green")).strip()
     roi_sister_path: "str | None" = None
-    if not external_csv and roi_sister_suffix:
-        # Shared with the ROI-viewer preview so both agree on WHICH file.
-        from firefly.analysis.fa_roi import find_sister_roi_path as _find_sister
-        roi_sister_path = _find_sister(fpath, roi_sister_suffix)
-    # Promote to active mode if user explicitly picked "sister" OR if
-    # auto-detect is on and we found a file.
     if roi_mode == "sister":
+        if not external_csv and roi_sister_suffix:
+            from firefly.analysis.fa_roi import find_sister_roi_path as _find_sister
+            roi_sister_path = _find_sister(fpath, roi_sister_suffix)
         if roi_sister_path is None:
             _log(f"  NOTE: ROI mode set to 'Sister TIFF' but no "
                  f"`<base>{roi_sister_suffix}.tif` found — falling back "
                  f"to no ROI.")
             roi_mode = "none"
-    elif (roi_mode_user in ("none", "auto", "manual")
-            and roi_mode in ("none", "auto", "manual")
-            and bool(p.get("roi_sister_autodetect", True))
-            and roi_sister_path is not None):
-        _log(f"  NOTE: found sister ROI image "
-             f"{os.path.basename(roi_sister_path)} — using it instead "
-             f"of intensity-based ROI.  Set roi_sister_autodetect=False "
-             f"to disable.")
-        roi_mode = "sister"
 
     _roi_skipped = False   # set True if a polygon ROI is dropped (shape mismatch)
     if roi_mode != "none" and len(locs) > 0:
