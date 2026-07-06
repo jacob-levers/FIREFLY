@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.76.33 — 6 Jul 2026
+
+### Fixed
+
+- **Windows updates no longer fail with "Access is denied" while downloading.** A
+  freshly-downloaded installer is briefly locked by Windows Defender's on-write
+  scan, which could make the final save step fail. FIREFLY now waits that out with
+  a longer retry, and if antivirus or a security policy (e.g. AppLocker) is
+  genuinely blocking the file, it stops quickly with a clear message to download
+  the update by hand from the Releases page — instead of silently re-downloading
+  the whole installer several times before failing.
+
+### Changed
+
+- **The Windows updater no longer leaves a backup `.exe` behind.** It now stages
+  the new build alongside the old one, verifies it (size + checksum), then swaps it
+  in with a fast rename — safer, with nothing left cluttering the folder.
+
 ## v2.76.32 — 6 Jul 2026
 
 ### Fixed
