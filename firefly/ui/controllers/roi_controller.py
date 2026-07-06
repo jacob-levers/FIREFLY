@@ -646,8 +646,7 @@ class RoiController(QObject):
         self._sister_path = path
         target = self._proj.shape if self._proj is not None else None
         try:
-            mask, note = build_sister_roi_mask(
-                path, target_shape=target, bg_sigma=float(self._bg_sigma))
+            mask, note = build_sister_roi_mask(path, target_shape=target)
         except Exception as exc:
             self._sister_status = f"Sister ROI failed: {exc}"
             return

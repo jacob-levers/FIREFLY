@@ -1447,9 +1447,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 from firefly.analysis.fa_roi import (
                     build_sister_roi_mask as _sister_mask)
                 _tgt = mean_proj.shape if mean_proj is not None else None
-                roi_mask, _note = _sister_mask(
-                    roi_sister_path, target_shape=_tgt,
-                    bg_sigma=float(p.get("roi_bg_sigma", 25.0)))
+                roi_mask, _note = _sister_mask(roi_sister_path, target_shape=_tgt)
                 if roi_mask is not None:
                     roi_source_label = f"Sister TIFF · {_note}"
                     _log(f"  Sister ROI: {_note}")

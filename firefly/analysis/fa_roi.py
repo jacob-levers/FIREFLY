@@ -397,21 +397,29 @@ def find_sister_roi_path(fpath, suffix="_green"):
     return None
 
 
-def build_sister_roi_mask(sister_path, target_shape=None, bg_sigma=25.0):
+def build_sister_roi_mask(sister_path, target_shape=None, *,
+                          method="otsu", manual_threshold=None,
+                          smooth_sigma=2.0, fill_holes=True, keep_largest=True):
     """Build a bool ROI mask from a sister ROI image (e.g. ``_green.tif``).
 
-    Replicates the run-time logic so the ROI-viewer preview is identical to what
-    the analysis actually includes:
+    A microscope ROI export is one of two things, handled distinctly:
 
-    * multi-frame stacks are max-projected (a static outline survives whichever
-      frame the microscope saved it on);
-    * if ``target_shape`` is given and the (projected) image doesn't match it,
-      the ROI is skipped;
-    * a *mostly-zero* image (< 40 % non-zero) is treated as a binary/labelled
-      segmentation — non-zero pixels are inside;
-    * otherwise it's a grayscale fluorescence channel — normalise to [0, 1] and
-      Li-threshold via :func:`build_roi_mask_advanced` (``mode_hint="mean"``);
-      on failure, fall back to the non-zero mask.
+    * an already-made **mask / labelled segmentation** — detected by having only
+      a handful of distinct pixel values (not by how much of the frame it covers)
+      — used directly, non-zero = inside, at ANY coverage; or
+    * a **grayscale overview** (e.g. a max projection of the cell) — segmented
+      into a solid cell footprint: light smooth → intensity threshold
+      (Otsu / Li / Triangle / Mean, or a manual level) → **fill interior holes**
+      → keep the largest region.
+
+    It deliberately does NOT use the molecule spot-detector
+    (:func:`build_roi_mask_advanced`): that routine's Difference-of-Gaussians
+    background suppression cancels the interior of a large uniform ROI and leaves
+    only its edge — the opposite of what a drawn cell region needs.
+
+    Multi-frame stacks are max-projected; a mismatched-resolution sister is
+    resized to ``target_shape`` when the aspect ratio matches (else skipped, since
+    a different aspect implies a different field of view).
 
     Returns ``(mask | None, note)`` where ``note`` is a short human-readable
     provenance / reason string (used for the worker log and the viewer status).
@@ -436,27 +444,77 @@ def build_sister_roi_mask(sister_path, target_shape=None, bg_sigma=25.0):
     if arr.ndim != 2:
         return None, f"{name}: unexpected shape {tuple(arr.shape)}"
 
+    # Is it ALREADY a mask / labelled segmentation?  Decide by the number of
+    # distinct levels, not coverage — a real mask can fill most of the frame.
+    is_mask = arr.dtype == bool or _np.unique(arr).size <= 8
+
+    # Resolution mismatch → resize only when the aspect ratio matches (same FOV,
+    # different binning); a different aspect means a different crop, so skip.
+    rs_note = ""
     if target_shape is not None and tuple(arr.shape) != tuple(target_shape):
-        return None, (f"{name}: shape {tuple(arr.shape)} ≠ stack "
-                      f"{tuple(target_shape)} — skipped")
+        ah, aw = arr.shape
+        th, tw = target_shape
+        if not aw or not tw or abs((ah / aw) - (th / tw)) > 0.02:
+            return None, (f"{name}: shape {tuple(arr.shape)} ≠ stack "
+                          f"{tuple(target_shape)} (different field) — skipped")
+        try:
+            from skimage.transform import resize as _resize
+            arr = _resize(arr, tuple(target_shape),
+                          order=0 if is_mask else 1,
+                          preserve_range=True, anti_aliasing=not is_mask)
+            rs_note = " · resized to stack"
+        except Exception as exc:
+            return None, f"{name}: could not resize to {tuple(target_shape)}: {exc}"
 
-    nonzero_frac = float((arr > 0).sum()) / float(arr.size or 1)
-    if nonzero_frac < 0.4:
-        mask = arr > 0
-        return mask, f"{name} · non-zero mask"
+    if is_mask:
+        return (arr > 0), f"{name} · used directly as a mask{rs_note}"
 
-    try:
-        arrf = arr.astype(_np.float32)
-        mn, mx = float(arrf.min()), float(arrf.max())
-        if mx > mn:
-            arrf = (arrf - mn) / (mx - mn)
-        mask, _info = build_roi_mask_advanced(
-            arrf, threshold=None, threshold_method="li",
-            bg_sigma=float(bg_sigma), mode_hint="mean")
-        return mask, f"{name} · Li threshold"
-    except Exception as exc:
-        mask = arr > 0
-        return mask, f"{name} · non-zero mask (Li failed: {exc})"
+    # ── grayscale overview → segment the cell footprint ──────────────────
+    from scipy.ndimage import binary_fill_holes, gaussian_filter
+    arrf = _np.asarray(arr, dtype=_np.float32)
+    mn, mx = float(arrf.min()), float(arrf.max())
+    if mx <= mn:
+        return None, f"{name}: flat image — nothing to threshold"
+    arrf = (arrf - mn) / (mx - mn)
+    sm = gaussian_filter(arrf, float(smooth_sigma)) if smooth_sigma else arrf
+
+    if manual_threshold is not None:
+        t = float(manual_threshold)
+        tname = f"manual threshold {t:.3f}"
+    else:
+        try:
+            from skimage.filters import (threshold_li, threshold_otsu,
+                                         threshold_triangle)
+            m = (method or "otsu").lower()
+            if   m == "li":       t = float(threshold_li(sm))
+            elif m == "triangle": t = float(threshold_triangle(sm))
+            elif m == "mean":     t = float(sm.mean())
+            else:                 t = float(threshold_otsu(sm)); m = "otsu"
+            tname = f"{m} threshold"
+        except Exception:
+            t = float(sm.mean())
+            tname = "mean threshold"
+
+    mask = sm > t
+    if fill_holes:
+        try:
+            mask = binary_fill_holes(mask)
+        except Exception:
+            pass
+    if keep_largest and mask.any():
+        try:
+            from skimage.measure import label as _label
+            lbl = _label(mask, connectivity=2)
+            sizes = _np.bincount(lbl.ravel())
+            sizes[0] = 0
+            if sizes.size > 1 and sizes.max() > 0:
+                mask = lbl == int(_np.argmax(sizes))
+        except Exception:
+            pass
+    if not mask.any():
+        return None, f"{name}: {tname} produced an empty ROI"
+    holes = ", holes filled" if fill_holes else ""
+    return mask.astype(bool, copy=False), f"{name} · {tname}{holes}{rs_note}"
 
 
 def apply_roi_mask(locs, mask):
