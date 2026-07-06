@@ -89,11 +89,16 @@ Flickable {
                         Layout.fillWidth: index > 0
                         spacing: 0
 
-                        // connector to the previous node
+                        // connector to the previous node — pinned to the circle's
+                        // centre-line (the circle is a 30px item at the TOP of the
+                        // node column, so its centre is 15px down), NOT the vertical
+                        // centre of the circle+label column below it.
                         Rectangle {
                             visible: index > 0
                             Layout.fillWidth: true
                             Layout.preferredHeight: 2
+                            Layout.alignment: Qt.AlignTop
+                            Layout.topMargin: 14        // (30 − 2) / 2 → centre at y = 15
                             radius: 1
                             color: (Process.complete || index <= Process.stage) ? pal.SUCCESS
                                  : pal.BORDER
