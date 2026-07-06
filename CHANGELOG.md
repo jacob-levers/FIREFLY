@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.32 — 6 Jul 2026
+
+### Fixed
+
+- **Sister-TIFF ROIs from a cell overview now segment properly.** When the sister
+  image is a grayscale microscope projection (the kind you trace a cell outline on),
+  FIREFLY was running it through the single-molecule detector, whose background
+  suppression hollowed out the solid cell and left only its rim. It now segments the
+  cell with a plain intensity threshold, **fills interior holes** (so a dim nucleus
+  isn't punched out) and keeps the cell region — a solid footprint. An image that is
+  already a mask is detected by its pixel values and used as-is at any coverage, and a
+  same-field sister at a different resolution is resized to the recording.
+
+- **The pipeline stepper's connector lines line up with the step circles.** They were
+  sitting slightly low (centred on the circle-plus-label); they now run through the
+  centre of the numbered circles.
+
 ## v2.76.31 — 6 Jul 2026
 
 ### Fixed
