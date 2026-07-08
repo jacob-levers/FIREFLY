@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.76.35 — 8 Jul 2026
+
+### Fixed
+
+- **The Analysis tab's section headers now follow the Light theme.** The
+  LIVE RESULTS / CONDITIONS / COMPARISON SETTINGS header bars (and the comparison
+  plot's gridlines and labels) were hardcoded to a dark colour and stayed dark in
+  Light mode; they're now theme-aware. Dark themes are unchanged.
+
 ## v2.76.34 — 8 Jul 2026
 
 ### Changed
