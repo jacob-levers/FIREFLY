@@ -12,12 +12,23 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import sys
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 _SENTINEL = "— Current settings —"
 _BUILTIN_TAG = "__firefly_builtin__"
+
+
+def _bundled_presets_dir():
+    """The read-only *shipped* presets directory — the dev tree in a source run,
+    or the extracted bundle in a frozen build."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, "firefly", "ui", "presets")
+    # this file is firefly/ui/controllers/preset_controller.py → ../presets
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "presets")
 
 
 class PresetController(QObject):
@@ -75,6 +86,39 @@ class PresetController(QObject):
     @Slot()
     def refresh(self):
         self.namesChanged.emit()
+
+    @Slot()
+    def seed_builtins(self):
+        """Install the shipped built-in presets (PC12 Cells, Drosophila Neurons)
+        into the user presets dir so every FIREFLY build offers them.
+
+        Fresh installs get them; on an app update the builtin-tagged copies are
+        refreshed to the shipped version (so a preset edit like this one reaches
+        everyone); a user's OWN preset of the same name — one without the builtin
+        tag — is never overwritten.
+        """
+        src = _bundled_presets_dir()
+        if not os.path.isdir(src):
+            return
+        changed = False
+        for fn in os.listdir(src):
+            if not fn.endswith(".json"):
+                continue
+            dest = os.path.join(self._dir(), fn)
+            if os.path.exists(dest):
+                try:
+                    with open(dest, encoding="utf-8") as fh:
+                        if not json.load(fh).get(_BUILTIN_TAG):
+                            continue          # user's own preset with this name — keep it
+                except Exception:
+                    continue                  # unreadable → leave it alone
+            try:
+                shutil.copyfile(os.path.join(src, fn), dest)
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            self.namesChanged.emit()
 
     # ── save / load / delete ─────────────────────────────────────────────
     @Slot(str, result=bool)

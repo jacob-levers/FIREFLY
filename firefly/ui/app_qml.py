@@ -162,6 +162,7 @@ def build_main_window(app: QtWidgets.QApplication):
     workspace = AnalysisWorkspaceController(settings)
     sidebar = SidebarController(settings, importc)
     presets = PresetController(sidebar)
+    presets.seed_builtins()               # ship the built-in PC12 / Drosophila presets
     hyperfly = HyperflyController()       # live parallel-batch (HYPER-FLY) dashboard
     batchc = BatchController(settings, importc, roi_store=roi_store,
                              override_store=roi_override, hyperfly=hyperfly)

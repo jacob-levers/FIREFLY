@@ -91,6 +91,36 @@ def test_preset_builtin_tag_stripped(tmp_path, monkeypatch):
     assert sb.get("analysis/diameter") == 15   # applied; tag ignored, no crash
 
 
+def test_seed_builtins_installs_shipped_presets(tmp_path, monkeypatch):
+    import json
+    from firefly.ui.controllers.params.params_builder import LINKER_LABEL_TO_VALUE
+    sb, pc = _make(tmp_path, monkeypatch)
+    pc.seed_builtins()
+    assert "PC12 Cells" in pc.names and "Drosophila Neurons" in pc.names
+    pc12 = json.load(open(os.path.join(tmp_path, "PC12 Cells.json"), encoding="utf-8"))
+    # the settings requested for the PC12 preset
+    assert LINKER_LABEL_TO_VALUE[pc12["analysis/linker"]] == "trackpy"
+    assert pc12["analysis/search_range"] == 3
+    assert pc12["analysis/roi_mode"] == "Manual threshold"
+    assert pc12["analysis/roi_bg_sigma"] == 100.0
+    assert pc12["analysis/roi_threshold"] == 0.02
+    # and it actually loads/applies cleanly through the sidebar
+    pc.load("PC12 Cells")
+    assert sb.get("analysis/search_range") == 3
+
+
+def test_seed_builtins_never_clobbers_a_users_own_preset(tmp_path, monkeypatch):
+    import json
+    sb, pc = _make(tmp_path, monkeypatch)
+    mine = {"analysis/diameter": 99}                 # no __firefly_builtin__ tag
+    with open(os.path.join(tmp_path, "PC12 Cells.json"), "w", encoding="utf-8") as fh:
+        json.dump(mine, fh)
+    pc.seed_builtins()
+    kept = json.load(open(os.path.join(tmp_path, "PC12 Cells.json"), encoding="utf-8"))
+    assert kept == mine                              # user's own preset untouched
+    assert "Drosophila Neurons" in pc.names          # the non-conflicting one still seeds
+
+
 # ── manifest replay pins the resolved auto-minmass threshold ──────────────────
 def test_manifest_replay_pins_auto_minmass():
     from firefly.ui.controllers.params.sidebar_controller import SidebarController

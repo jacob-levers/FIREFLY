@@ -229,6 +229,13 @@ _qml_dir = os.path.join(SPECPATH, "firefly", "ui", "qml")
 if os.path.isdir(_qml_dir):
     datas += [(_qml_dir, os.path.join("firefly", "ui", "qml"))]
 
+# Bundle the shipped built-in presets (PC12 Cells, Drosophila Neurons) so every
+# build seeds them into ~/.firefly/presets on first run (PresetController
+# .seed_builtins resolves them from sys._MEIPASS/firefly/ui/presets).
+_presets_dir = os.path.join(SPECPATH, "firefly", "ui", "presets")
+if os.path.isdir(_presets_dir):
+    datas += [(_presets_dir, os.path.join("firefly", "ui", "presets"))]
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
     ["run_firefly.py"],
