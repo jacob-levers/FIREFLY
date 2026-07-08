@@ -18,7 +18,7 @@ Item {
     // WELL, which made the Dark theme read as AMOLED in the Analysis cards.
     readonly property color mat: pal.BG
     readonly property color cSunken: pal.BG
-    readonly property color cCardHead: "#10151b"     // header, slightly above card body
+    readonly property color cCardHead: pal.PANEL_ALT  // header band — theme-aware (was a hardcoded dark navy that stayed dark in Light mode)
     // design spacing: cards are 12px-radius with 14px interior padding and sit
     // 14px apart; columns are 16px apart with a 20px page inset.
     readonly property int gRad: 12
@@ -835,7 +835,7 @@ Item {
             function xOf(k) { return mL + (axis.length <= 1 ? 0.5 : k / (axis.length - 1)) * (W - mL - mR); }
             function yOf(v) { return mT + (1 - (v - lo) / (hi - lo || 1)) * (H - mT - mB); }
             // gridlines + y labels
-            ctx.strokeStyle = "#1d232c"; ctx.fillStyle = "#5b636e";
+            ctx.strokeStyle = pal.BORDER; ctx.fillStyle = root.faint;   // theme-aware gridlines + labels
             ctx.font = "10px Menlo"; ctx.textAlign = "right";
             for (var t = 0; t <= 4; t++) {
                 var v = lo + (t / 4) * (hi - lo), yy = yOf(v);
@@ -843,7 +843,7 @@ Item {
                 ctx.fillText(v.toFixed(3), mL - 6, yy + 3);
             }
             // x labels
-            ctx.textAlign = "center"; ctx.fillStyle = "#8b949e"; ctx.font = "11px sans-serif";
+            ctx.textAlign = "center"; ctx.fillStyle = pal.TXT_MUTED; ctx.font = "11px sans-serif";
             for (var a = 0; a < axis.length; a++) ctx.fillText(axis[a], xOf(a), H - mB + 20);
             // subject lines
             for (var s = 0; s < series.length; s++) {
