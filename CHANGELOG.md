@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.76.34 — 8 Jul 2026
+
+### Changed
+
+- **Trackpy (Crocker–Grier) is now the default trajectory linker.** New and
+  never-configured runs use the long-standing, fast Crocker–Grier linker — the
+  best all-rounder for Brownian motion — instead of the Kalman filter. Your saved
+  linker choice is unchanged; this only affects fresh installs and runs that never
+  picked a linker.
+
+### Fixed
+
+- **The built-in PC12 Cells and Drosophila Neurons presets now ship with every
+  build.** They were meant to but were never actually bundled, so a fresh install
+  had no presets. FIREFLY now seeds them on first run and refreshes them on update,
+  without ever overwriting a preset you created yourself. The **PC12 Cells** preset
+  now uses the Trackpy linker, a search range of 3, and a Manual-threshold ROI
+  (background σ 100, threshold 0.02).
+
 ## v2.76.33 — 6 Jul 2026
 
 ### Fixed
