@@ -18,9 +18,9 @@ def link_trajectories(locs, search_range=5, memory=3, min_len=5, max_len=None,
     """Link localisations into trajectories.
 
     linker      : one of (see `firefly.analysis.fa_enums.Linker`); the default is
-        `fa_enums.DEFAULT_LINKER` ("kalman", matching the GUI/README):
-        "trackpy" — Crocker-Grier recursive-subnet nearest-neighbour,
-        best for pure Brownian diffusion; "kalman" (default) — constant-velocity
+        `fa_enums.DEFAULT_LINKER` ("trackpy", matching the GUI/README):
+        "trackpy" (default) — Crocker-Grier recursive-subnet nearest-neighbour,
+        best for pure Brownian diffusion; "kalman" — constant-velocity
         Kalman LAP (TrackMate "Linear Motion"), better on directed / crossing motion;
         "simple_lap" (alias "lap") — Jaqaman two-step LAP (frame-to-frame +
         gap-closing); "full_lap" — Simple LAP + optional merge/split + feature

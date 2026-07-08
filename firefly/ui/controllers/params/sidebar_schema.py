@@ -160,9 +160,9 @@ FIELDS = [
 
     # ── Linking ──────────────────────────────────────────────────────────
     _f("linking", "analysis/linker", "combo", "Linker",
-       "Kalman filter — TrackMate (Linear Motion)",
-       items=["Kalman filter — TrackMate (Linear Motion)",
-              "Crocker–Grier — Trackpy",
+       "Crocker–Grier — Trackpy",
+       items=["Crocker–Grier — Trackpy",
+              "Kalman filter — TrackMate (Linear Motion)",
               "Jaqaman LAP — TrackMate (simple)",
               "Jaqaman LAP — TrackMate (merge/split)",
               "Nearest-neighbour — greedy",

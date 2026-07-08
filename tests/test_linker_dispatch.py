@@ -6,7 +6,7 @@ Covers the audit fixes:
     adapter used to forward those into ``link_trajectories_sa`` and crash.
   * B2 — the ``nn`` linker is canonical TrackMate Nearest-neighbour: strictly
     frame-to-frame, it must NOT bridge a one-frame gap.
-  * B3 — the forward default linker is ``fa_enums.DEFAULT_LINKER`` ("kalman"),
+  * B3 — the forward default linker is ``fa_enums.DEFAULT_LINKER`` ("trackpy"),
     matching the GUI/README.
   * B4 — the feature-penalty multiplier is the FIREFLY-specific form
     ``P = 1 + Σ w·|a−b|/(a+b)`` (no ×3 TrackMate factor).
@@ -93,20 +93,20 @@ def test_lap_does_bridge_the_gap_for_contrast():
     assert out["particle"].nunique() == 1
 
 
-# ── B3: forward default linker is kalman (matches GUI/README) ─────────────────
-def test_default_linker_constant_is_kalman():
-    assert fa_enums.DEFAULT_LINKER == "kalman"
-    assert fa_enums.DEFAULT_LINKER == Linker.KALMAN.value
+# ── B3: forward default linker is trackpy (matches GUI/README) ────────────────
+def test_default_linker_constant_is_trackpy():
+    assert fa_enums.DEFAULT_LINKER == "trackpy"
+    assert fa_enums.DEFAULT_LINKER == Linker.TRACKPY.value
 
 
 def test_link_trajectories_forward_default_is_default_linker():
     default = inspect.signature(link_trajectories).parameters["linker"].default
-    assert default == fa_enums.DEFAULT_LINKER == "kalman"
+    assert default == fa_enums.DEFAULT_LINKER == "trackpy"
 
 
-def test_default_linker_resolves_to_kalman_adapter():
+def test_default_linker_resolves_to_trackpy_adapter():
     from firefly.analysis.fa_linking_registry import _resolve_linker
-    assert _resolve_linker(fa_enums.DEFAULT_LINKER).name == "kalman"
+    assert _resolve_linker(fa_enums.DEFAULT_LINKER).name == "trackpy"
 
 
 # ── B4: feature-penalty value is the FIREFLY form (no ×3) ─────────────────────

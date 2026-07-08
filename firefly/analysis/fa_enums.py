@@ -137,11 +137,11 @@ class Linker(Enum):
     """Trajectory-linking algorithm.
 
     ``trackpy``    — Crocker–Grier recursive-subnet nearest-neighbour (best for
-                     pure Brownian diffusion; also the parse / pre-linker-manifest
-                     REPLAY fallback — see `parse` and `DEFAULT_LINKER` below).
+                     pure Brownian diffusion).  **Forward default** for a fresh
+                     run (`DEFAULT_LINKER`), and the parse / pre-linker-manifest
+                     REPLAY fallback — see `parse` and `DEFAULT_LINKER` below.
     ``kalman``     — constant-velocity Kalman LAP (TrackMate "Linear Motion";
-                     directed / crossing motion).  **Forward default** for a
-                     fresh run (`DEFAULT_LINKER`).
+                     directed / crossing motion).
     ``simple_lap`` — Jaqaman two-step LAP: frame-to-frame + gap-closing, no
                      merge/split (TrackMate "Simple LAP"; legacy token ``lap``).
     ``full_lap``   — Simple LAP + optional merge/split + feature penalties
@@ -181,10 +181,10 @@ class Linker(Enum):
 
 # Single source of truth for the FORWARD default linker (a fresh run that does
 # not specify one) — must match the GUI's first-listed combo entry and the
-# README.  This is intentionally distinct from the re-ROI / pre-linker-manifest
-# REPLAY default (`firefly_worker._POSTPROC_LINK_DEFAULTS["linker"]`), which
-# stays "trackpy" so an old run with no recorded linker replays faithfully.
-DEFAULT_LINKER = Linker.KALMAN.value   # "kalman"
+# README.  The re-ROI / pre-linker-manifest REPLAY default
+# (`firefly_worker._POSTPROC_LINK_DEFAULTS["linker"]`) is also "trackpy", so an
+# old run with no recorded linker replays faithfully.
+DEFAULT_LINKER = Linker.TRACKPY.value   # "trackpy"
 
 
 class MsgKind(StrEnum):

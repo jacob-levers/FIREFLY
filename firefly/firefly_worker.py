@@ -1815,8 +1815,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             max_len=p.get("max_track_len"),
             # The GUI always records "linker"; the "trackpy" fallback only fires
             # when REPLAYING a pre-linker manifest that has no linker key (those
-            # runs were trackpy-era), so it stays trackpy for replay fidelity —
-            # NOT the forward default (fa_enums.DEFAULT_LINKER = "kalman").
+            # runs were trackpy-era), so it stays trackpy for replay fidelity.
+            # (The forward default, fa_enums.DEFAULT_LINKER, is also "trackpy".)
             linker=str(p.get("linker", "trackpy")),
             link_params=p.get("link_params") or {},
             progress_cb=_link_progress,

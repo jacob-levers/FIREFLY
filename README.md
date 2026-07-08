@@ -16,8 +16,8 @@ low-SNR / structured backgrounds, and two alternative GPU sub-pixel refiners,
 **Gaussian MLE** (maximum-likelihood 2-D Gaussian fit) and **radial symmetry**
 (Parthasarathy 2012, closed-form) — which re-fit each spot's centre and match the
 centroid localisers closely on isolated spots, with small gains at low SNR.
-Linking offers **six trajectory linkers** — Kalman filter (TrackMate Linear
-Motion, default), Crocker–Grier (Trackpy), Jaqaman LAP (TrackMate, with an
+Linking offers **six trajectory linkers** — Crocker–Grier (Trackpy, default),
+Kalman filter (TrackMate Linear Motion), Jaqaman LAP (TrackMate, with an
 optional merge/split variant), nearest-neighbour, and a palmTRACER-inspired
 simulated-annealing tracker — plus an optional **auto search-range** that picks
 the linking distance from the data. You can also **import and analyse
@@ -174,12 +174,12 @@ launch, not on every tab switch.
   macOS — and **Auto** prefers the GPU but drops back cleanly to CPU.
 - **Selectable linker** — a **Linker** dropdown (Linking panel) chooses the
   trajectory linker (labelled *Algorithm — Software*):
-  - **Kalman filter — TrackMate (Linear Motion)** (default) — a constant-velocity
+  - **Crocker–Grier — Trackpy** (default) — recursive subnet nearest-neighbour;
+    the long-standing, fast linker and the best all-rounder for Brownian motion.
+  - **Kalman filter — TrackMate (Linear Motion)** — a constant-velocity
     linear-motion tracker; holds track identities through crossings and directed /
     fast transport where nearest-neighbour linking swaps tracks, and matches
     trackpy on pure diffusion.
-  - **Crocker–Grier — Trackpy** — recursive subnet nearest-neighbour; the
-    long-standing, fast linker and the best all-rounder for Brownian motion.
   - **Jaqaman LAP — TrackMate** — TrackMate's two-step global assignment
     (frame-to-frame + gap-closing).
   - **Jaqaman LAP — TrackMate (merge/split)** — the above plus optional

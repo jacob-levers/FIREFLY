@@ -102,7 +102,7 @@ _DEFAULTS = {
     "backend":               "Auto",
     "workers":               _N_CPUS,
     "chunk_size":            500,
-    "linker":                "Kalman filter — TrackMate (Linear Motion)",
+    "linker":                "Crocker–Grier — Trackpy",
     "allow_merging":         False,
     "allow_splitting":       False,
     "fig_theme":             "Dark",
