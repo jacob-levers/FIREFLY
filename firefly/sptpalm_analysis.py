@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.35"
+__version__ = "2.76.36"
+# v2.76.36 — FIX Compare/Analysis: MSD AUC was blank (empty figure + dashed
+#           stats) — _msd_auc used np.trapz, removed in numpy 2 → np.trapezoid;
+#           and the report crashed on Windows ('charmap' codec can't encode '≥')
+#           because two stats-CSV writers lacked encoding="utf-8".
 # v2.76.19 — Visualise load/export failures no longer fail silently — a broken
 #           run folder, corrupt cluster map, or failed export now shows an error
 #           toast (Vis.warn was emitted into the void).  Found by an error-handling

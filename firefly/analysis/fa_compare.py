@@ -2428,7 +2428,7 @@ def _write_prism_ttests(path, stats_df, stats_config=None):
     cfg = normalize_stats_config(stats_config)
     corr_disp = correction_display(cfg["correction"])
     _alpha = float(cfg["alpha"])
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         w = _csv.writer(fh)
         w.writerow(["Group comparisons  (per metric)"])
         # Exact configuration that produced these results.
@@ -2558,7 +2558,7 @@ def _write_twoway_csv(path, twoway_df, twoway_msg, drilldown, summary_df,
 
     metrics = list(dict.fromkeys(twoway_df["metric"].tolist()))
 
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         w = _csv.writer(fh)
         w.writerow(["Two-way mixed-effects ANOVA  (repeated measures on Time point)"])
         w.writerow(["Model", twoway_msg or ""])

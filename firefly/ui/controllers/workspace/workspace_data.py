@@ -373,7 +373,8 @@ def _msd_auc(run: RunData) -> Optional[float]:
     ok = np.isfinite(lag_s) & np.isfinite(msd)
     if ok.sum() < 2:
         return None
-    return float(np.trapz(msd[ok], lag_s[ok]))
+    _trap = getattr(np, "trapezoid", None) or np.trapz   # np.trapz removed in numpy 2.0
+    return float(_trap(msd[ok], lag_s[ok]))
 
 
 def _jdd_median_jump(run: RunData) -> Optional[float]:

@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.36 — 9 Jul 2026
+
+Compare/Analysis fixes — MSD AUC metric + report generation.
+
+### Fixed
+
+- **MSD AUC comparison was blank** (empty figure + dashed headline/group stats).
+  The live metric's `_msd_auc()` used `np.trapz`, which numpy 2.0 removed, so
+  every MSD-AUC computation raised `AttributeError` and the metric came back
+  empty. Now uses `np.trapezoid` (with a numpy-1 fallback), matching the
+  already-fixed `fa_diffusion`. (`firefly/ui/controllers/workspace/workspace_data.py`)
+- **Report generation crashed on Windows** with `'charmap' codec can't encode
+  character '≥'` (the `≥` sign; also `α` / `µ` / `²` / en-dashes). The
+  group-comparisons and two-way-ANOVA CSV writers opened their files without
+  `encoding="utf-8"`, so they fell back to cp1252. Both now write UTF-8.
+  (`firefly/analysis/fa_compare.py`)
+
 ## v2.76.35 — 8 Jul 2026
 
 ### Fixed
