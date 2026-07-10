@@ -935,10 +935,24 @@ def compare_groups(groups,
     # one-factor group comparison — treat it exactly as if no time points were
     # set, otherwise the interaction plots degenerate to a single x-position and
     # render weirdly.
-    two_factor = len(timepoint_tokens) >= 2
+    # Two-factor (group × time) needs ≥2 DISTINCT time points AND ≥2 distinct
+    # groups — a group × time interaction is undefined with a single group.
+    # When one group name spans ≥2 time points (e.g. "Munc 18" tagged Pre-drug
+    # and Post-drug on separate cards) the interaction degenerates to a single
+    # group line and the subject-pairing drops every unpaired cell, blanking the
+    # figure.  Detect that and fold it down to a plain one-way comparison of the
+    # (group · time) cells — exactly what the scalar stats already report.
+    distinct_tp = len(timepoint_tokens) >= 2
+    two_factor = distinct_tp and len(set(group_factor)) >= 2
     labels = [(f"{group_factor[i]} / {timepoints_per_card[i]}"
-               if (two_factor and timepoints_per_card[i]) else group_factor[i])
+               if (distinct_tp and timepoints_per_card[i]) else group_factor[i])
               for i in range(n_groups)]
+    if distinct_tp and not two_factor:
+        # single group across ≥2 time points → treat each card as its own group
+        # (drop the now single-level time factor) so the one-way panels render.
+        group_factor = list(labels)
+        timepoints_per_card = ["" for _ in group_factor]
+        timepoint_tokens = []
     colors   = [g.get("color", "#3b6ed8")     for g in groups]
     folder_lists = [list(g["folders"]) for g in groups]
 
@@ -1080,7 +1094,13 @@ def compare_groups(groups,
         paired_df, pair_warn, _dropped = fa_twoway.validate_pairing(summary_df)
         if pair_warn:
             print(f"  Two-way pairing: {pair_warn}")
-        twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df, stats_config=cfg)
+        # The two-way ANOVA is a SECONDARY headline stat — it must never be able
+        # to blank the primary figure.  If it fails (singular/underpowered design,
+        # pingouin quirk, …) skip it and let every panel render regardless.
+        try:
+            twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df, stats_config=cfg)
+        except Exception as e:
+            twoway_df, twoway_msg = None, f"skipped ({type(e).__name__}: {e})"
         print(f"  Two-way ANOVA: {twoway_msg}")
 
     # ── Render the figure ────────────────────────────────────────────────────

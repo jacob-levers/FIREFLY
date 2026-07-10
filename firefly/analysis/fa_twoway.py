@@ -213,9 +213,14 @@ def compute_twoway_anova(df, metrics=None, stats_config=None):
         for _, r in aov.iterrows():
             src = r.get("Source")
             pgg = _col(r, "p_GG_corr", "p-GG-corr")
-            if src == "Interaction" and eps and np.isfinite(eps):
-                d1, d2 = eps * float(r["DF1"]), eps * float(r["DF2"])
-                pgg = float(_stats.f.sf(float(r["F"]), d1, d2))
+            # GG-correct the interaction p — but only when F and both dfs are
+            # actually present.  A degenerate/underpowered table (e.g. 1 subject
+            # per cell) omits the F column, and the bare r["F"] raised KeyError
+            # here, propagating out and blanking the whole comparison figure.
+            _F, _d1, _d2 = _f(r.get("F")), _f(r.get("DF1")), _f(r.get("DF2"))
+            if (src == "Interaction" and eps and np.isfinite(eps)
+                    and _F is not None and _d1 is not None and _d2 is not None):
+                pgg = float(_stats.f.sf(_F, eps * _d1, eps * _d2))
             rows.append({
                 "metric": m, "section": "anova", "effect": src,
                 "SS": _f(r.get("SS")), "MS": _f(r.get("MS")),

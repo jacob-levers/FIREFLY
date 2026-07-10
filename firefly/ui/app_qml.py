@@ -310,6 +310,17 @@ def build_main_window(app: QtWidgets.QApplication):
 
 
 def main() -> int:
+    # Windows consoles and redirected stdio default to cp1252, which raises
+    # UnicodeEncodeError the moment analysis code prints a non-Latin-1 glyph
+    # (≥, µ, θ, κ, °, …).  A two-way-ANOVA status line printing "≥" crashed
+    # report generation this way ("Report failed: 'charmap' codec can't encode
+    # '≥'").  Harden the real streams to UTF-8 with backslash-replace so a
+    # stray unicode print can never take down a run.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     app.setApplicationName("FIREFLY")
     app.setOrganizationName("jacoblevers")   # must match the Widgets app for QSettings

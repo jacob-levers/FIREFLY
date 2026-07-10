@@ -11,7 +11,14 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.36"
+__version__ = "2.76.37"
+# v2.76.37 — FIX Analysis: live figure was blank for EVERY metric when two
+#           conditions shared a name but differed by time point (e.g. "Munc 18"
+#           Pre-drug vs Post-drug) — the engine read it as a 1-group × 2-time
+#           interaction, dropped all unpaired cells and drew nothing.  Now folds
+#           to a plain one-way comparison of the cells.  Also FIX report crash
+#           ('charmap' can't encode '≥'): the two-way-ANOVA status *print()* hit
+#           Windows' cp1252 stdout — hardened stdout/stderr to UTF-8 at startup.
 # v2.76.36 — FIX Compare/Analysis: MSD AUC was blank (empty figure + dashed
 #           stats) — _msd_auc used np.trapz, removed in numpy 2 → np.trapezoid;
 #           and the report crashed on Windows ('charmap' codec can't encode '≥')

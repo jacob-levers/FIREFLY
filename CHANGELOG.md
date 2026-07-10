@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.76.37 — 10 Jul 2026
+
+Analysis fixes — blank live figure + report crash, both triggered by same-named
+conditions across time points.
+
+### Fixed
+
+- **Live comparison figure was blank for every metric** when two conditions
+  shared a name but differed only by time point (e.g. "Munc 18 · Pre-drug" vs
+  "Munc 18 · Post-drug"). `_engine_groups` labels each group by condition name,
+  so both collapsed to one group; with ≥2 time points the engine entered a
+  group × time **interaction** with a single group, dropped every unpaired cell,
+  and rendered nothing — while the headline/group stats (which use a distinct
+  per-card label list) still populated. It was intermittent (blank, then draws
+  on tab-switch) because of the async render cache. A group × time interaction
+  now **requires ≥2 distinct groups**; one name spread across ≥2 time points
+  folds to a plain one-way comparison of the (group · time) cells, matching what
+  the scalar stats already report. (`firefly/analysis/fa_compare.py`)
+- **Report generation crashed on Windows** with `'charmap' codec can't encode
+  character '≥'`. This one was **not** a file write — it was a bare `print()`
+  (`Two-way ANOVA: Two-way ANOVA needs ≥2 groups …`) hitting the app's cp1252
+  stdout. stdout/stderr are now reconfigured to UTF-8 (backslash-replace) at GUI
+  startup, so any unicode analysis log line (≥ µ θ ° κ …) can no longer crash a
+  run. (`firefly/ui/app_qml.py`)
+- **Two-way ANOVA can no longer blank the figure.** A degenerate/underpowered
+  design (e.g. one subject per cell) raised `KeyError('F')` in the ANOVA table,
+  which propagated and killed the whole figure. The GG-correction now guards
+  missing `F`/`df` columns, and the ANOVA call is wrapped so this secondary stat
+  never takes down the primary panels. (`firefly/analysis/fa_twoway.py`,
+  `firefly/analysis/fa_compare.py`)
+
 ## v2.76.36 — 9 Jul 2026
 
 Compare/Analysis fixes — MSD AUC metric + report generation.
