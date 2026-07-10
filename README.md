@@ -2,6 +2,8 @@
 
 **Fluorescence Inference & Reconstruction Engine — Framework for Localization Yields**
 
+![FIREFLY welcome screen](docs/images/01-landing.png)
+
 A single-particle tracking PALM / dSTORM analysis pipeline for `.czi` (Zeiss)
 and `.tif` / `.tiff` image stacks. Localisation, linking, MSD / diffusion /
 motion-class analysis, JDD, dwell-time, MSS, DBSCAN clustering, redundant-
@@ -152,6 +154,33 @@ dashboard (active only during a parallel batch). Figure styling lives in
 **Preferences** — the cogwheel in the header. The landing page is shown only at
 launch, not on every tab switch.
 
+### The workflow, tab by tab
+
+**Import** — configure the analysis in the parameter sidebar, drop in a recording,
+preview detection and draw a region of interest.
+
+![Import tab](docs/images/02-import.png)
+
+**Process** — the live run cockpit: a connected pipeline stepper, live detection
+preview, localisation-mass histogram and resource meters.
+
+![Process tab](docs/images/03-process.png)
+
+**Analysis** — drop 2–12 conditions into one live comparison; the figure,
+statistics and significance update as you add data — no "Generate" step.
+
+![Analysis tab](docs/images/04-analysis.png)
+
+**Visualise** — explore a finished run: every trajectory coloured by motion class
+over the cell, with playback, DBSCAN clusters and super-resolution reconstruction.
+
+![Visualise tab — trajectories coloured by motion class](docs/images/05-visualise.png)
+
+**HYPER-FLY** — on a capable workstation a folder batch fans out across worker
+processes, each shown as a live tile with its own preview and progress.
+
+![HYPER-FLY parallel-batch dashboard](docs/images/06-hyperfly.png)
+
 ---
 
 ## Features
@@ -249,6 +278,23 @@ Four modes:
   viewer; per-file polygons are remembered.
 
 ### Figures
+
+Every run produces a **17-panel analysis figure**. A selection:
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/images/fig-msd.png" alt="Ensemble MSD curves with anomalous fit"></td>
+    <td width="33%"><img src="docs/images/fig-diffusion-distribution.png" alt="Diffusion-coefficient distribution"></td>
+    <td width="33%"><img src="docs/images/fig-motion-classes.png" alt="Motion classification"></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/images/fig-alpha-distribution.png" alt="Anomalous-exponent (alpha) distribution by motion class"></td>
+    <td width="33%"><img src="docs/images/fig-density-map.png" alt="Localisation position-density map"></td>
+    <td width="33%"><img src="docs/images/fig-cluster-map.png" alt="DBSCAN cluster map"></td>
+  </tr>
+</table>
+
+<sub>Left→right, top→bottom: ensemble MSD (+ anomalous fit) · log₁₀(D) distribution · motion-class breakdown · anomalous-exponent α by class · position-density map · DBSCAN cluster map.</sub>
 
 - Single-sample combined figure with 17 panels (A–Q): max projection,
   trajectories, MSD curves, log₁₀(D) distribution, motion-class
