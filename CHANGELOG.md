@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.76.38 — 13 Jul 2026
+
+Update download no longer runs twice on restrictive networks.
+
+### Fixed
+
+- **In-app updates "downloaded twice" on proxied / antivirus networks.** FIREFLY
+  fetches an update over 4 parallel connections for speed; if any one connection
+  was disrupted — common on locked-down university/corporate networks — it
+  discarded the whole attempt and re-downloaded the entire installer with a single
+  connection (the progress bar filling to 100%, resetting to 0, then filling
+  again). Each segment now retries and **resumes from where it dropped**, so a
+  transient disruption re-fetches only the missing piece and the parallel download
+  succeeds — no full re-download. A clean network was always a single download.
+
 ## v2.76.37 — 10 Jul 2026
 
 Analysis fixes — blank live figure + report crash, both triggered by same-named

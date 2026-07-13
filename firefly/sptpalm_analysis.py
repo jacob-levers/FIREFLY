@@ -11,7 +11,13 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.37"
+__version__ = "2.76.38"
+# v2.76.38 — FIX in-app update "downloads twice": the parallel (4-connection)
+#           installer download discarded the whole attempt and re-downloaded the
+#           entire file single-stream when ANY one connection dropped (common on
+#           proxied / AV university networks).  Each segment now retries + resumes
+#           from the bytes already on disk, so a drop re-fetches only its tail and
+#           the parallel download succeeds — no full re-download.
 # v2.76.37 — FIX Analysis: live figure was blank for EVERY metric when two
 #           conditions shared a name but differed by time point (e.g. "Munc 18"
 #           Pre-drug vs Post-drug) — the engine read it as a 1-group × 2-time
