@@ -540,27 +540,51 @@ def _download_parallel(url: str,
     state = {"done": 0, "last_t": 0.0, "cancel": False}
 
     def _fetch(idx, start, end):
-        h = dict(base_headers); h["Range"] = f"bytes={start}-{end}"
-        with urllib.request.urlopen(
-                urllib.request.Request(url, headers=h), timeout=timeout) as resp, \
-                open(_seg_path(idx), "wb") as out:
-            while True:
-                if state["cancel"]:
-                    raise DownloadError("Download cancelled by user.")
-                chunk = resp.read(CHUNK)
-                if not chunk:
-                    break
-                out.write(chunk)
-                snap = None
-                with lock:
-                    state["done"] += len(chunk)
-                    now = time.monotonic()
-                    if progress_cb is not None and now - state["last_t"] >= 0.1:
-                        state["last_t"] = now
-                        snap = state["done"]
-                if snap is not None:
-                    try:    progress_cb(snap, total)
-                    except Exception: pass
+        # Retry + RESUME this one segment instead of letting a single dropped
+        # connection fail the whole parallel download (which then re-downloads the
+        # entire file single-stream — the "downloads twice" users see on flaky /
+        # proxied / AV networks).  We resume from the bytes already on disk, so a
+        # transient drop only re-fetches the missing tail, not the whole segment.
+        seg = _seg_path(idx)
+        need = end - start + 1                    # bytes this segment must hold
+        SEG_TRIES = 4
+        for attempt in range(1, SEG_TRIES + 1):
+            got = os.path.getsize(seg) if os.path.exists(seg) else 0
+            if got >= need:
+                return                            # already complete
+            h = dict(base_headers)
+            h["Range"] = f"bytes={start + got}-{end}"   # resume from what we have
+            try:
+                with urllib.request.urlopen(
+                        urllib.request.Request(url, headers=h), timeout=timeout) as resp, \
+                        open(seg, "ab" if got else "wb") as out:
+                    while True:
+                        if state["cancel"]:
+                            raise DownloadError("Download cancelled by user.")
+                        chunk = resp.read(CHUNK)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        snap = None
+                        with lock:
+                            state["done"] += len(chunk)
+                            now = time.monotonic()
+                            if progress_cb is not None and now - state["last_t"] >= 0.1:
+                                state["last_t"] = now
+                                snap = state["done"]
+                        if snap is not None:
+                            try:    progress_cb(snap, total)
+                            except Exception: pass
+                if os.path.getsize(seg) >= need:
+                    return                        # segment complete
+                # short read (connection closed early) → loop to resume the tail
+            except DownloadError:
+                raise                             # user cancel → propagate at once
+            except Exception:
+                if attempt >= SEG_TRIES:
+                    raise                         # give up → parallel falls back once
+                time.sleep(0.4 * attempt)         # brief backoff, then resume
+        raise DownloadError(f"segment {idx} incomplete after {SEG_TRIES} tries")
 
     # Poll the cancel callback off the worker threads.
     stop_poll = threading.Event()

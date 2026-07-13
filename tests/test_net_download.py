@@ -120,6 +120,44 @@ def test_finalize_retries_transient_lock_then_succeeds(tmp_path, monkeypatch):
     assert calls["n"] == 3 and dest.read_bytes() == b"payload"
 
 
+# ── parallel segment resume (the "update downloads twice" fix) ────────────────
+def test_parallel_dropped_segment_resumes_without_full_refetch(tmp_path, monkeypatch):
+    """A dropped parallel segment must RESUME (re-fetch only its missing tail),
+    not fail the whole parallel download into a full single-stream re-download —
+    the cause of the 'update downloads twice' on flaky / proxied / AV networks."""
+    monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
+    TOTAL = 12 * 1024 * 1024                      # > MIN_PARALLEL_BYTES → parallel runs
+    data = os.urandom(TOTAL)
+    served = {"bytes": 0}
+    dropped = {"done": False}
+
+    def fake_urlopen(req, timeout=None):
+        s, _, e = (req.get_header("Range") or "").replace("bytes=", "").partition("-")
+        start = int(s); end = int(e) if e else TOTAL - 1
+        if start == 0 and end == 0:               # probe → advertise Range support + total
+            r = _FakeResp(data[:1], status=206)
+            r.headers = {"Content-Range": f"bytes 0-0/{TOTAL}", "Content-Length": "1"}
+            return r
+        seg = data[start:end + 1]
+        if not dropped["done"] and start >= TOTAL // 4:   # drop one segment once, mid-stream
+            dropped["done"] = True
+            seg = seg[: len(seg) // 2]            # short body → the connection "ends" early
+        served["bytes"] += len(seg)
+        r = _FakeResp(seg, status=206)
+        r.headers = {"Content-Length": str(len(seg))}
+        return r
+
+    monkeypatch.setattr(nd.urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "out.bin"
+    nd.download_file("http://x/big", str(dest),
+                     validate_cb=lambda p: open(p, "rb").read() == data,
+                     parallel_segments=4, max_attempts=1)
+
+    assert dropped["done"]                        # the simulated drop happened
+    assert dest.read_bytes() == data              # file assembled correctly despite it
+    assert served["bytes"] < TOTAL * 1.5          # only the dropped tail re-fetched — NOT the whole file twice
+
+
 def test_finalize_gives_up_terminally(tmp_path, monkeypatch):
     monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
     part = tmp_path / "f.part"; part.write_bytes(b"x")
