@@ -623,50 +623,54 @@ Flickable {
                 // one tile per queued series — wraps to as many rows as needed
                 Flow {
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: 7
                     Repeater {
                         model: Batch.runQueue
                         delegate: Item {
+                            id: node
                             required property var modelData
-                            implicitWidth: 20; implicitHeight: 20
+                            // 24px box holds the 20px tile + its 2px ring (inset), so
+                            // the running tile's glow never spills onto its neighbours
+                            // or the card edge — and gives each square more breathing room.
+                            implicitWidth: 24; implicitHeight: 24
+                            readonly property bool isRunning: modelData.current
+                                                              || modelData.status === "running"
+                            // breathing glow: the running tile + its ring fade their
+                            // intensity 1.0 ↔ 0.4 over 1.4 s (matches the design mockup).
+                            // Reduce-motion → static (pulse stays 1.0).
+                            property real pulse: 1.0
+                            SequentialAnimation on pulse {
+                                running: node.isRunning && Batch.running && !Theme.reducedMotion
+                                loops: Animation.Infinite
+                                // ease-in down + ease-out up == CSS ease-in-out over the
+                                // 1 → 0.4 → 1 cycle: dwells bright, quick through the dim.
+                                NumberAnimation { from: 1.0; to: 0.4; duration: 700; easing.type: Easing.InSine }
+                                NumberAnimation { from: 0.4; to: 1.0; duration: 700; easing.type: Easing.OutSine }
+                            }
+                            // soft accent ring around the running tile — inset border
+                            // keeps it inside the 24px box; fades in sync with the tile.
                             Rectangle {
-                                anchors.fill: parent
-                                radius: 5
+                                anchors.centerIn: parent
+                                width: 24; height: 24; radius: 7
+                                color: "transparent"
+                                border.width: 2; border.color: pal.ACC
+                                visible: node.isRunning
+                                opacity: node.pulse * 0.4
+                            }
+                            // the tile
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 20; height: 20; radius: 5
                                 readonly property bool plain: modelData.status !== "done"
                                                               && modelData.status !== "error"
-                                                              && modelData.status !== "running"
-                                color: modelData.status === "done"    ? pal.SUCCESS
-                                     : modelData.status === "error"   ? pal.DANGER
-                                     : modelData.status === "running" ? pal.ACC
+                                                              && !node.isRunning
+                                color: modelData.status === "done"  ? pal.SUCCESS
+                                     : modelData.status === "error" ? pal.DANGER
+                                     : node.isRunning               ? pal.ACC
                                      : pal.PANEL_ALT
                                 border.width: plain ? 1 : 0
                                 border.color: pal.BORDER
-                            }
-                            // pulsing ring on the running tile (mirrors the stepper)
-                            Rectangle {
-                                anchors.centerIn: parent
-                                width: 26; height: 26; radius: 7
-                                color: "transparent"
-                                border.width: 2; border.color: pal.ACC
-                                visible: modelData.current && !Theme.reducedMotion
-                                opacity: 0.0
-                                SequentialAnimation on opacity {
-                                    running: modelData.current && Batch.running && !Theme.reducedMotion
-                                    loops: Animation.Infinite
-                                    NumberAnimation { from: 0.55; to: 0.0; duration: 1200; easing.type: Easing.OutQuad }
-                                }
-                                SequentialAnimation on scale {
-                                    running: modelData.current && Batch.running && !Theme.reducedMotion
-                                    loops: Animation.Infinite
-                                    NumberAnimation { from: 1.0; to: 1.35; duration: 1200; easing.type: Easing.OutQuad }
-                                }
-                            }
-                            // static ring when reduced motion is on (still identifiable)
-                            Rectangle {
-                                anchors.centerIn: parent
-                                width: 24; height: 24; radius: 6
-                                color: "transparent"; border.width: 2; border.color: pal.ACC
-                                visible: modelData.current && Theme.reducedMotion
+                                opacity: node.isRunning ? node.pulse : 1.0
                             }
                         }
                     }

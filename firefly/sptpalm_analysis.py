@@ -11,7 +11,13 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.41-rc.1"
+__version__ = "2.76.42-rc.1"
+# v2.76.42-rc.1 — PRE-RELEASE.  Batch-queue pip grid polish: the running tile's
+#           animation no longer overlaps its neighbours (each tile sits in a 24px
+#           box that fully contains its 20px square + inset 2px ring, with more
+#           spacing), and the running tile now "breathes" its intensity
+#           (1.0 ↔ 0.4 over 1.4 s, ease-in-out) — a faithful match to the design
+#           mockup, replacing the expanding ring that caused the overlap.
 # v2.76.41-rc.1 — PRE-RELEASE.  FIX the app theme reverting (typically to AMOLED)
 #           on every macOS update: the theme + accent were stored in a QSettings
 #           domain (FIREFLY/sptPALM) that matched neither the app's org/app name

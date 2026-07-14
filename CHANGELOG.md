@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.42-rc.1 — 14 Jul 2026
+
+Pre-release for testing: batch-queue pip-grid polish.
+
+### Fixed
+
+- **The running tile's animation on the Process batch queue overlapped its
+  neighbours.** It was an expanding ring that grew past the tile onto the
+  surrounding squares and the card edge. Each tile now sits in a slightly larger
+  box that fully contains its square and ring, with more spacing between squares.
+
+### Changed
+
+- **The running batch tile now "breathes".** Instead of the expanding ring, the
+  running square and its ring gently pulse their intensity (bright to dim and
+  back, ~1.4 s) — matching the intended design.
+
 ## v2.76.41-rc.1 — 14 Jul 2026
 
 Pre-release for testing: the app theme no longer reverts to AMOLED on update.
