@@ -11,7 +11,15 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.40-rc.1"
+__version__ = "2.76.41-rc.1"
+# v2.76.41-rc.1 — PRE-RELEASE.  FIX the app theme reverting (typically to AMOLED)
+#           on every macOS update: the theme + accent were stored in a QSettings
+#           domain (FIREFLY/sptPALM) that matched neither the app's org/app name
+#           nor its bundle id, so cfprefsd didn't reliably flush those writes when
+#           the .app was replaced.  Both now live in the primary jacoblevers/
+#           FIREFLY store (like every other setting), with a one-time migration:
+#           a stuck AMOLED normalises to Dark (the default), a deliberate Light is
+#           kept, and AMOLED stays selectable + persists if actually chosen.
 # v2.76.40-rc.1 — PRE-RELEASE.  (1) The regular-batch → Process screen work now
 #           shows a compact pip-grid "Batch queue" above the console (one tile per
 #           series, running one ringed) with a "Now" caption.  (2) FIX Analysis:

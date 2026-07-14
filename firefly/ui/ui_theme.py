@@ -69,20 +69,27 @@ _THEMES = {
 
 
 def _pick_startup_theme() -> str:
-    """Read the user's chosen app theme from QSettings (the same key
-    the Figures-tab dropdown writes to), defaulting to "Dark".  Used
-    once at module-load time to select which palette `_THEME` points
-    at for the lifetime of this process — see the AMOLED-theme block
-    docstring above for why a live-switch isn't currently supported.
+    """Read the user's chosen app theme, defaulting to "Dark".
+
+    Stored in the app's PRIMARY settings domain (``jacoblevers``/``FIREFLY``) —
+    the same store as reduce-motion / font-size, which persist reliably.  The
+    theme used to live in a SEPARATE QSettings domain (``FIREFLY``/``sptPALM``)
+    that matches neither the app's org/app name nor its bundle id, so on macOS
+    ``cfprefsd`` didn't reliably flush its writes across an in-app update — the
+    theme reverted (typically to AMOLED) on every update.  One-time migration off
+    the old domain preserves a deliberate Light choice; anything else (including a
+    stuck AMOLED) starts on Dark.  AMOLED stays selectable and now persists.
     """
     try:
-        s = QtCore.QSettings("FIREFLY", "sptPALM")
-        name = str(s.value("ui/app_theme", "Dark") or "Dark")
-        if name in _THEMES:
-            return name
+        name = QtCore.QSettings("jacoblevers", "FIREFLY").value("ui/app_theme", None)
+        if name is None:                        # migrate from the old (foreign) store
+            old = str(QtCore.QSettings("FIREFLY", "sptPALM")
+                      .value("ui/app_theme", "") or "")
+            name = "Light" if old == "Light" else "Dark"
+        name = str(name or "Dark")
+        return name if name in _THEMES else "Dark"
     except Exception:
-        pass
-    return "Dark"
+        return "Dark"
 
 
 _ACTIVE_THEME_NAME = _pick_startup_theme()

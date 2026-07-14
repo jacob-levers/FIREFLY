@@ -80,10 +80,14 @@ class ThemeController(QObject):
                 "ui/reduce_motion", False, type=bool)
         except Exception:
             self._reduced_motion = False
-        # accent lives alongside the theme (FIREFLY/sptPALM, key ui/accent).
+        # accent lives in the primary store (jacoblevers/FIREFLY, key ui/accent),
+        # alongside the theme — moved off the old FIREFLY/sptPALM domain that
+        # didn't persist reliably across a macOS update (see _pick_startup_theme).
         self._accent = "Luminous blue"
         try:
-            a = QSettings("FIREFLY", "sptPALM").value("ui/accent", "Luminous blue")
+            a = QSettings("jacoblevers", "FIREFLY").value("ui/accent", None)
+            if a is None:                       # one-time migration from the old store
+                a = QSettings("FIREFLY", "sptPALM").value("ui/accent", "Luminous blue")
             if any(x["name"] == a for x in self._ACCENTS):
                 self._accent = a
         except Exception:
@@ -159,7 +163,7 @@ class ThemeController(QObject):
         if any(a["name"] == name for a in self._ACCENTS) and name != self._accent:
             self._accent = name
             try:
-                s = QSettings("FIREFLY", "sptPALM")
+                s = QSettings("jacoblevers", "FIREFLY")   # primary store (survives updates)
                 s.setValue("ui/accent", name); s.sync()
             except Exception:
                 pass
@@ -226,9 +230,11 @@ class ThemeController(QObject):
     def setTheme(self, name: str):
         if name in _THEMES and name != self._name:
             self._name = name
-            # persist to the SAME key the Widgets Figures-tab dropdown writes.
+            # Persist to the primary store (jacoblevers/FIREFLY) so it survives an
+            # in-app update — the old FIREFLY/sptPALM domain didn't (see
+            # _pick_startup_theme).  sync() flushes now to survive a crash/relaunch.
             try:
-                s = QSettings("FIREFLY", "sptPALM")
+                s = QSettings("jacoblevers", "FIREFLY")
                 s.setValue("ui/app_theme", name); s.sync()
             except Exception:
                 pass

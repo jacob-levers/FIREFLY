@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.76.41-rc.1 — 14 Jul 2026
+
+Pre-release for testing: the app theme no longer reverts to AMOLED on update.
+
+### Fixed
+
+- **The app theme reverted (usually to AMOLED) on every update.** The theme and
+  accent colour were stored in a QSettings domain that matched neither the app's
+  name nor its bundle identifier, so on macOS the writes weren't reliably flushed
+  when the app bundle was replaced during an update — the theme snapped back to a
+  stale cached value. Both now live in the same primary settings store as
+  everything else, so your choice sticks. A one-time migration normalises a stuck
+  AMOLED to **Dark** (the default) and preserves a deliberate Light theme; AMOLED
+  is still selectable and now persists correctly.
+
 ## v2.76.40-rc.1 — 14 Jul 2026
 
 Pre-release for testing: batch-queue pip grid, a working Log-D graph style, and
