@@ -11,7 +11,14 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.38"
+__version__ = "2.76.39-rc.1"
+# v2.76.39-rc.1 — PRE-RELEASE.  A regular (non-HYPER-FLY) batch now moves to the
+#           Process screen while it runs — mirroring that cockpit's live detection
+#           preview, pipeline stepper, resource meters and in-depth console — with
+#           a new compact "Batch queue" card above the console for at-a-glance
+#           progress through the queued series.  Previously a serial batch stayed
+#           on the Import screen (progress only, no live preview / console).
+#           HYPER-FLY batches still route to their own dashboard.
 # v2.76.38 — FIX in-app update "downloads twice": the parallel (4-connection)
 #           installer download discarded the whole attempt and re-downloaded the
 #           entire file single-stream when ANY one connection dropped (common on

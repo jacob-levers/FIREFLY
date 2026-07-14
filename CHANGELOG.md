@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.76.39-rc.1 — 14 Jul 2026
+
+Pre-release for testing: a regular batch now runs on the Process screen with a
+live queue.
+
+### Changed
+
+- **A regular (non-HYPER-FLY) batch moves to the Process screen while it runs.**
+  It previously stayed on the Import screen — which showed queue progress but
+  lacked the Process screen's live detection preview and in-depth console. The
+  running batch now drives the Process cockpit (live preview, pipeline stepper,
+  resource meters, full log), so you get the same rich view a single-file run
+  has. HYPER-FLY (parallel) batches still route to their own dashboard.
+
+### Added
+
+- **A compact "Batch queue" card above the Process console.** A small,
+  at-a-glance view of the queued series — status dot, name, and a mini progress
+  bar on the file currently running — so you can see overall batch progress
+  without leaving the Process screen. Less detailed than the Import queue by
+  design.
+
 ## v2.76.38 — 13 Jul 2026
 
 Update download no longer runs twice on restrictive networks.

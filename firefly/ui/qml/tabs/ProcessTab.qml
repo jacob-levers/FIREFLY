@@ -595,6 +595,84 @@ Flickable {
             }
         }
 
+        // ── batch queue (only while a serial batch mirrors this cockpit) ──
+        // Compact, at-a-glance progress through the queued series — the Process
+        // screen otherwise shows only the current file.
+        Card {
+            Layout.fillWidth: true
+            visible: Batch.running
+            Layout.preferredHeight: bqCol.implicitHeight + sc.sp4 * 2
+            ColumnLayout {
+                id: bqCol
+                x: sc.sp4; y: sc.sp4
+                width: parent.width - sc.sp4 * 2
+                spacing: sc.sp3
+                RowLayout {
+                    Layout.fillWidth: true
+                    Icon { name: "layers"; size: 13; color: pal.TXT_MUTED }
+                    Text { text: "Batch queue"; color: pal.TXT
+                           font.pixelSize: sc.textSm; font.bold: true }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: Batch.filesDone + " / " + Batch.filesTotal + " done"
+                              + (Batch.filesFailed > 0 ? " · " + Batch.filesFailed + " failed" : "")
+                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                    }
+                }
+                // The list is capped + scrollable so a big batch stays compact.
+                ListView {
+                    id: bqList
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(contentHeight, 132)
+                    interactive: contentHeight > height
+                    clip: true
+                    spacing: sc.sp2
+                    model: Batch.runQueue
+                    delegate: RowLayout {
+                        required property var modelData
+                        width: bqList.width
+                        spacing: sc.sp3
+                        Rectangle {
+                            width: 8; height: 8; radius: 4
+                            Layout.alignment: Qt.AlignVCenter
+                            color: modelData.status === "done"    ? pal.SUCCESS
+                                 : modelData.status === "error"   ? pal.DANGER
+                                 : modelData.status === "running" ? pal.ACC
+                                 : pal.BORDER
+                        }
+                        Text {
+                            text: modelData.name
+                            color: modelData.current ? pal.TXT : pal.TXT_MUTED
+                            font.pixelSize: sc.textXs
+                            font.bold: modelData.current
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: 160
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            implicitHeight: 4; radius: 2
+                            color: pal.PANEL_ALT
+                            clip: true
+                            Rectangle {
+                                height: parent.height; radius: 2
+                                width: Math.max(0, Math.min(1, modelData.progress / 100)) * parent.width
+                                color: modelData.status === "error" ? pal.DANGER
+                                     : modelData.status === "done"  ? pal.SUCCESS : pal.ACC
+                                Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
+                            }
+                        }
+                        Text {
+                            visible: modelData.current
+                            text: Math.round(modelData.progress) + "%"
+                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
+                            Layout.preferredWidth: 34; horizontalAlignment: Text.AlignRight
+                        }
+                    }
+                }
+            }
+        }
+
         // ── compact run log ──────────────────────────────────────────────
         Card {
             Layout.fillWidth: true

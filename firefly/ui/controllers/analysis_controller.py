@@ -82,6 +82,9 @@ class AnalysisController(QObject):
     runFinished = Signal()
     runFailed = Signal(str)
     runStopped = Signal()
+    # Raised when Stop is pressed while this cockpit is mirroring an external
+    # run (a serial batch) — BatchController owns that worker, so it handles it.
+    externalStopRequested = Signal()
 
     def __init__(self, settings, importc, roi_store=None, override_store=None,
                  parent=None):
@@ -96,6 +99,7 @@ class AnalysisController(QObject):
         self._cancel_event = None
 
         self._running = False
+        self._external = False         # True while mirroring a serial batch run
         self._stage = -1
         self._complete = False
         self._progress = 0
@@ -286,6 +290,11 @@ class AnalysisController(QObject):
     @Slot()
     def stop(self):
         """Cooperative cancel; the poller escalates to SIGTERM→SIGKILL."""
+        if self._external:
+            # We're only mirroring a serial batch — hand Stop back to the owner
+            # (BatchController) instead of touching our own idle subprocess.
+            self.externalStopRequested.emit()
+            return
         if self._proc is not None and self._proc.is_alive():
             if self._cancel_event is not None:
                 self._cancel_event.set()
@@ -294,6 +303,96 @@ class AnalysisController(QObject):
             self.logLine.emit(
                 "\n── Stop requested.  Waiting for the current stage to reach a "
                 "checkpoint (up to 5 s); will force-terminate if it doesn't.")
+
+    # ── external run mirroring (a serial batch drives this cockpit) ──────
+    # A serial (non-HYPER-FLY) batch emits the SAME per-file message stream a
+    # single run does — preview frames, progress, log, mass.  Rather than
+    # duplicate the whole cockpit, BatchController feeds that stream in through
+    # these hooks so the Process screen shows the batch's live detection, log,
+    # stepper and resource meters.  No subprocess is spawned here: the batch
+    # owns its worker, and Stop is routed back via externalStopRequested.
+    def beginExternalRun(self) -> bool:
+        """Enter mirror mode.  Returns False (no-op) if a run is already live."""
+        if self._running:
+            return False
+        self._external = True
+        self._stage = -1
+        self._complete = False
+        self._progress = 0
+        self._progress_text = "Starting…"
+        self._stage_label = "Starting…"
+        self._headline = ""
+        self._out_dir = ""
+        self._severity = ""
+        self._stats = {}
+        self._live_image = None
+        self._minmass = -1.0
+        self._stop_requested_at = None
+        self._stop_stage = 0
+        self.stageChanged.emit()
+        self.progressChanged.emit()
+        self.resultChanged.emit()
+        self.statsChanged.emit()
+        self.frameTokenChanged.emit()
+        self.minmassChanged.emit()
+        self._running = True
+        self._run_start = time.monotonic()
+        self._elapsed = "00:00"
+        self.runningChanged.emit()
+        self.elapsedChanged.emit()
+        self._elapsed_timer.start()
+        self._sample_resources()
+        return True
+
+    def feedLog(self, line):
+        if self._external and line:
+            self.logLine.emit(line)
+
+    def feedProgress(self, pct, msg=""):
+        if self._external:
+            self._apply_progress((pct, msg))
+
+    def feedMass(self, vals):
+        if not self._external:
+            return
+        try:
+            self.massChunk.emit([float(v) for v in vals])
+        except Exception:
+            pass
+
+    def feedPreview(self, payload):
+        if self._external:
+            self._on_preview(payload)
+
+    def resetStepper(self):
+        """A new file is starting inside the batch — rewind the per-file stepper."""
+        if self._external:
+            self._stage = -1
+            self._complete = False
+            self.stageChanged.emit()
+
+    def endExternalRun(self, severity="ok", headline="", out_dir="", stats=None):
+        if not self._external:
+            return
+        self._severity = severity or ""
+        self._headline = headline or ""
+        self._out_dir = out_dir or ""
+        self._stats = {str(k): v for k, v in (stats or {}).items()}
+        if severity == "ok":
+            self._set_complete()
+            self._progress = 100
+            self._progress_text = "Complete"
+        self.resultChanged.emit()
+        self.statsChanged.emit()
+        self.progressChanged.emit()
+        self._elapsed_timer.stop()
+        if self._run_start is not None:
+            self._elapsed = _format_elapsed(time.monotonic() - self._run_start)
+            self.elapsedChanged.emit()
+        self._run_start = None
+        self._external = False
+        self._running = False
+        self.runningChanged.emit()
 
     # ── queue drain (33 Hz) ──────────────────────────────────────────────
     def _drain(self):

@@ -94,15 +94,21 @@ class BatchController(QObject):
     runFinished = Signal()
     runFailed = Signal(str)
     runStopped = Signal()
+    # Ask the shell to switch tabs when a run starts (Process cockpit for a
+    # serial batch, HYPER-FLY dashboard for a parallel one).
+    requestTab = Signal(int)
 
     def __init__(self, settings, importc, roi_store=None, override_store=None,
-                 hyperfly=None, parent=None):
+                 hyperfly=None, cockpit=None, parent=None):
         super().__init__(parent)
         self._s = settings
         self._import = importc
         self._roi_store = roi_store
         self._override_store = override_store
         self._hf = hyperfly       # HyperflyController (live parallel dashboard)
+        self._cockpit = cockpit   # AnalysisController — a serial batch mirrors it
+        self._driving_cockpit = False   # True while feeding the Process cockpit
+        self._final_result = None       # (severity, headline, out_dir, stats) for endExternalRun
         self._folder = ""
         self._recursive = False
         self._out_dir = ""
@@ -656,6 +662,23 @@ class BatchController(QObject):
     def filesFailed(self):
         return self._files_failed
 
+    @Property("QVariantList", notify=seriesChanged)
+    def runQueue(self):
+        """Compact view of the active run set — the series actually queued, with
+        their status + progress — for the at-a-glance queue on the Process tab."""
+        names = {s["key"]: s.get("name", s["key"]) for s in self._series}
+        out = []
+        for i, key in enumerate(self._run_order):
+            st = self._series_status.get(key, "queued")
+            out.append({
+                "name": names.get(key, key),
+                "status": st,
+                "current": (i == self._cur_index),
+                "progress": (self._cur_progress if i == self._cur_index
+                             else 100 if st in ("done", "error") else 0),
+            })
+        return out
+
     # ── params + spawn ───────────────────────────────────────────────────
     def _build_params_list(self):
         out_root = self._out_root()
@@ -716,6 +739,8 @@ class BatchController(QObject):
             except Exception: pass
 
         self._error = ""
+        self._driving_cockpit = False
+        self._final_result = None
         self._files_total = len(params_list)
         self._files_done = 0
         self._files_failed = 0
@@ -730,6 +755,17 @@ class BatchController(QObject):
         self.progressChanged.emit()
         self.statusChanged.emit()
         self._model.allChanged()
+
+        # Decide serial vs HYPER-FLY the same way the worker will (reads the env
+        # we just exported), so we can move to the right screen: a serial batch
+        # mirrors the Process cockpit; a parallel one has its own dashboard.
+        serial = True
+        try:
+            from firefly.analysis.fa_hyperfly import plan_concurrency
+            serial = not plan_concurrency(params_list).get("active", False)
+        except Exception:
+            serial = True
+
         if self._hf:
             # stem → input path, so the dashboard can show each running tile's
             # max-projection (HF_TILE only carries the stem, not the path).
@@ -741,7 +777,7 @@ class BatchController(QObject):
         from firefly import firefly_worker
         ok = self._session.start(
             firefly_worker.run_batch_analysis, params_list, name="FIREFLY-BatchWorker",
-            on_log=self.logLine.emit, on_progress=self._on_progress,
+            on_log=self._on_log, on_progress=self._on_progress,
             done_kind=MsgKind.BATCH_DONE,
             terminal={MsgKind.BATCH_DONE: self._on_batch_done,
                       MsgKind.STOPPED: self._on_stopped,
@@ -749,6 +785,7 @@ class BatchController(QObject):
             forward={MsgKind.FILE_STARTING: self._on_file_starting,
                      MsgKind.FILE_DONE: self._on_file_done,
                      MsgKind.FILE_ERROR: self._on_file_error,
+                     MsgKind.MASS_CHUNK: self._on_mass,
                      MsgKind.HF_TILE: self._on_hf_tile,
                      MsgKind.PREVIEW_FRAME: self._on_hf_preview,
                      MsgKind.HYPERFLY_STATUS: self._on_hf_status},
@@ -760,21 +797,51 @@ class BatchController(QObject):
             self.runningChanged.emit()
             self._model.allChanged()
             self.seriesChanged.emit()
+            # A serial batch takes over the Process cockpit (live preview, log,
+            # stepper, meters); a parallel one lights up the HYPER-FLY dashboard.
+            if serial and self._cockpit is not None and self._cockpit.beginExternalRun():
+                self._driving_cockpit = True
+                self.requestTab.emit(1)          # Process
+            elif not serial:
+                self.requestTab.emit(4)          # HYPER-FLY
 
     @Slot()
     def stop(self):
         self._session.stop()
 
     # ── drain callbacks ──────────────────────────────────────────────────
+    def _on_log(self, line):
+        self.logLine.emit(line)
+        if self._driving_cockpit and self._cockpit is not None:
+            self._cockpit.feedLog(line)
+
+    def _on_mass(self, payload):
+        if self._driving_cockpit and self._cockpit is not None:
+            self._cockpit.feedMass(payload)
+
     def _on_progress(self, payload):
         try:
-            pct, _ = payload
-            self._progress = int(pct)
-            self._cur_progress = int(pct)
-            self.progressChanged.emit()
-            self._refresh_running_row()      # advance the running series' bar
+            pct, msg = payload
         except Exception:
-            pass
+            try:
+                pct, msg = int(payload[0]), ""
+            except Exception:
+                return
+        self._progress = int(pct)
+        self._cur_progress = int(pct)
+        self.progressChanged.emit()
+        self._refresh_running_row()          # advance the running series' bar
+        if self._driving_cockpit and self._cockpit is not None:
+            # The batch stamps a "[i/n] file" marker (overall %) at each file
+            # boundary; skip it so the cockpit's bar reads as a smooth overall
+            # (completed files + the current file's fraction) and the stepper
+            # only advances on real per-file stage messages.
+            m = str(msg or "")
+            if not m.startswith("["):
+                p = max(0, min(100, int(pct)))
+                overall = int(100 * (self._files_done + p / 100.0)
+                              / max(1, self._files_total))
+                self._cockpit.feedProgress(overall, m)
 
     def _mark(self, status):
         if 0 <= self._cur_index < len(self._run_order):
@@ -796,6 +863,8 @@ class BatchController(QObject):
         self.statusChanged.emit()
         self._model.allChanged()
         self.seriesChanged.emit()
+        if self._driving_cockpit and self._cockpit is not None:
+            self._cockpit.resetStepper()      # rewind the per-file stepper
 
     def _on_file_done(self, payload):
         self._mark("done")
@@ -830,10 +899,20 @@ class BatchController(QObject):
     def _on_hf_preview(self, payload):
         if self._hf:
             self._hf.onPreview(payload)
+        if self._driving_cockpit and self._cockpit is not None:
+            self._cockpit.feedPreview(payload)
 
     def _on_hf_status(self, payload):
         if self._hf:
             self._hf.onStatus(payload)
+        # We predicted serial but HYPER-FLY engaged after all — detach the
+        # cockpit mirror and move to the dashboard (belt-and-braces; the
+        # prediction reads the same env the worker does, so this is rare).
+        if self._driving_cockpit and (payload or {}).get("active"):
+            self._driving_cockpit = False
+            if self._cockpit is not None:
+                self._cockpit.endExternalRun("", "", "", {})
+            self.requestTab.emit(4)
 
     def _on_batch_done(self, payload):
         payload = payload or {}
@@ -843,10 +922,23 @@ class BatchController(QObject):
         self._status = f"Batch complete — {n_ok} ok" + (f", {n_fail} failed" if n_fail else "")
         self.progressChanged.emit()
         self.statusChanged.emit()
+        # Cockpit result card: headline + aggregate trajectory/localisation totals.
+        results = payload.get("results") or []
+        stats = {}
+        try:
+            stats = {"n_tracks": int(sum(r.get("n_tracks", 0) or 0 for r in results)),
+                     "n_locs":   int(sum(r.get("n_locs", 0) or 0 for r in results))}
+        except Exception:
+            stats = {}
+        self._final_result = (
+            "warn" if n_fail else "ok",
+            f"Batch complete — {n_ok} ok" + (f", {n_fail} failed" if n_fail else ""),
+            self._out_root(), stats)
         self.runFinished.emit()
 
     def _on_stopped(self, _payload=None):
         self._finish("Stopped")
+        self._final_result = ("warn", "Batch stopped", "", {})
         self.runStopped.emit()
 
     def _on_error(self, message):
@@ -854,6 +946,7 @@ class BatchController(QObject):
         self._error = str(message or "Batch failed.")
         self.logLine.emit("\n" + self._error)
         self.statusChanged.emit()
+        self._final_result = ("error", "Batch error — see log", "", {})
         self.runFailed.emit(self._error)
 
     def _finish(self, status):
@@ -869,6 +962,12 @@ class BatchController(QObject):
         self._running = False
         if self._hf:
             self._hf.finish()
+        if self._driving_cockpit and self._cockpit is not None:
+            sev, headline, out_dir, stats = (
+                self._final_result or ("ok", "Batch complete", "", {}))
+            self._cockpit.endExternalRun(sev, headline, out_dir, stats)
+        self._driving_cockpit = False
+        self._final_result = None
         self.runningChanged.emit()
         self._model.allChanged()
         self.seriesChanged.emit()

@@ -165,7 +165,14 @@ def build_main_window(app: QtWidgets.QApplication):
     presets.seed_builtins()               # ship the built-in PC12 / Drosophila presets
     hyperfly = HyperflyController()       # live parallel-batch (HYPER-FLY) dashboard
     batchc = BatchController(settings, importc, roi_store=roi_store,
-                             override_store=roi_override, hyperfly=hyperfly)
+                             override_store=roi_override, hyperfly=hyperfly,
+                             cockpit=analysis)
+    # A serial (non-HYPER-FLY) batch mirrors the Process cockpit: it drives the
+    # AnalysisController's live preview/log/stepper and asks the shell to move to
+    # the Process tab; a parallel batch moves to the HYPER-FLY dashboard.  Stop
+    # pressed on the mirrored cockpit is routed back to the batch worker.
+    batchc.requestTab.connect(appc.enterMain)
+    analysis.externalStopRequested.connect(batchc.stop)
     updates = UpdatesController(settings)
     # In-app update: once the swap-and-relaunch helper is staged, the app MUST
     # quit so the helper can replace the running bundle and relaunch it.
