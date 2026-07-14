@@ -3,7 +3,14 @@ domain that reverted the theme (typically to AMOLED) on every macOS update.
 
 The fake QSettings keeps the test off the real user plists (no pollution).
 """
-from firefly.ui import ui_theme
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest                                            # noqa: E402
+
+pytest.importorskip("PySide6")                            # skip in the Qt-less CI image
+from firefly.ui import ui_theme                           # noqa: E402
 
 NEW = ("jacoblevers", "FIREFLY")     # primary store — persists reliably
 OLD = ("FIREFLY", "sptPALM")         # old foreign domain — the bug's source
