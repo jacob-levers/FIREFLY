@@ -587,6 +587,15 @@ class AnalysisWorkspaceController(QObject):
         self._debounce.setInterval(_DEBOUNCE_MS)
         self._debounce.timeout.connect(self._launch_figure)
 
+        # Live-update the Analysis figures when a Figures preference changes
+        # (graph styles, theme, mobile-D threshold): the cached renders are keyed
+        # only by data-rev, so without this a style change never reaches the tab.
+        if self._settings is not None:
+            try:
+                self._settings.changed.connect(self._on_figpref_changed)
+            except (AttributeError, TypeError):
+                pass
+
         self._load_persisted()
         if not self._conditions:
             self._seed_empty()
@@ -1575,6 +1584,35 @@ class AnalysisWorkspaceController(QObject):
         self._engfig_cache.clear()
         self._slices = {}; self._slice_missing = set()
         self._recompute()
+
+    def _on_figpref_changed(self, key):
+        """A Figures preference changed (graph styles, theme, mobile-D threshold)
+        → drop every cached render and redraw the current view live.  Reacts to
+        the whole ``figures/`` namespace so new graph-style keys work for free;
+        ``figures/compare_panels`` is skipped (its own toggle path re-renders,
+        and the controller writes it itself — reacting would loop)."""
+        if not isinstance(key, str):
+            return
+        if not (key.startswith("figures/") or key == "analysis/mobile_d"):
+            return
+        if key == "figures/compare_panels":
+            return
+        # Invalidate every cached render (engine figure + sliced panels +
+        # gallery thumbnails + group-averaged panels), then redraw — reusing the
+        # same invalidation the data-change path uses.
+        self._engfig_rev += 1
+        self._engfig_cache.clear()
+        self._slices = {}; self._slice_missing = set()
+        self._panel_rev += 1
+        self._panel_thumb_cache.clear()
+        self._group_cache.clear()
+        self.panelRevChanged.emit()
+        # Debounced so a "Restore defaults" burst (many keys at once) coalesces
+        # into a single re-render.
+        self._set_busy(True)
+        self._debounce.start()
+        if self._view == "panels":
+            self._render_panel_async()
 
     # ════════════════ QML PROPERTIES ════════════════════════════════════
     @Property("QVariantList", notify=conditionsChanged)

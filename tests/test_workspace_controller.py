@@ -130,6 +130,47 @@ def test_recommend_and_presets_roundtrip(tmp_path):
     assert c.metric == "radial_dist"
 
 
+def test_figpref_change_invalidates_figure_caches(tmp_path):
+    """A Figures preference change (e.g. the log-D graph style) must invalidate
+    the cached renders + bump the revs, so the Analysis tab redraws instead of
+    serving a stale panel — the bug where the style never reached the tab."""
+    c, ids = _ctrl_with_two_conditions(tmp_path)     # settings=None
+    rev0, prev0 = c._engfig_rev, c._panel_rev
+    c._engfig_cache[("logd_dist", rev0)] = object()  # seed a stale cached render
+    seen = []
+    c.panelRevChanged.connect(lambda: seen.append(1))
+
+    c._on_figpref_changed("figures/logd_style")
+    assert c._engfig_rev == rev0 + 1                  # data-rev bumped → cache key stale
+    assert c._engfig_cache == {} and c._slices == {}  # every cached render dropped
+    assert c._panel_rev == prev0 + 1 and seen         # thumbnails told to re-request
+
+    # unrelated keys and the self-managed panel-selection key are ignored (no loop)
+    r = c._engfig_rev
+    c._on_figpref_changed("updates/channel")
+    c._on_figpref_changed("figures/compare_panels")
+    assert c._engfig_rev == r
+
+
+def test_settings_change_signal_is_wired_to_figure_invalidation(tmp_path):
+    """Writing figures/logd_style through the settings object must reach the
+    workspace controller (the missing connection was the root cause)."""
+    from PySide6.QtCore import QObject, Signal
+
+    class FakeSettings(QObject):
+        changed = Signal(str)
+        def __init__(self): super().__init__(); self._d = {}
+        def get(self, k, d=None): return self._d.get(k, d)
+        def getStr(self, k, d=""): return str(self._d.get(k, d))
+        def setValue(self, k, v): self._d[str(k)] = v; self.changed.emit(str(k))
+        def sync(self): pass
+
+    c = AnalysisWorkspaceController(settings=FakeSettings())
+    rev0 = c._engfig_rev
+    c._settings.setValue("figures/logd_style", "ridgeline")
+    assert c._engfig_rev == rev0 + 1                  # signal → handler → invalidation
+
+
 def test_report_progress_drain():
     """compare_groups' progress_cb writes (done,total,msg) off-thread; the GUI
     drain turns it into a determinate bar during loading and an indeterminate one

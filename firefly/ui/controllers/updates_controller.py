@@ -44,6 +44,7 @@ class UpdatesController(QObject):
         self._check_error = ""                     # non-empty → the check couldn't complete
         self._pre_tag = ""                         # newer prerelease (notify-only, stable channel)
         self._pre_url = _RELEASES_PAGE
+        self._return_to_stable = False             # offered release is a return-to-stable, not a forward update
         self._result = None                       # written off-thread, drained on GUI thread
         self._ticks = 0                            # drain ticks → bound the wait
         self._poll = QTimer(self)
@@ -116,6 +117,13 @@ class UpdatesController(QObject):
     def updateAvailable(self):
         return self._available
 
+    @Property(bool, notify=changed)
+    def returningToStable(self):
+        """True when the offered release is a return to the stable build (the
+        running build is a pre-release and the channel is now Stable), so the UI
+        can frame it as 'return to stable' rather than a forward update."""
+        return self._return_to_stable
+
     @Property(str, notify=changed)
     def latestTag(self):
         return self._latest_tag
@@ -186,6 +194,15 @@ class UpdatesController(QObject):
                     chosen = updater.pick_release(releases, include_prerelease=include_pre)
                     rel = updater.parse_release(chosen) if chosen else {}
                     newer = bool(rel.get("tag")) and updater.is_newer(rel["tag"], __version__)
+                    # Leaving the beta channel: a pre-release build running on the
+                    # Stable channel should be offered the stable release to return
+                    # to — even when its version isn't strictly newer (it's a
+                    # channel switch off the beta, effectively a downgrade).
+                    to_stable = False
+                    if (not include_pre and not newer and rel.get("tag")
+                            and updater.is_prerelease_version(__version__)):
+                        newer = True
+                        to_stable = True
                     # notify-about-pre-releases (stable channel only): surface the
                     # newest prerelease if it's newer than both the current build
                     # and the stable release we'd install.  Notify-only — it never
@@ -198,7 +215,8 @@ class UpdatesController(QObject):
                         if (ptag and updater.is_newer(ptag, __version__)
                                 and (not rel.get("tag") or updater.is_newer(ptag, rel["tag"]))):
                             pre = {"tag": ptag, "url": prel.get("html_url") or _RELEASES_PAGE}
-                    payload = {"ok": True, "rel": rel, "newer": newer, "pre": pre}
+                    payload = {"ok": True, "rel": rel, "newer": newer,
+                               "to_stable": to_stable, "pre": pre}
             except Exception as exc:
                 payload = {"ok": False, "err": str(exc)}
             # `self` may be mid-teardown; ignore if the attribute is already gone.
@@ -227,6 +245,7 @@ class UpdatesController(QObject):
             self._last_checked = "just now"
             rel = res.get("rel") or {}
             self._available = bool(res.get("newer"))
+            self._return_to_stable = bool(res.get("to_stable"))
             if rel.get("tag"):
                 self._latest_tag = rel["tag"]
             if rel.get("body"):

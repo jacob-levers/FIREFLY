@@ -11,14 +11,22 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.39-rc.1"
+__version__ = "2.76.40-rc.1"
+# v2.76.40-rc.1 — PRE-RELEASE.  (1) The regular-batch → Process screen work now
+#           shows a compact pip-grid "Batch queue" above the console (one tile per
+#           series, running one ringed) with a "Now" caption.  (2) FIX Analysis:
+#           the log-D graph style (and figure theme / mobile-D) now actually
+#           re-render the live Analysis figures — they were served from a cache
+#           keyed only by data, so preference changes never reached the tab; the
+#           style pickers moved to a new "Graph styles" Preferences section.
+#           (3) FIX updates: pre-release versions now order correctly (rc.1 < rc.2
+#           < final) and switching back to the Stable channel from a beta build
+#           offers a "return to the stable release" instead of staying silent.
 # v2.76.39-rc.1 — PRE-RELEASE.  A regular (non-HYPER-FLY) batch now moves to the
 #           Process screen while it runs — mirroring that cockpit's live detection
 #           preview, pipeline stepper, resource meters and in-depth console — with
-#           a new compact "Batch queue" card above the console for at-a-glance
-#           progress through the queued series.  Previously a serial batch stayed
-#           on the Import screen (progress only, no live preview / console).
-#           HYPER-FLY batches still route to their own dashboard.
+#           a compact "Batch queue" above the console.  HYPER-FLY batches still
+#           route to their own dashboard.
 # v2.76.38 — FIX in-app update "downloads twice": the parallel (4-connection)
 #           installer download discarded the whole attempt and re-downloaded the
 #           entire file single-stream when ANY one connection dropped (common on

@@ -563,6 +563,18 @@ Item {
                     }
                 }
                 Group {
+                    title: "Graph styles"
+                    desc: "How individual graphs are drawn, in both the live Analysis tab and the exported report. More graphs will become customisable here over time."
+                    PrefRow {
+                        label: "Log-D distribution"
+                        desc: "How the per-condition log₁₀(D) distributions are plotted."
+                        Select { implicitWidth: 170; model: root.logdLabels
+                                 currentIndex: (root.rev, Math.max(0, root.logdValues.indexOf(Settings.getStr("figures/logd_style", "overlaid"))))
+                                 onPicked: (t) => { var i = root.logdLabels.indexOf(t)
+                                                    if (i >= 0) Settings.setValue("figures/logd_style", root.logdValues[i]) } }
+                    }
+                }
+                Group {
                     title: "Rendering & quality"
                     desc: "Resolution and line styling for everything FIREFLY draws."
                     PrefRow {
@@ -585,13 +597,6 @@ Item {
                         Select { implicitWidth: 170; model: root.fontOpts
                                  currentIndex: (root.rev, Math.max(0, root.fontOpts.indexOf(Settings.getStr("figures/font", "DejaVu Sans"))))
                                  onPicked: (t) => Settings.setValue("figures/font", t) }
-                    }
-                    PrefRow {
-                        label: "log-D plot style"
-                        Select { implicitWidth: 170; model: root.logdLabels
-                                 currentIndex: (root.rev, Math.max(0, root.logdValues.indexOf(Settings.getStr("figures/logd_style", "overlaid"))))
-                                 onPicked: (t) => { var i = root.logdLabels.indexOf(t)
-                                                    if (i >= 0) Settings.setValue("figures/logd_style", root.logdValues[i]) } }
                     }
                     PrefRow {
                         label: "Anti-aliasing"; desc: "Smooth strokes; disable for crisp pixel-exact masks."
@@ -1035,12 +1040,19 @@ Item {
                             id: upCol
                             x: sc.sp5; y: sc.sp4; width: parent.width - sc.sp5 - sc.sp4
                             spacing: sc.sp3
+                            Text {
+                                visible: Updates.returningToStable
+                                text: "Return to the stable release"
+                                color: pal.ACC; font.pixelSize: sc.textXs; font.weight: Font.DemiBold
+                            }
                             Text { text: Updates.latestTag; color: pal.TXT; font.pixelSize: sc.textMd
                                    font.family: "Menlo"; font.weight: Font.DemiBold }
                             Text {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
                                 text: Updates.releaseBody !== "" ? Updates.releaseBody
-                                                                 : "A new release is available on GitHub."
+                                      : Updates.returningToStable
+                                          ? "You're on a pre-release build. Switch back to the stable release."
+                                          : "A new release is available on GitHub."
                                 color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                                 maximumLineCount: 8; elide: Text.ElideRight
                             }

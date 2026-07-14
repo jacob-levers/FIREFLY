@@ -665,7 +665,7 @@ class BatchController(QObject):
     @Property("QVariantList", notify=seriesChanged)
     def runQueue(self):
         """Compact view of the active run set — the series actually queued, with
-        their status + progress — for the at-a-glance queue on the Process tab."""
+        their status — for the at-a-glance pip grid on the Process tab."""
         names = {s["key"]: s.get("name", s["key"]) for s in self._series}
         out = []
         for i, key in enumerate(self._run_order):
@@ -674,10 +674,24 @@ class BatchController(QObject):
                 "name": names.get(key, key),
                 "status": st,
                 "current": (i == self._cur_index),
-                "progress": (self._cur_progress if i == self._cur_index
-                             else 100 if st in ("done", "error") else 0),
             })
         return out
+
+    @Property(str, notify=seriesChanged)
+    def currentName(self):
+        """Name of the series currently running (for the queue's 'Now' caption)."""
+        if 0 <= self._cur_index < len(self._run_order):
+            key = self._run_order[self._cur_index]
+            for s in self._series:
+                if s["key"] == key:
+                    return s.get("name", key)
+            return key
+        return ""
+
+    @Property(int, notify=seriesChanged)
+    def currentProgress(self):
+        """Progress % of the series currently running (0 when none is live)."""
+        return self._cur_progress if 0 <= self._cur_index < len(self._run_order) else 0
 
     # ── params + spawn ───────────────────────────────────────────────────
     def _build_params_list(self):

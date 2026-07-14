@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.76.40-rc.1 — 14 Jul 2026
+
+Pre-release for testing: batch-queue pip grid, a working Log-D graph style, and
+correct pre-release / return-to-stable update behaviour.
+
+### Changed
+
+- **Batch queue on the Process screen is now a compact pip grid.** One tile per
+  queued series (green done · blue running, ringed · grey queued · red failed)
+  that wraps to as many rows as needed, with a "Now" caption showing the running
+  file and its per-file progress. Replaces the per-row progress bars, which
+  duplicated the overall bar at the top.
+
+### Fixed
+
+- **The Log-D graph style now actually changes the Analysis figures.** The live
+  figures were cached keyed only by the data revision, and the Analysis tab
+  wasn't listening for preference changes — so switching the Log-D plot style (or
+  the figure theme, or the mobile-D threshold) never redrew. Changing any Figures
+  preference now invalidates the cached renders and redraws live. The per-graph
+  style pickers moved into a dedicated **Graph styles** section in Preferences,
+  ready for more graphs to become customisable.
+- **Update channel: pre-release versions now compare correctly and you can
+  return to stable.** `2.76.39-rc.1 < 2.76.39-rc.2 < 2.76.39` (a pre-release
+  precedes its final release), so rc→rc and rc→final read as upgrades. And
+  switching from the Pre-release channel back to Stable while running a beta build
+  now offers a **"return to the stable release"** instead of staying silent.
+
 ## v2.76.39-rc.1 — 14 Jul 2026
 
 Pre-release for testing: a regular batch now runs on the Process screen with a

@@ -82,23 +82,39 @@ def updates_dir() -> str:
 
 # ── Version comparison ────────────────────────────────────────────────────────
 def parse_version(s: str) -> "tuple[int, ...]":
-    """Parse a 'v2.41.0' / '2.41.0-dev3' style tag into a comparable tuple
-    of ints.  Non-numeric suffix segments compare as 0.  (The single
-    canonical comparator — ``_UpdateCheckThread`` delegates here.)"""
+    """Parse a 'v2.41.0' / '2.41.0-rc.2' style tag into a comparable tuple.
+
+    Pre-release aware (semver ordering): a suffix sorts BEFORE the final release
+    of the same x.y.z, and numbered pre-releases order among themselves —
+    ``2.76.39-rc.1 < 2.76.39-rc.2 < 2.76.39``.  Encoded as
+    ``(major, minor, patch, is_final, pre_num)``: a final release is
+    ``(…, 1, 0)``; a pre-release is ``(…, 0, n)`` where ``n`` is the trailing
+    integer in the suffix (``rc.2`` → 2, none → 0).  The single canonical
+    comparator — ``is_newer`` / ``pick_release`` delegate here."""
     import re
-    s = (s or "").lstrip("vV").split("-", 1)[0]
+    raw = (s or "").lstrip("vV")
+    core, _, pre = raw.partition("-")
     parts = []
-    for chunk in s.split("."):
+    for chunk in core.split("."):
         m = re.match(r"(\d+)", chunk)
         parts.append(int(m.group(1)) if m else 0)
-    while len(parts) < 3:
-        parts.append(0)
-    return tuple(parts)
+    parts = (parts + [0, 0, 0])[:3]
+    if pre:
+        m = re.search(r"(\d+)\s*$", pre)
+        return tuple(parts) + (0, int(m.group(1)) if m else 0)
+    return tuple(parts) + (1, 0)
 
 
 def is_newer(latest: str, current: str) -> bool:
     """True if release tag ``latest`` is strictly newer than ``current``."""
     return parse_version(latest) > parse_version(current)
+
+
+def is_prerelease_version(s: str) -> bool:
+    """True if a version string carries a pre-release suffix (e.g. ``2.76.39-rc.1``).
+    Used to offer a return to the stable release when a beta build is running on
+    the Stable channel."""
+    return "-" in (s or "").lstrip("vV")
 
 
 # ── GitHub release discovery ──────────────────────────────────────────────────

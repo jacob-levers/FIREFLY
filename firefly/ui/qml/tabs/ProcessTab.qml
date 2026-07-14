@@ -596,8 +596,9 @@ Flickable {
         }
 
         // ── batch queue (only while a serial batch mirrors this cockpit) ──
-        // Compact, at-a-glance progress through the queued series — the Process
-        // screen otherwise shows only the current file.
+        // A compact pip grid — one tile per queued series, coloured by status,
+        // the running one ringed — so batch progress reads at a glance without
+        // leaving the Process screen (the top bar already covers overall %).
         Card {
             Layout.fillWidth: true
             visible: Batch.running
@@ -619,55 +620,74 @@ Flickable {
                         color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
                     }
                 }
-                // The list is capped + scrollable so a big batch stays compact.
-                ListView {
-                    id: bqList
+                // one tile per queued series — wraps to as many rows as needed
+                Flow {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(contentHeight, 132)
-                    interactive: contentHeight > height
-                    clip: true
-                    spacing: sc.sp2
-                    model: Batch.runQueue
-                    delegate: RowLayout {
-                        required property var modelData
-                        width: bqList.width
-                        spacing: sc.sp3
-                        Rectangle {
-                            width: 8; height: 8; radius: 4
-                            Layout.alignment: Qt.AlignVCenter
-                            color: modelData.status === "done"    ? pal.SUCCESS
-                                 : modelData.status === "error"   ? pal.DANGER
-                                 : modelData.status === "running" ? pal.ACC
-                                 : pal.BORDER
-                        }
-                        Text {
-                            text: modelData.name
-                            color: modelData.current ? pal.TXT : pal.TXT_MUTED
-                            font.pixelSize: sc.textXs
-                            font.bold: modelData.current
-                            elide: Text.ElideRight
-                            Layout.preferredWidth: 160
-                        }
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.alignment: Qt.AlignVCenter
-                            implicitHeight: 4; radius: 2
-                            color: pal.PANEL_ALT
-                            clip: true
+                    spacing: 6
+                    Repeater {
+                        model: Batch.runQueue
+                        delegate: Item {
+                            required property var modelData
+                            implicitWidth: 20; implicitHeight: 20
                             Rectangle {
-                                height: parent.height; radius: 2
-                                width: Math.max(0, Math.min(1, modelData.progress / 100)) * parent.width
-                                color: modelData.status === "error" ? pal.DANGER
-                                     : modelData.status === "done"  ? pal.SUCCESS : pal.ACC
-                                Behavior on width { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
+                                anchors.fill: parent
+                                radius: 5
+                                readonly property bool plain: modelData.status !== "done"
+                                                              && modelData.status !== "error"
+                                                              && modelData.status !== "running"
+                                color: modelData.status === "done"    ? pal.SUCCESS
+                                     : modelData.status === "error"   ? pal.DANGER
+                                     : modelData.status === "running" ? pal.ACC
+                                     : pal.PANEL_ALT
+                                border.width: plain ? 1 : 0
+                                border.color: pal.BORDER
+                            }
+                            // pulsing ring on the running tile (mirrors the stepper)
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 26; height: 26; radius: 7
+                                color: "transparent"
+                                border.width: 2; border.color: pal.ACC
+                                visible: modelData.current && !Theme.reducedMotion
+                                opacity: 0.0
+                                SequentialAnimation on opacity {
+                                    running: modelData.current && Batch.running && !Theme.reducedMotion
+                                    loops: Animation.Infinite
+                                    NumberAnimation { from: 0.55; to: 0.0; duration: 1200; easing.type: Easing.OutQuad }
+                                }
+                                SequentialAnimation on scale {
+                                    running: modelData.current && Batch.running && !Theme.reducedMotion
+                                    loops: Animation.Infinite
+                                    NumberAnimation { from: 1.0; to: 1.35; duration: 1200; easing.type: Easing.OutQuad }
+                                }
+                            }
+                            // static ring when reduced motion is on (still identifiable)
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 24; height: 24; radius: 6
+                                color: "transparent"; border.width: 2; border.color: pal.ACC
+                                visible: modelData.current && Theme.reducedMotion
                             }
                         }
-                        Text {
-                            visible: modelData.current
-                            text: Math.round(modelData.progress) + "%"
-                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo"
-                            Layout.preferredWidth: 34; horizontalAlignment: Text.AlignRight
-                        }
+                    }
+                }
+                // "Now" caption — the running file + its per-file progress
+                Rectangle {
+                    Layout.fillWidth: true; implicitHeight: 1
+                    color: pal.BORDER; visible: Batch.currentName !== ""
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: Batch.currentName !== ""
+                    spacing: sc.sp3
+                    Text { text: "Now"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                    Text {
+                        text: Batch.currentName; color: pal.TXT; font.pixelSize: sc.textXs
+                        elide: Text.ElideRight; Layout.fillWidth: true
+                    }
+                    Text {
+                        text: Math.round(Batch.currentProgress) + "%"; color: pal.ACC
+                        font.pixelSize: sc.textXs; font.family: "Menlo"
                     }
                 }
             }

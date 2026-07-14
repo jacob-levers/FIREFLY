@@ -170,8 +170,10 @@ def test_run_queue_reflects_active_set():
     c._cur_progress = 37
     q = c.runQueue
     assert [r["name"] for r in q] == ["Cell 1", "Cell 2"]
-    assert q[0]["status"] == "done" and q[0]["progress"] == 100
-    assert q[1]["current"] and q[1]["progress"] == 37
+    assert q[0]["status"] == "done" and not q[0]["current"]
+    assert q[1]["status"] == "running" and q[1]["current"]
+    # the 'Now' caption reads the running series + its per-file progress
+    assert c.currentName == "Cell 2" and c.currentProgress == 37
 
 
 def test_clear_running_ends_external_run_with_final_result():
