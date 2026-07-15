@@ -49,3 +49,26 @@ def test_real_changelog_parses():
     assert len(out) == 3
     for e in out:
         assert e["version"].startswith("v") and e["summary"]
+
+
+def test_prereleases_are_skipped_stable_only():
+    """The landing timeline shows only stable releases — rc/dev headings are
+    filtered so users see consolidated stable entries, not fragmented rc ones."""
+    sample = """# Changelog
+
+## v2.76.43 — 15 Jul 2026
+- **Stable release.** Consolidates the rc series.
+
+## v2.76.42-rc.1 — 14 Jul 2026
+- **A pre-release entry.** Should never appear on the landing.
+
+## v2.76.41-rc.1 — 14 Jul 2026
+- **Another rc entry.** Also hidden.
+
+## v2.76.38 — 13 Jul 2026
+- **Older stable.** Still shown.
+"""
+    out = parse_recent_updates(sample, limit=5)
+    assert [r["version"] for r in out] == ["v2.76.43", "v2.76.38"]
+    assert out[0]["summary"] == "Stable release."
+    assert out[1]["summary"] == "Older stable."

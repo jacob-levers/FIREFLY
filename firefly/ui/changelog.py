@@ -18,19 +18,29 @@ _SUMMARY = re.compile(r'-\s+\*\*(.+?)\*\*', re.S)
 
 
 def parse_recent_updates(text: str, limit: int = 3) -> list:
-    """Return the top ``limit`` version sections as
-    ``[{"version", "date", "summary"}]`` (newest first)."""
+    """Return the top ``limit`` STABLE version sections as
+    ``[{"version", "date", "summary"}]`` (newest first).
+
+    Pre-release headings (a version with a ``-rc`` / ``-dev`` suffix) are
+    skipped, so the timeline shows only stable releases — each of which
+    consolidates the changes from its whole pre-release series rather than
+    fragmenting them across rc entries."""
     out = []
     heads = list(_HEADING.finditer(text or ""))
-    for i, m in enumerate(heads[:limit]):
+    for i, m in enumerate(heads):
+        version = m.group(1)
+        if "-" in version.lstrip("vV"):          # e.g. v2.76.44-rc.1 → skip
+            continue
         start = m.end()
         end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
         body = text[start:end]
         sm = _SUMMARY.search(body)
         summary = re.sub(r'\s+', ' ', sm.group(1)).strip() if sm else ""
-        out.append({"version": m.group(1),
+        out.append({"version": version,
                     "date": (m.group(2) or "").strip(),
                     "summary": summary})
+        if len(out) >= limit:
+            break
     return out
 
 

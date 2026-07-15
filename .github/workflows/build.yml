@@ -123,11 +123,27 @@ jobs:
           path: dist/FIREFLY-macOS.dmg
           retention-days: 30
 
+      - name: Release notes from CHANGELOG
+        # The release body (what the in-app "Updates" card shows) is the CHANGELOG
+        # section for this version.  Strip any -rc suffix so a pre-release reuses
+        # its target stable entry.  Exact-substring match (no regex → dots safe).
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          BASE="${GITHUB_REF#refs/tags/v}"; BASE="${BASE%%-*}"
+          awk -v v="$BASE" '
+            index($0, "## v" v " ")==1 {grab=1; print; next}
+            grab && /^## v/ {exit}
+            grab {print}
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then echo "See the CHANGELOG for details." > RELEASE_NOTES.md; fi
+          echo "---- release notes ----"; cat RELEASE_NOTES.md
+
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/FIREFLY-macOS.dmg
+          body_path: RELEASE_NOTES.md
           # A tag with a pre-release suffix (e.g. v2.76.39-rc.1) publishes a
           # GitHub *pre-release* — the Pre-release update channel installs it,
           # the Stable channel skips it, and it never becomes "Latest".
@@ -321,11 +337,31 @@ jobs:
           path: dist\FIREFLY-Windows.exe
           retention-days: 30
 
+      - name: Release notes from CHANGELOG
+        # Same as the macOS job — the CHANGELOG section for this version becomes
+        # the release body.  Windows also writes it so the release is complete
+        # even if the macOS job is skipped or fails.
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $base = ($env:GITHUB_REF -replace '^refs/tags/v','') -replace '-.*',''
+          $prefix = "## v$base "
+          $out = @(); $grab = $false
+          foreach ($l in (Get-Content CHANGELOG.md)) {
+            if ($l.StartsWith($prefix)) { $grab = $true; $out += $l; continue }
+            if ($grab -and $l -match '^## v') { break }
+            if ($grab) { $out += $l }
+          }
+          if ($out.Count -eq 0) { $out = @("See the CHANGELOG for details.") }
+          ($out -join "`n") | Set-Content -Encoding UTF8 RELEASE_NOTES.md
+          Write-Host "---- release notes ----"; Get-Content RELEASE_NOTES.md
+
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist\FIREFLY-Windows.exe
+          body_path: RELEASE_NOTES.md
           # See the macOS job: a hyphenated tag ships a GitHub pre-release.
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
