@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.4"
+__version__ = "2.76.44-rc.5"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -26,7 +26,11 @@ __version__ = "2.76.44-rc.4"
 #           responsive and more folders can be dropped while others load.
 #           (4) CHANGE the "update available" card renders its release notes as
 #           Markdown (bold, code spans, bullets) instead of the raw ## / ** /
-#           backtick source, and drops the redundant version heading.
+#           backtick source, and drops the redundant version heading.  (5) FIX
+#           Visualise: a run whose params.json was empty or BOM-prefixed aborted
+#           with "Expecting value: line 1 column 1 (char 0)".  The JSON loader is
+#           now BOM/empty-tolerant, and a run loads its tracks + diffusion even
+#           when params.json is unreadable (only the recorded stack is skipped).
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

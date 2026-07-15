@@ -9,6 +9,11 @@
   or micro sign (`°` / `µ`) from a palmTRACER or Excel export — the load aborted.
   The viewer now reads those files with a `cp1252` → `latin-1` fallback, so they
   open normally.
+- **Visualiser couldn't load some runs** with `Expecting value: line 1 column 1
+  (char 0)`. A run whose `params.json` was empty or started with a UTF-8 BOM
+  (common in Windows-written files) failed to open. The loader now strips a BOM,
+  handles an empty file cleanly, and — if `params.json` can't be read at all —
+  still loads the run's tracks and diffusion, skipping only the recorded stack.
 - **Update progress could shoot past 100% and jump back to 0%.** On some
   networks a download segment resumed after the proxy ignored its range request,
   double-counting its bytes. Progress is now measured from the bytes actually on
