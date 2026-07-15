@@ -23,6 +23,17 @@ from test_workspace_data import make_run_folder
 _app = QApplication.instance() or QApplication([])
 
 
+def _await_load(c, timeout=10.0):
+    """Folder loading is async (off the GUI thread); pump the event loop until
+    every dropped folder has resolved so the synchronous readout is settled."""
+    import time
+    deadline = time.monotonic() + timeout
+    while c.loadingFolders and time.monotonic() < deadline:
+        _app.processEvents()
+        time.sleep(0.01)
+    _app.processEvents()
+
+
 def _ctrl_with_two_conditions(tmp_path, d_lo=0.04, d_hi=0.35, nf=4):
     c = AnalysisWorkspaceController(settings=None)
     ids = [cond["id"] for cond in c.conditions]
@@ -30,7 +41,32 @@ def _ctrl_with_two_conditions(tmp_path, d_lo=0.04, d_hi=0.35, nf=4):
     for k in range(nf):
         c.addFolders(ids[0], [make_run_folder(str(tmp_path), f"lo{k}", seed=10 + k, d_centre=d_lo)])
         c.addFolders(ids[1], [make_run_folder(str(tmp_path), f"hi{k}", seed=50 + k, d_centre=d_hi)])
+    _await_load(c)
     return c, ids
+
+
+def test_add_folders_loads_off_thread_without_blocking(tmp_path):
+    # Adding a run folder returns immediately with a *loading* placeholder chip;
+    # the run's sidecars are read on a background thread, so the GUI never
+    # blocks.  Pumping the event loop resolves the chip to real run data.
+    c = AnalysisWorkspaceController(settings=None)
+    cid = c.conditions[0]["id"]
+    run = make_run_folder(str(tmp_path), "async0", seed=3, d_centre=0.1)
+    c.addFolders(cid, [run])
+    # synchronous readout right after the call: one chip, still loading
+    fol = c.conditions[0]["folders"]
+    assert len(fol) == 1
+    assert fol[0]["loading"] is True
+    assert fol[0]["qc"] == "loading"
+    assert c.loadingFolders is True
+    # nothing is "active" until it resolves (active() filters run is None)
+    assert c.conditions[0]["activeFolders"] == 0
+    _await_load(c)
+    fol = c.conditions[0]["folders"]
+    assert fol[0]["loading"] is False
+    assert fol[0]["qc"] in ("ok", "warn")
+    assert c.loadingFolders is False
+    assert c.conditions[0]["activeFolders"] == 1
 
 
 def test_live_numbers_appear_with_two_ready_conditions(tmp_path):
@@ -71,6 +107,7 @@ def test_failed_qc_folder_excluded_by_default(tmp_path):
     # a run with zero tracks → qc 'error' → excluded on add
     bad = make_run_folder(str(tmp_path), "empty", seed=1, n_tracks=0)
     c.addFolders(cid, [bad])
+    _await_load(c)
     fol = c.conditions[0]["folders"][0]
     assert fol["qc"] == "error"
     assert fol["excluded"] is True
@@ -87,6 +124,7 @@ def test_paired_by_timepoint(tmp_path):
     for k in range(3):
         c.addFolders(ids[0], [make_run_folder(str(tmp_path), f"pre{k}", seed=k, d_centre=0.2)])
         c.addFolders(ids[1], [make_run_folder(str(tmp_path), f"post{k}", seed=20 + k, d_centre=0.1)])
+    _await_load(c)
     c.setCfg("groupBy", "Timepoint (pre/post)")
     assert c.paired is True
     assert c.pairedAxis == ["Pre-drug", "Post-drug"]

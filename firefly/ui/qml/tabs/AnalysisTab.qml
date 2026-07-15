@@ -1223,10 +1223,11 @@ Item {
                     model: gr.cond.folders
                     delegate: Rectangle {
                         required property var modelData
-                        readonly property color qcC: modelData.qc === "error" ? pal.DANGER : modelData.qc === "warn" ? pal.WARN : pal.SUCCESS
+                        readonly property bool loading: modelData.loading === true
+                        readonly property color qcC: loading ? pal.ACC : modelData.qc === "error" ? pal.DANGER : modelData.qc === "warn" ? pal.WARN : pal.SUCCESS
                         implicitWidth: Math.min(chrow.implicitWidth + sc.sp3 * 2, 230)
                         implicitHeight: 26; radius: sc.radiusSm
-                        color: pal.PANEL_ALT; opacity: modelData.excluded ? 0.5 : 1
+                        color: pal.PANEL_ALT; opacity: modelData.excluded ? 0.5 : loading ? 0.75 : 1
                         border.width: 1
                         border.color: modelData.qc === "error" ? Qt.rgba(0.878, 0.322, 0.322, 0.4) : pal.BORDER
                         RowLayout {
@@ -1236,13 +1237,19 @@ Item {
                             spacing: 6
                             Rectangle {
                                 width: 6; height: 6; radius: 3; color: qcC; Layout.alignment: Qt.AlignVCenter
-                                TapHandler { onTapped: Analysis.toggleFolder(gr.cond.id, modelData.id) }
+                                // gentle pulse while the run loads off-thread
+                                SequentialAnimation on opacity {
+                                    running: loading; loops: Animation.Infinite
+                                    NumberAnimation { from: 1.0; to: 0.3; duration: 600; easing.type: Easing.InOutSine }
+                                    NumberAnimation { from: 0.3; to: 1.0; duration: 600; easing.type: Easing.InOutSine }
+                                }
+                                TapHandler { enabled: !loading; onTapped: Analysis.toggleFolder(gr.cond.id, modelData.id) }
                             }
                             Text {
                                 Layout.fillWidth: true
                                 text: modelData.id; color: pal.TXT_MUTED; font.pixelSize: 10; font.family: "Menlo"
                                 font.strikeout: modelData.excluded; elide: Text.ElideMiddle
-                                TapHandler { onTapped: Analysis.toggleFolder(gr.cond.id, modelData.id) }
+                                TapHandler { enabled: !loading; onTapped: Analysis.toggleFolder(gr.cond.id, modelData.id) }
                             }
                             Text { text: modelData.n; color: root.faint; font.pixelSize: 10; font.family: "Menlo" }
                             Icon {

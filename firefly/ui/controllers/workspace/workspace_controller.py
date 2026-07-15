@@ -19,6 +19,7 @@ state machine.
 from __future__ import annotations
 
 import os
+import queue
 import threading
 import weakref
 
@@ -41,13 +42,15 @@ def _glabel(name: str, phase: str) -> str:
 
 # ── internal model ─────────────────────────────────────────────────────────
 class _Folder:
-    __slots__ = ("path", "run", "excluded")
+    __slots__ = ("path", "run", "excluded", "loading")
 
-    def __init__(self, path, run):
+    def __init__(self, path, run, loading=False):
         self.path = path
         self.run = run                       # wd.RunData | None
         # failed-QC folders start excluded (matches the prototype)
         self.excluded = bool(run is not None and run.qc_level == "error")
+        # a placeholder chip while the run loads off the GUI thread
+        self.loading = bool(loading)
 
 
 class _Condition:
@@ -454,6 +457,7 @@ class _EngineAllPanelsJob(threading.Thread):
 class AnalysisWorkspaceController(QObject):
     # right-rail / inputs
     conditionsChanged = Signal()
+    loadingChanged = Signal()          # count of folders still loading changed
     timepointsChanged = Signal()
     # left-rail / outputs
     metricChanged = Signal()
@@ -478,6 +482,7 @@ class AnalysisWorkspaceController(QObject):
     _reportRendered = Signal()         # full-engine report finished (worker→GUI)
     _engfigRendered = Signal()         # live single-panel engine figure (worker→GUI)
     _allpanelsRendered = Signal()      # all-panels slice dict ready (worker→GUI)
+    _foldersLoaded = Signal()          # condition folders loaded (worker→GUI)
 
     def __init__(self, settings=None, parent=None):
         super().__init__(parent)
@@ -583,6 +588,11 @@ class AnalysisWorkspaceController(QObject):
         self._reportRendered.connect(self._on_report_rendered)
         self._engfigRendered.connect(self._on_engfig_rendered)
         self._allpanelsRendered.connect(self._on_allpanels_rendered)
+        # async condition-folder loading: worker threads read run sidecars off
+        # the GUI thread and hand back results through this queue + signal.
+        self._load_q: queue.Queue = queue.Queue()
+        self._loading_n = 0
+        self._foldersLoaded.connect(self._on_folders_loaded)
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -1648,8 +1658,10 @@ class AnalysisWorkspaceController(QObject):
                 "ready": len(active) >= 2,
                 "folders": [{
                     "id": f.run.id if f.run else os.path.basename(f.path),
-                    "n": f.run.n_label if f.run else "—",
-                    "qc": f.run.qc_level if f.run else "error",
+                    "n": "…" if f.loading else (f.run.n_label if f.run else "—"),
+                    "qc": "loading" if f.loading else (
+                        f.run.qc_level if f.run else "error"),
+                    "loading": f.loading,
                     "excluded": f.excluded, "path": f.path,
                 } for f in c.folders],
             })
@@ -1662,6 +1674,11 @@ class AnalysisWorkspaceController(QObject):
     @Property(int, notify=conditionsChanged)
     def conditionCount(self):
         return len(self._conditions)
+
+    @Property(bool, notify=loadingChanged)
+    def loadingFolders(self):
+        """True while one or more dropped folders are still loading."""
+        return self._loading_n > 0
 
     @Property(int, constant=True)
     def maxConditions(self):
@@ -1998,19 +2015,50 @@ class AnalysisWorkspaceController(QObject):
         c = self._cond(cid)
         if c is None:
             return
-        if self._add_paths(c, [self._to_path(u) for u in urls]):
+        staged, flagged = self._stage_paths(c, [self._to_path(u) for u in urls])
+        if staged:
+            # Show the loading chips immediately, then read the (potentially
+            # large) run sidecars off the GUI thread so the tab never freezes
+            # and more folders can be dropped while these load.
+            self.conditionsChanged.emit()
+            self._loading_n += len(staged)
+            self.loadingChanged.emit()
+            def _work(folders=staged):
+                for folder in folders:
+                    try:
+                        run = wd.load_run(folder.path)
+                    except Exception:
+                        run = None
+                    if run is not None:
+                        try:
+                            run.diff()      # warm the per-track cache off-thread
+                        except Exception:
+                            pass
+                    self._load_q.put((folder, run))
+                self._foldersLoaded.emit()
+            threading.Thread(target=_work, daemon=True,
+                             name="FIREFLY-CondLoad").start()
+        elif flagged:
+            # only unrecognised (flagged) paths were added — no load needed
             self._changed(conditions=True)
 
-    def _add_paths(self, c, paths):
-        added = False
+    def _stage_paths(self, c, paths):
+        """Resolve *paths* to loading-placeholder folders using only the cheap
+        ``is_run_folder`` probe — the heavy ``load_run`` happens off-thread.
+
+        A run folder and every run child of a parent folder become *loading*
+        chips (``staged``); an unrecognised path is shown once as a flagged
+        (invalid) chip (``flagged``).  Returns ``(staged, flagged)``.
+        """
+        staged, flagged = [], False
         for path in paths:
             if not path or not os.path.isdir(path):
                 continue
             if any(f.path == path for f in c.folders):
                 continue
-            run = wd.load_run(path)
-            if run is not None:                         # a run folder itself
-                c.folders.append(_Folder(path, run)); added = True
+            if wd.is_run_folder(path):                  # a run folder itself
+                f = _Folder(path, None, loading=True)
+                c.folders.append(f); staged.append(f)
                 continue
             # not a run folder — accept a *parent* folder of runs by scanning one
             # level down for child run folders.
@@ -2022,11 +2070,29 @@ class AnalysisWorkspaceController(QObject):
             for ch in children:
                 if (os.path.isdir(ch) and wd.is_run_folder(ch)
                         and not any(f.path == ch for f in c.folders)):
-                    c.folders.append(_Folder(ch, wd.load_run(ch)))
-                    added = True; found = True
+                    f = _Folder(ch, None, loading=True)
+                    c.folders.append(f); staged.append(f); found = True
             if not found:                               # show it anyway (flagged)
-                c.folders.append(_Folder(path, None)); added = True
-        return added
+                c.folders.append(_Folder(path, None)); flagged = True
+        return staged, flagged
+
+    @Slot()
+    def _on_folders_loaded(self):
+        """GUI-thread: drain loaded runs into their placeholder chips."""
+        got = False
+        while True:
+            try:
+                folder, run = self._load_q.get_nowait()
+            except queue.Empty:
+                break
+            folder.run = run
+            folder.loading = False
+            folder.excluded = bool(run is not None and run.qc_level == "error")
+            self._loading_n = max(0, self._loading_n - 1)
+            got = True
+        if got:
+            self.loadingChanged.emit()
+            self._changed(conditions=True)     # recompute — caches are warm now
 
     @Slot(int)
     def browseAddFolder(self, cid):
