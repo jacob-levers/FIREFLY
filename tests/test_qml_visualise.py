@@ -458,3 +458,22 @@ def test_embed_location_changes_visibility():
     # Clearing content hides it again
     e.setViewerContent(False)
     assert viewer.isVisible() is False
+
+
+def test_visualise_reads_are_encoding_tolerant(tmp_path):
+    """A non-UTF-8 export (a stray ° / µ byte, 0xb0 / 0xb5 from palmTRACER or
+    Excel) must not abort a load with 'utf-8 codec can't decode byte'."""
+    import pandas as pd
+    from firefly.ui.controllers.visualise_controller import _read_csv_enc, _load_json_enc
+
+    csv = tmp_path / "t.csv"                       # header has a ° (0xb0), latin-1
+    csv.write_bytes("particle,frame,x,y,temp_\xb0C\n0,0,1.0,2.0,37\n".encode("latin-1"))
+    with pytest.raises(UnicodeDecodeError):        # strict utf-8 would blow up
+        pd.read_csv(str(csv), encoding="utf-8")
+    df = _read_csv_enc(str(csv))                   # the tolerant reader recovers
+    assert list(df["particle"]) == [0] and df.shape == (1, 5)
+
+    pj = tmp_path / "p_params.json"                # value has a µ (0xb5), latin-1
+    pj.write_bytes('{"units": "\xb5m", "pixel_size": 0.106}'.encode("latin-1"))
+    d = _load_json_enc(str(pj))
+    assert d["pixel_size"] == 0.106

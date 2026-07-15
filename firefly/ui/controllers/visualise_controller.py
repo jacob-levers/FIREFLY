@@ -40,6 +40,34 @@ _RUN_COLOURS = ["#58a6ff", "#f6a623", "#4fe0a0", "#27c0e8", "#e05252",
                 "#a371f7", "#7ed321", "#f78166", "#d2a8ff", "#56d364"]
 
 
+def _read_csv_enc(path, **kw):
+    """``pd.read_csv`` tolerant of non-UTF-8 exports: a stray ° / µ byte
+    (0xb0 / 0xb5, common in palmTRACER- or Excel-written CSVs) must not abort a
+    load with 'utf-8 codec can't decode byte'.  Falls back to cp1252, then
+    latin-1 (which maps every byte, so it never raises UnicodeDecodeError)."""
+    import pandas as pd
+    try:
+        return pd.read_csv(path, **kw)
+    except UnicodeDecodeError:
+        try:
+            return pd.read_csv(path, encoding="cp1252", **kw)
+        except UnicodeDecodeError:
+            return pd.read_csv(path, encoding="latin-1", **kw)
+
+
+def _load_json_enc(path):
+    """``json.load`` tolerant of a non-UTF-8 params file (same rationale)."""
+    import json
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    for enc in ("utf-8", "cp1252", "latin-1"):
+        try:
+            return json.loads(raw.decode(enc))
+        except UnicodeDecodeError:
+            continue
+    return json.loads(raw.decode("latin-1", "replace"))
+
+
 class VisualiseController(QObject):
     # property-notify signals
     dataChanged = Signal()
@@ -215,8 +243,7 @@ class VisualiseController(QObject):
             stack_path = None
             params_files = [f for f in os.listdir(extras) if f.endswith("_params.json")]
             if params_files:
-                with open(os.path.join(extras, params_files[0])) as fh:
-                    params = json.load(fh)
+                params = _load_json_enc(os.path.join(extras, params_files[0]))
                 stack_path = params.get("input_file") or params.get("stem")
                 stem = params_files[0][:-len("_params.json")]
                 try:                               # real pixel size → sane super-res canvas
@@ -285,20 +312,19 @@ class VisualiseController(QObject):
     @Slot(str, "QVariant")
     def loadTracksPath(self, csv_path: str, diff_csv_path=None):
         try:
-            import pandas as pd
-            df = pd.read_csv(csv_path)
+            df = _read_csv_enc(csv_path)
             need = {"particle", "frame", "x", "y"}
             missing = need - set(df.columns)
             if missing:
                 raise ValueError(f"CSV missing columns: {sorted(missing)}")
             diff_df = None
             if diff_csv_path and os.path.isfile(diff_csv_path):
-                try:    diff_df = pd.read_csv(diff_csv_path)
+                try:    diff_df = _read_csv_enc(diff_csv_path)
                 except Exception: diff_df = None
             elif not diff_csv_path:
                 guess = csv_path.replace("_trajectories.csv", "_diffusion_summary.csv")
                 if guess != csv_path and os.path.isfile(guess):
-                    try:    diff_df = pd.read_csv(guess)
+                    try:    diff_df = _read_csv_enc(guess)
                     except Exception: diff_df = None
             # Register as an overlay run (multi-run track comparison). Each run's
             # particle ids are offset so picking can decode which run a track is
@@ -892,15 +918,14 @@ class VisualiseController(QObject):
                 raise FileNotFoundError("No *_cluster_labels.csv (re-run analysis "
                                         "to generate per-loc labels)")
             stem = lbl[0][:-len("_cluster_labels.csv")]
-            labels_df = pd.read_csv(os.path.join(extras, lbl[0]))
+            labels_df = _read_csv_enc(os.path.join(extras, lbl[0]))
             stats_path = os.path.join(extras, f"{stem}_cluster_stats.csv")
-            stats_df = pd.read_csv(stats_path) if os.path.isfile(stats_path) else None
+            stats_df = _read_csv_enc(stats_path) if os.path.isfile(stats_path) else None
             px_um = 1.0
             params_path = os.path.join(extras, f"{stem}_params.json")
             if os.path.isfile(params_path):
                 try:
-                    with open(params_path) as fh:
-                        pj = json.load(fh)
+                    pj = _load_json_enc(params_path)
                     px_um = float(pj.get("pixel_size_um", 1.0)) or 1.0
                     if pj.get("cluster_eps_nm") is not None:
                         self._cl_eps_nm = int(round(float(pj["cluster_eps_nm"])))
@@ -963,9 +988,8 @@ class VisualiseController(QObject):
         if not (os.path.isfile(traj) and os.path.isfile(diff)):
             return                                # standalone export, no tracks
         try:
-            import pandas as pd
-            df = pd.read_csv(traj)
-            dd = pd.read_csv(diff)
+            df = _read_csv_enc(traj)
+            dd = _read_csv_enc(diff)
             if ({"x", "y", "particle"}.issubset(df.columns)
                     and "motion" in getattr(dd, "columns", [])):
                 self._motion_src = [(df, dd)]
