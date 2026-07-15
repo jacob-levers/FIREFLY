@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.76.44 — 15 Jul 2026
+
+### Fixed
+
+- **Visualiser couldn't load some runs** with `'utf-8' codec can't decode byte
+  0xb0`. If a run's `params.json` or a CSV contained a non-UTF-8 byte — a degree
+  or micro sign (`°` / `µ`) from a palmTRACER or Excel export — the load aborted.
+  The viewer now reads those files with a `cp1252` → `latin-1` fallback, so they
+  open normally.
+
 ## v2.76.43 — 15 Jul 2026
 
 Stable release. Everything from the 2.76.39–2.76.42 pre-releases, plus a new
