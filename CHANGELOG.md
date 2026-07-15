@@ -9,6 +9,11 @@
   or micro sign (`°` / `µ`) from a palmTRACER or Excel export — the load aborted.
   The viewer now reads those files with a `cp1252` → `latin-1` fallback, so they
   open normally.
+- **Update progress could shoot past 100% and jump back to 0%.** On some
+  networks a download segment resumed after the proxy ignored its range request,
+  double-counting its bytes. Progress is now measured from the bytes actually on
+  disk (capped at 100%), and a range-ignoring server falls back cleanly to a
+  single-stream download.
 
 ## v2.76.43 — 15 Jul 2026
 
