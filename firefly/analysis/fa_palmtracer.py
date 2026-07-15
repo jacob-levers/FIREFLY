@@ -590,7 +590,8 @@ def load_summary_from_folder(folder, use_native=False):
 def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
                          pixel_size_um, frame_interval_s,
                          width=None, height=None, n_frames=None,
-                         mobile_D_threshold=None):
+                         mobile_D_threshold=None,
+                         logd_clip_min=None, logd_clip_max=None):
     """
     Emit PALM-Tracer-compatible CSV files alongside FIREFLY's native outputs.
 
@@ -696,6 +697,13 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
                  else _np.zeros(len(diff_df)))
     logD_arr  = _np.where(D_arr > 0, _np.log10(_np.where(D_arr > 0, D_arr, 1)),
                           _np.nan)
+    # Clamp LogD into the D-coefficient range (palmTRACER-style) so the exported
+    # LogD column is plot-ready: immobile tracks pile at the floor, fast tracks at
+    # the ceiling, instead of trailing to -14.  The D(um2/s) column stays raw.
+    if logd_clip_min is not None and logd_clip_max is not None:
+        _lo = _np.log10(logd_clip_min) if logd_clip_min > 0 else -5.0
+        _hi = _np.log10(logd_clip_max) if logd_clip_max > 0 else 1.0
+        logD_arr = _np.clip(logD_arr, _lo, _hi)   # NaN stays NaN
     mobile_n  = int(_np.sum(D_arr > mobile_D_threshold))
     immob_n   = int(_np.sum(D_arr <= mobile_D_threshold))
     mob_ratio = (mobile_n / immob_n) if immob_n else _np.nan

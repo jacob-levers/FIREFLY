@@ -11,7 +11,18 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.42-rc.1"
+__version__ = "2.76.43"
+# v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
+#           a new Log-D clip range.  Highlights since the last stable (2.76.38):
+#           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a
+#           live pip-grid queue; (2) the Log-D graph style + figure theme actually
+#           re-render the Analysis figures (moved to a "Graph styles" Preferences
+#           section); (3) update channel: correct pre-release ordering + a
+#           "return to stable" prompt; (4) the app theme no longer reverts to
+#           AMOLED on macOS updates; (5) NEW palmTRACER-style Log-D clip range
+#           (Diffusion & motion → entered in log₁₀D) that clamps the LogD graph,
+#           the palmTRACER export's LogD column, and a new clamped logD column in
+#           firefly_extras — raw D and all statistics are untouched.
 # v2.76.42-rc.1 — PRE-RELEASE.  Batch-queue pip grid polish: the running tile's
 #           animation no longer overlaps its neighbours (each tile sits in a 24px
 #           box that fully contains its 20px square + inset 2px ring, with more

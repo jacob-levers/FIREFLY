@@ -64,7 +64,7 @@ class SidebarController(QObject):
                 "items": f["items"], "min": f["min"], "max": f["max"],
                 "step": f["step"], "decimals": f["decimals"], "suffix": f["suffix"],
                 "special": f["special"], "tooltip": f["tooltip"],
-                "slider": f["slider"]})
+                "slider": f["slider"], "key2": f.get("key2")})
         return out
 
     # ── value get / set (coerced per kind) ───────────────────────────────
@@ -74,6 +74,10 @@ class SidebarController(QObject):
         if f is None:
             return None
         kind, default = f["kind"], f["default"]
+        if kind == "logdrange":
+            # the high bound (key2) has its own default
+            d = f["default2"] if key == f.get("key2") else default
+            return self._s.get_float(key, d)
         if kind == "bool":
             return self._s.get_bool(key, default)
         if kind == "int":
@@ -93,12 +97,12 @@ class SidebarController(QObject):
         elif kind == "int":
             try:    cv = int(round(float(v)))
             except (TypeError, ValueError): return False
-        elif kind == "double":
+        elif kind in ("double", "logdrange"):
             try:    cv = float(v)
             except (TypeError, ValueError): return False
         else:
             cv = str(v)
-        if kind in ("int", "double"):
+        if kind in ("int", "double", "logdrange"):
             if f["min"] is not None:
                 cv = max(f["min"], cv)
             if f["max"] is not None:
@@ -113,8 +117,14 @@ class SidebarController(QObject):
 
     @Slot(result="QVariantMap")
     def snapshot(self):
-        """All schema keys → current values (the preset/widget-state dict)."""
-        return {f["key"]: self.get(f["key"]) for f in S.FIELDS}
+        """All schema keys → current values (the preset/widget-state dict).
+        Includes both bounds of a logdrange field."""
+        out = {}
+        for f in S.FIELDS:
+            out[f["key"]] = self.get(f["key"])
+            if f.get("key2"):
+                out[f["key2"]] = self.get(f["key2"])
+        return out
 
     @Slot("QVariantMap")
     def applyState(self, state):
@@ -236,12 +246,16 @@ class SidebarController(QObject):
         for f in S.FIELDS:
             if f["section"] == section_key:
                 self._s.set(f["key"], f["default"])
+                if f.get("key2"):
+                    self._s.set(f["key2"], f["default2"])
         self._bump("")
 
     @Slot()
     def resetAll(self):
         for f in S.FIELDS:
             self._s.set(f["key"], f["default"])
+            if f.get("key2"):
+                self._s.set(f["key2"], f["default2"])
         self._bump("")
 
     # ── revision (reactivity) ────────────────────────────────────────────

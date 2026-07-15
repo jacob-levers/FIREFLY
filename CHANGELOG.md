@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.76.43 — 15 Jul 2026
+
+Stable release. Everything from the 2.76.39–2.76.42 pre-releases, plus a new
+Log-D clip range.
+
+### Added
+
+- **Log-D clip range (Diffusion and motion settings).** A palmTRACER-style
+  "D-Coefficient" range, entered in log₁₀D (e.g. −5 to 1), that clamps the Log-D
+  distribution graph, the palmTRACER export's `LogD` column, and a new
+  `logD_clipped` column in the `firefly_extras` diffusion summary — so the export
+  is plot-ready with no post-processing. Raw `D` and every statistic are
+  untouched. The Filter-by-D control uses the same log-space entry.
+- **A regular batch now runs on the Process screen** with a compact pip-grid
+  queue above the console, so you get the live detection preview and full log
+  while it works. HYPER-FLY batches keep their own dashboard.
+
+### Changed
+
+- **Graph styles moved to their own Preferences section**, and the Log-D plot
+  style (plus figure theme and mobile-D threshold) now actually re-render the
+  live Analysis figures — previously a cached render meant the setting did
+  nothing.
+
+### Fixed
+
+- **Update channel.** Pre-release versions now order correctly
+  (`rc.1 < rc.2 < final`), and switching back to the Stable channel from a
+  pre-release build offers a "return to the stable release" instead of staying
+  silent.
+- **The app theme no longer reverts (usually to AMOLED) on macOS updates** — the
+  theme and accent moved to the app's primary settings store, which persists
+  reliably across an in-app update.
+
 ## v2.76.42-rc.1 — 14 Jul 2026
 
 Pre-release for testing: batch-queue pip-grid polish.

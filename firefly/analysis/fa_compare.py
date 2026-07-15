@@ -550,7 +550,7 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
 
 
 def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
-                        threshold_label=""):
+                        threshold_label="", xlim=(-5.0, 1.0)):
     """Render the LogD distribution as small-multiple facets.
 
     Each facet overlays the pooled-per-track KDE(s) for its series (e.g. PRE
@@ -566,7 +566,7 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
     Facets share the x-axis (log₁₀ D).
     """
     from scipy import stats as _stats
-    xlo, xhi = -5.0, 1.0
+    xlo, xhi = xlim
     xk = np.linspace(xlo, xhi, 300)
     facets = [f for f in facets if f[2]]            # drop empty facets
     if not facets:
@@ -662,11 +662,11 @@ def _logd_kde_or_none(pooled, xk):
         return None
 
 
-def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold):
+def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
     """Classic ridgeline: one filled KDE per group, stacked with a vertical
     offset and directly labelled, plus a tick per replicate (per-cell median)
     on each ridge baseline so the honest n is still visible."""
-    xlo, xhi = -5.0, 1.0
+    xlo, xhi = xlim
     xk = np.linspace(xlo, xhi, 300)
     dens = [(lbl, col, _logd_kde_or_none(pooled, xk), medians)
             for (lbl, col, pooled, medians) in per_card]
@@ -694,9 +694,9 @@ def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold):
     ax.set_title("LogD distribution  (ridgeline)")
 
 
-def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold):
+def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
     """All groups' KDEs overlaid on one axes (best for ≤3 groups)."""
-    xlo, xhi = -5.0, 1.0
+    xlo, xhi = xlim
     xk = np.linspace(xlo, xhi, 300)
     bins = np.linspace(xlo, xhi, 31)
     for (lbl, col, pooled, _medians) in per_card:
@@ -722,7 +722,7 @@ def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold):
     ax.legend(frameon=False, loc="best", fontsize=7)
 
 
-def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold):
+def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
     """Per-group violins (log₁₀ D on y) with a per-cell median dot strip — a
     SuperPlot-style view that shows shape AND the replicate-level data."""
     valid = []
@@ -755,6 +755,7 @@ def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold):
     ax.set_xticklabels([l for l, _, _, _ in valid], rotation=30, ha="right",
                        fontsize=7)
     ax.set_ylabel("log₁₀ D  (µm²/s)")
+    ax.set_ylim(xlim)
     ax.set_title("LogD distribution  (violins + per-cell medians)")
     ax.legend(frameon=False, loc="lower right", fontsize=7)
 
@@ -869,6 +870,7 @@ def compare_groups(groups,
                    pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                    logd_plot_style="overlaid",
+                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
                    progress_cb=None, stats_config=None, use_native=False):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
@@ -1229,6 +1231,11 @@ def compare_groups(groups,
         ax = _next_ax()
         thr = np.log10(mobile_d_threshold)
         thr_lbl = f"D = {mobile_d_threshold:g} µm²/s"
+        # D-coefficient clip range → log₁₀ bounds (defaults −5…1).  Applied to the
+        # pooled distribution AND the per-cell medians, and to the axes below.
+        _clip_lo = np.log10(logd_clip_d_min) if logd_clip_d_min and logd_clip_d_min > 0 else -5.0
+        _clip_hi = np.log10(logd_clip_d_max) if logd_clip_d_max and logd_clip_d_max > 0 else 1.0
+        _xlim = (_clip_lo, _clip_hi)
 
         def _cell_logd(s):
             d = s.get("diffusion") if hasattr(s, "get") else None
@@ -1238,7 +1245,7 @@ def compare_groups(groups,
             vals = vals[vals > 0]
             if not len(vals):
                 return None
-            return np.clip(np.log10(vals), -5.0, 1.0)
+            return np.clip(np.log10(vals), _clip_lo, _clip_hi)
 
         def _gather(card_indices):
             pooled, medians = [], []
@@ -1258,11 +1265,11 @@ def compare_groups(groups,
             per_card.append((labels[gi], colors[gi], pooled, medians))
 
         if style == "ridgeline":
-            _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold)
+            _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim)
         elif style == "overlaid":
-            _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold)
+            _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim)
         elif style == "violin":
-            _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold)
+            _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim)
         else:
             # ── Faceted (default): facet by drug, PRE vs POST overlaid, with a
             # per-replicate median dot strip beneath each density. ──
@@ -1296,7 +1303,7 @@ def compare_groups(groups,
                                        [(colors[gi], pld, med, labels[gi], False)]))
             _render_logd_facets(fig, ss, facets, thr, pal,
                                 "LogD distribution  (● per-cell median)",
-                                threshold_label=thr_lbl)
+                                threshold_label=thr_lbl, xlim=_xlim)
 
     # ── 4. Mobile/Immobile ratio bar ──────────────────────────────────────────
     if "mob_immob" in panels:

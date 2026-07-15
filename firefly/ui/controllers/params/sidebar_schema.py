@@ -36,12 +36,15 @@ SECTIONS = [
 
 def _f(section, key, kind, label, default, *, min=None, max=None, step=None,
        decimals=None, items=None, suffix="", special="", enable=None,
-       hyperfly=False, tooltip="", slider=False):
+       hyperfly=False, tooltip="", slider=False, key2=None, default2=None):
+    # key2/default2: a paired second value (used by the "logdrange" kind, which
+    # renders a min–max pair — key holds the low bound, key2 the high bound).
     return {"section": section, "key": key, "kind": kind, "label": label,
             "default": default, "min": min, "max": max, "step": step,
             "decimals": decimals, "items": items or [], "suffix": suffix,
             "special": special, "enable": enable, "hyperfly": hyperfly,
-            "tooltip": tooltip or _TOOLTIPS.get(key, ""), "slider": slider}
+            "tooltip": tooltip or _TOOLTIPS.get(key, ""), "slider": slider,
+            "key2": key2, "default2": default2}
 
 
 # Hover help for every parameter (shown by FieldRow on hover).
@@ -82,8 +85,9 @@ _TOOLTIPS = {
     "analysis/alpha_directed": "α above this → Directed / super-diffusive.",
     "analysis/mobile_d": "D threshold (µm²/s) separating mobile from immobile for the mobile-fraction metric.",
     "analysis/jdd_components": "Number of diffusing populations fitted in the jump-distance distribution.",
-    "analysis/filter_d_enable": "Drop trajectories whose D falls outside the range below.",
-    "analysis/filter_d_min": "Minimum D (µm²/s) to keep a trajectory.",
+    "analysis/dcoeff_clip_logmin": "Log-D clip range, entered in log₁₀D (like palmTRACER's D-Coefficient), min to max. Values below the min are pinned to the floor and above the max to the ceiling, so immobile tracks pile at one point instead of smearing the curve. Default −5…1 (D 1e-5…10 µm²/s). Clamps the LogD graph, the palmTRACER export's LogD column, and a clamped logD column in firefly_extras — raw D and the statistics are unchanged.",
+    "analysis/filter_d_enable": "Drop trajectories whose D falls outside the Log-D range below. This removes tracks from the whole analysis — unlike the Log-D clip above, which only clamps the LogD display/export.",
+    "analysis/filter_d_logmin": "Keep only trajectories whose log₁₀D falls in this range (min to max). Tracks outside it are dropped from the entire analysis. Entered in log₁₀D; default −5…0 (D 1e-5…1 µm²/s).",
     "analysis/filter_d_max": "Maximum D (µm²/s) to keep a trajectory.",
     # ROI
     "analysis/roi_mode": "How the region of interest is defined for this run.",
@@ -192,12 +196,16 @@ FIELDS = [
     _f("diffusion", "analysis/mobile_d", "double", "Mobile D threshold", 0.05,
        min=0.0, max=10.0, step=0.01, decimals=3),
     _f("diffusion", "analysis/jdd_components", "int", "JDD components", 2, min=1, max=4, step=1),
+    # Log-D clip range (like palmTRACER's "D Coefficient"): clamps log₁₀D for the
+    # LogD graph + exports.  Entered in log₁₀D; does NOT drop tracks or touch raw
+    # D (that's Filter by D).  Default −5…1 → D 1e-5…10 µm²/s.
+    _f("diffusion", "analysis/dcoeff_clip_logmin", "logdrange", "Log-D clip range", -5.0,
+       key2="analysis/dcoeff_clip_logmax", default2=1.0,
+       min=-8.0, max=3.0, step=0.5, decimals=2),
     _f("diffusion", "analysis/filter_d_enable", "bool", "Filter by D", False),
-    _f("diffusion", "analysis/filter_d_min", "double", "D min", 0.0,
-       min=0.0, max=10.0, step=0.000001, decimals=7,
-       enable={"key": "analysis/filter_d_enable", "truthy": True}),
-    _f("diffusion", "analysis/filter_d_max", "double", "D max", 1.0,
-       min=0.0, max=10.0, step=0.000001, decimals=7,
+    _f("diffusion", "analysis/filter_d_logmin", "logdrange", "Keep Log-D range", -5.0,
+       key2="analysis/filter_d_logmax", default2=0.0,
+       min=-8.0, max=3.0, step=0.5, decimals=2,
        enable={"key": "analysis/filter_d_enable", "truthy": True}),
 
     # ── ROI ──────────────────────────────────────────────────────────────
@@ -256,8 +264,12 @@ FIELDS = [
     # Figure style/batch settings moved to the Preferences › Figures menu.
 ]
 
-# index by key for O(1) lookup
-BY_KEY = {f["key"]: f for f in FIELDS}
+# index by key for O(1) lookup — a logdrange field is reachable by both bounds
+BY_KEY = {}
+for _fld in FIELDS:
+    BY_KEY[_fld["key"]] = _fld
+    if _fld.get("key2"):
+        BY_KEY[_fld["key2"]] = _fld
 
 
 # Fields whose raw value (frames / pixels) has a real-world derived readout,

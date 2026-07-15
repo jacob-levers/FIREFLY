@@ -148,3 +148,25 @@ def test_save_comparison_circular_statistics(tmp_path):
     all_text = "\n".join((pg.extract_text() or "") for pg in r.pages)
     for label in ("Pre", "Post", "Wash"):
         assert label in all_text
+
+
+def test_compare_groups_honours_dcoeff_clip_range(tmp_path):
+    """The LogD graph's x-axis (and clip) follow the D-coefficient clip range."""
+    from firefly.analysis.fa_compare import compare_groups
+    from test_workspace_data import make_run_folder
+
+    g0 = [make_run_folder(str(tmp_path), f"lo{k}", seed=k, d_centre=0.05) for k in range(2)]
+    g1 = [make_run_folder(str(tmp_path), f"hi{k}", seed=9 + k, d_centre=0.4) for k in range(2)]
+    groups = [{"folders": g0, "label": "DMSO", "color": "#000000"},
+              {"folders": g1, "label": "Drug", "color": "#3fb950"}]
+
+    fig, _summary, _stats = compare_groups(
+        groups, output_dir=None, panels={"logd_dist"}, pdf_report=False,
+        logd_plot_style="overlaid",
+        logd_clip_d_min=1e-3, logd_clip_d_max=1.0)      # → log₁₀ x-axis [-3, 0]
+    assert fig is not None
+    ax = next((a for a in fig.axes if "LogD" in (a.get_title() or "")), None)
+    assert ax is not None
+    lo, hi = ax.get_xlim()
+    assert abs(lo - (-3.0)) < 1e-6 and abs(hi - 0.0) < 1e-6
+    plt.close(fig)

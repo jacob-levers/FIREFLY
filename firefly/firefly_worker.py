@@ -810,10 +810,24 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
         log(f"  WARN: native figure render failed ({_fig_exc}) — saving the "
             f"CSV outputs anyway; the figure will be missing.")
 
+    # Ready-to-plot clamped LogD column (see the raw-analysis path); raw D kept.
+    if diff_df is not None and len(diff_df) and "D" in diff_df.columns:
+        import numpy as _np
+        _dl = float(p.get("dcoeff_clip_min", 0.00001) or 0.00001)
+        _dh = float(p.get("dcoeff_clip_max", 10.0) or 10.0)
+        _dv = diff_df["D"].to_numpy(dtype=float)
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            _lg = _np.where(_dv > 0, _np.log10(_np.where(_dv > 0, _dv, 1.0)), _np.nan)
+        diff_df["logD_clipped"] = _np.clip(
+            _lg, _np.log10(_dl) if _dl > 0 else -5.0,
+            _np.log10(_dh) if _dh > 0 else 1.0)
+
     try:
         save_palmtracer_csvs(data_dir, stem, locs, tracks, diff_df, imsd_df,
                              pixel_size_um=px, frame_interval_s=fi,
-                             width=W, height=H, n_frames=int(s.get("n_frames") or 0))
+                             width=W, height=H, n_frames=int(s.get("n_frames") or 0),
+                             logd_clip_min=float(p.get("dcoeff_clip_min", 0.00001) or 0.00001),
+                             logd_clip_max=float(p.get("dcoeff_clip_max", 10.0) or 10.0))
     except Exception as _e:
         log(f"  WARN: PALM-Tracer CSV save skipped ({_e})")
     try:
@@ -1869,6 +1883,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _log(f"  Filter by D [{d_min}, {d_max}]: "
              f"{n_before} → {len(diff_df)} tracks")
 
+    # Ready-to-plot clamped LogD column (palmTRACER-style D-coefficient clip):
+    # clip(log10(D), log10(clip_min), log10(clip_max)), NaN where D≤0.  Written to
+    # diffusion_summary.csv alongside the untouched raw D so downstream plots (and
+    # the palmTRACER export's LogD column) match FIREFLY's LogD graph.
+    if len(diff_df) and "D" in diff_df.columns:
+        import numpy as _np
+        _dl = float(p.get("dcoeff_clip_min", 0.00001) or 0.00001)
+        _dh = float(p.get("dcoeff_clip_max", 10.0) or 10.0)
+        _dv = diff_df["D"].to_numpy(dtype=float)
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            _lg = _np.where(_dv > 0, _np.log10(_np.where(_dv > 0, _dv, 1.0)), _np.nan)
+        diff_df["logD_clipped"] = _np.clip(
+            _lg, _np.log10(_dl) if _dl > 0 else -5.0,
+            _np.log10(_dh) if _dh > 0 else 1.0)
+
     # ── Secondary analyses ────────────────────────────────────────────────
     _log(f"\n── Secondary analyses ────────────")
     _prog(80, "Secondary analyses…")
@@ -2000,7 +2029,9 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                              pixel_size_um=float(px),
                              frame_interval_s=float(fi),
                              width=stack_w, height=stack_h,
-                             n_frames=int(n_frames))
+                             n_frames=int(n_frames),
+                             logd_clip_min=float(p.get("dcoeff_clip_min", 0.00001) or 0.00001),
+                             logd_clip_max=float(p.get("dcoeff_clip_max", 10.0) or 10.0))
         _log("  Saved (data/): PALM-Tracer CSVs")
     except Exception as exc:
         _log(f"  WARN: PALM-Tracer export failed: {exc}\n{traceback.format_exc()}")

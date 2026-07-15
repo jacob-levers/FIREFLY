@@ -84,6 +84,8 @@ class _FigureJob(threading.Thread):
                 log_x=bool(self._cfg.get("logX", False)),
                 logd_style=self._cfg.get("_logd_style", "overlaid"),
                 mobile_d=float(self._cfg.get("_mobile_d", 0.05)),
+                logd_clip=(float(self._cfg.get("_logd_clip_min", 0.00001)),
+                           float(self._cfg.get("_logd_clip_max", 10.0))),
                 width_px=w, height_px=h, dpi=110)
         except Exception:
             img = None
@@ -1009,11 +1011,24 @@ class AnalysisWorkspaceController(QObject):
             mobile_d = float(s.get("analysis/mobile_d", 0.05)) if s else 0.05
         except (TypeError, ValueError):
             mobile_d = 0.05
+        dlo, dhi = self._dcoeff_clip()
         return dict(
             groups=self._engine_groups(), output_dir=None, panels=panels, theme=theme,
             logd_plot_style=(s.getStr("figures/logd_style", "overlaid") if s else "overlaid"),
+            logd_clip_d_min=dlo, logd_clip_d_max=dhi,
             mobile_d_threshold=mobile_d, pdf_report=False,
             stats_config=self._stats_config())
+
+    def _dcoeff_clip(self):
+        """(min, max) D-coefficient clip range (µm²/s) for the LogD graph, read
+        from the Diffusion-&-motion setting.  Defaults 1e-5…10 → log₁₀ −5…1."""
+        s = self._settings
+        try:
+            lo = float(s.get("analysis/dcoeff_clip_min", 0.00001)) if s else 0.00001
+            hi = float(s.get("analysis/dcoeff_clip_max", 10.0)) if s else 10.0
+        except (TypeError, ValueError):
+            lo, hi = 0.00001, 10.0
+        return lo, hi
 
     def _launch_figure(self):
         if len(self._cg) < 2 or self._paired:
@@ -1134,6 +1149,7 @@ class AnalysisWorkspaceController(QObject):
                 cfg["_mobile_d"] = float(s.get("analysis/mobile_d", 0.05))
             except (TypeError, ValueError):
                 cfg["_mobile_d"] = 0.05
+            cfg["_logd_clip_min"], cfg["_logd_clip_max"] = self._dcoeff_clip()
         self._fig_job = _FigureJob(self._cg, metric, cfg, (760, 400), deliver)
         self._fig_job.start()
 
@@ -1192,6 +1208,7 @@ class AnalysisWorkspaceController(QObject):
             mobile_d = float(s.get("analysis/mobile_d", 0.05)) if s else 0.05
         except (TypeError, ValueError):
             mobile_d = 0.05
+        dlo, dhi = self._dcoeff_clip()
         kwargs = dict(
             groups=groups,
             output_dir=(self._output_dir or self._export_dir()),
@@ -1199,6 +1216,7 @@ class AnalysisWorkspaceController(QObject):
             panels=(set(self._panels) if self._panels else None),
             theme=theme,
             logd_plot_style=logd,
+            logd_clip_d_min=dlo, logd_clip_d_max=dhi,
             mobile_d_threshold=mobile_d,
             pdf_report=True,
             stats_config=self._stats_config(),
@@ -1593,7 +1611,9 @@ class AnalysisWorkspaceController(QObject):
         and the controller writes it itself — reacting would loop)."""
         if not isinstance(key, str):
             return
-        if not (key.startswith("figures/") or key == "analysis/mobile_d"):
+        if not (key.startswith("figures/")
+                or key in ("analysis/mobile_d",
+                           "analysis/dcoeff_clip_min", "analysis/dcoeff_clip_max")):
             return
         if key == "figures/compare_panels":
             return

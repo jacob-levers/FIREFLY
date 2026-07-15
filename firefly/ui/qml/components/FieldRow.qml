@@ -62,6 +62,7 @@ Column {
         width: parent.width
         active: !root.isBool; visible: !root.isBool
         sourceComponent: root.field.kind === "combo" ? selectC
+                       : root.field.kind === "logdrange" ? logdRangeC
                        : root.field.slider ? sliderC
                        : spinC
     }
@@ -118,6 +119,56 @@ Column {
             special: root.field.special
             value: (Sidebar.revision, Sidebar.get(root.field.key))
             onCommitted: (v) => Sidebar.setValue(root.field.key, v)
+        }
+    }
+
+    // ── logdrange: a min–max pair entered in log₁₀D, with a live D readout ─
+    Component {
+        id: logdRangeC
+        Column {
+            id: rangeCol
+            width: parent ? parent.width : implicitWidth
+            spacing: sc.sp2
+            function fmtD(v) {
+                if (!isFinite(v) || v <= 0) return "0";
+                var e = Math.log(v) / Math.LN10;
+                if (e < -2.5 || e >= 4) return v.toExponential(0).replace("e+", "e");
+                return parseFloat(v.toPrecision(3)).toString();
+            }
+            RowLayout {
+                width: parent.width
+                spacing: sc.sp3
+                SpinBox {
+                    Layout.fillWidth: true
+                    enabled: root.en
+                    from: root.field.min; to: root.field.max
+                    step: root.field.step; decimals: root.field.decimals
+                    textAlign: TextInput.AlignHCenter
+                    value: (Sidebar.revision, Sidebar.get(root.field.key))
+                    onCommitted: (v) => Sidebar.setValue(root.field.key, v)
+                }
+                Text {
+                    text: "to"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                    Layout.alignment: Qt.AlignVCenter
+                }
+                SpinBox {
+                    Layout.fillWidth: true
+                    enabled: root.en
+                    from: root.field.min; to: root.field.max
+                    step: root.field.step; decimals: root.field.decimals
+                    textAlign: TextInput.AlignHCenter
+                    value: (Sidebar.revision, Sidebar.get(root.field.key2))
+                    onCommitted: (v) => Sidebar.setValue(root.field.key2, v)
+                }
+            }
+            Text {
+                readonly property real dlo: Math.pow(10, (Sidebar.revision, Sidebar.get(root.field.key)))
+                readonly property real dhi: Math.pow(10, Sidebar.get(root.field.key2))
+                text: "= D " + rangeCol.fmtD(dlo) + " — " + rangeCol.fmtD(dhi) + " µm²/s"
+                color: pal.TXT_MUTED
+                font.pixelSize: sc.textXs
+                font.family: "Menlo"
+            }
         }
     }
 }

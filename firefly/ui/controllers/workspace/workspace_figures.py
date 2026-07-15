@@ -158,7 +158,8 @@ def _new_axes(width_px, height_px, dpi):
     return fig, ax
 
 
-def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi):
+def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi,
+                        logd_clip=(0.00001, 10.0)):
     """Render the Diffusion-D metric with the REAL engine LogD renderer so the
     live preview is exactly the report's ``logd_dist`` panel (KDE distribution),
     not a bespoke ECDF.  Built on the live data; drawn into the live dark axes."""
@@ -169,11 +170,13 @@ def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi):
         style = "overlaid"          # faceted needs facet data → overlaid live
     pal = dict(_theme_palette("Dark"))
     pal["GRD"] = _GRID              # threshold line tint matches the live grid
-    # Match the engine EXACTLY: log10 then CLIP to [-5, 1] (fa_compare.py:1221), so
-    # immobile particles (D ≈ 1e-25) pile at -5 instead of smearing the KDE.
+    # Match the engine EXACTLY: log10 then CLIP to the D-coefficient range, so
+    # immobile particles pile at the floor instead of smearing the KDE.
+    _lo = float(np.log10(logd_clip[0])) if logd_clip[0] and logd_clip[0] > 0 else -5.0
+    _hi = float(np.log10(logd_clip[1])) if logd_clip[1] and logd_clip[1] > 0 else 1.0
     def _clip_log(arr):
         a = np.asarray(arr, float); a = a[np.isfinite(a)]; a = a[a > 0]
-        return np.clip(np.log10(a), -5.0, 1.0) if a.size else None
+        return np.clip(np.log10(a), _lo, _hi) if a.size else None
     per_card = []
     for g in groups:
         pooled = _clip_log(g["dist"]) if g.get("dist") is not None else None
@@ -183,7 +186,7 @@ def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi):
     fig, ax = _new_axes(width_px, height_px, dpi)
     fn = {"ridgeline": _render_logd_ridgeline, "violin": _render_logd_violin}.get(
         style, _render_logd_overlaid)
-    fn(ax, per_card, thr, pal, mobile_d or 0.05)
+    fn(ax, per_card, thr, pal, mobile_d or 0.05, xlim=(_lo, _hi))
     # keep the live dark theme: re-tint labels/title/legend the engine left default
     ax.title.set_color(_INK)
     ax.xaxis.label.set_color(_MUTED); ax.yaxis.label.set_color(_MUTED)
@@ -199,7 +202,8 @@ def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi):
 def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
                   err: str = "95% CI", log_x: bool = False,
                   width_px: int = 720, height_px: int = 380, dpi: int = 100,
-                  logd_style: str = "overlaid", mobile_d: float = 0.05):
+                  logd_style: str = "overlaid", mobile_d: float = 0.05,
+                  logd_clip: tuple = (0.00001, 10.0)):
     """Render one metric across ``groups`` → detached ``QImage``.
 
     ``groups``: ``[{"label", "color", "values": ndarray(per-folder scalars),
@@ -212,7 +216,7 @@ def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
     if metric.id == "D" and any(g.get("dist") is not None and len(g["dist"]) for g in groups):
         try:
             return _render_logd_engine(groups, logd_style, mobile_d,
-                                       width_px, height_px, dpi)
+                                       width_px, height_px, dpi, logd_clip=logd_clip)
         except Exception:
             pass   # fall through to the generic renderer if the engine path fails
 
