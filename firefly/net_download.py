@@ -537,49 +537,71 @@ def _download_parallel(url: str,
     _log(f"  parallel download: {n} segments, {total/1e6:.0f} MB total")
 
     lock = threading.Lock()
-    state = {"done": 0, "last_t": 0.0, "cancel": False}
+    state = {"last_t": 0.0, "cancel": False}
+    seg_bytes = [0] * n                    # ACTUAL bytes on disk per segment
+    _RANGE_IGNORED = "__range_ignored__"   # a 200 to a ranged request → fall back
+
+    def _report():
+        # Progress is the actual bytes on disk summed across segments, CAPPED at
+        # the total — never a running chunk tally.  So a resumed / retried segment
+        # can't double-count and push the bar past 100% (the bug users hit).
+        if progress_cb is None:
+            return
+        with lock:
+            now = time.monotonic()
+            if now - state["last_t"] < 0.1:
+                return
+            state["last_t"] = now
+            snap = min(sum(seg_bytes), total)
+        try:    progress_cb(snap, total)
+        except Exception: pass
 
     def _fetch(idx, start, end):
         # Retry + RESUME this one segment instead of letting a single dropped
-        # connection fail the whole parallel download (which then re-downloads the
-        # entire file single-stream — the "downloads twice" users see on flaky /
-        # proxied / AV networks).  We resume from the bytes already on disk, so a
-        # transient drop only re-fetches the missing tail, not the whole segment.
+        # connection fail the whole parallel download (the "downloads twice" users
+        # saw on flaky / proxied / AV networks).  We resume from the bytes already
+        # on disk, so a transient drop only re-fetches the missing tail.
         seg = _seg_path(idx)
         need = end - start + 1                    # bytes this segment must hold
         SEG_TRIES = 4
+        with lock:
+            seg_bytes[idx] = os.path.getsize(seg) if os.path.exists(seg) else 0
         for attempt in range(1, SEG_TRIES + 1):
             got = os.path.getsize(seg) if os.path.exists(seg) else 0
             if got >= need:
+                with lock: seg_bytes[idx] = need
+                _report()
                 return                            # already complete
             h = dict(base_headers)
             h["Range"] = f"bytes={start + got}-{end}"   # resume from what we have
             try:
                 with urllib.request.urlopen(
-                        urllib.request.Request(url, headers=h), timeout=timeout) as resp, \
-                        open(seg, "ab" if got else "wb") as out:
-                    while True:
-                        if state["cancel"]:
-                            raise DownloadError("Download cancelled by user.")
-                        chunk = resp.read(CHUNK)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        snap = None
-                        with lock:
-                            state["done"] += len(chunk)
-                            now = time.monotonic()
-                            if progress_cb is not None and now - state["last_t"] >= 0.1:
-                                state["last_t"] = now
-                                snap = state["done"]
-                        if snap is not None:
-                            try:    progress_cb(snap, total)
-                            except Exception: pass
+                        urllib.request.Request(url, headers=h), timeout=timeout) as resp:
+                    # A ranged request MUST come back 206.  A 200 means the server /
+                    # proxy ignored Range and is sending the WHOLE file, not this
+                    # segment — appending it would DUPLICATE bytes (bar past 100%)
+                    # and corrupt the segment.  Bail to the single-stream path,
+                    # which downloads a plain 200 correctly.
+                    if getattr(resp, "status", 200) != 206:
+                        raise DownloadError(_RANGE_IGNORED)
+                    with open(seg, "ab" if got else "wb") as out:
+                        while True:
+                            if state["cancel"]:
+                                raise DownloadError("Download cancelled by user.")
+                            chunk = resp.read(CHUNK)
+                            if not chunk:
+                                break
+                            out.write(chunk)
+                            with lock:
+                                seg_bytes[idx] += len(chunk)
+                            _report()
                 if os.path.getsize(seg) >= need:
+                    with lock: seg_bytes[idx] = need
+                    _report()
                     return                        # segment complete
                 # short read (connection closed early) → loop to resume the tail
             except DownloadError:
-                raise                             # user cancel → propagate at once
+                raise                             # cancel / range-ignored → propagate
             except Exception:
                 if attempt >= SEG_TRIES:
                     raise                         # give up → parallel falls back once

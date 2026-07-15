@@ -187,3 +187,49 @@ def test_terminal_finalize_is_not_re_downloaded(tmp_path, monkeypatch):
     assert attempts["n"] == 1                     # tried once, not 6×
     assert "after 6 attempts" not in str(ei.value)
     assert "manually" in str(ei.value).lower()
+
+
+def test_progress_never_exceeds_100_when_a_ranged_request_is_ignored(tmp_path, monkeypatch):
+    """A proxy that answers a segment's ranged request with 200 (the WHOLE file,
+    not the segment) must not push the bar past 100% or corrupt the download: the
+    parallel path bails cleanly to single-stream, and every progress report stays
+    within [0, total].  (The 'exceeds 100% / repeats from 0%' updater bug.)"""
+    monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
+    TOTAL = 12 * 1024 * 1024                      # > MIN_PARALLEL_BYTES → parallel runs
+    data = os.urandom(TOTAL)
+    ignored = {"done": False}
+
+    def fake_urlopen(req, timeout=None):
+        rng = req.get_header("Range")
+        if rng is None:                            # single-stream fallback (no Range)
+            r = _FakeResp(data, status=200)
+            r.headers = {"Content-Length": str(TOTAL)}
+            return r
+        s, _, e = rng.replace("bytes=", "").partition("-")
+        start = int(s); end = int(e) if e else TOTAL - 1
+        if start == 0 and end == 0:                # probe → advertise Range + total
+            r = _FakeResp(data[:1], status=206)
+            r.headers = {"Content-Range": f"bytes 0-0/{TOTAL}", "Content-Length": "1"}
+            return r
+        if start > 0 and not ignored["done"]:      # one segment → Range IGNORED (200)
+            ignored["done"] = True
+            r = _FakeResp(data, status=200)        # whole file, not the requested segment
+            r.headers = {"Content-Length": str(TOTAL)}
+            return r
+        seg = data[start:end + 1]
+        r = _FakeResp(seg, status=206)
+        r.headers = {"Content-Length": str(len(seg))}
+        return r
+
+    monkeypatch.setattr(nd.urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "out.bin"
+    reports = []
+    nd.download_file("http://x/big", str(dest),
+                     progress_cb=lambda d, t: reports.append((d, t)),
+                     validate_cb=lambda p: open(p, "rb").read() == data,
+                     parallel_segments=4, max_attempts=2)
+
+    assert ignored["done"]                          # the ignored-Range path was hit
+    assert dest.read_bytes() == data                # completed correctly via fallback
+    assert reports, "no progress reported"
+    assert all(0 <= d <= t for d, t in reports)     # never below 0 or above 100%
