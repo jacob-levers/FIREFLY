@@ -1049,12 +1049,18 @@ Item {
                                    font.family: "Menlo"; font.weight: Font.DemiBold }
                             Text {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                // render the GitHub notes as Markdown (bold
+                                // phrases, code spans, bullet lists) instead of
+                                // dumping the raw ## / ** / `` source.
+                                textFormat: Text.MarkdownText
                                 text: Updates.releaseBody !== "" ? Updates.releaseBody
                                       : Updates.returningToStable
                                           ? "You're on a pre-release build. Switch back to the stable release."
                                           : "A new release is available on GitHub."
                                 color: pal.TXT_MUTED; font.pixelSize: sc.textXs
-                                maximumLineCount: 8; elide: Text.ElideRight
+                                lineHeight: 1.25
+                                maximumLineCount: 12; elide: Text.ElideRight
+                                onLinkActivated: (link) => Qt.openUrlExternally(link)
                             }
                             // download progress (real in-app update)
                             ColumnLayout {

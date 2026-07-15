@@ -240,3 +240,24 @@ def test_update_downloaded_reuse_condition(mk_controller, tmp_path):
     c._prefetched_tag = "v2.99.0"
     staged.unlink()                                    # staged file vanished
     assert c.updateDownloaded is False
+
+
+def test_clean_release_notes_strips_redundant_version_heading():
+    # The update card shows the tag on its own line, then renders the body as
+    # Markdown — so the leading "## v… — date" heading is dropped, but the rest
+    # of the Markdown (section header, bold phrases, bullets) is preserved.
+    from firefly.ui.controllers.updates_controller import _clean_release_notes
+    body = (
+        "## v2.76.44 — 15 Jul 2026\n\n"
+        "### Fixed\n\n"
+        "- **Visualiser couldn't load some runs** with `utf-8 codec`.\n"
+        "- **Conditions tab froze** while loading.\n"
+    )
+    out = _clean_release_notes(body)
+    assert not out.startswith("## v2.76.44")           # version heading gone
+    assert out.startswith("### Fixed")                 # sub-header kept
+    assert "**Visualiser couldn't load some runs**" in out
+    assert "- **Conditions tab froze**" in out
+    assert _clean_release_notes("") == ""
+    # a body without a leading version heading is returned intact (trimmed)
+    assert _clean_release_notes("\n- just a bullet\n") == "- just a bullet"

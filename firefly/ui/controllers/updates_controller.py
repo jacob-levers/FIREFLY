@@ -24,6 +24,28 @@ _RELEASES_API = "https://api.github.com/repos/jacob-levers/FIREFLY/releases?per_
 _RELEASES_PAGE = "https://github.com/jacob-levers/FIREFLY/releases"
 
 
+def _clean_release_notes(body: str) -> str:
+    """Tidy a GitHub release body for the in-app update card.
+
+    The card renders this with ``Text.MarkdownText``, so we keep the Markdown
+    (bold phrases, code spans, bullet lists) but drop the leading
+    ``## v… — date`` version heading — the release tag is already shown on its
+    own line just above the notes, so the heading is redundant and, rendered as
+    an H2, oversized.  Leading/trailing blank lines are trimmed.
+    """
+    if not body:
+        return ""
+    lines = body.replace("\r\n", "\n").split("\n")
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i < len(lines) and lines[i].lstrip().startswith("## "):
+        i += 1
+        while i < len(lines) and not lines[i].strip():
+            i += 1
+    return "\n".join(lines[i:]).strip()
+
+
 class UpdatesController(QObject):
     changed = Signal()
     checkingChanged = Signal()
@@ -249,7 +271,7 @@ class UpdatesController(QObject):
             if rel.get("tag"):
                 self._latest_tag = rel["tag"]
             if rel.get("body"):
-                self._body = rel["body"]
+                self._body = _clean_release_notes(rel["body"])
             if rel.get("html_url"):
                 self._url = rel["html_url"]
             pre = res.get("pre") or {}
