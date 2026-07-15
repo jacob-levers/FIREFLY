@@ -20,6 +20,14 @@
   a loading chip and are read in the background, so the tab stays responsive and
   you can keep adding folders while others load.
 
+### Changed
+
+- **Update notes now render as formatted text.** The "update available" card
+  previously showed the raw release notes (literal `##`, `**` and backticks).
+  They're now rendered as Markdown — bold highlights, inline code and bullet
+  lists — and the redundant version heading is dropped since the tag is already
+  shown above.
+
 ## v2.76.43 — 15 Jul 2026
 
 Stable release. Everything from the 2.76.39–2.76.42 pre-releases, plus a new
