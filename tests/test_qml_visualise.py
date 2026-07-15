@@ -477,3 +477,32 @@ def test_visualise_reads_are_encoding_tolerant(tmp_path):
     pj.write_bytes('{"units": "\xb5m", "pixel_size": 0.106}'.encode("latin-1"))
     d = _load_json_enc(str(pj))
     assert d["pixel_size"] == 0.106
+
+
+def test_load_json_enc_handles_bom_and_empty(tmp_path):
+    # "Expecting value: line 1 column 1 (char 0)" came from a UTF-8 BOM at the
+    # start of a params.json (or an empty file). The helper must strip the BOM
+    # and raise a clean ValueError on empty content.
+    import json
+    from firefly.ui.controllers.visualise_controller import _load_json_enc
+    bom = tmp_path / "bom_params.json"
+    bom.write_bytes(b"\xef\xbb\xbf" + json.dumps({"pixel_size": 0.108}).encode())
+    assert _load_json_enc(str(bom)) == {"pixel_size": 0.108}
+    empty = tmp_path / "empty_params.json"
+    empty.write_bytes(b"")
+    with pytest.raises(ValueError):
+        _load_json_enc(str(empty))
+
+
+def test_visualise_load_run_survives_unreadable_params(tmp_path):
+    # A run whose params.json is empty/corrupt must still load its tracks +
+    # diffusion — the stem comes from the filename, so only the recorded stack
+    # is lost (previously this aborted the whole load with a raw JSON error).
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    run = _make_run(tmp_path)
+    # rename the stems' sidecars aren't needed; just drop an empty params.json in
+    (tmp_path / "run1" / "firefly_extras" / "cell1_params.json").write_bytes(b"")
+    c = VisualiseController()
+    assert c.loadRunFolder(run) is True
+    assert c.hasRun
+    assert c.hudTrackCount == 8

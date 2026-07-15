@@ -56,14 +56,24 @@ def _read_csv_enc(path, **kw):
 
 
 def _load_json_enc(path):
-    """``json.load`` tolerant of a non-UTF-8 params file (same rationale)."""
+    """``json.load`` tolerant of a non-UTF-8 or BOM-prefixed params file.
+
+    ``utf-8-sig`` strips a leading UTF-8 BOM (Windows editors write one, and a
+    stray ``\\ufeff`` at char 0 otherwise trips ``json.loads`` with
+    "Expecting value: line 1 column 1 (char 0)"), then falls back to cp1252 /
+    latin-1 for stray ° / µ bytes.  Raises ``ValueError`` on an empty file so
+    callers can fall back cleanly rather than surfacing a cryptic JSON error."""
     import json
     with open(path, "rb") as fh:
         raw = fh.read()
-    for enc in ("utf-8", "cp1252", "latin-1"):
+    if not raw.strip():
+        raise ValueError(f"{os.path.basename(path)} is empty")
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
         try:
             return json.loads(raw.decode(enc))
         except UnicodeDecodeError:
+            continue
+        except json.JSONDecodeError:
             continue
     return json.loads(raw.decode("latin-1", "replace"))
 
@@ -243,9 +253,19 @@ class VisualiseController(QObject):
             stack_path = None
             params_files = [f for f in os.listdir(extras) if f.endswith("_params.json")]
             if params_files:
-                params = _load_json_enc(os.path.join(extras, params_files[0]))
-                stack_path = params.get("input_file") or params.get("stem")
+                # The stem comes from the *filename*, so an empty/corrupt/BOM'd
+                # params.json must not abort the load — the run still has its
+                # trajectories + diffusion sidecars.  We just lose the recorded
+                # input stack + pixel size (the user can add the stack manually).
                 stem = params_files[0][:-len("_params.json")]
+                try:
+                    params = _load_json_enc(os.path.join(extras, params_files[0]))
+                except Exception as pexc:
+                    params = {}
+                    self.statusMessage.emit(
+                        f"Couldn't read {params_files[0]} ({pexc}); "
+                        f"loading tracks without the recorded stack")
+                stack_path = params.get("input_file") or params.get("stem")
                 try:                               # real pixel size → sane super-res canvas
                     if params.get("pixel_size"):
                         self._cl_px_um = float(params["pixel_size"])
