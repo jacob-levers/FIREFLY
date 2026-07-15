@@ -14,6 +14,11 @@
   double-counting its bytes. Progress is now measured from the bytes actually on
   disk (capped at 100%), and a range-ignoring server falls back cleanly to a
   single-stream download.
+- **Analysis "Conditions" tab froze while data was loading.** Each run folder
+  dropped onto a condition was read on the interface thread, so a large drop
+  locked the window and made it hard to add more. Dropped folders now appear as
+  a loading chip and are read in the background, so the tab stays responsive and
+  you can keep adding folders while others load.
 
 ## v2.76.43 — 15 Jul 2026
 

@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.2"
+__version__ = "2.76.44-rc.3"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -19,7 +19,11 @@ __version__ = "2.76.44-rc.2"
 #           could exceed 100% then jump to 0%: the parallel downloader double-
 #           counted a segment that resumed after a proxy ignored its Range request.
 #           Progress is now the bytes actually on disk, capped at 100%, and a
-#           range-ignoring 200 falls back cleanly to single-stream.
+#           range-ignoring 200 falls back cleanly to single-stream.  (3) FIX the
+#           Analysis "Conditions" tab froze while data was added: each dropped run
+#           was read on the GUI thread.  Folders now show a loading chip and their
+#           (potentially large) sidecars are read off-thread, so the tab stays
+#           responsive and more folders can be dropped while others load.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a
