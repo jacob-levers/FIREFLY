@@ -442,12 +442,22 @@ def _decode_czi_parallel(path, channel, n_t, H, W, stop_event=None):
     return stack
 
 
-def _load_single_czi(path, channel=0, stop_event=None):
+def _load_single_czi(path, channel=0, stop_event=None, dtype=np.float32,
+                     reserve_gb=None):
     """Load a single CZI file and return (stack, pixel_size_um, frame_interval_s).
 
     stop_event : threading.Event or None
         If set, loading is aborted and _Cancelled is raised.
         The check runs every 500 frames so the UI stays responsive.
+    dtype : numpy dtype or None
+        Output stack dtype.  Defaults to float32 (what the analysis pipeline
+        needs).  Pass ``None`` to keep the camera's native dtype (e.g. uint16),
+        which halves the stack's memory for a viewer that only *displays* it —
+        so a movie that would spill to a disk memmap as float32 fits in RAM.
+    reserve_gb : float or None
+        Override the RAM reserve kept free for the OS/other apps.  A display-
+        only caller can lower it so the fast in-RAM bulk read is chosen for a
+        movie it just shows.
     """
     def _chk():
         if stop_event is not None and stop_event.is_set():
@@ -468,12 +478,15 @@ def _load_single_czi(path, channel=0, stop_event=None):
         if f0.ndim > 2:
             f0 = f0[0]
         H, W  = f0.shape
+        out_dtype = np.dtype(dtype) if dtype is not None else np.dtype(f0.dtype)
 
         # Opt-in parallel JPEG-XR decode: use this file's idle core budget to
         # decode subblocks concurrently (1 core/file → up to N).  Spot-checked
         # against this same aicspylibczi reader and falls back to the bulk read
         # on anything unexpected, so it can never silently corrupt frames.
-        if _czi_parallel_decode_enabled():
+        # (Only for the float32 analysis path — it emits float32; the native
+        # viewer dtype takes the parameterised bulk/per-frame path below.)
+        if out_dtype == np.float32 and _czi_parallel_decode_enabled():
             try:
                 par = _decode_czi_parallel(path, ch, n_t, H, W, stop_event)
             except _Cancelled:
@@ -497,15 +510,23 @@ def _load_single_czi(path, channel=0, stop_event=None):
         # per-frame but not in bulk, so gate the fast path on free memory —
         # macOS swaps rather than raising MemoryError, so we must check up
         # front instead of relying on a failed allocation.
-        bytes_f32 = n_t * H * W * 4
-        peak_need = bytes_f32 + n_t * H * W * int(f0.dtype.itemsize)
+        bytes_out = n_t * H * W * out_dtype.itemsize
+        # Bulk read holds the native frames; converting to a *different* dtype
+        # needs a second buffer, but keeping the native dtype reuses it in place
+        # (np.ascontiguousarray is a no-op on a contiguous same-dtype array).  So
+        # the native (viewer) path's bulk budget is ~1× — which is what lets a
+        # uint16 movie take the fast in-RAM bulk read instead of the slow
+        # per-frame memmap fallback.
+        peak_need = bytes_out + (0 if out_dtype == f0.dtype
+                                 else n_t * H * W * int(f0.dtype.itemsize))
         try:
             import psutil as _psutil
             avail   = _psutil.virtual_memory().available
-            reserve = _user_ram_reserve_gb() * (1024 ** 3)
+            reserve = (reserve_gb if reserve_gb is not None
+                       else _user_ram_reserve_gb()) * (1024 ** 3)
             bulk_ok = peak_need < (avail - reserve)
         except Exception:
-            bulk_ok = bytes_f32 < 2 * (1024 ** 3)   # can't measure → only if small
+            bulk_ok = bytes_out < 2 * (1024 ** 3)   # can't measure → only if small
 
         stack = None
         if bulk_ok:
@@ -517,7 +538,7 @@ def _load_single_czi(path, channel=0, stop_event=None):
                 if arr.ndim == 2:          # single timepoint
                     arr = arr[None, ...]
                 if arr.shape == (n_t, H, W):
-                    stack = np.ascontiguousarray(arr, dtype=np.float32)
+                    stack = np.ascontiguousarray(arr, dtype=out_dtype)
                     print(f"  Loaded {n_t} frames (bulk read).", flush=True)
                 else:
                     print(f"  Bulk read shape {arr.shape} != expected "
@@ -538,14 +559,14 @@ def _load_single_czi(path, channel=0, stop_event=None):
             # that would double peak RAM) and fill it frame by frame.  Uses a
             # disk-backed memmap when the stack won't fit in RAM, so a single
             # CZI larger than memory loads instead of OOM-ing / swapping.
-            stack = _alloc_or_memmap_stack((n_t, H, W))
-            stack[0] = f0.astype(np.float32)
+            stack = _alloc_or_memmap_stack((n_t, H, W), out_dtype, reserve_gb)
+            stack[0] = f0.astype(out_dtype)
             for t in range(1, n_t):
                 img, _ = czi.read_image(T=t, C=ch)
                 frame  = img.squeeze()
                 if frame.ndim > 2:
                     frame = frame[0]
-                stack[t] = frame.astype(np.float32)
+                stack[t] = frame.astype(out_dtype)
                 if t % 500 == 0:
                     print(f"  Loading: {t}/{n_t} frames...", flush=True)
                     _chk()
@@ -557,6 +578,8 @@ def _load_single_czi(path, channel=0, stop_event=None):
         # Note: czifile needs imagecodecs to decompress JPEG XR frames
         # (the default compression for Zeiss Elyra).
         # Install with: pip install imagecodecs
+        # None → keep native camera dtype (viewer path); else the requested one.
+        cz_dtype = np.dtype(dtype) if dtype is not None else None
         with czifile.CziFile(path) as czi:
             xml  = czi.metadata()
             meta = _parse_czi_metadata(xml)
@@ -573,7 +596,7 @@ def _load_single_czi(path, channel=0, stop_event=None):
                 try:
                     seg = entry.data_segment()
                     arr = np.asarray(seg.data(raw=False),
-                                     dtype=np.float32).squeeze()
+                                     dtype=cz_dtype).squeeze()
                     if arr.size == 0:
                         continue
                     while arr.ndim > 2:
@@ -603,11 +626,14 @@ def _load_single_czi(path, channel=0, stop_event=None):
         "Run:  pip install aicspylibczi imagecodecs")
 
 
-def load_czi(path, channel=0, stop_event=None, files=None):
+def load_czi(path, channel=0, stop_event=None, files=None, dtype=np.float32,
+             reserve_gb=None):
     """Load a CZI (or multi-file CZI series) into one stack.
 
     `files`, when provided, overrides the auto-discovery of sibling
     files — used by the GUI to honour per-file checkbox selections.
+    `dtype` — output stack dtype (``None`` keeps the native camera dtype;
+    see :func:`_load_single_czi`).  `reserve_gb` — RAM-reserve override.
     """
     if files:
         seen = set()
@@ -630,7 +656,8 @@ def load_czi(path, channel=0, stop_event=None, files=None):
         # loads the right one.
         only = series[0]
         print(f"  Loading CZI: {only}")
-        stack, px_um, fi_s = _load_single_czi(only, channel, stop_event)
+        stack, px_um, fi_s = _load_single_czi(only, channel, stop_event, dtype,
+                                              reserve_gb)
         print(f"  Shape: {stack.shape}  (T x Y x X)", flush=True)
         return stack, px_um, fi_s
 
@@ -656,7 +683,8 @@ def load_czi(path, channel=0, stop_event=None, files=None):
     import gc as _gc
     for i, fpath in enumerate(series):
         print(f"  [{i+1}/{len(series)}] {os.path.basename(fpath)}", flush=True)
-        st, px, fi = _load_single_czi(fpath, channel, stop_event)
+        st, px, fi = _load_single_czi(fpath, channel, stop_event, dtype,
+                                      reserve_gb)
         if i == 0:
             px_um_out = px
             fi_s_out  = fi
@@ -1399,13 +1427,18 @@ def _tif_series_nat_key(filepath):
     return -1   # bare <root>.tif sorts first
 
 
-def load_tif(path, stop_event=None, files=None):
+def load_tif(path, stop_event=None, files=None, dtype=np.float32):
     """Load `path` and (when present) its sibling files into one stack.
 
     If `files` is a non-empty list, it overrides auto-discovery — the
     GUI uses this to honour per-file checkbox selections within a series.
     The override is sorted to match _find_tif_series ordering so frame
     indices line up with the user's expectation.
+
+    `dtype` is accepted for parity with :func:`load_czi` / :func:`load_file`,
+    but TIF stacks always load as float32 for now — the native-dtype (uint16)
+    memory optimisation is CZI-only (its lazy/streaming/memmap paths make a
+    dtype switch here non-trivial), so a ``None`` request is treated as float32.
     """
     if files:
         # De-dup and sort by the same NATURAL key the auto-discovery
@@ -2057,17 +2090,24 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     return out
 
 
-def load_file(path, channel=0, stop_event=None, files=None):
+def load_file(path, channel=0, stop_event=None, files=None, dtype=np.float32,
+              reserve_gb=None):
     """Load `path` (or, if `files` is provided, the explicit list of
     files) as a single stack.
 
     `files` lets a caller override the auto-discovery of sister files
     that `_find_tif_series` / `_find_czi_series` does — useful when the
     GUI wants to load only a user-selected subset of a multi-file series.
+    `dtype` is the output stack dtype: float32 for the analysis pipeline,
+    or ``None`` to keep the camera's native dtype (uint16) for a viewer
+    that only displays it — half the memory, so it stays in RAM.
+    `reserve_gb` overrides the RAM reserve (a display-only caller can lower
+    it so the movie stays in RAM rather than spilling to a slow disk memmap).
     """
     ext = os.path.splitext(path)[1].lower()
     if   ext == ".czi":            return load_czi(path, channel, stop_event,
-                                                   files=files)
+                                                   files=files, dtype=dtype,
+                                                   reserve_gb=reserve_gb)
     elif ext in (".tif", ".tiff"): return load_tif(path, stop_event,
-                                                   files=files)
+                                                   files=files, dtype=dtype)
     else: sys.exit(f"ERROR: Unsupported file '{ext}'. Use .czi or .tif")

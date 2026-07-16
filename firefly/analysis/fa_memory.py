@@ -106,19 +106,24 @@ def _user_ram_reserve_gb() -> float:
     return max(4.0, min(8.0, 0.15 * total_gb))
 
 
-def _alloc_or_memmap_stack(shape, dtype=np.float32):
+def _alloc_or_memmap_stack(shape, dtype=np.float32, reserve_gb=None):
     """Allocate a single-file (T, H, W) stack.  Returns a plain in-RAM array
     when it fits in available memory (minus the OS reserve), otherwise a
     disk-backed np.memmap so a stack larger than RAM doesn't OOM or silently
     swap.  Mirrors the RAM-vs-memmap policy the multi-file / TIF loaders
-    already use, extending it to the single-file CZI/TIF paths."""
+    already use, extending it to the single-file CZI/TIF paths.
+
+    ``reserve_gb`` overrides the default OS/user RAM reserve — a display-only
+    caller (the Visualiser) can pass a smaller value so a movie it just shows
+    stays in RAM instead of spilling to a slow disk memmap."""
     import numpy as _np
     nbytes = int(_np.prod(shape)) * _np.dtype(dtype).itemsize
     fits_ram = True
     try:
         import psutil as _ps
         avail   = _ps.virtual_memory().available
-        reserve = _user_ram_reserve_gb() * (1024 ** 3)
+        reserve = (reserve_gb if reserve_gb is not None
+                   else _user_ram_reserve_gb()) * (1024 ** 3)
         fits_ram = nbytes < (avail - reserve)
     except Exception:
         fits_ram = True
