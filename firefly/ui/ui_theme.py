@@ -5,6 +5,8 @@ the analysis figures.
 """
 from __future__ import annotations
 
+import os
+
 from PySide6 import QtCore, QtGui, QtWidgets
 
 
@@ -68,25 +70,81 @@ _THEMES = {
 }
 
 
+def theme_pref_path() -> str:
+    """Plain-file store for the chosen app theme, in a stable per-user dir that
+    survives app updates.
+
+    Why not QSettings: on macOS QSettings("jacoblevers","FIREFLY") resolves to
+    the ``com.jacoblevers.FIREFLY`` preferences domain, but the app bundle id is
+    ``com.jacoblevers.firefly`` — cfprefsd treats those as *different*
+    (case-sensitive) domains even though the plist filenames collide on the
+    case-insensitive disk, so a theme write from the bundled app wasn't read back
+    reliably after an in-app update (it kept reverting).  A plain JSON file in
+    the app-data dir sidesteps cfprefsd entirely, so the choice is durable.
+    """
+    import sys
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support", "FIREFLY")
+    elif os.name == "nt":
+        base = os.path.join(os.environ.get("APPDATA") or home, "FIREFLY")
+    else:
+        base = os.path.join(os.environ.get("XDG_CONFIG_HOME")
+                            or os.path.join(home, ".config"), "firefly")
+    return os.path.join(base, "ui_prefs.json")
+
+
+def _read_theme_file():
+    try:
+        import json
+        with open(theme_pref_path(), encoding="utf-8") as fh:
+            return (json.load(fh) or {}).get("app_theme")
+    except Exception:
+        return None
+
+
+def write_theme_file(name: str) -> None:
+    """Durably persist the chosen theme to the plain-file store (atomic)."""
+    try:
+        import json
+        p = theme_pref_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        data = {}
+        try:
+            with open(p, encoding="utf-8") as fh:
+                data = json.load(fh) or {}
+        except Exception:
+            data = {}
+        data["app_theme"] = str(name)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
 def _pick_startup_theme() -> str:
     """Read the user's chosen app theme, defaulting to "Dark".
 
-    Stored in the app's PRIMARY settings domain (``jacoblevers``/``FIREFLY``) —
-    the same store as reduce-motion / font-size, which persist reliably.  The
-    theme used to live in a SEPARATE QSettings domain (``FIREFLY``/``sptPALM``)
-    that matches neither the app's org/app name nor its bundle id, so on macOS
-    ``cfprefsd`` didn't reliably flush its writes across an in-app update — the
-    theme reverted (typically to AMOLED) on every update.  One-time migration off
-    the old domain preserves a deliberate Light choice; anything else (including a
-    stuck AMOLED) starts on Dark.  AMOLED stays selectable and now persists.
+    Preference order: the durable plain-file store (write_theme_file) → the
+    legacy QSettings store (migrated on first run) → Dark.  We only READ here
+    (never write) so importing this module has no filesystem side effects; the
+    file is written by an explicit theme change (see ThemeController.setTheme).
+    A deliberate AMOLED / Light choice is preserved — this fixes DURABILITY, it
+    does not force Dark.
     """
     try:
-        name = QtCore.QSettings("jacoblevers", "FIREFLY").value("ui/app_theme", None)
-        if name is None:                        # migrate from the old (foreign) store
+        name = _read_theme_file()
+        if name in _THEMES:
+            return name
+        # migrate from the QSettings store (previous mechanism)
+        qs = QtCore.QSettings("jacoblevers", "FIREFLY").value("ui/app_theme", None)
+        if qs is None:                          # ...or the older foreign domain
             old = str(QtCore.QSettings("FIREFLY", "sptPALM")
                       .value("ui/app_theme", "") or "")
-            name = "Light" if old == "Light" else "Dark"
-        name = str(name or "Dark")
+            qs = "Light" if old == "Light" else "Dark"
+        name = str(qs or "Dark")
         return name if name in _THEMES else "Dark"
     except Exception:
         return "Dark"

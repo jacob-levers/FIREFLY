@@ -25,9 +25,13 @@ class _FakeQSettings:
     def sync(self): pass
 
 
-def _patch(monkeypatch, values):
+def _patch(monkeypatch, values, file_theme=None):
     _FakeQSettings.store = dict(values)
     monkeypatch.setattr(ui_theme.QtCore, "QSettings", _FakeQSettings)
+    # Keep the durable plain-file store off the real user file.  By default it's
+    # empty so these tests exercise the QSettings-migration fallback; pass
+    # file_theme to simulate a persisted file choice.
+    monkeypatch.setattr(ui_theme, "_read_theme_file", lambda: file_theme)
 
 
 def test_defaults_to_dark_when_nothing_is_set(monkeypatch):
@@ -64,4 +68,30 @@ def test_new_domain_wins_over_old(monkeypatch):
 
 def test_unknown_value_falls_back_to_dark(monkeypatch):
     _patch(monkeypatch, {(NEW, "ui/app_theme"): "Nonsense"})
+    assert ui_theme._pick_startup_theme() == "Dark"
+
+
+def test_file_store_is_preferred_over_qsettings(monkeypatch):
+    # The durable plain-file store wins over QSettings — this is what survives an
+    # in-app update on macOS (QSettings' domain didn't match the app bundle id).
+    _patch(monkeypatch, {(NEW, "ui/app_theme"): "Dark"}, file_theme="Light")
+    assert ui_theme._pick_startup_theme() == "Light"
+
+
+def test_file_store_respects_a_deliberate_amoled(monkeypatch):
+    # A user who actually chose AMOLED keeps it — the fix is durability, NOT
+    # forcing Dark.
+    _patch(monkeypatch, {}, file_theme="AMOLED")
+    assert ui_theme._pick_startup_theme() == "AMOLED"
+
+
+def test_write_then_read_theme_file_round_trips(monkeypatch, tmp_path):
+    # write_theme_file → _read_theme_file round-trip through a real (temp) file,
+    # and _pick_startup_theme reads it back without touching QSettings.
+    p = str(tmp_path / "ui_prefs.json")
+    monkeypatch.setattr(ui_theme, "theme_pref_path", lambda: p)
+    ui_theme.write_theme_file("AMOLED")
+    assert ui_theme._read_theme_file() == "AMOLED"
+    ui_theme.write_theme_file("Dark")
+    assert ui_theme._read_theme_file() == "Dark"
     assert ui_theme._pick_startup_theme() == "Dark"

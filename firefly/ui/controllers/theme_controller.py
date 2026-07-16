@@ -230,9 +230,13 @@ class ThemeController(QObject):
     def setTheme(self, name: str):
         if name in _THEMES and name != self._name:
             self._name = name
-            # Persist to the primary store (jacoblevers/FIREFLY) so it survives an
-            # in-app update — the old FIREFLY/sptPALM domain didn't (see
-            # _pick_startup_theme).  sync() flushes now to survive a crash/relaunch.
+            # Durable store: a plain file in the app-data dir that survives an
+            # in-app update (unlike macOS QSettings, whose domain didn't match
+            # the app bundle id — see ui_theme._pick_startup_theme / the AMOLED-
+            # reverts-every-update bug).  Also keep writing QSettings so other
+            # readers of ui/app_theme stay in sync.
+            from firefly.ui.ui_theme import write_theme_file
+            write_theme_file(name)
             try:
                 s = QSettings("jacoblevers", "FIREFLY")
                 s.setValue("ui/app_theme", name); s.sync()
