@@ -91,6 +91,7 @@ class _FigureJob(threading.Thread):
                            float(self._cfg.get("_logd_clip_max", 10.0))),
                 group_style=self._cfg.get("_group_style", "box_points"),
                 length_style=self._cfg.get("_length_style", "density"),
+                grouped_data=self._cfg.get("_grouped_data"),
                 width_px=w, height_px=h, dpi=110)
         except Exception:
             img = None
@@ -734,6 +735,29 @@ class AnalysisWorkspaceController(QObject):
             })
         return groups
 
+    def _grouped_tp_data(self, metric) -> dict:
+        """For the 'Grouped by timepoint' style: per-dish values keyed by
+        condition NAME → timepoint (phase), so each group can show its timepoints
+        side by side (the "between-dish variability" figure) — independent of the
+        Group-by mode, which otherwise pools or separates them."""
+        names, phases = [], []
+        data: dict = {}
+        colors: dict = {}
+        for c in self._shown():
+            v = self._values(c, metric)
+            if v is None or not len(v):
+                continue
+            nm = c.name
+            ph = c.phase if c.phase not in ("—", "") else ""
+            if nm not in data:
+                data[nm] = {}; names.append(nm); colors[nm] = c.color
+            data[nm].setdefault(ph, []).append(np.asarray(v, dtype=float))
+            if ph and ph not in phases:
+                phases.append(ph)
+        data = {nm: {ph: np.concatenate(arrs) for ph, arrs in tps.items()}
+                for nm, tps in data.items()}
+        return {"names": names, "phases": phases, "data": data, "colors": colors}
+
     def _engine_groups(self) -> list:
         """Folder-path groups for the real engine: one dict per shown condition
         carrying its analysis-output folders + its timepoint token (which drives
@@ -1167,6 +1191,13 @@ class AnalysisWorkspaceController(QObject):
             except (TypeError, ValueError):
                 cfg["_mobile_d"] = 0.05
             cfg["_logd_clip_min"], cfg["_logd_clip_max"] = self._dcoeff_clip()
+            # Grouped-by-timepoint style needs the per-name × phase breakdown
+            # (the live groups otherwise pool it away) — compute it for this metric.
+            if cfg.get("_group_style") == "grouped":
+                try:
+                    cfg["_grouped_data"] = self._grouped_tp_data(metric)
+                except Exception:
+                    cfg["_grouped_data"] = None
         self._fig_job = _FigureJob(self._cg, metric, cfg, (760, 400), deliver)
         self._fig_job.start()
 

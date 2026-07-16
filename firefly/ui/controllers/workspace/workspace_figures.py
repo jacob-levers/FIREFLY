@@ -203,20 +203,37 @@ def _gf_theme():
     return {"bg": _MAT, "fg": _INK, "grid": _GRID, "spine": _GRID, "muted": _MUTED}
 
 
-def _render_group_comparison(groups, metric, style, err, width_px, height_px, dpi):
+def _render_group_comparison(groups, metric, style, err, width_px, height_px, dpi,
+                             grouped_data=None):
     """Scalar-metric group comparison via the shared renderer (Preferences
-    figures/group_style): box+points / grouped / violin / bar, with a KW label."""
+    figures/group_style): box+points / grouped / violin / bar, with a KW label.
+
+    For ``grouped`` we prefer ``grouped_data`` (per condition-NAME × timepoint,
+    the "between-dish variability" split); it falls back to one series per group.
+    """
     import matplotlib.pyplot as plt
     from firefly.analysis import fa_group_figures as _gf
     order, values, gcolors = [], {}, {}
-    for g in groups:
-        v = np.asarray(g.get("values", []), float); v = v[np.isfinite(v)]
-        if not len(v):
-            continue
-        order.append(g["label"]); values[g["label"]] = {"": v}
-        gcolors[g["label"]] = g.get("color")
+    tp_order = None
+    if style == "grouped" and grouped_data and grouped_data.get("data"):
+        gd = grouped_data
+        tp_order = gd.get("phases") or None
+        for nm in gd["names"]:
+            tps = {ph: np.asarray(v, float)[np.isfinite(np.asarray(v, float))]
+                   for ph, v in gd["data"].get(nm, {}).items()}
+            tps = {ph: v for ph, v in tps.items() if len(v)}
+            if tps:
+                order.append(nm); values[nm] = tps
+                gcolors[nm] = gd.get("colors", {}).get(nm)
+    else:
+        for g in groups:
+            v = np.asarray(g.get("values", []), float); v = v[np.isfinite(v)]
+            if not len(v):
+                continue
+            order.append(g["label"]); values[g["label"]] = {"": v}
+            gcolors[g["label"]] = g.get("color")
     stat_label = ""
-    arrs = [values[l][""] for l in order]
+    arrs = [np.concatenate(list(values[l].values())) for l in order if values[l]]
     if len(arrs) >= 2 and all(len(a) >= 1 for a in arrs):
         try:
             from scipy.stats import kruskal
@@ -225,7 +242,7 @@ def _render_group_comparison(groups, metric, style, err, width_px, height_px, dp
             pass
     fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
     _gf.draw_group_comparison(fig, fig.add_gridspec(1, 1)[0], order, values, style=style,
-                              stat_label=stat_label, group_colors=gcolors,
+                              stat_label=stat_label, group_colors=gcolors, tp_order=tp_order,
                               theme=_gf_theme(), ylabel=metric.axis, err=err)
     fig.tight_layout(pad=1.1)
     return _qimage_from_figure(fig)
@@ -256,7 +273,8 @@ def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
                   width_px: int = 720, height_px: int = 380, dpi: int = 100,
                   logd_style: str = "overlaid", mobile_d: float = 0.05,
                   logd_clip: tuple = (0.00001, 10.0),
-                  group_style: str = "box_points", length_style: str = "density"):
+                  group_style: str = "box_points", length_style: str = "density",
+                  grouped_data=None):
     """Render one metric across ``groups`` → detached ``QImage``.
 
     ``groups``: ``[{"label", "color", "values": ndarray(per-folder scalars),
@@ -288,7 +306,8 @@ def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
     if group_style in ("box_points", "grouped", "violin", "bar"):
         try:
             return _render_group_comparison(groups, metric, group_style, err,
-                                            width_px, height_px, dpi)
+                                            width_px, height_px, dpi,
+                                            grouped_data=grouped_data)
         except Exception:
             pass   # fall through to the legacy renderer
     fig, ax = _new_axes(width_px, height_px, dpi)

@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.8"
+__version__ = "2.76.44-rc.9"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -65,7 +65,11 @@ __version__ = "2.76.44-rc.8"
 #           comparison, track-length and MSD-AUC change (each drives the live tab
 #           + report, like Log-D); new shared renderers in fa_group_figures; new
 #           metrics spot intensity / Rg / net displacement / speed.  Stats (test,
-#           error) stay on the Analysis tab.
+#           error) stay on the Analysis tab.  (15) NEW the live Analysis scalar
+#           figure honours the "Grouped by timepoint" style: it splits each
+#           condition by name × timepoint (pre/post) side by side — the between-
+#           dish view — instead of pooling or flattening, with the condition
+#           palette and a Kruskal–Wallis label.  Other styles are unchanged.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a
