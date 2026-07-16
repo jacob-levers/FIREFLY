@@ -86,11 +86,28 @@ class ImportController(QObject):
         self._thumb = None                # QImage preview of the recording
         self._thumb_token = 0
         self._proj = None                 # cached max-projection array (recolour without re-read)
+        # Pixel size / frame interval read from the picked file's embedded
+        # metadata (None when the file has none, e.g. a CSV).  Used to fill the
+        # sidebar's Imaging-metadata fields so they show the file's real values.
+        self._meta_px = None
+        self._meta_fi = None
         # The preview colour is owned by the ROI editor's dropdown; we just read
         # the shared 'ui/preview_cmap' key so the thumbnail matches it.
         self._preview_cmap = self._current_cmap()
+        # Re-fill the metadata fields when the user unticks an Override in the
+        # sidebar (they should revert to the file's detected value).
+        try:
+            self._s.changed.connect(self._on_settings_changed)
+        except Exception:
+            pass
         if self._file:
             self._probe()
+
+    def _on_settings_changed(self, key):
+        if key == "analysis/override_px" and not self.overridePx:
+            self._apply_metadata(px=True, fi=False)
+        elif key == "analysis/override_fi" and not self.overrideFi:
+            self._apply_metadata(px=False, fi=True)
 
     def _current_cmap(self):
         c = self._s.get_str("ui/preview_cmap", "Grayscale")
@@ -296,6 +313,7 @@ class ImportController(QObject):
     def _probe(self):
         self._fmt, self._frames, self._is_csv, self._size_str = "", 0, False, ""
         self._read_error = ""
+        self._meta_px = self._meta_fi = None
         p = self._file
         if p and os.path.isfile(p):
             try:    self._size_str = _human_size(os.path.getsize(p))
@@ -309,6 +327,11 @@ class ImportController(QObject):
                     import tifffile
                     with tifffile.TiffFile(p) as t:
                         self._frames = len(t.pages)
+                        try:
+                            from firefly.analysis.fa_loaders import _parse_ome_metadata
+                            self._meta_px, self._meta_fi = _parse_ome_metadata(t)
+                        except Exception:
+                            pass
                     # a TIFF that opens but has no image frames is unusable
                     if self._frames <= 0:
                         self._read_error = ("This TIFF has no image frames — "
@@ -326,12 +349,45 @@ class ImportController(QObject):
                     dims = czi.dims               # e.g. "TCYX"
                     if "T" in dims:
                         self._frames = int(czi.size[dims.index("T")])
+                    try:
+                        from firefly.analysis.fa_loaders import _parse_czi_metadata
+                        m = _parse_czi_metadata(czi.meta if hasattr(czi, "meta")
+                                                else None)
+                        self._meta_px = m.get("pixel_size_um")
+                        self._meta_fi = m.get("frame_interval_s")
+                    except Exception:
+                        pass
                 except Exception:
                     self._read_error = ("Couldn't read this file — it may be "
                                         "corrupt or incomplete.")
+        # Fill the sidebar's Imaging-metadata fields from the file (image inputs
+        # only; CSVs carry no metadata) unless the user is overriding.
+        self._apply_metadata()
         self.probeChanged.emit()
         self._probe_series(p, self._is_csv)
         self._render_thumb()
+
+    def _apply_metadata(self, px=True, fi=True):
+        """Fill pixel size / frame interval from the picked file's embedded
+        metadata (falling back to the built-in default when the file has none) —
+        matching exactly what the run will use when not overriding.  Skipped for
+        CSV input (no image metadata) and for a field the user is overriding."""
+        if self._is_csv:
+            return
+        if px and not self.overridePx:
+            self.pixelSize = float(self._meta_px or DEFAULT_PIXEL_SIZE_UM)
+        if fi and not self.overrideFi:
+            self.frameInterval = float(self._meta_fi or DEFAULT_FRAME_INTERVAL_S)
+
+    # Detected-from-file values (None when the file carries no metadata), so the
+    # UI can label the fields "from file" vs "default/manual" if it wants to.
+    @Property(float, notify=probeChanged)
+    def metaPixelSize(self):
+        return float(self._meta_px) if self._meta_px else 0.0
+
+    @Property(float, notify=probeChanged)
+    def metaFrameInterval(self):
+        return float(self._meta_fi) if self._meta_fi else 0.0
 
     # ── multi-file series (single analysis auto-combines siblings) ────────
     def _probe_series(self, path, is_csv):

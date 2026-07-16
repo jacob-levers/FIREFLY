@@ -213,3 +213,29 @@ def test_import_flags_corrupt_series_part(tmp_path):
     assert c.seriesUnreadableCount == 1
     assert c.seriesFrameTotal == 7                                 # 3 + 0 + 4 (readable only)
     assert c.hasReadError is True                                  # blocks Start analysis
+
+
+def test_import_fills_calibration_from_file_metadata():
+    # Importing an image file fills the sidebar's pixel-size / frame-interval
+    # from the file's embedded metadata (unless overriding); a CSV (no metadata)
+    # and an active Override both leave the fields untouched.
+    from firefly.ui.controllers.import_controller import ImportController
+    s = _RecSettings()
+    c = ImportController(s)
+    c._is_csv = False
+    c._meta_px, c._meta_fi = 0.1587, 0.32
+    c._apply_metadata()
+    assert abs(c.pixelSize - 0.1587) < 1e-9
+    assert abs(c.frameInterval - 0.32) < 1e-9
+    # Override ON → the user's manual value survives a re-probe
+    s.set("analysis/override_px", True)
+    s.set("analysis/pixel_size", 0.099)
+    c._meta_px = 0.2
+    c._apply_metadata()
+    assert abs(c.pixelSize - 0.099) < 1e-9
+    # CSV input → no image metadata → fields left as-is
+    c._is_csv = True
+    keep = c.frameInterval
+    c._meta_fi = 0.5
+    c._apply_metadata()
+    assert c.frameInterval == keep
