@@ -14,6 +14,19 @@
   (common in Windows-written files) failed to open. The loader now strips a BOM,
   handles an empty file cleanly, and — if `params.json` can't be read at all —
   still loads the run's tracks and diffusion, skipping only the recorded stack.
+- **Visualiser couldn't load runs from external drives** with `CSV missing
+  columns: ['frame', 'particle', 'x', 'y']` (or `Expecting value: line 1 column
+  1 (char 0)`). On exFAT/FAT/SMB volumes macOS writes hidden `._<name>` companion
+  files next to every file; the loader was reading one of those binary sidecars
+  instead of the real CSV/JSON. It now skips hidden dotfiles when finding a run's
+  sidecars.
+- **Visualiser froze (or had to be force-quit) loading a run with a large
+  movie.** The raw movie — a multi-GB `.czi`, especially over a USB/network
+  drive — was decoded on the interface thread, locking the window with no sign it
+  was working. It now decodes off the interface thread behind a **"Loading
+  movie…" popup** (with a Skip option), so the window never looks crashed, and
+  playback is blocked until the movie is fully loaded — so it's smooth right
+  away instead of stuttering while the movie is still decoding.
 - **Update progress could shoot past 100% and jump back to 0%.** On some
   networks a download segment resumed after the proxy ignored its range request,
   double-counting its bytes. Progress is now measured from the bytes actually on
@@ -25,6 +38,13 @@
   a loading chip and are read in the background, so the tab stays responsive and
   you can keep adding folders while others load.
 
+### Added
+
+- **"Clear" button in the Visualiser** (next to "Reset view"). Wipes every
+  loaded run, movie, cluster map and super-res layer back to an empty tab in one
+  click (with a confirmation). Your files aren't touched and your settings are
+  kept.
+
 ### Changed
 
 - **Update notes now render as formatted text.** The "update available" card
@@ -32,6 +52,11 @@
   They're now rendered as Markdown — bold highlights, inline code and bullet
   lists — and the redundant version heading is dropped since the tag is already
   shown above.
+- **Visualiser loads movies dramatically faster and with half the memory.** The
+  raw movie is now kept in the camera's native 16-bit format (the viewer only
+  displays it, so it never needed 32-bit floats), so a movie that used to spill
+  to a slow disk file now stays in RAM. On a test machine a 16,000-frame movie
+  went from ~200 s to ~1 s to load, with much smoother playback.
 
 ## v2.76.43 — 15 Jul 2026
 

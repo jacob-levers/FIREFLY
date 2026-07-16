@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.5"
+__version__ = "2.76.44-rc.6"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -31,6 +31,22 @@ __version__ = "2.76.44-rc.5"
 #           with "Expecting value: line 1 column 1 (char 0)".  The JSON loader is
 #           now BOM/empty-tolerant, and a run loads its tracks + diffusion even
 #           when params.json is unreadable (only the recorded stack is skipped).
+#           (6) FIX Visualise on exFAT / SMB drives: macOS AppleDouble "._<name>"
+#           sidecars were picked instead of the real CSV/JSON (this is the true
+#           cause of both "CSV missing columns" and the "char 0" JSON error).
+#           The run loader now skips dotfiles.  Also hardened the CSV reader to
+#           strip a UTF-8 BOM (utf-8-sig).  (7) FIX Visualise froze / had to be
+#           force-quit loading a run with a large movie: a multi-GB .czi (worse
+#           over USB/SMB) was decoded on the GUI thread.  The movie now decodes
+#           on a worker thread behind a blocking "Loading movie…" popup (with a
+#           Skip option) so the window never looks crashed, and playback is only
+#           reached once the movie is fully loaded — smooth right away instead of
+#           stuttering while the decode competes for the CPU.  (8) PERF the
+#           Visualiser loads the movie in native uint16 (not float32) with a
+#           smaller RAM reserve, so it stays in RAM instead of a disk memmap:
+#           a 16k-frame .czi went ~200 s → ~1 s to load.  (9) NEW "Clear" button
+#           resets the Visualise tab (drops every run / movie / cluster / super-
+#           res layer) back to empty, with a confirmation.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a
