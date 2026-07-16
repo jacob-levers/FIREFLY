@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.6"
+__version__ = "2.76.44-rc.7"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -46,7 +46,13 @@ __version__ = "2.76.44-rc.6"
 #           smaller RAM reserve, so it stays in RAM instead of a disk memmap:
 #           a 16k-frame .czi went ~200 s → ~1 s to load.  (9) NEW "Clear" button
 #           resets the Visualise tab (drops every run / movie / cluster / super-
-#           res layer) back to empty, with a confirmation.
+#           res layer) back to empty, with a confirmation.  (10) FIX Import fills
+#           the sidebar's pixel-size / frame-interval from the picked file's
+#           embedded metadata (unless you Override), so they show the file's real
+#           values.  (11) FIX with drift correction on, the figure's max-
+#           projection background is re-aligned by the same per-frame drift, so
+#           it's sharp and matches the corrected tracks instead of staying
+#           smeared.  (12) UI more padding above the update card's Download button.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

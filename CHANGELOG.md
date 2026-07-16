@@ -37,6 +37,16 @@
   locked the window and made it hard to add more. Dropped folders now appear as
   a loading chip and are read in the background, so the tab stays responsive and
   you can keep adding folders while others load.
+- **Pixel size and frame interval didn't reflect the imported file.** The
+  Imaging-metadata fields showed a fixed default instead of the values embedded
+  in the file you picked. Importing an image now fills them from the file's
+  metadata (unless you tick Override), so they show — and confirm — what the run
+  will actually use.
+- **Drift-corrected runs had a blurry max-projection background.** Drift
+  correction was applied to the tracks but not to the figure's background image,
+  so the projection stayed smeared by the drift while the tracks were sharp. The
+  background is now re-aligned by the same per-frame drift, so it's crisp and
+  matches the corrected tracks.
 
 ### Added
 
@@ -57,6 +67,8 @@
   displays it, so it never needed 32-bit floats), so a movie that used to spill
   to a slow disk file now stays in RAM. On a test machine a 16,000-frame movie
   went from ~200 s to ~1 s to load, with much smoother playback.
+- **More breathing room** above the "Download & install" button on the update
+  card, so it isn't crowded against the release notes.
 
 ## v2.76.43 — 15 Jul 2026
 
