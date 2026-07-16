@@ -47,6 +47,16 @@
   so the projection stayed smeared by the drift while the tracks were sharp. The
   background is now re-aligned by the same per-frame drift, so it's crisp and
   matches the corrected tracks.
+- **The MSD comparison drew every facet in the same blue** when the comparison
+  collapsed to a one-way layout — e.g. two conditions that share a name and
+  differ only by time point. Each facet is now drawn in its own condition
+  colour whenever there's no within-facet time split, so it matches the legend.
+- **The live Analysis figure could keep showing the old graph** after a settings
+  or graph-style change even though it read "LIVE" — you had to flick between
+  graph types to force it to update. A slower render for a now-superseded state
+  could finish late and repaint the tab with the stale image. Figure renders are
+  now tagged with the state they were started for, so only the render matching
+  what you're currently looking at is ever shown.
 - **The theme kept reverting (to AMOLED) after an update.** The previous fix
   still stored it where macOS wouldn't reliably read it back in the packaged app
   (the preferences domain didn't match the app's bundle identifier). Your chosen

@@ -209,6 +209,84 @@ def test_settings_change_signal_is_wired_to_figure_invalidation(tmp_path):
     assert c._engfig_rev == rev0 + 1                  # signal → handler → invalidation
 
 
+def _qimg(argb):
+    from PySide6.QtGui import QImage
+    im = QImage(4, 4, QImage.Format.Format_RGBA8888)
+    im.fill(argb)
+    return im
+
+
+def test_stale_bespoke_render_never_overwrites_the_live_figure(tmp_path):
+    """A late-finishing bespoke render from a superseded generation must be
+    dropped — otherwise it repaints the tab with the OLD graph while the state
+    reads LIVE (the 'have to flick between graph types to update it' bug)."""
+    c, ids = _ctrl_with_two_conditions(tmp_path)
+    fresh, stale = _qimg(0xFF00FF00), _qimg(0xFFFF0000)
+
+    gen = c._fig_gen()
+    c._deliver_figure(gen, fresh)        # worker stash (generation-tagged) …
+    c._on_figure_rendered()              # … GUI drain
+    tok = c.figureToken
+    assert c._fig_image is fresh
+
+    # a render tagged with a prior generation arrives late → ignored entirely
+    c._deliver_figure((gen[0] - 1, gen[1]), stale)
+    c._on_figure_rendered()
+    assert c._fig_image is fresh         # not overwritten
+    assert c.figureToken == tok          # token not bumped → QML not told to reload
+
+
+def test_stale_single_panel_render_is_dropped_and_leaves_cache_clean(tmp_path):
+    """A stale single-panel engine render must neither repaint nor poison the
+    rev-keyed cache under a since-reused key."""
+    c, ids = _ctrl_with_two_conditions(tmp_path)
+    fresh, stale = _qimg(0xFF00FF00), _qimg(0xFFFF0000)
+    cur = c._fig_gen()
+    key = (c._metric, c._engfig_rev)
+
+    with c._fig_lock:
+        c._pending_engfig.append((cur, key, fresh))
+    c._on_engfig_rendered()
+    assert c._engfig_cache.get(key) is fresh and c._fig_image is fresh
+    tok = c.figureToken
+
+    with c._fig_lock:                    # older generation, same panel key
+        c._pending_engfig.append(((cur[0] - 1, cur[1]), key, stale))
+    c._on_engfig_rendered()
+    assert c._engfig_cache.get(key) is fresh    # cache not poisoned by the stale img
+    assert c._fig_image is fresh and c.figureToken == tok
+
+
+def test_freshest_delivery_wins_when_stale_and_fresh_arrive_together(tmp_path):
+    """When a stale and a fresh render land before the drain runs, the fresh one
+    (matching the current generation) is the one applied — the accumulation list
+    means the stale arrival can't clobber or hide the fresh result."""
+    c, ids = _ctrl_with_two_conditions(tmp_path)
+    fresh, stale = _qimg(0xFF00FF00), _qimg(0xFFFF0000)
+    cur = c._fig_gen()
+    # stale queued first, fresh second — both pending when the handler drains
+    c._deliver_figure((cur[0] - 1, cur[1]), stale)
+    c._deliver_figure(cur, fresh)
+    c._on_figure_rendered()
+    assert c._fig_image is fresh
+
+
+def test_stale_gallery_hero_render_is_dropped(tmp_path):
+    """The gallery (All-panels) hero has the same guard: a panel render that
+    finishes after the user switched panel/condition/replicate is ignored."""
+    c, ids = _ctrl_with_two_conditions(tmp_path)
+    fresh, stale = _qimg(0xFF00FF00), _qimg(0xFFFF0000)
+    cur = c._panel_gen()
+    c._deliver_panel(cur, fresh)
+    c._on_panel_rendered()
+    assert c._panel_image is fresh
+    tok = c.panelToken
+    # a render from a superseded selection lands late → ignored
+    c._deliver_panel((cur[0], cur[1], cur[2] + 1, cur[3]), stale)
+    c._on_panel_rendered()
+    assert c._panel_image is fresh and c.panelToken == tok
+
+
 def test_report_progress_drain():
     """compare_groups' progress_cb writes (done,total,msg) off-thread; the GUI
     drain turns it into a determinate bar during loading and an indeterminate one

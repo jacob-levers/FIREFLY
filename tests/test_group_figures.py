@@ -66,6 +66,30 @@ def test_render_msd_single_timepoint_draws_one_series():
     plt.close(fig)
 
 
+def test_faceted_msd_colours_by_group_when_single_timepoint():
+    # One-way comparison (each facet is a distinct condition, single/empty
+    # timepoint): every facet must use ITS OWN group colour, not the shared
+    # timepoint fallback — otherwise all facets render the same blue.
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    groups = ["Cond · Pre", "Cond · Post"]
+    data = {g: {"": np.abs(np.random.default_rng(i).normal(0.1, 0.02, (5, 10)))}
+            for i, g in enumerate(groups)}
+    lags = np.arange(1, 11) * 0.02
+    gcolors = {"Cond · Pre": "#58a6ff", "Cond · Post": "#f78166"}
+    fig = plt.figure()
+    gf.draw_msd(fig, fig.add_gridspec(1, 1)[0], groups, data, lags,
+                style="mean_faceted", tp_order=[""], group_colors=gcolors)
+    # two facets, each drawing its single mean line in its group colour
+    facet_colors = []
+    for ax in fig.axes:
+        lines = [ln for ln in ax.get_lines() if len(ln.get_xdata())]
+        if lines:
+            facet_colors.append(mcolors.to_hex(lines[-1].get_color()).lower())
+    assert "#58a6ff" in facet_colors and "#f78166" in facet_colors
+    plt.close(fig)
+
+
 def _fig_ss():
     import matplotlib.pyplot as plt
     fig = plt.figure()

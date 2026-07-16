@@ -116,12 +116,20 @@ def draw_msd(fig, subplotspec, groups, data, lags_s, *, style="mean_faceted",
         shared = axes[0] if axes else None
         ax = fig.add_subplot(sub[r, c], sharex=shared, sharey=shared)
         axes.append(ax)
+    # Within a facet the curve is coloured by TIME POINT (so pre/post read as two
+    # traces).  But when there's no within-facet time split — a one-way comparison
+    # where each facet IS a distinct condition (e.g. two cards that differ only by
+    # time point, collapsed to one-way) — colour each facet by its GROUP colour so
+    # the facets match the condition legend instead of all sharing the fallback.
+    multi_tp = len(tp_order) > 1
     for i, (ax, g) in enumerate(zip(axes, groups)):
+        gc = group_colors.get(g, _FALLBACK[i % len(_FALLBACK)])
         for tp in tp_order:
             arr = data.get(g, {}).get(tp)
             if arr is None or not len(arr):
                 continue
-            arr = np.asarray(arr, float); m = arr.mean(0); col = tpc[tp]
+            arr = np.asarray(arr, float); m = arr.mean(0)
+            col = tpc[tp] if multi_tp else gc
             if style == "individual":
                 for row in arr:
                     ax.plot(T, row, color=col, lw=0.8, alpha=0.30)

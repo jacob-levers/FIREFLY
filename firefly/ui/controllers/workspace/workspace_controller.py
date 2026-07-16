@@ -525,7 +525,9 @@ class AnalysisWorkspaceController(QObject):
         self._panel_image: QImage | None = None
         self._panel_token = 0
         self._panel_job = None
-        self._pending_panel: QImage | None = None
+        # generation-tagged like the comparison figure, so a stale gallery-hero
+        # render can't repaint after a panel / condition / replicate switch
+        self._pending_panel: list = []     # [(gen, img)]
         # on-demand thumbnail rendering (the gallery grid): cache keyed by
         # (cond, panel, w, h, rev); rev bumps when condition data changes.
         self._panel_thumb_cache: dict = {}
@@ -557,7 +559,14 @@ class AnalysisWorkspaceController(QObject):
         self._fig_image: QImage | None = None
         self._fig_token = 0
         self._fig_job = None
-        self._pending_image: QImage | None = None
+        # Async figure deliveries are generation-tagged and accumulated in lists
+        # (drained under _fig_lock) so a late-finishing STALE render can never
+        # overwrite a fresh one — the cause of the "says LIVE but shows the old
+        # graph until you flick panels" staleness.  Generation = (engfig_rev,
+        # metric): rev bumps on data/cfg/figure-pref change, metric on panel
+        # switch, so a result only applies when both still match.
+        self._fig_lock = threading.Lock()
+        self._pending_image: list = []       # [(gen, img)] bespoke renders
         # full-engine report (fa_compare.compare_groups) lane
         self._report_job = None
         self._pending_report: dict | None = None
@@ -575,12 +584,11 @@ class AnalysisWorkspaceController(QObject):
         # every panel (titles stripped so the narrow-cell slices stay clean), so
         # the ~9s compute is paid once and switching panels is then instant.
         self._engfig_job = None
-        self._pending_engfig: QImage | None = None
+        self._pending_engfig: list = []    # [(gen, key, img)] single-panel renders
         self._engfig_cache: dict = {}      # (panel_key, rev) → QImage  (fallback path)
         self._engfig_rev = 0               # bumps on data / cfg change
-        self._engfig_key = None
         self._allpanels_job = None
-        self._pending_slices = None
+        self._pending_slices: list = []    # [(rev, slices)] all-panels renders
         self._allpanels_rev = -1
         self._slices: dict = {}            # panel_key → QImage for self._slices_rev
         self._slices_rev = -1
@@ -1069,6 +1077,21 @@ class AnalysisWorkspaceController(QObject):
             lo, hi = 0.00001, 10.0
         return lo, hi
 
+    def _fig_gen(self):
+        """The identity of the figure the user is currently looking at: bumps on
+        any data / cfg / figure-preference change (via ``_engfig_rev``) AND on a
+        panel switch (``_metric``).  Panel-specific async renders capture this at
+        launch and are dropped on delivery if it no longer matches."""
+        return (self._engfig_rev, self._metric)
+
+    def _drain_pending(self, lst):
+        """Atomically take + clear a generation-tagged delivery list (workers
+        append under the same lock), so no in-flight append is lost mid-drain."""
+        with self._fig_lock:
+            items = lst[:]
+            del lst[:]
+        return items
+
     def _launch_figure(self):
         if len(self._cg) < 2 or self._paired:
             # paired view is drawn in QML (SVG); no matplotlib figure
@@ -1106,12 +1129,14 @@ class AnalysisWorkspaceController(QObject):
             return
         kwargs = self._engine_render_kwargs(set(wd.PANEL_KEYS))
         self._allpanels_rev = self._engfig_rev
+        rev = self._engfig_rev
         ref = weakref.ref(self)
 
         def deliver(slices):
             c = ref()
             if c is not None:
-                c._pending_slices = slices
+                with c._fig_lock:
+                    c._pending_slices.append((rev, slices))
                 c._allpanelsRendered.emit()
 
         self._allpanels_job = _EngineAllPanelsJob(kwargs, wd.PANEL_KEYS, deliver)
@@ -1119,15 +1144,18 @@ class AnalysisWorkspaceController(QObject):
         self._allpanels_job.start()
 
     def _on_allpanels_rendered(self):
-        slices = self._pending_slices or {}
-        self._pending_slices = None
-        self._allpanels_job = None
-        if self._allpanels_rev != self._engfig_rev:
-            # data/cfg changed mid-render → results are stale; recompute.
-            self._launch_figure()
+        # Apply only the freshest all-panels render whose rev still matches — a
+        # stale one (rev bumped mid-render) is dropped, never shown as if live.
+        fresh = [s for (r, s) in self._drain_pending(self._pending_slices)
+                 if r == self._engfig_rev]
+        if not fresh:
+            if self._allpanels_job is None:
+                self._launch_figure()      # only stale results arrived → redraw
             return
+        slices = fresh[-1] or {}
+        self._allpanels_job = None
         self._slices = slices
-        self._slices_rev = self._allpanels_rev
+        self._slices_rev = self._engfig_rev
         self._slice_missing = set(wd.PANEL_KEYS) - set(slices.keys())
         panel = self._metric
         img = slices.get(panel)
@@ -1157,14 +1185,15 @@ class AnalysisWorkspaceController(QObject):
             self.figureChanged.emit()
             return
         kwargs = self._engine_render_kwargs({panel})
-        self._engfig_key = key
         self._set_busy(True)
+        gen = self._fig_gen()
         ref = weakref.ref(self)
 
         def deliver(img):
             c = ref()
             if c is not None:
-                c._pending_engfig = img
+                with c._fig_lock:
+                    c._pending_engfig.append((gen, key, img))
                 c._engfigRendered.emit()
 
         self._engfig_job = _EngineFigJob(kwargs, deliver)
@@ -1173,12 +1202,13 @@ class AnalysisWorkspaceController(QObject):
     def _launch_bespoke_figure(self, metric):
         """Fast non-engine preview (used for metrics without an export panel, and
         as a fallback if the engine render fails)."""
+        gen = self._fig_gen()
         ref = weakref.ref(self)
 
         def deliver(img):
             c = ref()
             if c is not None:
-                c._deliver_figure(img)
+                c._deliver_figure(gen, img)
 
         cfg = dict(self._cfg)
         s = self._settings
@@ -1202,11 +1232,18 @@ class AnalysisWorkspaceController(QObject):
         self._fig_job.start()
 
     def _on_engfig_rendered(self):
-        img = self._pending_engfig
-        self._pending_engfig = None
+        # Keep only deliveries whose generation still matches (same rev + panel);
+        # a stale single-panel render is dropped so it can't overwrite the live
+        # figure or poison the rev-keyed cache under a since-reused key.
+        cur = self._fig_gen()
+        fresh = [(k, im) for (g, k, im) in self._drain_pending(self._pending_engfig)
+                 if g == cur]
+        if not fresh:
+            return                                # every result is stale → ignore
         self._engfig_job = None
+        key, img = fresh[-1]
         if img is not None and not img.isNull():
-            self._engfig_cache[self._engfig_key] = img
+            self._engfig_cache[key] = img
             self._fig_image = img
             self._fig_token += 1
             self._set_busy(False)
@@ -1216,16 +1253,21 @@ class AnalysisWorkspaceController(QObject):
         else:                                    # viz-only panel → no preview
             self._set_busy(False)
 
-    def _deliver_figure(self, img):
-        # called on the worker thread — stash + signal (queued to GUI thread)
-        self._pending_image = img
+    def _deliver_figure(self, gen, img):
+        # called on the worker thread — stash (generation-tagged) + signal
+        with self._fig_lock:
+            self._pending_image.append((gen, img))
         self._figureRendered.emit()
 
     def _on_figure_rendered(self):
-        if self._pending_image is not None and not self._pending_image.isNull():
-            self._fig_image = self._pending_image
+        cur = self._fig_gen()
+        fresh = [im for (g, im) in self._drain_pending(self._pending_image)
+                 if g == cur]
+        if not fresh:
+            return                                # stale bespoke render → ignore
+        if fresh[-1] is not None and not fresh[-1].isNull():
+            self._fig_image = fresh[-1]
             self._fig_token += 1
-        self._pending_image = None
         self._set_busy(False)
         self.figureChanged.emit()
 
@@ -1384,6 +1426,12 @@ class AnalysisWorkspaceController(QObject):
             self.busyChanged.emit()
 
     # ── panels lane ─────────────────────────────────────────────────────
+    def _panel_gen(self):
+        """Identity of the gallery hero the user is looking at — bumps on a data
+        change (``_panel_rev``) or a condition / panel / replicate switch."""
+        return (self._panel_rev, self._panel_cond, self._panel_sel,
+                self._panel_replicate)
+
     def _render_panel_async(self):
         shown = self._shown()
         if not shown:
@@ -1391,12 +1439,13 @@ class AnalysisWorkspaceController(QObject):
         ci = min(max(0, self._panel_cond), len(shown) - 1)
         cond = shown[ci]
         panel = wd.PANELS[self._panel_sel]
+        gen = self._panel_gen()
         ref = weakref.ref(self)
 
         def deliver(img):
             c = ref()
             if c is not None:
-                c._deliver_panel(img)
+                c._deliver_panel(gen, img)
 
         # Averageable panels → the EXACT fa_figure panel, pooled over the group's
         # folders.  ONE make_figure render per group fills a cache of all panels,
@@ -1479,15 +1528,21 @@ class AnalysisWorkspaceController(QObject):
             self.panelGroupRevChanged.emit()
         self._show_group_panel()                   # show current selection if ready
 
-    def _deliver_panel(self, img):
-        self._pending_panel = img
+    def _deliver_panel(self, gen, img):
+        with self._fig_lock:
+            self._pending_panel.append((gen, img))
         self._panelRendered.emit()
 
     def _on_panel_rendered(self):
-        if self._pending_panel is not None and not self._pending_panel.isNull():
-            self._panel_image = self._pending_panel
+        cur = self._panel_gen()
+        fresh = [im for (g, im) in self._drain_pending(self._pending_panel)
+                 if g == cur]
+        if not fresh:
+            return                                # stale hero render → ignore
+        self._panel_job = None
+        if fresh[-1] is not None and not fresh[-1].isNull():
+            self._panel_image = fresh[-1]
             self._panel_token += 1
-        self._pending_panel = None
         self.panelImageChanged.emit()
 
     def panel_image(self) -> QImage:
