@@ -11,6 +11,9 @@ Item {
     anchors.fill: parent
     property string title: ""
     property bool opened: false
+    // dismissable=false → no backdrop-click / Esc / × close (used for a
+    // blocking "loading…" popup that only its own action can dismiss).
+    property bool dismissable: true
     default property alias body: bodyCol.data
     signal closed()
 
@@ -23,8 +26,11 @@ Item {
     visible: opened || backdrop.opacity > 0.001 || card.opacity > 0.001
     z: 1000
 
-    function open()  { opened = true;  try { Embed.setModalOpen(true) }  catch (e) {} }
-    function close() { opened = false; try { Embed.setModalOpen(false) } catch (e) {}; root.closed() }
+    function open()  { opened = true }
+    function close() { opened = false; root.closed() }
+    // Toggle the native viewer island's hide reactively, so `opened` works
+    // whether set via open()/close() or bound directly to a controller flag.
+    onOpenedChanged: { try { Embed.setModalOpen(opened) } catch (e) {} }
 
     Rectangle {
         id: backdrop
@@ -32,7 +38,7 @@ Item {
         color: "#000000"
         opacity: root.opened ? 0.55 : 0
         Behavior on opacity { NumberAnimation { duration: root.opened ? root.durIn : root.durOut } }
-        MouseArea { anchors.fill: parent; onClicked: root.close() }
+        MouseArea { anchors.fill: parent; onClicked: if (root.dismissable) root.close() }
     }
 
     Card {
@@ -61,13 +67,16 @@ Item {
             spacing: sc.sp4
             RowLayout {
                 Layout.fillWidth: true
+                // no title + not dismissable → hide the header entirely, so a
+                // blocking "loading…" modal can present a clean centred body.
+                visible: root.title !== "" || root.dismissable
                 Text { text: root.title; color: pal.TXT; font.pixelSize: sc.textXl; font.bold: true
                        Layout.fillWidth: true }
-                IconButton { icon: "x"; tip: "Close"; onClicked: root.close() }
+                IconButton { visible: root.dismissable; icon: "x"; tip: "Close"; onClicked: root.close() }
             }
             ColumnLayout { id: bodyCol; Layout.fillWidth: true; spacing: sc.sp4 }
         }
     }
 
-    Keys.onEscapePressed: root.close()
+    Keys.onEscapePressed: if (root.dismissable) root.close()
 }

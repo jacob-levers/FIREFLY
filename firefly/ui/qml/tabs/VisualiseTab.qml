@@ -440,8 +440,17 @@ Item {
                         Button { variant: "secondary"; text: "Stack"; icon: "image"
                                  Layout.fillWidth: true; onClicked: Vis.loadStack() }
                     }
-                    Button { Layout.fillWidth: true; variant: "secondary"; text: "Reset view"
-                             icon: "scan-search"; onClicked: Vis.resetView() }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: sc.sp2
+                        Button { variant: "secondary"; text: "Reset view"; icon: "scan-search"
+                                 Layout.fillWidth: true; onClicked: Vis.resetView() }
+                        // Clear everything loaded/generated back to an empty tab.
+                        Button {
+                            variant: "secondary"; text: "Clear"; icon: "trash-2"
+                            Layout.fillWidth: true; enabled: Vis.hasContent
+                            onClicked: clearConfirm.open()
+                        }
+                    }
 
                     // ── background layer (above the per-layer list) ──────────
                     ColumnLayout {
@@ -511,5 +520,62 @@ Item {
             }
         }
         }
+    }
+
+    // ══ blocking "loading movie…" popup ══
+    // A large raw movie (a multi-GB .czi) can take a minute to decode.  It's
+    // decoded off the GUI thread so the window never hard-freezes, but this
+    // modal blocks interaction until it's ready — so playback is only reached
+    // once the movie is fully loaded (never mid-decode, when it would stutter).
+    // Not dismissable; "Skip movie" cancels the decode.
+    Modal {
+        id: movieLoadingModal
+        title: ""                        // headerless → clean centred body
+        dismissable: false
+        opened: Vis.movieLoading
+
+        // progress ring rotating around a static play glyph
+        Item {
+            Layout.alignment: Qt.AlignHCenter
+            implicitWidth: 56; implicitHeight: 56
+            Icon {
+                anchors.fill: parent
+                name: "loader-circle"; size: 56; color: pal.ACC
+                RotationAnimator on rotation {
+                    running: Vis.movieLoading && !Theme.reducedMotion
+                    loops: Animation.Infinite; from: 0; to: 360; duration: 1000
+                }
+            }
+            Icon { anchors.centerIn: parent; name: "play"; size: 20; color: pal.ACC }
+        }
+        Text {
+            Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+            text: "Loading movie…"; color: pal.TXT
+            font.pixelSize: sc.textLg; font.weight: Font.DemiBold
+        }
+        Text {
+            Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+            text: Vis.movieLoadingLabel; color: pal.TXT_MUTED
+            font.pixelSize: sc.textXs; font.family: "Menlo"; elide: Text.ElideMiddle
+        }
+        Text {
+            Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+            text: "This can take a minute."; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+        }
+        Button {
+            Layout.alignment: Qt.AlignHCenter; Layout.topMargin: sc.sp2
+            variant: "ghost"; text: "Skip movie"; onClicked: Vis.cancelMovieLoad()
+        }
+    }
+
+    // confirm before wiping loaded runs / movie / clusters / super-res
+    ConfirmModal {
+        id: clearConfirm
+        title: "Clear the Visualise tab?"
+        message: "This removes every loaded run, movie, cluster map and super-res "
+                 + "layer from the viewer. Your files aren't deleted — you can load "
+                 + "them again. Settings (colours, cluster params) are kept."
+        confirmText: "Clear"
+        action: function () { Vis.clearAll() }
     }
 }

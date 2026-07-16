@@ -41,18 +41,20 @@ _RUN_COLOURS = ["#58a6ff", "#f6a623", "#4fe0a0", "#27c0e8", "#e05252",
 
 
 def _read_csv_enc(path, **kw):
-    """``pd.read_csv`` tolerant of non-UTF-8 exports: a stray ° / µ byte
-    (0xb0 / 0xb5, common in palmTRACER- or Excel-written CSVs) must not abort a
-    load with 'utf-8 codec can't decode byte'.  Falls back to cp1252, then
-    latin-1 (which maps every byte, so it never raises UnicodeDecodeError)."""
+    """``pd.read_csv`` tolerant of a UTF-8 BOM and non-UTF-8 exports.
+
+    ``utf-8-sig`` strips a leading BOM (else the first header becomes
+    ``\\ufeffparticle`` and a required-column check fails) while still decoding
+    ordinary UTF-8; cp1252 → latin-1 then handle a stray ° / µ byte (0xb0 /
+    0xb5, common in palmTRACER- or Excel-written CSVs).  latin-1 maps every
+    byte, so the final attempt never raises ``UnicodeDecodeError``."""
     import pandas as pd
-    try:
-        return pd.read_csv(path, **kw)
-    except UnicodeDecodeError:
+    for enc in ("utf-8-sig", "cp1252"):
         try:
-            return pd.read_csv(path, encoding="cp1252", **kw)
+            return pd.read_csv(path, encoding=enc, **kw)
         except UnicodeDecodeError:
-            return pd.read_csv(path, encoding="latin-1", **kw)
+            continue
+    return pd.read_csv(path, encoding="latin-1", **kw)
 
 
 def _load_json_enc(path):
@@ -78,6 +80,21 @@ def _load_json_enc(path):
     return json.loads(raw.decode("latin-1", "replace"))
 
 
+def _listdir_visible(path):
+    """``os.listdir`` minus dotfiles — drops the macOS AppleDouble ``._<name>``
+    sidecars (binary resource-fork blobs macOS writes next to every file on
+    exFAT / FAT / SMB volumes, e.g. an external drive) and ``.DS_Store``.
+
+    Left in, an ``endswith`` match picks ``._<stem>_trajectories.csv`` — it
+    sorts before the real file because ``.`` < ``0``–``9`` — so the loader
+    reads the binary sidecar and fails with "CSV missing columns" (or a JSON
+    error for ``._<stem>_params.json``).  Mirrors ``fa_palmtracer``'s guard."""
+    try:
+        return [f for f in os.listdir(path) if not f.startswith(".")]
+    except OSError:
+        return []
+
+
 class VisualiseController(QObject):
     # property-notify signals
     dataChanged = Signal()
@@ -94,6 +111,7 @@ class VisualiseController(QObject):
     backgroundChanged = Signal()
     inspectorChanged = Signal()
     nFramesChanged = Signal()
+    movieLoadingChanged = Signal()     # background-movie decode started/finished
     clusterChanged = Signal()
     srChanged = Signal()
     explorerChanged = Signal()
@@ -169,6 +187,17 @@ class VisualiseController(QObject):
         self._sr_poll = QTimer(self)     # drains the result on the GUI thread
         self._sr_poll.setInterval(30)
         self._sr_poll.timeout.connect(self._drain_superres)
+        # ── background-stack load (off-thread) ────────────────────────────
+        # Decoding a raw movie (a multi-GB .czi, worse from an external drive)
+        # blocks for seconds — long enough to freeze the window — so read it on
+        # a worker thread and hand the array to the viewer on the GUI thread.
+        self._stack_loading = False
+        self._stack_result = None        # (status, path, stack|err) written off-thread
+        self._movie_label = ""           # basename shown on the loading popup
+        self._stack_stop = None          # threading.Event to cancel a decode
+        self._stack_poll = QTimer(self)
+        self._stack_poll.setInterval(50)
+        self._stack_poll.timeout.connect(self._drain_stack)
         # ── track explorer ───────────────────────────────────────────────
         self._exp_df = None
         self._exp_filtered = None
@@ -238,7 +267,7 @@ class VisualiseController(QObject):
             extras = os.path.join(run_dir, "firefly_extras")
             if not os.path.isdir(extras):
                 children = [os.path.join(run_dir, n)
-                            for n in sorted(os.listdir(run_dir))
+                            for n in sorted(_listdir_visible(run_dir))
                             if os.path.isdir(os.path.join(run_dir, n, "firefly_extras"))]
                 if len(children) == 1:
                     return self.loadRunFolder(children[0])
@@ -251,7 +280,7 @@ class VisualiseController(QObject):
                     f"No firefly_extras/ in {os.path.basename(run_dir)}")
             stem = None
             stack_path = None
-            params_files = [f for f in os.listdir(extras) if f.endswith("_params.json")]
+            params_files = [f for f in _listdir_visible(extras) if f.endswith("_params.json")]
             if params_files:
                 # The stem comes from the *filename*, so an empty/corrupt/BOM'd
                 # params.json must not abort the load — the run still has its
@@ -272,7 +301,7 @@ class VisualiseController(QObject):
                 except (TypeError, ValueError):
                     pass
             if not stem:
-                tr = [f for f in os.listdir(extras) if f.endswith("_trajectories.csv")]
+                tr = [f for f in _listdir_visible(extras) if f.endswith("_trajectories.csv")]
                 if tr:
                     stem = tr[0][:-len("_trajectories.csv")]
             if not stem:
@@ -303,10 +332,66 @@ class VisualiseController(QObject):
 
     @Slot(str)
     def loadStackPath(self, path: str):
+        # Decode the movie on a worker thread so the window never truly freezes
+        # (a multi-GB .czi over a USB/network volume can take minutes), but a
+        # modal "Loading movie…" popup blocks interaction until it's ready — so
+        # playback is only ever reached once the movie is fully loaded, never
+        # during the decode when the worker is competing for the CPU.
+        if self._stack_loading:
+            return
+        self._stack_loading = True
+        self._stack_result = None
+        self._movie_label = os.path.basename(path)
+        self._stack_stop = threading.Event()
+        self.movieLoadingChanged.emit()
+        self.statusMessage.emit(f"Loading {self._movie_label}…")
+        self._stack_poll.start()
+        stop = self._stack_stop
+
+        def _work():
+            try:
+                from firefly.sptpalm_analysis import load_file
+                # dtype=None keeps the camera's native dtype (uint16): half the
+                # memory of float32, so the movie fits in RAM instead of spilling
+                # to a slow disk memmap — the viewer only displays it anyway.
+                # A small reserve (vs the analysis pipeline's 4 GB) lets that
+                # in-RAM bulk read win on a 16 GB Mac with modest free memory.
+                stack, _, _ = load_file(path, channel=0, stop_event=stop,
+                                        dtype=None, reserve_gb=1.5)
+                self._stack_result = ("ok", path, stack)
+            except Exception as exc:
+                kind = "cancel" if stop.is_set() else "err"
+                self._stack_result = (kind, path, str(exc))
+        threading.Thread(target=_work, daemon=True,
+                         name="FIREFLY-VisStack").start()
+
+    @Slot()
+    def cancelMovieLoad(self):
+        """Abort an in-flight movie decode (the popup's Skip button) — the run's
+        tracks stay loaded, just without the raw-movie background."""
+        if self._stack_loading and self._stack_stop is not None:
+            self._stack_stop.set()
+            self.statusMessage.emit("Movie loading cancelled")
+
+    def _drain_stack(self):
+        """GUI thread: apply the off-thread-decoded movie to the viewer."""
+        r = self._stack_result
+        if r is None:
+            return
+        self._stack_result = None
+        self._stack_poll.stop()
+        self._stack_loading = False
+        self._stack_stop = None
+        self.movieLoadingChanged.emit()
+        status, path, payload = r
+        if status == "cancel":
+            return                       # user skipped; tracks remain
+        if status == "err":
+            self.warn.emit("Load failed",
+                           f"Couldn't load {os.path.basename(path)}:\n{payload}")
+            return
+        stack = payload
         try:
-            from firefly.sptpalm_analysis import load_file
-            self.statusMessage.emit(f"Loading {os.path.basename(path)}…")
-            stack, _, _ = load_file(path, channel=0)
             self.ensureViewer().set_stack(stack)
             # remember the camera field size so a super-res render fills the same
             # extent as the Raw movie / Max projection backgrounds
@@ -319,7 +404,8 @@ class VisualiseController(QObject):
             self._after_background_change()
             self.statusMessage.emit(f"Loaded {len(stack):,} frames")
         except Exception as exc:
-            self.warn.emit("Load failed", f"Couldn't load {os.path.basename(path)}:\n{exc}")
+            self.warn.emit("Load failed",
+                           f"Couldn't display {os.path.basename(path)}:\n{exc}")
 
     @Slot()
     def loadTracks(self):
@@ -520,6 +606,15 @@ class VisualiseController(QObject):
         self._rebuild_layers()
 
     # ── transport ────────────────────────────────────────────────────────
+    @Property(bool, notify=movieLoadingChanged)
+    def movieLoading(self):
+        """True while the raw movie is decoding — QML shows a blocking popup."""
+        return self._stack_loading
+
+    @Property(str, notify=movieLoadingChanged)
+    def movieLoadingLabel(self):
+        return self._movie_label
+
     @Property(int, notify=nFramesChanged)
     def nFrames(self):
         return self._viewer.n_frames if self._viewer is not None else 0
@@ -688,6 +783,61 @@ class VisualiseController(QObject):
         if self._viewer is not None:
             try:    self._viewer.reset_view()
             except Exception: pass
+
+    @Slot()
+    def clearAll(self):
+        """Reset the Visualise tab to empty — drop every loaded run, movie,
+        cluster and super-res layer so nothing generated remains.  User
+        preferences (colours, cluster params) are kept."""
+        # cancel any in-flight movie decode / super-res render
+        if self._stack_loading and self._stack_stop is not None:
+            self._stack_stop.set()
+        self._stack_poll.stop()
+        self._stack_loading = False
+        self._stack_result = None
+        self._stack_stop = None
+        self._movie_label = ""
+        self._sr_poll.stop()
+        self._sr_rendering = False
+        self._sr_result = None
+        # wipe the native viewer's layers (points → super-res → tracks → movie)
+        if self._viewer is not None:
+            for meth in ("clear_points", "clear_superres",
+                         "clear_tracks", "clear_stack"):
+                try:    getattr(self._viewer, meth)()
+                except Exception: pass
+        # tracks / runs
+        self._runs = []
+        self._tracks_df = None
+        self._diff_df = None
+        self._motion_pids = {}
+        self._class_visible = {}
+        self._has_run = False
+        self._hud_tracks = 0
+        self._inspector = {"mode": "none"}
+        self._inspector_visible = False
+        self._field_px = None
+        # clusters
+        self._cl_xy_um = None; self._cl_xy_um_full = None; self._cl_labels = None
+        self._cl_motion = None; self._cl_motion_tried_derive = False
+        self._motion_src = []
+        self._cl_xy_px = None; self._cl_stats_df = None; self._cl_extras_dir = None
+        self._cl_stem = None; self._cl_present = False
+        self._cl_count = 0; self._cl_status = ""; self._cl_px_um = 1.0
+        # super-res
+        self._sr_img = None; self._sr_status = ""
+        # explorer
+        self._exp_df = None; self._exp_filtered = None; self._exp_rows = []
+        self._exp_count = ""
+        self._rebuild_layers()               # → empty layer list
+        # notify every dependent property back to idle
+        for sig in (self.movieLoadingChanged, self.dataChanged,
+                    self.layersChanged, self.clusterChanged, self.srChanged,
+                    self.backgroundChanged, self.inspectorChanged,
+                    self.nFramesChanged, self.currentFrameChanged,
+                    self.explorerChanged):
+            sig.emit()
+        self.statusMessage.emit("Cleared the Visualise tab")
 
     @Property(bool, notify=dataChanged)
     def hasRun(self):
@@ -933,7 +1083,7 @@ class VisualiseController(QObject):
             extras = os.path.join(run_dir, "firefly_extras")
             if not os.path.isdir(extras):
                 raise FileNotFoundError("No firefly_extras/ subfolder")
-            lbl = [f for f in os.listdir(extras) if f.endswith("_cluster_labels.csv")]
+            lbl = [f for f in _listdir_visible(extras) if f.endswith("_cluster_labels.csv")]
             if not lbl:
                 raise FileNotFoundError("No *_cluster_labels.csv (re-run analysis "
                                         "to generate per-loc labels)")

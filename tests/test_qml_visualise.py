@@ -506,3 +506,92 @@ def test_visualise_load_run_survives_unreadable_params(tmp_path):
     assert c.loadRunFolder(run) is True
     assert c.hasRun
     assert c.hudTrackCount == 8
+
+
+def test_visualise_ignores_appledouble_sidecars(tmp_path):
+    # On exFAT / SMB volumes macOS writes binary "._<name>" AppleDouble
+    # siblings. They sort before the real file, so an unfiltered endswith scan
+    # picks "._cell1_trajectories.csv" and fails with "CSV missing columns".
+    # The loader must skip dotfiles and read the real sidecars.
+    from firefly.ui.controllers.visualise_controller import (
+        VisualiseController, _listdir_visible)
+    run = _make_run(tmp_path)
+    extras = tmp_path / "run1" / "firefly_extras"
+    junk = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X       \x00"
+    for real in ("cell1_trajectories.csv", "cell1_diffusion_summary.csv"):
+        (extras / f"._{real}").write_bytes(junk)
+    (extras / "._cell1_params.json").write_bytes(junk)
+    (extras / ".DS_Store").write_bytes(junk)
+    # helper drops every dotfile
+    assert not any(n.startswith(".") for n in _listdir_visible(str(extras)))
+    c = VisualiseController()
+    assert c.loadRunFolder(run) is True
+    assert c.hudTrackCount == 8          # real trajectories, not the "._" junk
+
+
+def test_read_csv_enc_strips_utf8_bom(tmp_path):
+    # A trajectories.csv saved with a UTF-8 BOM would otherwise yield a first
+    # column named "﻿particle", failing the required-column check.
+    import pandas as pd
+    from firefly.ui.controllers.visualise_controller import _read_csv_enc
+    p = tmp_path / "bom_trajectories.csv"
+    p.write_bytes(b"\xef\xbb\xbf" + b"particle,frame,x,y\n0,0,1.0,2.0\n")
+    df = _read_csv_enc(str(p))
+    assert list(df.columns) == ["particle", "frame", "x", "y"]
+    assert len(df) == 1
+
+
+def test_visualise_stack_loads_off_thread(monkeypatch):
+    # A multi-GB .czi (e.g. 16000x256x256 over USB) must decode on a worker
+    # thread so the window never freezes. loadStackPath returns immediately;
+    # the viewer gets the movie via the GUI-thread drain timer.
+    import time
+    import numpy as np
+    import firefly.sptpalm_analysis as core
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    stack = np.zeros((5, 16, 16), dtype=np.float32)
+    monkeypatch.setattr(core, "load_file",
+                        lambda path, channel=0, stop_event=None, dtype=None,
+                        reserve_gb=None: (stack, 0.16, 0.32))
+    c = VisualiseController()
+    c.loadStackPath("/fake/Fly1-16k.czi")
+    assert c._stack_loading is True          # returned without blocking
+    assert c.movieLoading is True            # popup shows while decoding
+    deadline = time.monotonic() + 5.0
+    while c._stack_loading and time.monotonic() < deadline:
+        _app.processEvents(); time.sleep(0.01)
+    _app.processEvents()
+    assert c._stack_loading is False         # worker + drain completed
+    assert c._viewer is not None
+    assert c.nFrames >= 5                    # movie reached the viewer
+
+
+def test_visualise_clear_all_resets_to_idle(tmp_path):
+    # The Clear button wipes every loaded run/movie/cluster back to empty.
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController()
+    run = _make_run(tmp_path)
+    c.loadRunFolder(run)
+    assert c.hasRun and c.hudTrackCount == 8 and len(c.layers) > 0
+    c.clearAll()
+    assert c.hasRun is False
+    assert c.hasContent is False
+    assert c.hudTrackCount == 0
+    assert c.layers == []
+    assert c.nFrames == 0
+    assert c.movieLoading is False
+    # a fresh load after clearing still works
+    c.loadRunFolder(run)
+    assert c.hasRun and c.hudTrackCount == 8
+
+
+def test_alloc_stack_honours_dtype_and_reserve_override():
+    # The Visualiser loads movies as native uint16 with a small RAM reserve so a
+    # 2 GB movie stays in RAM (fast bulk read) instead of a slow disk memmap.
+    import numpy as np
+    from firefly.analysis.fa_memory import _alloc_or_memmap_stack
+    a = _alloc_or_memmap_stack((4, 8, 8), np.uint16, reserve_gb=0.5)
+    assert a.dtype == np.uint16
+    assert not isinstance(a, np.memmap)          # small + tiny reserve → in-RAM
+    b = _alloc_or_memmap_stack((4, 8, 8))        # default float32
+    assert b.dtype == np.float32
