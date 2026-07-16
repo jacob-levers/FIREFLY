@@ -870,6 +870,8 @@ def compare_groups(groups,
                    pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                    logd_plot_style="overlaid",
+                   msd_plot_style="mean_faceted", msd_err="SEM",
+                   auc_plot_style="paired",
                    logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
                    progress_cb=None, stats_config=None, use_native=False):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
@@ -1164,16 +1166,24 @@ def compare_groups(groups,
         for i in range(n_groups):
             yield labels[i], all_summaries[i], colors[i]
 
-    # ── 1. MSD overlay ────────────────────────────────────────────────────────
+    # ── 1. MSD comparison (styled: mean±err faceted / individual / overlaid) ──
+    #   Style comes from Preferences (figures/msd_style); the error type comes
+    #   from the Analysis tab (msd_err).  Curves are grouped by condition ×
+    #   timepoint so a paired (pre/post-style) design overlays both series per
+    #   facet, while a single-timepoint design draws one.
     if "msd" in panels:
+        from firefly.analysis import fa_group_figures as _gfig
         ax = _next_ax()
-        msd_ends, msd_cols, msd_labs = [], [], []
-        for grp_label, summaries, color in _zip_groups():
-            curves = []
-            tref = None
-            for s in summaries:
-                e = s["ensemble_msd"]
-                if e is None: continue
+        ss = ax.get_subplotspec(); ax.remove()
+        msd_by_gt = {}                      # {group: {timepoint: [curve arrays]}}
+        tref = None
+        for gi in range(n_groups):
+            grp = group_factor[gi]
+            tp = timepoints_per_card[gi] or ""
+            for s in all_summaries[gi]:
+                e = s.get("ensemble_msd") if hasattr(s, "get") else s["ensemble_msd"]
+                if e is None:
+                    continue
                 fi = _fi_or_default(s["params"], s.get("stem", ""))
                 t = e["lag_frame"].values * fi
                 y = e["msd_um2"].values
@@ -1183,40 +1193,93 @@ def compare_groups(groups,
                     tref = t
                 if len(t) != len(tref) or not np.allclose(t, tref):
                     y = np.interp(tref, t, y)
-                curves.append(y)
-            if not curves:
-                continue
-            arr = np.vstack(curves)
-            mean = arr.mean(axis=0)
-            sem = arr.std(axis=0, ddof=1) / np.sqrt(len(curves)) if len(curves) > 1 else None
-            ax.plot(tref, mean, "-o", color=color, label=grp_label, ms=4, lw=1.5)
-            if sem is not None:
-                ax.fill_between(tref, mean - sem, mean + sem, color=color, alpha=0.15)
-            msd_ends.append((float(tref[-1]), float(mean[-1])))
-            msd_cols.append(color); msd_labs.append(grp_label)
-        ax.set_xlabel("Time delta (s)")
-        ax.set_ylabel("MSD (µm²)")
-        ax.set_title("Mean Square Displacement")
-        # Direct line-end labels (curves fan out at the largest lag); keep the
-        # shared legend only when the ends are too close to label without overlap.
-        if not _maybe_end_labels(ax, msd_ends, msd_cols, msd_labs):
-            ax.legend(frameon=False, loc="best")
+                msd_by_gt.setdefault(grp, {}).setdefault(tp, []).append(y)
+        if tref is not None and msd_by_gt:
+            data = {g: {tp: np.vstack(v) for tp, v in tps.items()}
+                    for g, tps in msd_by_gt.items()}
+            groups_order = ([g for g in group_order if g in data]
+                            if two_factor else list(data))
+            tp_seen = [tp for tps in msd_by_gt.values() for tp in tps]
+            tp_ord = ([t for t in tp_order if t in tp_seen] if two_factor
+                      else sorted(set(tp_seen)))
+            theme = {"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
+                     "spine": pal["GRD"], "muted": pal["MUT"]}
+            _gfig.draw_msd(fig, ss, groups_order, data, tref,
+                           style=(msd_plot_style if msd_plot_style in
+                                  ("mean_faceted", "individual", "overlaid")
+                                  else "mean_faceted"),
+                           err=msd_err,
+                           tp_order=tp_ord,
+                           group_colors={g: group_colors.get(g) for g in groups_order},
+                           theme=theme, xlabel="Time delta (s)")
+        else:
+            _ax = fig.add_subplot(ss)
+            _ax.text(0.5, 0.5, "no MSD curves exported", ha="center", va="center",
+                     transform=_ax.transAxes, color=pal["MUT"], fontsize=10)
+            _ax.set_xticks([]); _ax.set_yticks([])
 
-    # ── 2. AUC bar chart ──────────────────────────────────────────────────────
+    # ── 2. MSD-AUC change (styled: paired lines / Δ box) ──────────────────────
+    #   For a 2-timepoint design, the AUC panel shows the per-dish change across
+    #   timepoints in the Preferences style (paired lines + per-group p, or a Δ
+    #   box with an omnibus test).  A single-timepoint design keeps the group bar.
     if "auc" in panels:
         ax = _next_ax()
-        if two_factor:
-            _interaction_plot(ax, summary_df, "auc_msd", group_order, tp_order,
-                              group_colors, pal, ylabel="AUC (µm²·s)",
-                              headline=_twoway_headline(twoway_df, "auc_msd"),
-                              card_colors=card_colors, stats_config=cfg)
+        if two_factor and len(tp_order) >= 2:
+            from firefly.analysis import fa_group_figures as _gfig
+            ss = ax.get_subplotspec(); ax.remove()
+            paired = {}
+            for grp in group_order:
+                a = summary_df.loc[(summary_df["group"] == grp)
+                                   & (summary_df["timepoint"] == tp_order[0])
+                                   ].groupby("cell")["auc_msd"].mean()
+                b = summary_df.loc[(summary_df["group"] == grp)
+                                   & (summary_df["timepoint"] == tp_order[1])
+                                   ].groupby("cell")["auc_msd"].mean()
+                common = a.index.intersection(b.index)
+                if len(common):
+                    paired[grp] = {tp_order[0]: a.loc[common].to_numpy(float),
+                                   tp_order[1]: b.loc[common].to_numpy(float)}
+            style = auc_plot_style if auc_plot_style in ("paired", "delta") else "paired"
+            if paired:
+                groups_o = [g for g in group_order if g in paired]
+                theme = {"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
+                         "spine": pal["GRD"], "muted": pal["MUT"]}
+                if style == "delta":
+                    dd = [paired[g][tp_order[1]] - paired[g][tp_order[0]] for g in groups_o]
+                    dd = [d for d in dd if len(d)]
+                    stat_labels = ""
+                    if len(dd) >= 2:
+                        try:
+                            from scipy.stats import kruskal
+                            stat_labels = f"Kruskal–Wallis, p = {kruskal(*dd).pvalue:.2g}"
+                        except Exception:
+                            pass
+                else:
+                    stat_labels = {}
+                    for g in groups_o:
+                        try:
+                            p, _stars = _paired_test(paired[g][tp_order[0]],
+                                                     paired[g][tp_order[1]], cfg)
+                            stat_labels[g] = f"p = {p:.2g}" if p == p else ""
+                        except Exception:
+                            stat_labels[g] = ""
+                _gfig.draw_auc_change(fig, ss, groups_o, paired, style=style,
+                                      tp_order=list(tp_order), stat_labels=stat_labels,
+                                      group_colors={g: group_colors.get(g) for g in groups_o},
+                                      theme=theme, ylabel="MSD AUC")
+            else:
+                _ax = fig.add_subplot(ss)
+                _ax.text(0.5, 0.5, "no paired AUC (unmatched timepoints)",
+                         ha="center", va="center", transform=_ax.transAxes,
+                         color=pal["MUT"], fontsize=9)
+                _ax.set_xticks([]); _ax.set_yticks([])
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="AUC (µm²·s)",
                              record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
-        ax.set_title("Area Under the Curve")
+            ax.set_title("Area Under the Curve")
 
     # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────
     if "logd_dist" in panels:

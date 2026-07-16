@@ -89,6 +89,8 @@ class _FigureJob(threading.Thread):
                 mobile_d=float(self._cfg.get("_mobile_d", 0.05)),
                 logd_clip=(float(self._cfg.get("_logd_clip_min", 0.00001)),
                            float(self._cfg.get("_logd_clip_max", 10.0))),
+                group_style=self._cfg.get("_group_style", "box_points"),
+                length_style=self._cfg.get("_length_style", "density"),
                 width_px=w, height_px=h, dpi=110)
         except Exception:
             img = None
@@ -1025,6 +1027,9 @@ class AnalysisWorkspaceController(QObject):
         return dict(
             groups=self._engine_groups(), output_dir=None, panels=panels, theme=theme,
             logd_plot_style=(s.getStr("figures/logd_style", "overlaid") if s else "overlaid"),
+            msd_plot_style=(s.getStr("figures/msd_style", "mean_faceted") if s else "mean_faceted"),
+            msd_err=self._cfg.get("err", "SEM"),
+            auc_plot_style=(s.getStr("figures/auc_style", "paired") if s else "paired"),
             logd_clip_d_min=dlo, logd_clip_d_max=dhi,
             mobile_d_threshold=mobile_d, pdf_report=False,
             stats_config=self._stats_config())
@@ -1155,6 +1160,8 @@ class AnalysisWorkspaceController(QObject):
         s = self._settings
         if s is not None:
             cfg["_logd_style"] = s.getStr("figures/logd_style", "overlaid")
+            cfg["_group_style"] = s.getStr("figures/group_style", "box_points")
+            cfg["_length_style"] = s.getStr("figures/length_style", "density")
             try:
                 cfg["_mobile_d"] = float(s.get("analysis/mobile_d", 0.05))
             except (TypeError, ValueError):
@@ -1226,6 +1233,9 @@ class AnalysisWorkspaceController(QObject):
             panels=(set(self._panels) if self._panels else None),
             theme=theme,
             logd_plot_style=logd,
+            msd_plot_style=(s.getStr("figures/msd_style", "mean_faceted") if s else "mean_faceted"),
+            msd_err=self._cfg.get("err", "SEM"),
+            auc_plot_style=(s.getStr("figures/auc_style", "paired") if s else "paired"),
             logd_clip_d_min=dlo, logd_clip_d_max=dhi,
             mobile_d_threshold=mobile_d,
             pdf_report=True,

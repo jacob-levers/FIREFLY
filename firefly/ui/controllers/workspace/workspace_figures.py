@@ -199,11 +199,64 @@ def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi,
     return _qimage_from_figure(fig)
 
 
+def _gf_theme():
+    return {"bg": _MAT, "fg": _INK, "grid": _GRID, "spine": _GRID, "muted": _MUTED}
+
+
+def _render_group_comparison(groups, metric, style, err, width_px, height_px, dpi):
+    """Scalar-metric group comparison via the shared renderer (Preferences
+    figures/group_style): box+points / grouped / violin / bar, with a KW label."""
+    import matplotlib.pyplot as plt
+    from firefly.analysis import fa_group_figures as _gf
+    order, values, gcolors = [], {}, {}
+    for g in groups:
+        v = np.asarray(g.get("values", []), float); v = v[np.isfinite(v)]
+        if not len(v):
+            continue
+        order.append(g["label"]); values[g["label"]] = {"": v}
+        gcolors[g["label"]] = g.get("color")
+    stat_label = ""
+    arrs = [values[l][""] for l in order]
+    if len(arrs) >= 2 and all(len(a) >= 1 for a in arrs):
+        try:
+            from scipy.stats import kruskal
+            stat_label = f"Kruskal–Wallis, p = {kruskal(*arrs).pvalue:.3g}"
+        except Exception:
+            pass
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
+    _gf.draw_group_comparison(fig, fig.add_gridspec(1, 1)[0], order, values, style=style,
+                              stat_label=stat_label, group_colors=gcolors,
+                              theme=_gf_theme(), ylabel=metric.axis, err=err)
+    fig.tight_layout(pad=1.1)
+    return _qimage_from_figure(fig)
+
+
+def _render_length_density(groups, metric, width_px, height_px, dpi):
+    """Overlaid per-group track-length density (Preferences figures/length_style)."""
+    import matplotlib.pyplot as plt
+    from firefly.analysis import fa_group_figures as _gf
+    order, dists, gcolors = [], {}, {}
+    for g in groups:
+        d = g.get("dist")
+        if d is None or not len(d):
+            continue
+        order.append(g["label"]); dists[g["label"]] = np.asarray(d, float)
+        gcolors[g["label"]] = g.get("color")
+    if not order:
+        return None
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
+    _gf.draw_length_density(fig, fig.add_gridspec(1, 1)[0], order, dists,
+                            group_colors=gcolors, theme=_gf_theme(), xlabel=metric.axis)
+    fig.tight_layout(pad=1.1)
+    return _qimage_from_figure(fig)
+
+
 def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
                   err: str = "95% CI", log_x: bool = False,
                   width_px: int = 720, height_px: int = 380, dpi: int = 100,
                   logd_style: str = "overlaid", mobile_d: float = 0.05,
-                  logd_clip: tuple = (0.00001, 10.0)):
+                  logd_clip: tuple = (0.00001, 10.0),
+                  group_style: str = "box_points", length_style: str = "density"):
     """Render one metric across ``groups`` → detached ``QImage``.
 
     ``groups``: ``[{"label", "color", "values": ndarray(per-folder scalars),
@@ -221,6 +274,23 @@ def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
             pass   # fall through to the generic renderer if the engine path fails
 
     has_dist = any(g.get("dist") is not None and len(g["dist"]) for g in groups)
+
+    # Track-length distribution → overlaid density (Preferences figures/length_style).
+    if metric.id == "len" and length_style == "density" and has_dist:
+        try:
+            img = _render_length_density(groups, metric, width_px, height_px, dpi)
+            if img is not None:
+                return img
+        except Exception:
+            pass
+
+    # Scalar-metric group comparison → the styled renderer (figures/group_style).
+    if group_style in ("box_points", "grouped", "violin", "bar"):
+        try:
+            return _render_group_comparison(groups, metric, group_style, err,
+                                            width_px, height_px, dpi)
+        except Exception:
+            pass   # fall through to the legacy renderer
     fig, ax = _new_axes(width_px, height_px, dpi)
     title = f"{metric.label}" + (f"  ({metric.unit})" if metric.unit else "")
     ax.set_title(title, fontsize=11, fontweight="bold", pad=10)

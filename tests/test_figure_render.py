@@ -170,3 +170,48 @@ def test_compare_groups_honours_dcoeff_clip_range(tmp_path):
     lo, hi = ax.get_xlim()
     assert abs(lo - (-3.0)) < 1e-6 and abs(hi - 0.0) < 1e-6
     plt.close(fig)
+
+
+@pytest.mark.parametrize("style", ["mean_faceted", "individual", "overlaid"])
+def test_compare_groups_msd_styles_render(tmp_path, style):
+    """The MSD panel renders in each Preferences graph-style without error, on
+    real ensemble_msd data (make_run_folder writes it)."""
+    from firefly.analysis.fa_compare import compare_groups
+    from test_workspace_data import make_run_folder
+    g0 = [make_run_folder(str(tmp_path), f"a{k}", seed=k, d_centre=0.05) for k in range(2)]
+    g1 = [make_run_folder(str(tmp_path), f"b{k}", seed=9 + k, d_centre=0.4) for k in range(2)]
+    groups = [{"folders": g0, "label": "DMSO", "color": "#000000"},
+              {"folders": g1, "label": "Drug", "color": "#3fb950"}]
+    fig, _s, _st = compare_groups(groups, output_dir=None, panels={"msd"},
+                                  pdf_report=False, msd_plot_style=style, msd_err="SEM")
+    assert fig is not None and len(fig.axes) >= 1     # ≥1 facet drawn
+    plt.close(fig)
+
+
+def test_compare_groups_msd_paired_timepoints(tmp_path):
+    """A paired (pre/post-style) design overlays both timepoints per facet."""
+    from firefly.analysis.fa_compare import compare_groups
+    from test_workspace_data import make_run_folder
+    pre = [make_run_folder(str(tmp_path), f"pre{k}", seed=k, d_centre=0.1) for k in range(2)]
+    post = [make_run_folder(str(tmp_path), f"post{k}", seed=5 + k, d_centre=0.2) for k in range(2)]
+    groups = [{"folders": pre, "label": "Drug", "color": "#58a6ff", "timepoint": "pre"},
+              {"folders": post, "label": "Drug", "color": "#58a6ff", "timepoint": "post"}]
+    fig, _s, _st = compare_groups(groups, output_dir=None, panels={"msd"},
+                                  pdf_report=False, msd_plot_style="mean_faceted")
+    assert fig is not None and len(fig.axes) >= 1
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("style", ["paired", "delta"])
+def test_compare_groups_auc_styles(tmp_path, style):
+    """The AUC panel renders the paired/Δ change across two timepoints."""
+    from firefly.analysis.fa_compare import compare_groups
+    from test_workspace_data import make_run_folder
+    pre = [make_run_folder(str(tmp_path), f"pre{k}", seed=k, d_centre=0.1) for k in range(3)]
+    post = [make_run_folder(str(tmp_path), f"post{k}", seed=5 + k, d_centre=0.2) for k in range(3)]
+    groups = [{"folders": pre, "label": "Drug", "color": "#58a6ff", "timepoint": "pre"},
+              {"folders": post, "label": "Drug", "color": "#58a6ff", "timepoint": "post"}]
+    fig, _s, _st = compare_groups(groups, output_dir=None, panels={"auc"},
+                                  pdf_report=False, auc_plot_style=style)
+    assert fig is not None and len(fig.axes) >= 1
+    plt.close(fig)

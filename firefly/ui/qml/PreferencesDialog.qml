@@ -75,6 +75,14 @@ Item {
     readonly property var channelOpts: ["Stable", "Pre-release"]
     readonly property var logdLabels: ["Faceted (per-replicate)", "Ridgeline", "Overlaid KDEs", "Violins + points"]
     readonly property var logdValues: ["faceted", "ridgeline", "overlaid", "violin"]
+    readonly property var msdLabels: ["Mean ± error (faceted)", "Individual cells + mean", "Group overlaid"]
+    readonly property var msdValues: ["mean_faceted", "individual", "overlaid"]
+    readonly property var groupLabels: ["Box + points", "Grouped by timepoint", "Violin + points", "Bar"]
+    readonly property var groupValues: ["box_points", "grouped", "violin", "bar"]
+    readonly property var lengthLabels: ["Density", "Box"]
+    readonly property var lengthValues: ["density", "box"]
+    readonly property var aucLabels: ["Paired", "Δ box"]
+    readonly property var aucValues: ["paired", "delta"]
 
     function restoreDefaults() {
         Theme.setTheme("Dark"); Theme.setAccent("Luminous blue"); Theme.reducedMotion = false
@@ -572,6 +580,38 @@ Item {
                                  currentIndex: (root.rev, Math.max(0, root.logdValues.indexOf(Settings.getStr("figures/logd_style", "overlaid"))))
                                  onPicked: (t) => { var i = root.logdLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/logd_style", root.logdValues[i]) } }
+                    }
+                    PrefRow {
+                        label: "MSD curves"
+                        desc: "How the ensemble-MSD vs. time-lag curves are plotted, faceted by group (timepoints from your setup; error type from the Analysis tab)."
+                        Select { implicitWidth: 170; model: root.msdLabels
+                                 currentIndex: (root.rev, Math.max(0, root.msdValues.indexOf(Settings.getStr("figures/msd_style", "mean_faceted"))))
+                                 onPicked: (t) => { var i = root.msdLabels.indexOf(t)
+                                                    if (i >= 0) Settings.setValue("figures/msd_style", root.msdValues[i]) } }
+                    }
+                    PrefRow {
+                        label: "Group comparison"
+                        desc: "How per-metric group comparisons are drawn (D, step size, track length, tracks/dish, spot intensity, Rg, net displacement). Test + error come from the Analysis tab."
+                        Select { implicitWidth: 170; model: root.groupLabels
+                                 currentIndex: (root.rev, Math.max(0, root.groupValues.indexOf(Settings.getStr("figures/group_style", "box_points"))))
+                                 onPicked: (t) => { var i = root.groupLabels.indexOf(t)
+                                                    if (i >= 0) Settings.setValue("figures/group_style", root.groupValues[i]) } }
+                    }
+                    PrefRow {
+                        label: "Track-length distribution"
+                        desc: "Overlaid density (with the filter-threshold line) or a per-group box."
+                        Select { implicitWidth: 170; model: root.lengthLabels
+                                 currentIndex: (root.rev, Math.max(0, root.lengthValues.indexOf(Settings.getStr("figures/length_style", "density"))))
+                                 onPicked: (t) => { var i = root.lengthLabels.indexOf(t)
+                                                    if (i >= 0) Settings.setValue("figures/length_style", root.lengthValues[i]) } }
+                    }
+                    PrefRow {
+                        label: "MSD-AUC change"
+                        desc: "Area under each dish's MSD curve across timepoints: paired per-dish lines, or a Δ (later − earlier) box."
+                        Select { implicitWidth: 170; model: root.aucLabels
+                                 currentIndex: (root.rev, Math.max(0, root.aucValues.indexOf(Settings.getStr("figures/auc_style", "paired"))))
+                                 onPicked: (t) => { var i = root.aucLabels.indexOf(t)
+                                                    if (i >= 0) Settings.setValue("figures/auc_style", root.aucValues[i]) } }
                     }
                 }
                 Group {
