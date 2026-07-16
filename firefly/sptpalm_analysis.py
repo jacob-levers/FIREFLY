@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.7"
+__version__ = "2.76.44-rc.8"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -53,6 +53,19 @@ __version__ = "2.76.44-rc.7"
 #           projection background is re-aligned by the same per-frame drift, so
 #           it's sharp and matches the corrected tracks instead of staying
 #           smeared.  (12) UI more padding above the update card's Download button.
+#           (13) FIX theme really persists across updates now.  The prior fix
+#           moved it to a QSettings domain (jacoblevers/FIREFLY →
+#           com.jacoblevers.FIREFLY) that still didn't match the app bundle id
+#           (com.jacoblevers.firefly) — cfprefsd treated them as different
+#           case-sensitive domains, so the bundled app's write wasn't read back
+#           after an update (reverted to AMOLED).  The theme is now stored in a
+#           plain JSON file in the app-data dir, which cfprefsd never touches, so
+#           a deliberate choice (incl. AMOLED/Light) is durable — NOT forced Dark.
+#           (14) NEW Preferences → Figures "Graph styles" for MSD curves, group
+#           comparison, track-length and MSD-AUC change (each drives the live tab
+#           + report, like Log-D); new shared renderers in fa_group_figures; new
+#           metrics spot intensity / Rg / net displacement / speed.  Stats (test,
+#           error) stay on the Analysis tab.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

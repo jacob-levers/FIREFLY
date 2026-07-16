@@ -47,6 +47,12 @@
   so the projection stayed smeared by the drift while the tracks were sharp. The
   background is now re-aligned by the same per-frame drift, so it's crisp and
   matches the corrected tracks.
+- **The theme kept reverting (to AMOLED) after an update.** The previous fix
+  still stored it where macOS wouldn't reliably read it back in the packaged app
+  (the preferences domain didn't match the app's bundle identifier). Your chosen
+  theme is now saved to a plain file that survives updates — so whatever you
+  pick (Dark, AMOLED or Light) sticks. If you're on the reverting build, set it
+  once more after this update and it'll hold from then on.
 
 ### Added
 
@@ -54,6 +60,21 @@
   loaded run, movie, cluster map and super-res layer back to an empty tab in one
   click (with a confirmation). Your files aren't touched and your settings are
   kept.
+- **New "Graph styles" in Preferences → Figures** — pick how each comparison
+  graph is drawn (both the live Analysis tab and the exported report), the same
+  way the Log-D distribution already works:
+  - **MSD curves** — mean ± error faceted by group / individual-cell curves +
+    mean / group overlaid (error type follows the Analysis-tab SD·SEM·CI control).
+  - **Group comparison** — box + points (with Kruskal–Wallis) / grouped by
+    timepoint / violin + points / bar, applied to every scalar metric.
+  - **Track-length distribution** — overlaid density (with the filter-threshold
+    line) or box.
+  - **MSD-AUC change** — paired per-dish lines with a per-group p, or a Δ box.
+  All faceted views adapt to any number of conditions, and the second axis is a
+  generic "timepoint" that uses whatever labels you set (pre/post, etc.).
+- **New comparison metrics** from data FIREFLY already writes: **spot intensity**
+  (fluorescence proxy), **radius of gyration**, **net displacement**, and
+  **speed**.
 
 ### Changed
 
