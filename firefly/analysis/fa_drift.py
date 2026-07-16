@@ -13,6 +13,36 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 
+def align_frames_to_drift(frames, frame_indices, drift_df):
+    """Shift each frame by −drift[frame] so a projection of them is sharp and
+    aligned with drift-corrected localisations.
+
+    The figure's background is a small subset of raw movie frames; the tracks
+    over it are drift-corrected, so without this the background stays smeared by
+    the very drift that was removed from the tracks.  Shifting each sampled
+    frame by the same per-frame drift fixes that.
+
+    frames        : (K, H, W) array (modified in place and returned).
+    frame_indices : length-K movie frame index for each frame in ``frames``.
+    drift_df      : DataFrame with per-frame 'dx','dy' (px) from correct_drift.
+    """
+    frames = np.asarray(frames)
+    if drift_df is None or frames.ndim != 3 or len(frames) == 0:
+        return frames
+    from scipy.ndimage import shift as _shift
+    dx = np.asarray(drift_df["dx"], dtype=float)
+    dy = np.asarray(drift_df["dy"], dtype=float)
+    nf = len(dx)
+    if nf == 0:
+        return frames
+    for k, fidx in enumerate(np.asarray(frame_indices)):
+        fi = int(min(max(int(fidx), 0), nf - 1))
+        sx, sy = float(dx[fi]), float(dy[fi])
+        if abs(sx) > 1e-3 or abs(sy) > 1e-3:
+            frames[k] = _shift(frames[k], (-sy, -sx), order=1, mode="nearest")
+    return frames
+
+
 def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5,
                   max_shift_frac=0.30, outlier_k=6.0, outlier_tol_px=6.0):
     """

@@ -989,6 +989,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     external_csv = source == "external_csv"
 
     import numpy as _np
+    proj_idx = None          # frame indices behind proj_sample (image paths only);
+                             # used to drift-align the figure background below
     if not external_csv:
         # ── Load ──────────────────────────────────────────────────────────
         _log(f"\n── Load ──────────────────────────")
@@ -1720,9 +1722,22 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             locs, drift_df = correct_drift(
                 locs, n_seg_frames=int(p.get("drift_segment", 500)))
-            atomic_to_csv(drift_df, 
+            atomic_to_csv(drift_df,
                 os.path.join(extras_dir, f"{stem}_drift.csv"), index=False)
             _log(f"  Drift correction applied  |  saved {stem}_drift.csv")
+            # Re-align the figure-background sample by the SAME per-frame drift
+            # we just removed from the localisations — otherwise make_figure's
+            # projection stays smeared by the drift while the overlaid tracks are
+            # sharp.  Image inputs only (a CSV/histogram background has no
+            # per-frame image to shift).
+            if proj_idx is not None and getattr(proj_sample, "ndim", 0) == 3:
+                try:
+                    from firefly.analysis.fa_drift import align_frames_to_drift
+                    align_frames_to_drift(proj_sample, proj_idx, drift_df)
+                    _log("  Drift: re-aligned figure-background sample")
+                except Exception as _pexc:
+                    _log(f"  NOTE: couldn't drift-align figure background "
+                         f"({_pexc})")
         except Exception as exc:
             _log(f"  WARN: drift correction failed — {exc}")
 

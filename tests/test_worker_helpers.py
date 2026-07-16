@@ -154,3 +154,29 @@ def test_postproc_linking_params_preserves_present_falsy_values():
     recovered = _postproc_linking_params({"memory": 0, "max_track_len": None})
     assert recovered["memory"] == 0
     assert recovered["max_track_len"] is None
+
+
+def test_align_frames_to_drift_sharpens_projection():
+    # A spot that drifts frame-to-frame smears a raw max projection; shifting
+    # each frame by -drift collapses it back to one sharp pixel — the fix that
+    # keeps the figure background aligned with drift-corrected tracks.
+    import numpy as np
+    import pandas as pd
+    from firefly.analysis.fa_drift import align_frames_to_drift
+    H = W = 48
+    base = (24, 24)                                   # (y, x) reference pixel
+    idx = np.arange(5)
+    dx = np.array([0, 2, -1, 3, -2], dtype=float)     # integer per-frame drift
+    dy = np.array([0, 1, 2, -1, 1], dtype=float)
+    frames = np.zeros((5, H, W), dtype=np.float32)
+    for k in idx:
+        frames[k, base[0] + int(dy[k]), base[1] + int(dx[k])] = 1.0
+    drift = pd.DataFrame({"frame": idx, "dx": dx, "dy": dy})
+    raw_hits = int((frames.max(axis=0) > 0.5).sum())  # smeared over many pixels
+    assert raw_hits > 1
+    proj = align_frames_to_drift(frames.copy(), idx, drift).max(axis=0)
+    assert int((proj > 0.5).sum()) == 1               # collapsed to one pixel
+    py, px = np.unravel_index(int(np.argmax(proj)), proj.shape)
+    assert (int(py), int(px)) == base
+    # no drift_df → returned unchanged
+    assert align_frames_to_drift(frames, idx, None) is frames
