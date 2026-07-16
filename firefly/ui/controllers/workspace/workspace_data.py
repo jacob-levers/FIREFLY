@@ -257,6 +257,39 @@ def _step_scalar(run: RunData) -> Optional[float]:
     return float(np.sqrt(max(0.0, 2.0 * d * fi)))
 
 
+def _speed_scalar(run: RunData) -> Optional[float]:
+    """Mean speed ≈ step/Δt ≈ √(2·D/Δt) from the median D (derived)."""
+    d = _summary(run, "median_d")
+    fi = run.fi_s
+    if d is None or not fi:
+        return None
+    return float(np.sqrt(max(0.0, 2.0 * d / fi)))
+
+
+def _col_median(run: RunData, col: str) -> Optional[float]:
+    """Median of one per-track diffusion_summary column (for a scalar readout)."""
+    v = run._diff_col(col, positive=True)
+    return float(np.median(v)) if v is not None and len(v) else None
+
+
+def _fluor_dist(run: RunData) -> Optional[np.ndarray]:
+    """Per-localisation spot intensity (``mass`` column of localisations.csv) — a
+    relative fluorescence readout.  It's post-preprocessing integrated intensity
+    that scales with the detection threshold, so it's only meaningful COMPARED
+    across dishes analysed with identical settings."""
+    loc = run._read_csv("_localisations.csv")
+    if loc is None or "mass" not in getattr(loc, "columns", []):
+        return None
+    v = pd.to_numeric(loc["mass"], errors="coerce").to_numpy(float)
+    v = v[np.isfinite(v) & (v > 0)]
+    return v if len(v) else None
+
+
+def _fluor_scalar(run: RunData) -> Optional[float]:
+    v = _fluor_dist(run)
+    return float(np.median(v)) if v is not None else None
+
+
 def _angle_cos(run: RunData) -> Optional[np.ndarray]:
     """Per-step |cos θ| from the saved turning angles (column ``turning_angle_deg``
     — the analysis writes raw per-step angles in degrees, fa_palmtracer.py)."""
@@ -470,6 +503,16 @@ METRICS: list[Metric] = [
            scalar=_msd_at_1s),
     Metric("step", "Step size", "µm", 3, "step size (µm)", "Tracking",
            scalar=_step_scalar, approx=True),
+    Metric("speed", "Speed", "µm/s", 3, "speed (µm/s)", "Tracking",
+           scalar=_speed_scalar, approx=True),
+    Metric("rg", "Radius of gyration", "µm", 3, "R_g (µm)", "Tracking",
+           scalar=lambda r: _col_median(r, "radius_of_gyration_um"),
+           dist=lambda r: r._diff_col("radius_of_gyration_um", positive=True)),
+    Metric("netdisp", "Net displacement", "µm", 3, "net displacement (µm)", "Tracking",
+           scalar=lambda r: _col_median(r, "mean_radial_displacement_um"),
+           dist=lambda r: r._diff_col("mean_radial_displacement_um", positive=True)),
+    Metric("fluor", "Spot intensity", "a.u.", 0, "spot intensity (a.u.)", "Imaging",
+           scalar=_fluor_scalar, dist=_fluor_dist, approx=True),
     Metric("angle", "Turning angle", "", 2, "mean |cos θ|", "Tracking",
            scalar=_angle_scalar, dist=_angle_dist),
     Metric("a2", "Non-Gaussian α₂", "", 2, "α₂", "Diffusion",

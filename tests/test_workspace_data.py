@@ -153,3 +153,20 @@ def test_recommend_config_paired_vs_unpaired():
     assert wd.recommend_config(2, paired=False, multi_folder=False)["cfg"]["test"] == "Mann–Whitney U"
     assert wd.recommend_config(4, paired=False, multi_folder=True)["cfg"]["test"] == "Kruskal–Wallis"
     assert wd.recommend_config(2, paired=True, multi_folder=False)["cfg"]["test"] == "Wilcoxon signed-rank"
+
+
+def test_new_metrics_read_their_data(tmp_path):
+    # Rg / net-displacement / speed metrics added to the registry read from the
+    # data FIREFLY already writes (radius_of_gyration_um column; D-derived speed).
+    import numpy as np
+    from firefly.ui.controllers.workspace import workspace_data as wd
+    run = wd.load_run(make_run_folder(str(tmp_path), "m", seed=1, d_centre=0.1))
+    by_id = wd.METRIC_BY_ID
+    # radius of gyration → per-track distribution present
+    rg = by_id["rg"].dist(run)
+    assert rg is not None and len(rg) > 0 and np.all(rg >= 0)
+    # speed → derived scalar from median D (√(2D/Δt))
+    sp = by_id["speed"].scalar(run)
+    assert sp is not None and sp > 0
+    # net displacement column isn't in the minimal fixture → graceful None
+    assert by_id["netdisp"].dist(run) is None
