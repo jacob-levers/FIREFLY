@@ -1102,6 +1102,7 @@ Item {
                             }
                             RowLayout {
                                 spacing: sc.sp3
+                                Layout.topMargin: sc.sp4      // breathing room below the notes
                                 visible: !Updates.installing
                                 Button {
                                     variant: "primary"
