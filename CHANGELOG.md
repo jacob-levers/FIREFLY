@@ -53,6 +53,12 @@
   end sent back the whole rest of the file, so the reassembled download came out
   too large and the app quietly restarted with a single plain download. Each
   segment is now bounded to its own portion, so the installer downloads once.
+- **The Visualiser's "Max projection" background is now drift-corrected.** It was
+  built from the raw movie, so it stayed smeared by the drift that had been removed
+  from the tracks — the tracks were sharp but the background wasn't. It now aligns
+  the frames by the run's saved drift (from `<stem>_drift.csv`) before projecting,
+  the same way the analysis figure does, so the background is sharp and lines up
+  with the tracks. Runs without drift correction fall back to the raw projection.
 - **The full report and the live all-panels figure could fail to render.** A
   graph-styles regression let the MSD/AUC panels overwrite an internal colour
   setting, which then crashed the motion-classes panel — so a report with the

@@ -272,3 +272,27 @@ def test_axis_is_max_of_stack_and_tracks():
                          {"Brownian": "#0a0", "Unknown": "#777"})
     v.set_stack(np.zeros((40, 30, 30), "float32"))
     assert v.n_frames == max(40, int(df["frame"].max()) + 1)
+
+
+def test_max_projection_drift_correction_sharpens_the_background():
+    """With a run's drift loaded, the Max-projection background is built from a
+    drift-aligned subsample, so a feature smeared across the drift trail collapses
+    back to a sharp point (matching the drift-corrected tracks)."""
+    from scipy.ndimage import shift
+    H = W = 64
+    base = np.zeros((H, W), np.uint16); base[30, 30] = 1000
+    K = 40
+    dx = np.arange(K) * 0.4; dy = np.arange(K) * 0.3           # linear drift
+    frames = np.stack([shift(base, (dy[f], dx[f]), order=1, mode="nearest")
+                       for f in range(K)]).astype(np.uint16)
+    v = _viewer()
+    v.set_stack(frames)
+    raw = frames.max(axis=0)
+    corr = v._drift_corrected_proj(frames, pd.DataFrame({"dx": dx, "dy": dy}),
+                                   max_frames=K)
+    assert int((corr > 200).sum()) < int((raw > 200).sum())    # sharper
+    # set_drift stores it and invalidates the cached projection
+    v.set_drift(pd.DataFrame({"dx": dx, "dy": dy}))
+    assert v._drift_df is not None and v._maxproj_full is None
+    v.set_drift(None)                                          # clears cleanly
+    assert v._drift_df is None

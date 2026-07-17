@@ -193,6 +193,7 @@ class VisualiseController(QObject):
         # a worker thread and hand the array to the viewer on the GUI thread.
         self._stack_loading = False
         self._stack_result = None        # (status, path, stack|err) written off-thread
+        self._pending_drift = None       # run's drift_df, applied to the viewer on drain
         self._movie_label = ""           # basename shown on the loading popup
         self._stack_stop = None          # threading.Event to cancel a decode
         self._stack_poll = QTimer(self)
@@ -312,7 +313,17 @@ class VisualiseController(QObject):
                 raise FileNotFoundError(f"Missing {os.path.basename(tracks_path)}")
 
             if stack_path and os.path.isfile(stack_path):
-                self.loadStackPath(stack_path)
+                self.loadStackPath(stack_path)   # resets _pending_drift, then set below
+            # Drift-align the Max-projection background by the SAME per-frame drift
+            # removed from the tracks (saved as <stem>_drift.csv), so it's sharp and
+            # matches the corrected tracks instead of being smeared.  Applied to the
+            # viewer once the (async) movie decode lands, in _drain_stack.
+            drift_path = os.path.join(extras, f"{stem}_drift.csv")
+            if os.path.isfile(drift_path):
+                try:
+                    self._pending_drift = _read_csv_enc(drift_path)
+                except Exception:
+                    self._pending_drift = None
             diff = os.path.join(extras, f"{stem}_diffusion_summary.csv")
             self.loadTracksPath(tracks_path,
                                 diff if os.path.isfile(diff) else None)
@@ -341,6 +352,7 @@ class VisualiseController(QObject):
             return
         self._stack_loading = True
         self._stack_result = None
+        self._pending_drift = None       # a bare movie has no drift; loadRunFolder sets it
         self._movie_label = os.path.basename(path)
         self._stack_stop = threading.Event()
         self.movieLoadingChanged.emit()
@@ -392,7 +404,10 @@ class VisualiseController(QObject):
             return
         stack = payload
         try:
-            self.ensureViewer().set_stack(stack)
+            v = self.ensureViewer()
+            v.set_stack(stack)
+            try:    v.set_drift(self._pending_drift)   # drift-correct the max projection
+            except Exception: pass
             # remember the camera field size so a super-res render fills the same
             # extent as the Raw movie / Max projection backgrounds
             try:

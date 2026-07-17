@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.17"
+__version__ = "2.76.44-rc.18"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -128,7 +128,13 @@ __version__ = "2.76.44-rc.17"
 #           back to the same bar), while the bar option looked "removed".  Now ONE
 #           "MSD-AUC" control offers box+points / violin / bar / paired lines / Δ
 #           box: each is a distinct graph, paired/Δ apply to group×timepoint designs
-#           (else they fall back to box), and every option works.
+#           (else they fall back to box), and every option works.  (25) FIX the
+#           Visualiser's "Max projection" background was built from the RAW movie,
+#           so it stayed smeared by drift while the loaded tracks are drift-
+#           corrected.  It now loads the run's <stem>_drift.csv and builds the
+#           projection from a drift-aligned subsample (same alignment the report
+#           figure uses), so it's sharp and matches the tracks.  Falls back to the
+#           raw projection when a run has no drift file / no drift correction.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

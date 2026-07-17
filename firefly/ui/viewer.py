@@ -335,6 +335,7 @@ class FireflyViewer(QtWidgets.QWidget):
         self._maxproj_full = None             # full max projection (computed off-thread)
         self._maxproj_quick = None            # instant strided-sample preview
         self._maxproj_computing = False
+        self._drift_df = None                 # per-frame drift (dx,dy) for the run, or None
         self._maxprojReady.connect(self._on_maxproj_ready)
         self._sr = None                       # (img, scale, (ty, tx)) or None
         self._bg_mode = "Raw movie"
@@ -468,6 +469,7 @@ class FireflyViewer(QtWidgets.QWidget):
         elif arr.ndim != 3:
             raise ValueError(f"stack must be 2-D or 3-D, got {arr.ndim}-D")
         self._stack = arr
+        self._drift_df = None                # a fresh stack has no drift until set
         self._levels = _robust_levels(arr[arr.shape[0] // 2])
         self._frame_pix_cache.clear()
         h, w = arr.shape[1], arr.shape[2]
@@ -579,13 +581,38 @@ class FireflyViewer(QtWidgets.QWidget):
             self._maxproj_quick = sample.max(axis=0)
         return self._maxproj_quick
 
+    def set_drift(self, drift_df):
+        """Give the viewer the run's per-frame drift (a DataFrame with 'dx','dy',
+        or None).  The Max-projection background is then built from a drift-aligned
+        subsample so it's sharp and matches the drift-corrected tracks, instead of
+        being smeared by the drift that was removed from the localisations."""
+        self._drift_df = drift_df
+        self._maxproj_full = None            # recompute the projection with drift
+        if self._bg_mode == "Max projection":
+            self._apply_background()
+
+    def _drift_corrected_proj(self, stack, drift_df, max_frames=400):
+        """Max projection of up to ``max_frames`` evenly-spaced frames, each shifted
+        by −drift[frame] first (mirrors make_figure's background alignment).  A
+        subsample keeps it fast — aligning every frame of a 10⁴-frame movie would
+        take minutes and the projection barely changes past a few hundred frames."""
+        n = int(stack.shape[0])
+        k = min(int(max_frames), n)
+        idx = np.linspace(0, n - 1, k).astype(int)
+        sample = np.array(stack[idx])        # copy — align_frames_to_drift is in place
+        from firefly.analysis.fa_drift import align_frames_to_drift
+        align_frames_to_drift(sample, idx, drift_df)
+        return sample.max(axis=0)
+
     def _ensure_maxproj_full(self):
         """Compute the full max projection once, off the GUI thread (or inline
-        for a small stack where the sample already IS the full)."""
+        for a small stack where the sample already IS the full).  With drift loaded,
+        the projection is a drift-aligned subsample instead."""
         if (self._maxproj_full is not None or self._maxproj_computing
                 or self._stack is None):
             return
-        if self._stack.shape[0] <= 256:
+        drift = self._drift_df
+        if self._stack.shape[0] <= 256 and drift is None:
             self._maxproj_full = self._stack.max(axis=0)
             return
         self._maxproj_computing = True
@@ -593,8 +620,11 @@ class FireflyViewer(QtWidgets.QWidget):
         import threading
 
         def _work():
-            try:    mp = stack.max(axis=0)
-            except Exception: mp = None
+            try:
+                mp = (self._drift_corrected_proj(stack, drift)
+                      if drift is not None else stack.max(axis=0))
+            except Exception:
+                mp = None
             self._maxproj_full = mp
             self._maxproj_computing = False
             try:    self._maxprojReady.emit()       # GUI-thread refresh (queued)
