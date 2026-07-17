@@ -154,20 +154,21 @@ class _ReportJob(threading.Thread):
     call.  Heavy (reads every replicate folder, renders ~13 panels), so it's an
     explicit action, not part of the live recompute."""
 
-    def __init__(self, kwargs, done_cb):
+    def __init__(self, render_fn, out_dir, done_cb):
         super().__init__(daemon=True)
-        self._kwargs = kwargs
+        self._render = render_fn
+        self._out_dir = out_dir
         self._done = done_cb
 
     def run(self):
-        result = {"ok": False, "error": "", "dir": self._kwargs.get("output_dir", "")}
+        result = {"ok": False, "error": "", "dir": self._out_dir}
         try:
             # Deferred import: fa_compare pulls in matplotlib/scipy/pingouin, which
             # we don't want to pay for unless the user actually generates a report.
-            from firefly.analysis.fa_compare import compare_groups, CompareInputError
+            from firefly.analysis.fa_compare import CompareInputError
             try:
                 with _COMPARE_LOCK:
-                    compare_groups(**self._kwargs)
+                    self._render()          # compute_report (cached) → render_report
                 result["ok"] = True
             except CompareInputError as e:
                 result["error"] = str(e)               # expected user-error path
@@ -234,20 +235,19 @@ class _EngineFigJob(threading.Thread):
     panel) so the live figure is byte-for-byte the report's panel.  Heavier than
     the bespoke renderer (full compute), so the controller serialises + caches it."""
 
-    def __init__(self, kwargs, done_cb):
+    def __init__(self, render_fn, done_cb):
         super().__init__(daemon=True)
-        self._kwargs = kwargs
+        self._render = render_fn
         self._done = done_cb
 
     def run(self):
         img = None
         try:
-            from firefly.analysis.fa_compare import compare_groups
             from matplotlib.backends.backend_agg import FigureCanvasAgg
             import matplotlib.pyplot as plt
             from PySide6.QtGui import QImage
             with _COMPARE_LOCK:
-                fig, _summary, _stats = compare_groups(**self._kwargs)
+                fig, _summary, _stats = self._render()
                 # Strip the per-panel axes title for the IN-APP preview — it's
                 # redundant with the scroller chip / LIVE label (and the long
                 # ones overflowed).  Operates on the returned fig only; the
@@ -400,22 +400,22 @@ class _EngineAllPanelsJob(threading.Thread):
     it into a per-panel ``{key: QImage}`` dict.  This amortises the engine's
     monolithic ~9s compute across every panel: one render → all panels cached."""
 
-    def __init__(self, kwargs, panel_order, done_cb):
+    def __init__(self, render_fn, render_kwargs, panel_order, done_cb):
         super().__init__(daemon=True)
-        self._kwargs = kwargs
+        self._render = render_fn
+        self._render_kwargs = render_kwargs
         self._panel_order = list(panel_order)
         self._done = done_cb
 
     def run(self):
         slices = {}
         try:
-            from firefly.analysis.fa_compare import compare_groups
             from matplotlib.backends.backend_agg import FigureCanvasAgg
             import matplotlib.pyplot as plt
             from PySide6.QtGui import QImage
-            requested = set(self._kwargs.get("panels") or self._panel_order)
+            requested = set(self._render_kwargs.get("panels") or self._panel_order)
             with _COMPARE_LOCK:
-                fig, summary, _stats = compare_groups(**self._kwargs)
+                fig, summary, _stats = self._render()
                 # Strip per-panel titles BEFORE drawing: the long ones overflow
                 # their narrow grid cell and a tight-bbox slice would bleed in the
                 # neighbour panels.  Title-less, each panel's tightbbox fits its
@@ -444,7 +444,7 @@ class _EngineAllPanelsJob(threading.Thread):
                         pass
                     enabled = [k for k in self._panel_order
                                if k in requested and k not in skipped]
-                    theme = self._kwargs.get("theme", "Dark")
+                    theme = self._render_kwargs.get("theme", "Dark")
                     bg_hex = {"Dark": "#0d1117", "Light": "#ffffff",
                               "Publication": "#ffffff",
                               "OLED": "#000000"}.get(theme, "#0d1117")
@@ -586,7 +586,16 @@ class AnalysisWorkspaceController(QObject):
         self._engfig_job = None
         self._pending_engfig: list = []    # [(gen, key, img)] single-panel renders
         self._engfig_cache: dict = {}      # (panel_key, rev) → QImage  (fallback path)
-        self._engfig_rev = 0               # bumps on data / cfg change
+        self._engfig_rev = 0               # bumps on ANY render-affecting change
+        # ReportData cache: compute_report() is style/theme/panel-INDEPENDENT, so a
+        # style or theme change reuses it and only re-runs render_report (the cheap
+        # part).  `_data_rev` bumps ONLY on a data / stats-config / mobile-d change
+        # (a subset of what bumps `_engfig_rev`); a matching `_data_rev` means the
+        # cached ReportData is still valid.  Guarded by `_rd_lock` (worker threads).
+        self._data_rev = 0
+        self._rd_lock = threading.Lock()
+        self._rd_cache = None              # the cached ReportData
+        self._rd_cache_rev = -1            # the _data_rev it was computed for
         self._allpanels_job = None
         self._pending_slices: list = []    # [(rev, slices)] all-panels renders
         self._allpanels_rev = -1
@@ -1045,26 +1054,69 @@ class AnalysisWorkspaceController(QObject):
         return [{"name": g["label"], "color": g["color"]} for g in groups]
 
     # ── figure lane ─────────────────────────────────────────────────────
-    def _engine_render_kwargs(self, panels):
-        """compare_groups kwargs shared by the all-panels + single-panel jobs."""
+    def _compute_report_kwargs(self) -> dict:
+        """The style/theme-INDEPENDENT ``compute_report`` kwargs — these (with
+        ``_data_rev``) identify the cached ReportData.  Only a data / stats-config /
+        mobile-d change alters them, and those all bump ``_data_rev``."""
         s = self._settings
-        theme = (s.getStr("figures/theme", "Dark") if s else "Dark")
-        if theme not in ("Dark", "Light", "Publication"):
-            theme = "Dark"
         try:
             mobile_d = float(s.get("analysis/mobile_d", 0.05)) if s else 0.05
         except (TypeError, ValueError):
             mobile_d = 0.05
+        return dict(groups=self._engine_groups(), mobile_d_threshold=mobile_d,
+                    stats_config=self._stats_config())
+
+    def _render_report_kwargs(self, panels) -> dict:
+        """``render_report`` kwargs — theme / graph style / panel selection / clip:
+        the parts that can change WITHOUT invalidating the cached ReportData."""
+        s = self._settings
+        theme = (s.getStr("figures/theme", "Dark") if s else "Dark")
+        if theme not in ("Dark", "Light", "Publication"):
+            theme = "Dark"
         dlo, dhi = self._dcoeff_clip()
         return dict(
-            groups=self._engine_groups(), output_dir=None, panels=panels, theme=theme,
+            panels=panels, theme=theme,
             logd_plot_style=(s.getStr("figures/logd_style", "overlaid") if s else "overlaid"),
             msd_plot_style=(s.getStr("figures/msd_style", "mean_faceted") if s else "mean_faceted"),
             msd_err=self._cfg.get("err", "SEM"),
             auc_plot_style=(s.getStr("figures/auc_style", "paired") if s else "paired"),
-            logd_clip_d_min=dlo, logd_clip_d_max=dhi,
-            mobile_d_threshold=mobile_d, pdf_report=False,
-            stats_config=self._stats_config())
+            logd_clip_d_min=dlo, logd_clip_d_max=dhi)
+
+    def _cached_report_data(self, compute_kwargs, data_rev):
+        """Return the ReportData for ``data_rev`` — reuse the cache when its rev
+        still matches, else compute (outside the lock) and store it.  Called from
+        the render worker threads; the loads run off the GUI thread as before."""
+        with self._rd_lock:
+            if self._rd_cache_rev == data_rev and self._rd_cache is not None:
+                return self._rd_cache
+        from firefly.analysis.fa_compare import compute_report
+        rd = compute_report(**compute_kwargs)
+        with self._rd_lock:
+            self._rd_cache = rd
+            self._rd_cache_rev = data_rev
+        return rd
+
+    def _make_engine_render(self, render_kwargs, compute_progress_cb=None):
+        """Build the zero-arg callable a render job runs: fetch the cached
+        ReportData (compute once per ``_data_rev``) then ``render_report`` on it, so
+        a style/theme change re-renders without recomputing scalars or statistics.
+        ``compute_progress_cb`` (report lane only) drives the loading bar while the
+        ReportData is (re)computed — skipped on a cache hit, which is already
+        instant.  Returns ``(fig, summary_df, stats)`` — the compare_groups contract."""
+        compute_kwargs = self._compute_report_kwargs()
+        if compute_progress_cb is not None:
+            compute_kwargs["progress_cb"] = compute_progress_cb
+        data_rev = self._data_rev
+        ref = weakref.ref(self)
+
+        def _render():
+            from firefly.analysis.fa_compare import render_report, compare_groups
+            c = ref()
+            if c is None:                          # controller gone → one-shot
+                return compare_groups(**compute_kwargs, **render_kwargs)
+            rd = c._cached_report_data(compute_kwargs, data_rev)
+            return render_report(rd, **render_kwargs)
+        return _render
 
     def _dcoeff_clip(self):
         """(min, max) D-coefficient clip range (µm²/s) for the LogD graph, read
@@ -1127,7 +1179,9 @@ class AnalysisWorkspaceController(QObject):
         if len(self._engine_groups()) < 2:
             self._set_busy(False)
             return
-        kwargs = self._engine_render_kwargs(set(wd.PANEL_KEYS))
+        render_kwargs = self._render_report_kwargs(set(wd.PANEL_KEYS))
+        render_kwargs["output_dir"] = None
+        render_fn = self._make_engine_render(render_kwargs)
         self._allpanels_rev = self._engfig_rev
         rev = self._engfig_rev
         ref = weakref.ref(self)
@@ -1139,7 +1193,8 @@ class AnalysisWorkspaceController(QObject):
                     c._pending_slices.append((rev, slices))
                 c._allpanelsRendered.emit()
 
-        self._allpanels_job = _EngineAllPanelsJob(kwargs, wd.PANEL_KEYS, deliver)
+        self._allpanels_job = _EngineAllPanelsJob(render_fn, render_kwargs,
+                                                  wd.PANEL_KEYS, deliver)
         self._set_busy(True)
         self._allpanels_job.start()
 
@@ -1184,7 +1239,7 @@ class AnalysisWorkspaceController(QObject):
             self._set_busy(False)
             self.figureChanged.emit()
             return
-        kwargs = self._engine_render_kwargs({panel})
+        render_fn = self._make_engine_render(self._render_report_kwargs({panel}))
         self._set_busy(True)
         gen = self._fig_gen()
         ref = weakref.ref(self)
@@ -1196,7 +1251,7 @@ class AnalysisWorkspaceController(QObject):
                     c._pending_engfig.append((gen, key, img))
                 c._engfigRendered.emit()
 
-        self._engfig_job = _EngineFigJob(kwargs, deliver)
+        self._engfig_job = _EngineFigJob(render_fn, deliver)
         self._engfig_job.start()
 
     def _launch_bespoke_figure(self, metric):
@@ -1288,38 +1343,7 @@ class AnalysisWorkspaceController(QObject):
         if len(groups) < 2:
             self.toast.emit("Add at least two conditions with run folders")
             return
-        # Figure defaults come from Preferences (the global Figures section).
-        s = self._settings
-        theme = (s.getStr("figures/theme", "Dark") if s else "Dark")
-        if theme not in ("Dark", "Light", "Publication"):
-            theme = "Dark"
-        logd = (s.getStr("figures/logd_style", "overlaid") if s else "overlaid")
-        try:
-            mobile_d = float(s.get("analysis/mobile_d", 0.05)) if s else 0.05
-        except (TypeError, ValueError):
-            mobile_d = 0.05
-        dlo, dhi = self._dcoeff_clip()
-        kwargs = dict(
-            groups=groups,
-            output_dir=(self._output_dir or self._export_dir()),
-            output_stem=(self._cfg.get("outputStem") or "comparison"),
-            panels=(set(self._panels) if self._panels else None),
-            theme=theme,
-            logd_plot_style=logd,
-            msd_plot_style=(s.getStr("figures/msd_style", "mean_faceted") if s else "mean_faceted"),
-            msd_err=self._cfg.get("err", "SEM"),
-            auc_plot_style=(s.getStr("figures/auc_style", "paired") if s else "paired"),
-            logd_clip_d_min=dlo, logd_clip_d_max=dhi,
-            mobile_d_threshold=mobile_d,
-            pdf_report=True,
-            stats_config=self._stats_config(),
-        )
-        self._report_busy = True
-        self._report_progress = 0.0
-        self._report_status = "Starting…"
-        self._report_prog_raw = None
-        self._report_prog_poll.start()
-        self.reportChanged.emit()
+        out_dir = (self._output_dir or self._export_dir())
         ref = weakref.ref(self)
 
         def deliver(result):
@@ -1335,8 +1359,25 @@ class AnalysisWorkspaceController(QObject):
             if c is not None:
                 c._report_prog_raw = (int(done), int(total), str(msg))
 
-        kwargs["progress_cb"] = progress
-        self._report_job = _ReportJob(kwargs, deliver)
+        # Same split as the live tab: the report reuses the cached ReportData (so
+        # data loaded for the live figure isn't re-read) and renders the full
+        # bundle to disk.  Figure defaults come from Preferences (Figures section).
+        render_kwargs = self._render_report_kwargs(
+            set(self._panels) if self._panels else None)
+        render_kwargs.update(
+            output_dir=out_dir,
+            output_stem=(self._cfg.get("outputStem") or "comparison"),
+            pdf_report=True)
+        render_fn = self._make_engine_render(render_kwargs, compute_progress_cb=progress)
+
+        self._report_busy = True
+        self._report_progress = 0.0
+        self._report_status = "Starting…"
+        self._report_prog_raw = None
+        self._report_prog_poll.start()
+        self.reportChanged.emit()
+
+        self._report_job = _ReportJob(render_fn, out_dir, deliver)
         self._report_job.start()
 
     def _drain_report_progress(self):
@@ -1705,6 +1746,7 @@ class AnalysisWorkspaceController(QObject):
         self._group_cache.clear()
         self.panelRevChanged.emit()
         self._engfig_rev += 1              # data changed → invalidate engine-fig cache
+        self._data_rev += 1                # …and the cached ReportData (scalars/stats)
         self._engfig_cache.clear()
         self._slices = {}; self._slice_missing = set()
         self._recompute()
@@ -1723,10 +1765,13 @@ class AnalysisWorkspaceController(QObject):
             return
         if key == "figures/compare_panels":
             return
-        # Invalidate every cached render (engine figure + sliced panels +
-        # gallery thumbnails + group-averaged panels), then redraw — reusing the
-        # same invalidation the data-change path uses.
+        # Invalidate every cached RENDER (engine figure + sliced panels + gallery
+        # thumbnails + group-averaged panels), then redraw.  The cached ReportData
+        # (scalars/stats) survives a pure style/theme/clip change — only the
+        # mobile-D threshold feeds a scalar (mob/immob), so ONLY it bumps _data_rev.
         self._engfig_rev += 1
+        if key == "analysis/mobile_d":
+            self._data_rev += 1
         self._engfig_cache.clear()
         self._slices = {}; self._slice_missing = set()
         self._panel_rev += 1
@@ -2264,6 +2309,13 @@ class AnalysisWorkspaceController(QObject):
         self._cfg[key] = value
         self.cfgChanged.emit()
         self._engfig_rev += 1             # stats settings change the panel → invalidate
+        # A stats-config change (test / correction / alpha / post-hoc …) alters the
+        # computed statistics AND the two-way ANOVA baked into the ReportData, so it
+        # must invalidate it.  The render-only / live-view keys don't touch the
+        # engine compute — skip them so a bar-type toggle, plot-kind switch, log-axis
+        # flip or filename keystroke stays a cheap redraw.
+        if key not in ("err", "groupBy", "outputStem", "plot", "logX"):
+            self._data_rev += 1
         self._engfig_cache.clear()
         self._slices = {}; self._slice_missing = set()
         self._recompute()

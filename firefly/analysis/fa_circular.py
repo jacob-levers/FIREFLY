@@ -1979,6 +1979,34 @@ def _cohens_d_pooled(a, b):
     return float((np.mean(a) - np.mean(b)) / sp)
 
 
+def _pooled_d_batch(sa, sb):
+    """Pooled-SD Cohen's d for EACH ROW of resampled groups ``sa`` (m, na) and
+    ``sb`` (m, nb) — the vectorised form of :func:`_cohens_d_pooled`, identical
+    formula (ddof=1 pooled SD).  Returns a length-m array; NaN where the pooled SD
+    is zero/undefined (mirrors the scalar version returning None)."""
+    na = sa.shape[1]; nb = sb.shape[1]
+    va = sa.var(axis=1, ddof=1); vb = sb.var(axis=1, ddof=1)
+    sp = np.sqrt(((na - 1) * va + (nb - 1) * vb) / (na + nb - 2))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        d = (sa.mean(axis=1) - sb.mean(axis=1)) / sp
+    d = np.where(np.isfinite(sp) & (sp != 0), d, np.nan)
+    return d
+
+
+def _cliffs_delta_batch(sa, sb):
+    """Cliff's delta for EACH ROW of ``sa`` (m, na), ``sb`` (m, nb) — the mean sign
+    over the na×nb pairwise comparisons per row (vectorised :func:`_cliffs_delta`).
+    Chunked over rows so peak memory stays bounded for large na·nb."""
+    m, na = sa.shape; nb = sb.shape[1]
+    out = np.empty(m, dtype=float)
+    chunk = max(1, int(2_000_000 // max(1, na * nb)))
+    for s in range(0, m, chunk):
+        e = min(s + chunk, m)
+        diff = sa[s:e, :, None] - sb[s:e, None, :]     # (c, na, nb)
+        out[s:e] = np.sign(diff).mean(axis=(1, 2))
+    return out
+
+
 def _hedges_g_ci(a, b, n_boot=2000, seed=0):
     """Hedges' g (small-sample-corrected Cohen's d) with a percentile
     bootstrap 95% CI.
@@ -2000,16 +2028,12 @@ def _hedges_g_ci(a, b, n_boot=2000, seed=0):
     g = float(J * d)
     try:
         rng = np.random.default_rng(seed)
-        boot = np.empty(n_boot, dtype=float)
-        k = 0
-        for _ in range(n_boot):
-            da = _cohens_d_pooled(rng.choice(a, na, replace=True),
-                                  rng.choice(b, nb, replace=True))
-            if da is not None and np.isfinite(da):
-                boot[k] = J * da
-                k += 1
-        if k >= max(20, n_boot // 10):
-            lo, hi = np.percentile(boot[:k], [2.5, 97.5])
+        sa = a[rng.integers(0, na, size=(n_boot, na))]
+        sb = b[rng.integers(0, nb, size=(n_boot, nb))]
+        boot = J * _pooled_d_batch(sa, sb)
+        boot = boot[np.isfinite(boot)]
+        if boot.size >= max(20, n_boot // 10):
+            lo, hi = np.percentile(boot, [2.5, 97.5])
             return (g, float(lo), float(hi))
     except Exception:
         pass
@@ -2127,15 +2151,12 @@ def _cliffs_delta_ci(a, b, n_boot=2000, seed=0, ci_level=0.95):
     hi_pct = 100.0 - lo_pct
     try:
         rng = np.random.default_rng(seed)
-        boot = np.empty(n_boot, dtype=float)
-        k = 0
-        for _ in range(n_boot):
-            da = _cliffs_delta(rng.choice(a, na, replace=True),
-                               rng.choice(b, nb, replace=True))
-            if da is not None and np.isfinite(da):
-                boot[k] = da; k += 1
-        if k >= max(20, n_boot // 10):
-            lo, hi = np.percentile(boot[:k], [lo_pct, hi_pct])
+        sa = a[rng.integers(0, na, size=(n_boot, na))]
+        sb = b[rng.integers(0, nb, size=(n_boot, nb))]
+        boot = _cliffs_delta_batch(sa, sb)
+        boot = boot[np.isfinite(boot)]
+        if boot.size >= max(20, n_boot // 10):
+            lo, hi = np.percentile(boot, [lo_pct, hi_pct])
             return (delta, float(lo), float(hi))
     except Exception:
         pass

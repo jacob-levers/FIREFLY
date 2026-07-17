@@ -7,6 +7,10 @@ from __future__ import annotations
 import os
 import json
 import math
+import copy
+import hashlib
+import threading
+from dataclasses import dataclass, field
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
                                            motion_class_colors, label_text_color,
                                            DEFAULT_FRAME_INTERVAL_S)
@@ -33,6 +37,95 @@ from firefly.analysis import fa_twoway
 
 
 _FI_DEFAULT_WARNED: set = set()   # stems already warned about a missing Δt
+
+
+# ── ReportData: the style/theme-independent compute output (cacheable) ─────────
+@dataclass
+class ReportData:
+    """Everything a comparison needs that does NOT depend on theme, graph style or
+    panel selection: loaded per-folder summaries, per-replicate ``summary_df``,
+    factor levels + colours, the two-way ANOVA, and a memo cache for the expensive
+    effect-size statistics.  Produced by :func:`compute_report`, consumed by
+    :func:`render_report`.  The controller caches this and reuses it across
+    re-renders, so a style/theme change is a pure redraw with no recompute."""
+    cfg: dict
+    groups: list
+    n_groups: int
+    group_factor: list
+    timepoints_per_card: list
+    timepoint_tokens: list
+    distinct_tp: bool
+    two_factor: bool
+    labels: list
+    colors: list
+    folder_lists: list
+    all_summaries: list
+    skipped: list
+    summary_df: object
+    group_order: list
+    tp_order: list
+    card_colors: dict
+    group_colors: dict
+    many_groups: bool
+    bar_xticks: list
+    twoway_df: object
+    twoway_msg: object
+    pair_warn: object
+    paired_df: object
+    mobile_d_threshold: float
+    stat_cache: dict = field(default_factory=dict)
+
+
+# ── Memoised statistics ───────────────────────────────────────────────────────
+# The effect-size CIs / power in `_stat_test_n` are the dominant cost of a render
+# (~1.2 s across the panels).  They depend only on (data arrays, labels, cfg) —
+# NOT on theme/style — so re-rendering the same data in a new style shouldn't
+# recompute them.  `render_report` points this thread-local at the ReportData's
+# `stat_cache`; the draw's calls go through `_STN`/`_PT`, which memoise per unique
+# input.  A deep copy is returned so callers can mutate the result freely (the bar
+# panels annotate the pairwise dicts in place) without poisoning the cache.
+_TL = threading.local()
+
+
+def _arr_key(arrs):
+    out = []
+    for a in arrs:
+        a = np.ascontiguousarray(np.asarray(a, dtype=np.float64))
+        out.append((a.shape, hashlib.blake2b(a.tobytes(), digest_size=16).digest()))
+    return tuple(out)
+
+
+def _cfg_key(cfg):
+    try:
+        return json.dumps(cfg, sort_keys=True, default=str)
+    except Exception:
+        return repr(cfg)
+
+
+def _STN(arrs, labels, cfg):
+    """Memoised :func:`_stat_test_n` — same (data, labels, cfg) reuses the result."""
+    cache = getattr(_TL, "stat_cache", None)
+    if cache is None:
+        return _stat_test_n(arrs, labels, cfg)
+    key = ("n", _arr_key(arrs), tuple(str(x) for x in labels), _cfg_key(cfg))
+    hit = cache.get(key)
+    if hit is None:
+        hit = _stat_test_n(arrs, labels, cfg)
+        cache[key] = hit
+    return copy.deepcopy(hit)
+
+
+def _PT(a, b, cfg):
+    """Memoised :func:`_paired_test` (returns an immutable ``(p, stars)`` tuple)."""
+    cache = getattr(_TL, "stat_cache", None)
+    if cache is None:
+        return _paired_test(a, b, cfg)
+    key = ("p", _arr_key([a, b]), _cfg_key(cfg))
+    hit = cache.get(key)
+    if hit is None:
+        hit = _paired_test(a, b, cfg)
+        cache[key] = hit
+    return hit
 
 
 def _fi_or_default(params, stem="", _warned=_FI_DEFAULT_WARNED):
@@ -142,7 +235,7 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     from firefly.analysis.fa_stats_config import (
         normalize_stats_config, correct_pvalues, stars_for, describe_test_label)
     cfg = normalize_stats_config(stats_config)
-    omnibus, pairwise = _stat_test_n(arrs, labels, cfg)
+    omnibus, pairwise = _STN(arrs, labels, cfg)
     # Within-metric correction onto the pairwise list (also done centrally for
     # the CSV; computed here so the initial draw is already correct).
     # Self-correcting post-hocs (Games-Howell / Tukey / Dunnett) already control
@@ -443,7 +536,7 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
                 continue
             a = s0.loc[common].to_numpy(dtype=float)
             b = s1.loc[common].to_numpy(dtype=float)
-            p, stars = _paired_test(a, b, stats_config)
+            p, stars = _PT(a, b, stats_config)
             if not np.isfinite(p):
                 continue
             g = _paired_hedges_g(a, b)
@@ -864,45 +957,16 @@ def comparison_grid(n):
     return ((n + c - 1) // c, c)
 
 
-def compare_groups(groups,
-                   output_dir=None, output_stem="comparison",
-                   panels=None, theme="Dark",
-                   pdf_report=True,
-                   mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
-                   logd_plot_style="overlaid",
-                   msd_plot_style="mean_faceted", msd_err="SEM",
-                   auc_plot_style="paired",
-                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
-                   progress_cb=None, stats_config=None, use_native=False):
-    """Compare N≥2 groups of analysis output folders and render a multi-panel
-    figure, summary CSV, statistics CSV and combined PDF report.
-
-    Parameters
-    ----------
-    groups : list[dict]
-        [{"folders": [path, ...], "label": "Pre", "color": "#000000"}, ...]
-    output_dir : str or None
-        Where to save the figure / CSVs / PDF report.  If None, nothing is
-        saved to disk and only the figure is returned.
-    panels : set[str] or None
-        Subset of panels to render.  Default: all of {"msd", "auc",
-        "logd_dist", "mob_immob", "motion_classes", "track_length",
-        "jdd", "dwell_cdf", "turning_angles"}.
-    theme : str
-        Figure theme — "Dark" (default), "Light" or "Publication".
-    pdf_report : bool
-        If True (default) and output_dir is given, also write a multi-page
-        PDF report bundling the figure, parameters, folder lists and stats.
-    progress_cb : callable or None
-        Optional callback(done:int, total:int, msg:str) for UI progress.
-
-    Returns
-    -------
-    fig         : matplotlib.figure.Figure
-    summary_df  : pandas.DataFrame  — per-replicate scalar metrics
-    stats       : dict[str, dict]   — per-metric omnibus + pairwise tests
-    """
-    import matplotlib.pyplot as plt
+def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
+                   stats_config=None, use_native=False, progress_cb=None):
+    """Load + compute everything a comparison needs that is INDEPENDENT of
+    theme, graph style and panel selection: per-replicate scalars
+    (`summary_df`), factor levels, colours and the two-way ANOVA, plus an
+    (initially empty) memo cache for the expensive effect-size statistics.
+    Returns a `ReportData` the controller caches and hands to `render_report`,
+    so a style/theme change re-draws with no recompute.  Raises
+    `CompareInputError` on bad input (fewer than 2 groups, or a group with no
+    loadable folders)."""
     from firefly.analysis.fa_stats_config import normalize_stats_config
     # Reset the "already warned about a missing Δt" dedup per comparison run.
     # It's a module global (so _fi_or_default can warn once per stem within a
@@ -919,10 +983,6 @@ def compare_groups(groups,
             f"A comparison needs at least 2 groups; only {len(groups)} was given. "
             "Add another group on the Compare tab.")
 
-    if panels is None:
-        panels = {"msd", "auc", "logd_dist", "mob_immob", "motion_classes",
-                  "track_length", "jdd", "dwell_cdf", "turning_angles",
-                  "radial_dist", "van_hove", "vacf"}
 
     n_groups = len(groups)
     # `group_factor` is the raw group label of each card (the between-subjects
@@ -1107,6 +1167,86 @@ def compare_groups(groups,
             twoway_df, twoway_msg = None, f"skipped ({type(e).__name__}: {e})"
         print(f"  Two-way ANOVA: {twoway_msg}")
 
+    return ReportData(
+        cfg=cfg, groups=groups, n_groups=n_groups, group_factor=group_factor,
+        timepoints_per_card=timepoints_per_card, timepoint_tokens=timepoint_tokens,
+        distinct_tp=distinct_tp, two_factor=two_factor, labels=labels, colors=colors,
+        folder_lists=folder_lists, all_summaries=all_summaries, skipped=skipped,
+        summary_df=summary_df, group_order=group_order, tp_order=tp_order,
+        card_colors=card_colors, group_colors=group_colors, many_groups=many_groups,
+        bar_xticks=bar_xticks, twoway_df=twoway_df, twoway_msg=twoway_msg,
+        pair_warn=pair_warn, paired_df=paired_df,
+        mobile_d_threshold=mobile_d_threshold)
+
+
+def _draw_report(rd, *, output_dir=None, output_stem="comparison",
+                 panels=None, theme="Dark", pdf_report=True,
+                 logd_plot_style="overlaid", msd_plot_style="mean_faceted",
+                 msd_err="SEM", auc_plot_style="paired",
+                 logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
+    """Compare N≥2 groups of analysis output folders and render a multi-panel
+    figure, summary CSV, statistics CSV and combined PDF report.
+
+    Parameters
+    ----------
+    groups : list[dict]
+        [{"folders": [path, ...], "label": "Pre", "color": "#000000"}, ...]
+    output_dir : str or None
+        Where to save the figure / CSVs / PDF report.  If None, nothing is
+        saved to disk and only the figure is returned.
+    panels : set[str] or None
+        Subset of panels to render.  Default: all of {"msd", "auc",
+        "logd_dist", "mob_immob", "motion_classes", "track_length",
+        "jdd", "dwell_cdf", "turning_angles"}.
+    theme : str
+        Figure theme — "Dark" (default), "Light" or "Publication".
+    pdf_report : bool
+        If True (default) and output_dir is given, also write a multi-page
+        PDF report bundling the figure, parameters, folder lists and stats.
+    progress_cb : callable or None
+        Optional callback(done:int, total:int, msg:str) for UI progress.
+
+    Returns
+    -------
+    fig         : matplotlib.figure.Figure
+    summary_df  : pandas.DataFrame  — per-replicate scalar metrics
+    stats       : dict[str, dict]   — per-metric omnibus + pairwise tests
+    """
+    import matplotlib.pyplot as plt
+    cfg = rd.cfg
+    groups = rd.groups
+    n_groups = rd.n_groups
+    group_factor = rd.group_factor
+    timepoints_per_card = rd.timepoints_per_card
+    timepoint_tokens = rd.timepoint_tokens
+    distinct_tp = rd.distinct_tp
+    two_factor = rd.two_factor
+    labels = rd.labels
+    colors = rd.colors
+    folder_lists = rd.folder_lists
+    all_summaries = rd.all_summaries
+    skipped = rd.skipped
+    summary_df = rd.summary_df
+    group_order = rd.group_order
+    tp_order = rd.tp_order
+    card_colors = rd.card_colors
+    group_colors = rd.group_colors
+    many_groups = rd.many_groups
+    bar_xticks = rd.bar_xticks
+    twoway_df = rd.twoway_df
+    twoway_msg = rd.twoway_msg
+    pair_warn = rd.pair_warn
+    paired_df = rd.paired_df
+    mobile_d_threshold = rd.mobile_d_threshold
+    # Per-panel annotation handles + the returned per-metric stats dict are built
+    # as the panels draw (the returned `stats` only ever covers RENDERED panels).
+    panel_annots = {}
+    stats_records = {}
+    if panels is None:
+        panels = {"msd", "auc", "logd_dist", "mob_immob", "motion_classes",
+                  "track_length", "jdd", "dwell_cdf", "turning_angles",
+                  "radial_dist", "van_hove", "vacf"}
+
     # ── Render the figure ────────────────────────────────────────────────────
     panel_order = ["msd", "auc", "logd_dist", "mob_immob",
                    "motion_classes", "track_length", "track_count",
@@ -1202,8 +1342,8 @@ def compare_groups(groups,
             tp_seen = [tp for tps in msd_by_gt.values() for tp in tps]
             tp_ord = ([t for t in tp_order if t in tp_seen] if two_factor
                       else sorted(set(tp_seen)))
-            theme = {"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
-                     "spine": pal["GRD"], "muted": pal["MUT"]}
+            gtheme = {"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
+                      "spine": pal["GRD"], "muted": pal["MUT"]}
             _gfig.draw_msd(fig, ss, groups_order, data, tref,
                            style=(msd_plot_style if msd_plot_style in
                                   ("mean_faceted", "individual", "overlaid")
@@ -1211,7 +1351,7 @@ def compare_groups(groups,
                            err=msd_err,
                            tp_order=tp_ord,
                            group_colors={g: group_colors.get(g) for g in groups_order},
-                           theme=theme, xlabel="Time delta (s)")
+                           theme=gtheme, xlabel="Time delta (s)")
         else:
             _ax = fig.add_subplot(ss)
             _ax.text(0.5, 0.5, "no MSD curves exported", ha="center", va="center",
@@ -1242,8 +1382,8 @@ def compare_groups(groups,
             style = auc_plot_style if auc_plot_style in ("paired", "delta") else "paired"
             if paired:
                 groups_o = [g for g in group_order if g in paired]
-                theme = {"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
-                         "spine": pal["GRD"], "muted": pal["MUT"]}
+                gtheme = {"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
+                          "spine": pal["GRD"], "muted": pal["MUT"]}
                 if style == "delta":
                     dd = [paired[g][tp_order[1]] - paired[g][tp_order[0]] for g in groups_o]
                     dd = [d for d in dd if len(d)]
@@ -1258,15 +1398,15 @@ def compare_groups(groups,
                     stat_labels = {}
                     for g in groups_o:
                         try:
-                            p, _stars = _paired_test(paired[g][tp_order[0]],
-                                                     paired[g][tp_order[1]], cfg)
+                            p, _stars = _PT(paired[g][tp_order[0]],
+                                            paired[g][tp_order[1]], cfg)
                             stat_labels[g] = f"p = {p:.2g}" if p == p else ""
                         except Exception:
                             stat_labels[g] = ""
                 _gfig.draw_auc_change(fig, ss, groups_o, paired, style=style,
                                       tp_order=list(tp_order), stat_labels=stat_labels,
                                       group_colors={g: group_colors.get(g) for g in groups_o},
-                                      theme=theme, ylabel="MSD AUC")
+                                      theme=gtheme, ylabel="MSD AUC")
             else:
                 _ax = fig.add_subplot(ss)
                 _ax.text(0.5, 0.5, "no paired AUC (unmatched timepoints)",
@@ -1442,7 +1582,7 @@ def compare_groups(groups,
         if not two_factor:
             for ci, cname in enumerate(classes):
                 arrs = [fr[:, ci] if len(fr) else np.array([]) for fr in per_group]
-                omn, pw = _stat_test_n(arrs, labels, cfg)
+                omn, pw = _STN(arrs, labels, cfg)
                 stats_records[f"motion_frac_{cname}"] = {"omnibus": omn, "pairwise": pw}
         ax.set_xticks(x)
         # Show the GROUP NAME on the axis — the numeric stand-ins (bar_xticks)
@@ -1516,7 +1656,7 @@ def compare_groups(groups,
         if not two_factor:
             arrs = [summary_df.loc[summary_df["group"] == lbl, "mean_track_length_s"].values
                     for lbl in labels]
-            omn, pw = _stat_test_n(arrs, labels, cfg)
+            omn, pw = _STN(arrs, labels, cfg)
             stats_records["mean_track_length_s"] = {"omnibus": omn, "pairwise": pw}
 
     # ── 6b. Track count (trajectories detected per group) ─────────────────────
@@ -1939,7 +2079,7 @@ def compare_groups(groups,
                 arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
                         .dropna().to_numpy() for lbl in labels]
                 if sum(len(a) for a in arrs) >= 2:
-                    omn, pw = _stat_test_n(arrs, labels, cfg)
+                    omn, pw = _STN(arrs, labels, cfg)
                     stats_records[_m] = {"omnibus": omn, "pairwise": pw}
 
     # ── Multiple-comparison correction (within metric + optional across) ──────
@@ -2275,6 +2415,55 @@ def compare_groups(groups,
             print(f"  Results JSON skipped ({type(exc).__name__}: {exc})")
 
     return fig, summary_df, stats_records
+
+
+def render_report(report_data, *, output_dir=None, output_stem="comparison",
+                  panels=None, theme="Dark", pdf_report=True,
+                  logd_plot_style="overlaid", msd_plot_style="mean_faceted",
+                  msd_err="SEM", auc_plot_style="paired",
+                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
+    """Draw (+ optionally save) a comparison from a precomputed `ReportData`.
+    Only theme / graph style / panel selection vary here, so this is the cheap
+    part to re-run for a live style change on cached data.  Points the memo cache
+    at `report_data.stat_cache` for the duration of the draw.  Returns
+    ``(fig, summary_df, stats)`` exactly like `compare_groups`."""
+    _TL.stat_cache = report_data.stat_cache
+    try:
+        return _draw_report(
+            report_data, output_dir=output_dir, output_stem=output_stem,
+            panels=panels, theme=theme, pdf_report=pdf_report,
+            logd_plot_style=logd_plot_style, msd_plot_style=msd_plot_style,
+            msd_err=msd_err, auc_plot_style=auc_plot_style,
+            logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
+            progress_cb=progress_cb)
+    finally:
+        _TL.stat_cache = None
+
+
+def compare_groups(groups=None, output_dir=None, output_stem="comparison",
+                   panels=None, theme="Dark", pdf_report=True,
+                   mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
+                   logd_plot_style="overlaid", msd_plot_style="mean_faceted",
+                   msd_err="SEM", auc_plot_style="paired",
+                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
+                   progress_cb=None, stats_config=None, use_native=False,
+                   report_data=None):
+    """Compare N>=2 groups of analysis-output folders -> multi-panel figure,
+    summary CSV, statistics CSV and combined PDF report.  Thin wrapper: computes a
+    `ReportData` (unless one is supplied via ``report_data``) then renders it, so
+    the public API + return contract are unchanged.  Returns
+    ``(fig, summary_df, stats)``.  The live Analysis tab caches the `ReportData`
+    (see :func:`compute_report`) and re-runs only :func:`render_report` on a style
+    or theme change."""
+    rd = report_data if report_data is not None else compute_report(
+        groups, mobile_d_threshold=mobile_d_threshold, stats_config=stats_config,
+        use_native=use_native, progress_cb=progress_cb)
+    return render_report(
+        rd, output_dir=output_dir, output_stem=output_stem, panels=panels,
+        theme=theme, pdf_report=pdf_report, logd_plot_style=logd_plot_style,
+        msd_plot_style=msd_plot_style, msd_err=msd_err, auc_plot_style=auc_plot_style,
+        logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
+        progress_cb=progress_cb)
 
 
 def _json_safe(obj):

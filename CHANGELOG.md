@@ -53,6 +53,12 @@
   end sent back the whole rest of the file, so the reassembled download came out
   too large and the app quietly restarted with a single plain download. Each
   segment is now bounded to its own portion, so the installer downloads once.
+- **The full report and the live all-panels figure could fail to render.** A
+  graph-styles regression let the MSD/AUC panels overwrite an internal colour
+  setting, which then crashed the motion-classes panel — so a report with the
+  default panels (which includes both) produced nothing, and the Analysis tab
+  quietly fell back to slower per-panel rendering. Fixed, and both now render the
+  whole figure in one pass again.
 - **The MSD comparison drew every facet in the same blue** when the comparison
   collapsed to a one-way layout — e.g. two conditions that share a name and
   differ only by time point. Each facet is now drawn in its own condition
@@ -94,6 +100,15 @@
 
 ### Changed
 
+- **Analysis graphs update far faster.** Changing a graph style or theme used to
+  re-run the whole comparison (reload every dish, recompute all statistics) just
+  to redraw. The engine now separates the compute (loaded data, scalars and
+  statistics, which are cached) from the drawing, so a restyle is a pure redraw —
+  a live panel went from about a second to roughly instant, and a first render or
+  full report is about twice as fast (the effect-size confidence intervals were
+  also vectorised). The output is unchanged; only the wide bootstrap confidence
+  intervals at very small replicate counts shift slightly (they're statistically
+  identical).
 - **Update notes now render as formatted text.** The "update available" card
   previously showed the raw release notes (literal `##`, `**` and backticks).
   They're now rendered as Markdown — bold highlights, inline code and bullet

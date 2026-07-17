@@ -215,3 +215,28 @@ def test_compare_groups_auc_styles(tmp_path, style):
                                   pdf_report=False, auc_plot_style=style)
     assert fig is not None and len(fig.axes) >= 1
     plt.close(fig)
+
+
+def test_compare_groups_default_panels_render_without_theme_clobber(tmp_path):
+    """Regression: the msd/auc panels used to reassign the `theme` STRING to a
+    palette dict, so a later panel that read `theme` as a string
+    (motion_classes → motion_class_colors(theme).strip()) crashed with
+    'dict' object has no attribute 'strip'.  Since msd + motion_classes are both
+    default-on, the DEFAULT full report / all-panels render was broken.  Render
+    the full default panel set in one call and assert it completes with all
+    panels drawn."""
+    from firefly.analysis.fa_compare import compare_groups
+    from firefly.ui.controllers.workspace import workspace_data as wd
+    from test_workspace_data import make_run_folder
+    g0 = [make_run_folder(str(tmp_path), f"c{k}", seed=k, d_centre=0.06) for k in range(3)]
+    g1 = [make_run_folder(str(tmp_path), f"d{k}", seed=9 + k, d_centre=0.30) for k in range(3)]
+    groups = [{"folders": g0, "label": "Ctrl", "color": "#58a6ff"},
+              {"folders": g1, "label": "Drug", "color": "#f78166"}]
+    panels = set(wd.PANEL_KEYS)
+    assert {"msd", "motion_classes"} <= panels          # the crash pairing
+    fig, _s, _st = compare_groups(groups, output_dir=None, panels=panels,
+                                  pdf_report=False, theme="Dark")
+    # one main axes per panel (+ faceted sub-axes / colorbars) — the point is it
+    # rendered the whole grid instead of crashing on motion_classes.
+    assert fig is not None and len(fig.axes) >= len(panels)
+    plt.close(fig)

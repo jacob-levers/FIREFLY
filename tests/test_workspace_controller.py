@@ -287,6 +287,77 @@ def test_stale_gallery_hero_render_is_dropped(tmp_path):
     assert c._panel_image is fresh and c.panelToken == tok
 
 
+def test_data_rev_split_style_vs_data(tmp_path):
+    """The ReportData cache hinges on the rev split: a style/theme/clip/live-view
+    change bumps only `_engfig_rev` (re-render), while a data / stats-config /
+    mobile-D change also bumps `_data_rev` (recompute).  Guards the caching wiring."""
+    c, ids = _ctrl_with_two_conditions(tmp_path)
+    d0, e0 = c._data_rev, c._engfig_rev
+
+    # pure render changes → engfig only, ReportData preserved
+    for k in ("figures/theme", "figures/msd_style", "figures/logd_style",
+              "analysis/dcoeff_clip_min"):
+        d, e = c._data_rev, c._engfig_rev
+        c._on_figpref_changed(k)
+        assert c._data_rev == d, f"{k} must NOT bump _data_rev"
+        assert c._engfig_rev == e + 1, f"{k} must bump _engfig_rev"
+
+    for k in ("err", "plot", "logX", "outputStem"):
+        d = c._data_rev
+        c.setCfg(k, ("SD" if k == "err" else "Box" if k == "plot"
+                     else False if k == "logX" else "run2"))
+        assert c._data_rev == d, f"cfg '{k}' must NOT bump _data_rev"
+
+    # data-affecting changes → both revs
+    d, e = c._data_rev, c._engfig_rev
+    c._on_figpref_changed("analysis/mobile_d")     # feeds mob/immob scalar
+    assert c._data_rev == d + 1 and c._engfig_rev == e + 1
+
+    d = c._data_rev
+    c.setCfg("correction", "Holm")                 # stats-config → two-way + stats
+    assert c._data_rev == d + 1
+
+    d = c._data_rev
+    fid = c.conditions[0]["folders"][0]["id"]
+    c.toggleFolder(ids[0], fid)                     # data change
+    assert c._data_rev == d + 1
+
+
+def test_report_data_cache_reuses_until_data_rev_moves(tmp_path):
+    """`_cached_report_data` returns the SAME ReportData while the data-rev holds,
+    and recomputes once it moves — the mechanism that makes a style change a redraw."""
+    c, ids = _ctrl_with_two_conditions(tmp_path)
+    ck = c._compute_report_kwargs()
+    rd1 = c._cached_report_data(ck, c._data_rev)
+    rd2 = c._cached_report_data(ck, c._data_rev)
+    assert rd1 is rd2                               # cache hit → same object
+    # a data change moves the rev → next fetch recomputes a fresh ReportData
+    c._changed(conditions=True)
+    rd3 = c._cached_report_data(c._compute_report_kwargs(), c._data_rev)
+    assert rd3 is not rd1
+    # ReportData carries the pieces render_report needs
+    import pandas as pd
+    assert isinstance(rd3.summary_df, pd.DataFrame) and not rd3.summary_df.empty
+    assert isinstance(rd3.stat_cache, dict)
+
+
+def test_engine_render_lane_produces_figure_and_warms_cache(tmp_path):
+    """End-to-end through the real engine lane: the async all-panels/single-panel
+    render (now routed through the ReportData cache + render_report) must produce a
+    live figure and leave the cache warm for the current data-rev."""
+    import time
+    c, ids = _ctrl_with_two_conditions(tmp_path)
+    c._metric = "msd"
+    c._cg = c._build_groups()                 # what _recompute sets before rendering
+    c._launch_all_panels()
+    deadline = time.monotonic() + 40
+    while not c.hasFigure and time.monotonic() < deadline:
+        _app.processEvents(); time.sleep(0.02)
+    _app.processEvents()
+    assert c.hasFigure, "engine render lane produced no figure"
+    assert c._rd_cache is not None and c._rd_cache_rev == c._data_rev
+
+
 def test_report_progress_drain():
     """compare_groups' progress_cb writes (done,total,msg) off-thread; the GUI
     drain turns it into a determinate bar during loading and an indeterminate one
