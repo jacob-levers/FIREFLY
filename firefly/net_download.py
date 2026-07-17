@@ -485,7 +485,6 @@ def _download_parallel(url: str,
     atomically renamed — mirroring the single-stream path's integrity gauntlet.
     """
     import concurrent.futures
-    import shutil
 
     MIN_PARALLEL_BYTES = 8 * 1024 * 1024     # below this, one stream is fine
     CHUNK = 256 * 1024
@@ -584,14 +583,24 @@ def _download_parallel(url: str,
                     # which downloads a plain 200 correctly.
                     if getattr(resp, "status", 200) != 206:
                         raise DownloadError(_RANGE_IGNORED)
+                    # Read ONLY this segment's own bytes.  A CDN / proxy that
+                    # honours the range START but ignores the END answers a 206 by
+                    # streaming to EOF (legal per RFC 7233).  Without this bound
+                    # every non-last segment would swallow the whole tail of the
+                    # file, so the assembled size overshoots `total`, the post-
+                    # concat size check fails, and the parallel path falls back to
+                    # a FULL single-stream re-download — the visible "downloads to
+                    # 100%, then downloads all over again" bug.
+                    remaining = need - got
                     with open(seg, "ab" if got else "wb") as out:
-                        while True:
+                        while remaining > 0:
                             if state["cancel"]:
                                 raise DownloadError("Download cancelled by user.")
-                            chunk = resp.read(CHUNK)
+                            chunk = resp.read(min(CHUNK, remaining))
                             if not chunk:
                                 break
                             out.write(chunk)
+                            remaining -= len(chunk)
                             with lock:
                                 seg_bytes[idx] += len(chunk)
                             _report()
@@ -640,11 +649,24 @@ def _download_parallel(url: str,
         stop_poll.set()
 
     # ── Concatenate → .part, size-check, validate, atomic rename ──
+    # Copy EXACTLY each segment's own byte span (not the whole file on disk), so a
+    # segment left oversize by an end-ignoring server (or a prior buggy run) can't
+    # push the assembled size past `total`.  Assembly is therefore always exactly
+    # `total` bytes as long as each segment holds at least its span.
     try:
         with open(part_path, "wb") as out:
-            for i in range(n):
+            for (i, s, e) in ranges:
+                need_i = e - s + 1
                 with open(_seg_path(i), "rb") as sp:
-                    shutil.copyfileobj(sp, out, length=4 * 1024 * 1024)
+                    left = need_i
+                    while left > 0:
+                        buf = sp.read(min(4 * 1024 * 1024, left))
+                        if not buf:
+                            break
+                        out.write(buf)
+                        left -= len(buf)
+                if left > 0:                     # segment short on disk → can't assemble
+                    raise OSError(f"segment {i} short by {left} bytes")
     except Exception:
         _cleanup()
         try: os.remove(part_path)

@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.10"
+__version__ = "2.76.44-rc.11"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -79,7 +79,14 @@ __version__ = "2.76.44-rc.10"
 #           to flick between graph types to force it.  Async figure renders are
 #           now generation-tagged, so a slower render for a superseded state can
 #           no longer overwrite (or cache-poison) the current one; only the
-#           render matching what you're looking at is ever shown.
+#           render matching what you're looking at is ever shown.  (18) FIX the
+#           updater downloaded the whole installer TWICE (0→100 %, then 0→100 %
+#           again) on some networks: a CDN/proxy that honours a byte-range's
+#           start but ignores its end streams each parallel segment to EOF, so
+#           the assembled file overshot its size and the parallel path fell back
+#           to a full single-stream re-download.  Each segment now reads only its
+#           own byte span and assembly copies exactly that span, so it downloads
+#           once.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

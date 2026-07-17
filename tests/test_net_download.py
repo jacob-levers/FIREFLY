@@ -158,6 +158,50 @@ def test_parallel_dropped_segment_resumes_without_full_refetch(tmp_path, monkeyp
     assert served["bytes"] < TOTAL * 1.5          # only the dropped tail re-fetched — NOT the whole file twice
 
 
+def test_parallel_end_ignoring_server_does_not_trigger_a_second_download(tmp_path, monkeypatch):
+    """A CDN/proxy that honours the range START but ignores the END streams a 206
+    to EOF for every segment.  The parallel path must read only each segment's own
+    bytes and assemble EXACTLY `total`, so it does NOT fall back to a full single-
+    stream re-download — the 'downloads to 100%, then downloads all over again' bug.
+    A plain (Range-less) request would be the single-stream fallback; assert it
+    never happens."""
+    monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
+    TOTAL = 12 * 1024 * 1024                      # > MIN_PARALLEL_BYTES → parallel runs
+    data = os.urandom(TOTAL)
+    counts = {"ranged": 0, "plain": 0}
+
+    def fake_urlopen(req, timeout=None):
+        rng = req.get_header("Range")
+        if rng is None:                            # single-stream fallback path
+            counts["plain"] += 1
+            r = _FakeResp(data, status=200)
+            r.headers = {"Content-Length": str(TOTAL)}
+            return r
+        s, _, e = rng.replace("bytes=", "").partition("-")
+        start = int(s); end = int(e) if e else TOTAL - 1
+        if start == 0 and end == 0:                # probe → advertise Range + total
+            r = _FakeResp(data[:1], status=206)
+            r.headers = {"Content-Range": f"bytes 0-0/{TOTAL}", "Content-Length": "1"}
+            return r
+        counts["ranged"] += 1
+        # Honour START, IGNORE END: stream from `start` to EOF (legal 206 body).
+        body = data[start:]
+        r = _FakeResp(body, status=206)
+        r.headers = {"Content-Range": f"bytes {start}-{TOTAL - 1}/{TOTAL}",
+                     "Content-Length": str(len(body))}
+        return r
+
+    monkeypatch.setattr(nd.urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "out.bin"
+    nd.download_file("http://x/big", str(dest),
+                     validate_cb=lambda p: open(p, "rb").read() == data,
+                     parallel_segments=4, max_attempts=2)
+
+    assert dest.read_bytes() == data              # assembled correctly from the segments
+    assert counts["ranged"] >= 4                  # the parallel segments ran
+    assert counts["plain"] == 0                   # …and NO single-stream re-download happened
+
+
 def test_finalize_gives_up_terminally(tmp_path, monkeypatch):
     monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
     part = tmp_path / "f.part"; part.write_bytes(b"x")

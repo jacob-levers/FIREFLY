@@ -47,6 +47,12 @@
   so the projection stayed smeared by the drift while the tracks were sharp. The
   background is now re-aligned by the same per-frame drift, so it's crisp and
   matches the corrected tracks.
+- **The updater downloaded the whole installer twice** (to 100%, then again from
+  0%) on some networks. FIREFLY fetches the installer in parallel segments for
+  speed; a proxy or CDN that honoured a segment's start position but ignored its
+  end sent back the whole rest of the file, so the reassembled download came out
+  too large and the app quietly restarted with a single plain download. Each
+  segment is now bounded to its own portion, so the installer downloads once.
 - **The MSD comparison drew every facet in the same blue** when the comparison
   collapsed to a one-way layout — e.g. two conditions that share a name and
   differ only by time point. Each facet is now drawn in its own condition
