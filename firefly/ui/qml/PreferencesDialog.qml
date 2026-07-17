@@ -84,8 +84,8 @@ Item {
     readonly property var markValues: ["box_points", "violin", "bar"]
     readonly property var lengthLabels: ["Density", "Box"]
     readonly property var lengthValues: ["density", "box"]
-    readonly property var aucLabels: ["Paired", "Δ box"]
-    readonly property var aucValues: ["paired", "delta"]
+    readonly property var aucLabels: ["Box + points", "Violin + points", "Bar", "Paired lines (timepoints)", "Δ box (timepoints)"]
+    readonly property var aucValues: ["box_points", "violin", "bar", "paired", "delta"]
 
     function restoreDefaults() {
         Theme.setTheme("Dark"); Theme.setAccent("Luminous blue"); Theme.reducedMotion = false
@@ -605,8 +605,6 @@ Item {
                                  onPicked: (t) => { var i = root.msdLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/msd_style", root.msdValues[i]) } }
                     }
-                    MarkRow { label: "MSD-AUC (per condition)"; panelKey: "auc"
-                              desc: "How each condition's area-under-the-MSD-curve comparison is drawn. (Pre/post timepoint designs use the 'MSD-AUC change' style below instead.)" }
                     MarkRow { label: "Mobile fraction"; panelKey: "mob_immob"
                               desc: "How the mobile/immobile-ratio comparison is drawn." }
                     MarkRow { label: "Track count"; panelKey: "track_count"
@@ -624,10 +622,10 @@ Item {
                                                     if (i >= 0) Settings.setValue("figures/length_style", root.lengthValues[i]) } }
                     }
                     PrefRow {
-                        label: "MSD-AUC change (timepoints)"
-                        desc: "Only for pre/post timepoint designs: area under each dish's MSD curve across timepoints — paired per-dish lines, or a Δ (later − earlier) box."
+                        label: "MSD-AUC"
+                        desc: "Area under each MSD curve. Box + points / violin / bar draw it per condition; 'Paired lines' and 'Δ box' show the change across timepoints and apply only to group × pre/post designs (otherwise they fall back to box + points)."
                         Select { implicitWidth: 170; model: root.aucLabels
-                                 currentIndex: (root.rev, Math.max(0, root.aucValues.indexOf(Settings.getStr("figures/auc_style", "paired"))))
+                                 currentIndex: (root.rev, Math.max(0, root.aucValues.indexOf(Settings.getStr("figures/auc_style", "box_points"))))
                                  onPicked: (t) => { var i = root.aucLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/auc_style", root.aucValues[i]) } }
                     }

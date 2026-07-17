@@ -1401,7 +1401,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     #   box with an omnibus test).  A single-timepoint design keeps the group bar.
     if "auc" in panels:
         ax = _next_ax()
-        if two_factor and len(tp_order) >= 2:
+        # ONE "MSD-AUC" style drives this panel: paired lines / Δ box are the
+        # timepoint-change views (only meaningful for a group × timepoint design);
+        # box+points / violin / bar draw the per-condition AUC.  A paired/Δ choice
+        # on a non-two-factor design falls through to the per-condition mark.
+        if two_factor and len(tp_order) >= 2 and auc_plot_style in ("paired", "delta"):
             from firefly.analysis import fa_group_figures as _gfig
             ss = ax.get_subplotspec(); ax.remove()
             paired = {}
@@ -1416,7 +1420,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                 if len(common):
                     paired[grp] = {tp_order[0]: a.loc[common].to_numpy(float),
                                    tp_order[1]: b.loc[common].to_numpy(float)}
-            style = auc_plot_style if auc_plot_style in ("paired", "delta") else "paired"
+            style = auc_plot_style   # guaranteed "paired" or "delta" by the branch
             if paired:
                 groups_o = [g for g in group_order if g in paired]
                 gtheme = {"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
@@ -1451,11 +1455,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                          color=pal["MUT"], fontsize=9)
                 _ax.set_xticks([]); _ax.set_yticks([])
         else:
+            mark = auc_plot_style if auc_plot_style in ("box_points", "violin", "bar") else "box_points"
             data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="AUC (µm²·s)",
-                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("auc"))
+                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=mark)
             ax.set_title("Area Under the Curve")
 
     # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────

@@ -220,8 +220,8 @@ def test_compare_groups_auc_styles(tmp_path, style):
 @pytest.mark.parametrize("group_style,want", [
     ("bar", "Rectangle"), ("box_points", "PathPatch"), ("violin", None)])
 def test_group_style_changes_the_scalar_panel_mark(tmp_path, group_style, want):
-    """The Preferences 'Group comparison' style must reach the ENGINE's scalar
-    panels (AUC etc.), not just the bespoke fallback — bar / box+points / violin.
+    """The per-graph style must reach the ENGINE's scalar panels (mobile fraction
+    etc.) — bar / box+points / violin — not just the bespoke fallback.
     (The bug: selecting box did nothing because the engine hard-drew a bar.)"""
     from firefly.analysis.fa_compare import compute_report, render_report
     from test_workspace_data import make_run_folder
@@ -230,7 +230,8 @@ def test_group_style_changes_the_scalar_panel_mark(tmp_path, group_style, want):
     groups = [{"folders": g0, "label": "A", "color": "#58a6ff"},
               {"folders": g1, "label": "B", "color": "#f78166"}]
     rd = compute_report(groups)
-    fig, _s, _st = render_report(rd, panels={"auc"}, pdf_report=False, group_style=group_style)
+    fig, _s, _st = render_report(rd, panels={"mob_immob"}, pdf_report=False,
+                                 group_style=group_style)
     ax = next(a for a in fig.axes if a.get_ylabel())
     if want == "Rectangle":
         assert any(type(p).__name__ == "Rectangle" for p in ax.patches)   # bars
@@ -240,6 +241,40 @@ def test_group_style_changes_the_scalar_panel_mark(tmp_path, group_style, want):
     else:                                          # violin → PolyCollection bodies
         assert len(ax.collections) >= 2 and not ax.patches
     plt.close(fig)
+
+
+def test_auc_single_control_drives_mark_and_timepoint_change(tmp_path):
+    """The one 'MSD-AUC' control (auc_plot_style) drives the whole panel: box /
+    violin / bar per condition, plus paired-lines / Δ-box for a group × timepoint
+    design.  A paired/Δ choice on a non-two-factor design falls back to box."""
+    from firefly.analysis.fa_compare import compute_report, render_report
+    from test_workspace_data import make_run_folder
+
+    def has(fig, kind):
+        return any(type(p).__name__ == kind for a in fig.axes for p in a.patches)
+
+    # one-way: box / bar honoured; paired falls back to box (no rectangles)
+    ow = [{"folders": [make_run_folder(str(tmp_path), f"a{k}", seed=k, d_centre=0.05) for k in range(4)],
+           "label": "A", "color": "#58a6ff"},
+          {"folders": [make_run_folder(str(tmp_path), f"b{k}", seed=9 + k, d_centre=0.4) for k in range(4)],
+           "label": "B", "color": "#f78166"}]
+    rd = compute_report(ow)
+    f = render_report(rd, panels={"auc"}, pdf_report=False, auc_plot_style="bar")[0]
+    assert has(f, "Rectangle"); plt.close(f)
+    f = render_report(rd, panels={"auc"}, pdf_report=False, auc_plot_style="paired")[0]
+    assert has(f, "PathPatch") and not has(f, "Rectangle"); plt.close(f)   # fell back to box
+
+    # two-factor: paired = per-dish lines (no box/bar patches); Δ = a box
+    tf = []
+    for gi, (nm, col) in enumerate([("DMSO", "#58a6ff"), ("KCl", "#f78166")]):
+        for tp, sb, d in [("pre", gi * 10, 0.1), ("post", gi * 10 + 5, 0.2)]:
+            tf.append({"folders": [make_run_folder(str(tmp_path), f"{nm}{tp}{k}", seed=sb + k, d_centre=d)
+                                   for k in range(4)], "label": nm, "color": col, "timepoint": tp})
+    rd2 = compute_report(tf)
+    f = render_report(rd2, panels={"auc"}, pdf_report=False, auc_plot_style="paired")[0]
+    assert not has(f, "Rectangle") and not has(f, "PathPatch"); plt.close(f)   # lines
+    f = render_report(rd2, panels={"auc"}, pdf_report=False, auc_plot_style="delta")[0]
+    assert has(f, "PathPatch"); plt.close(f)                                    # Δ box
 
 
 def test_panel_styles_are_independent_per_panel(tmp_path):
@@ -252,7 +287,8 @@ def test_panel_styles_are_independent_per_panel(tmp_path):
     groups = [{"folders": g0, "label": "A", "color": "#58a6ff"},
               {"folders": g1, "label": "B", "color": "#f78166"}]
     rd = compute_report(groups)
-    ps = {"auc": "box_points", "mob_immob": "bar", "track_count": "violin", "vacf": "bar"}
+    ps = {"mob_immob": "bar", "track_count": "violin", "van_hove": "box_points",
+          "vacf": "bar"}   # AUC is driven by auc_plot_style, not panel_styles
 
     def mark(fig):
         ax = next(a for a in fig.axes if a.get_ylabel())
@@ -264,8 +300,8 @@ def test_panel_styles_are_independent_per_panel(tmp_path):
             return "violin"
         return "?"
 
-    for key, want in [("auc", "box"), ("mob_immob", "bar"),
-                      ("track_count", "violin"), ("vacf", "bar")]:
+    for key, want in [("mob_immob", "bar"), ("track_count", "violin"),
+                      ("van_hove", "box"), ("vacf", "bar")]:
         fig, _s, _st = render_report(rd, panels={key}, pdf_report=False, panel_styles=ps)
         assert mark(fig) == want, f"{key} drew {mark(fig)}, want {want}"
         plt.close(fig)

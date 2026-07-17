@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.16"
+__version__ = "2.76.44-rc.17"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -122,6 +122,13 @@ __version__ = "2.76.44-rc.16"
 #           the raw microscope image behind the Trajectories / Trajectories-by-D
 #           panels so the tracks sit on a plain background.  Feeds the existing
 #           fig_traj_bg render flag; applies to figures generated from then on.
+#           (24) FIX/CHANGE the MSD-AUC graph had TWO confusing style controls (a
+#           per-condition box/violin/bar AND a separate paired/Δ "change") — and on
+#           a non-two-factor design the paired vs Δ choice did nothing (both fell
+#           back to the same bar), while the bar option looked "removed".  Now ONE
+#           "MSD-AUC" control offers box+points / violin / bar / paired lines / Δ
+#           box: each is a distinct graph, paired/Δ apply to group×timepoint designs
+#           (else they fall back to box), and every option works.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

@@ -62,11 +62,18 @@
 - **Each scalar comparison graph now has its own format control.** Preferences →
   Figures used to have a single "Group comparison" dropdown that set the style for
   every scalar panel at once — and its description even listed metrics that aren't
-  in the comparison tab. It's now one control per graph (MSD-AUC, mobile fraction,
-  track count, non-Gaussian α₂, VACF), each choosing box + points / violin / bar
+  in the comparison tab. It's now one control per graph (mobile fraction, track
+  count, non-Gaussian α₂, VACF), each choosing box + points / violin / bar
   independently, applied in both the live tab and the exported report. Choosing a
   format previously had no effect on these engine panels (they always drew a bar);
   now it does. The dots, error/stat annotations and numbers are unchanged.
+- **MSD-AUC is now a single, working control.** It briefly had two overlapping
+  dropdowns (a per-condition box/violin/bar and a separate paired/Δ "change"), and
+  on a design without both multiple conditions *and* pre/post timepoints the paired
+  and Δ options drew the same graph while the bar option looked missing. There's
+  now one "MSD-AUC" control offering box + points / violin / bar / paired lines /
+  Δ box — each a distinct graph. Paired lines and Δ box apply to group × timepoint
+  designs; on any other design they fall back to box + points.
 - **The live comparison scroller showed the wrong graph for some panels** (e.g.
   "Track count" drew the Diffusion-D chart) and MSD graph-style changes seemed to
   do nothing — because those panels were actually displaying a *different* panel.
