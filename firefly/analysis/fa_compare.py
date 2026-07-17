@@ -168,9 +168,14 @@ def _replicate_colors(k):
 
 def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                      ylabel="", record_stats=None, metric_name="",
-                     xtick_labels=None, stats_config=None, annot_sink=None):
-    """Bar chart with mean ± SEM and individual replicate dots, generalised
-    to N groups.
+                     xtick_labels=None, stats_config=None, annot_sink=None,
+                     style="box_points"):
+    """Per-group scalar comparison with individual replicate dots, generalised
+    to N groups.  ``style`` (Preferences → Figures → Group comparison) picks the
+    backdrop mark: ``box_points`` (box + median/IQR, the default) / ``violin`` /
+    ``bar`` (mean ± SEM).  ``grouped`` falls back to the box here (the grouped-by-
+    timepoint layout is a separate two-factor renderer).  The per-replicate dots
+    and the full stats annotation are identical across styles.
 
     For 2 groups: shows pairwise stars on a bracket (matches lab style).
     For 3+ groups: shows omnibus ANOVA / Kruskal p-value as a panel
@@ -208,10 +213,36 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     # the bar face is a very pale wash (blended 88% toward the background) at low
     # opacity, while the EDGE keeps the saturated group colour and the error bars
     # stay solid — the dots read as the data, not the bar.
-    ax.bar(x, means, yerr=sems, capsize=4,
-           color=[(*_bar_fill_for(i, frac=0.88), 0.45) for i in range(n)],
-           edgecolor=colors, linewidth=1.6,
-           ecolor=sig_col)
+    style = (style or "box_points").lower()
+    if style == "bar":
+        ax.bar(x, means, yerr=sems, capsize=4,
+               color=[(*_bar_fill_for(i, frac=0.88), 0.45) for i in range(n)],
+               edgecolor=colors, linewidth=1.6,
+               ecolor=sig_col)
+    elif style in ("violin", "violin_points"):
+        vi = [i for i in range(n) if len(arrs[i]) >= 2]
+        if vi:
+            parts = ax.violinplot([arrs[i] for i in vi], positions=vi,
+                                  widths=0.7, showextrema=False)
+            for body, i in zip(parts["bodies"], vi):
+                body.set_facecolor(_bar_fill_for(i, 0.85))
+                body.set_edgecolor(colors[i]); body.set_linewidth(1.3)
+                body.set_alpha(0.45)
+        for i in range(n):                       # mean ± SEM marker on top
+            if len(arrs[i]):
+                ax.errorbar(i, means[i], yerr=sems[i], fmt="_", ms=14,
+                            color=sig_col, capsize=4, lw=1.5, zorder=4)
+    else:                                        # box_points / grouped → box + IQR
+        bp = ax.boxplot([arrs[i] if len(arrs[i]) else [np.nan] for i in range(n)],
+                        positions=list(x), widths=0.5, showfliers=False,
+                        patch_artist=True)
+        for i, patch in enumerate(bp["boxes"]):
+            patch.set_facecolor((*_bar_fill_for(i, 0.85), 0.35))
+            patch.set_edgecolor(colors[i]); patch.set_linewidth(1.6)
+        for ln in bp["whiskers"] + bp["caps"]:
+            ln.set_color(palette.get("MUT", sig_col)); ln.set_linewidth(1.0)
+        for md in bp["medians"]:
+            md.set_color(sig_col); md.set_linewidth(1.8)
     rng = np.random.default_rng(0)
     max_rep = max((len(a) for a in arrs), default=0)
     rep_colors = _replicate_colors(max_rep)
@@ -1182,7 +1213,7 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
 def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  panels=None, theme="Dark", pdf_report=True,
                  logd_plot_style="overlaid", msd_plot_style="mean_faceted",
-                 msd_err="SEM", auc_plot_style="paired",
+                 msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
@@ -1418,7 +1449,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="AUC (µm²·s)",
-                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
+                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
             ax.set_title("Area Under the Curve")
 
     # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────
@@ -1522,7 +1553,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Mobile/Immobile ratio",
-                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
+                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
         ax.set_title("Mobile/Immobile Ratio")
 
     # ── 5. Motion class fractions (stacked bars: x = population, colour = class) ─
@@ -1673,7 +1704,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Tracks (n)",
                              record_stats=stats_records, metric_name="n_tracks",
-                             xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
+                             xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
         ax.set_title("Tracks detected")
 
     # ── 7. JDD: per-population D + fraction (N groups) ────────────────────────
@@ -1940,7 +1971,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Non-Gaussian α₂",
                              record_stats=stats_records,
-                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
+                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
         ax.set_title("Population heterogeneity (α₂)")
 
     # ── VACF persistence (directional memory) ─────────────────────────────────
@@ -1958,7 +1989,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="VACF persistence (lag 1)",
                              record_stats=stats_records,
-                             metric_name="vacf_persistence", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots)
+                             metric_name="vacf_persistence", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
         ax.set_title("Directional persistence (VACF lag 1)")
 
     # ── Drop per-panel legends (the top band is the shared key) ───────────────
@@ -2420,7 +2451,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
 def render_report(report_data, *, output_dir=None, output_stem="comparison",
                   panels=None, theme="Dark", pdf_report=True,
                   logd_plot_style="overlaid", msd_plot_style="mean_faceted",
-                  msd_err="SEM", auc_plot_style="paired",
+                  msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
     """Draw (+ optionally save) a comparison from a precomputed `ReportData`.
     Only theme / graph style / panel selection vary here, so this is the cheap
@@ -2433,7 +2464,7 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
             report_data, output_dir=output_dir, output_stem=output_stem,
             panels=panels, theme=theme, pdf_report=pdf_report,
             logd_plot_style=logd_plot_style, msd_plot_style=msd_plot_style,
-            msd_err=msd_err, auc_plot_style=auc_plot_style,
+            msd_err=msd_err, auc_plot_style=auc_plot_style, group_style=group_style,
             logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
             progress_cb=progress_cb)
     finally:
@@ -2444,7 +2475,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
                    panels=None, theme="Dark", pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                    logd_plot_style="overlaid", msd_plot_style="mean_faceted",
-                   msd_err="SEM", auc_plot_style="paired",
+                   msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                    logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
                    progress_cb=None, stats_config=None, use_native=False,
                    report_data=None):
@@ -2462,6 +2493,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
         rd, output_dir=output_dir, output_stem=output_stem, panels=panels,
         theme=theme, pdf_report=pdf_report, logd_plot_style=logd_plot_style,
         msd_plot_style=msd_plot_style, msd_err=msd_err, auc_plot_style=auc_plot_style,
+        group_style=group_style,
         logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
         progress_cb=progress_cb)
 

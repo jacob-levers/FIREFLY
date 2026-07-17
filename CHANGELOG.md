@@ -59,6 +59,13 @@
   default panels (which includes both) produced nothing, and the Analysis tab
   quietly fell back to slower per-panel rendering. Fixed, and both now render the
   whole figure in one pass again.
+- **The "Group comparison" graph style now applies to the scalar panels.**
+  Choosing box + points / violin / bar (Preferences → Figures) had no effect on
+  the AUC, mobile-fraction, track-count, non-Gaussian α₂ and VACF panels — the
+  engine always drew a bar, so "box" did nothing. The style now drives every one
+  of those panels in both the live tab and the exported report. The default is
+  box + points (matching the setting's default); choose "bar" for the previous
+  look. The dots, error/stat annotations and numbers are unchanged.
 - **The live comparison scroller showed the wrong graph for some panels** (e.g.
   "Track count" drew the Diffusion-D chart) and MSD graph-style changes seemed to
   do nothing — because those panels were actually displaying a *different* panel.

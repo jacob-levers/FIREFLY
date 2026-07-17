@@ -888,6 +888,7 @@ class AnalysisWorkspaceController(QObject):
             msd_plot_style=(s.getStr("figures/msd_style", "mean_faceted") if s else "mean_faceted"),
             msd_err=self._cfg.get("err", "SEM"),
             auc_plot_style=(s.getStr("figures/auc_style", "paired") if s else "paired"),
+            group_style=(s.getStr("figures/group_style", "box_points") if s else "box_points"),
             logd_clip_d_min=dlo, logd_clip_d_max=dhi)
 
     def _cached_report_data(self, compute_kwargs, data_rev):

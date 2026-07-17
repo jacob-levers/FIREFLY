@@ -217,6 +217,31 @@ def test_compare_groups_auc_styles(tmp_path, style):
     plt.close(fig)
 
 
+@pytest.mark.parametrize("group_style,want", [
+    ("bar", "Rectangle"), ("box_points", "PathPatch"), ("violin", None)])
+def test_group_style_changes_the_scalar_panel_mark(tmp_path, group_style, want):
+    """The Preferences 'Group comparison' style must reach the ENGINE's scalar
+    panels (AUC etc.), not just the bespoke fallback — bar / box+points / violin.
+    (The bug: selecting box did nothing because the engine hard-drew a bar.)"""
+    from firefly.analysis.fa_compare import compute_report, render_report
+    from test_workspace_data import make_run_folder
+    g0 = [make_run_folder(str(tmp_path), f"c{k}", seed=k, d_centre=0.05) for k in range(4)]
+    g1 = [make_run_folder(str(tmp_path), f"d{k}", seed=9 + k, d_centre=0.4) for k in range(4)]
+    groups = [{"folders": g0, "label": "A", "color": "#58a6ff"},
+              {"folders": g1, "label": "B", "color": "#f78166"}]
+    rd = compute_report(groups)
+    fig, _s, _st = render_report(rd, panels={"auc"}, pdf_report=False, group_style=group_style)
+    ax = next(a for a in fig.axes if a.get_ylabel())
+    if want == "Rectangle":
+        assert any(type(p).__name__ == "Rectangle" for p in ax.patches)   # bars
+    elif want == "PathPatch":
+        assert any(type(p).__name__ == "PathPatch" for p in ax.patches)   # box bodies
+        assert not any(type(p).__name__ == "Rectangle" for p in ax.patches)
+    else:                                          # violin → PolyCollection bodies
+        assert len(ax.collections) >= 2 and not ax.patches
+    plt.close(fig)
+
+
 def test_compare_groups_default_panels_render_without_theme_clobber(tmp_path):
     """Regression: the msd/auc panels used to reassign the `theme` STRING to a
     palette dict, so a later panel that read `theme` as a string
