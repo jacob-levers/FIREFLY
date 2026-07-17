@@ -94,6 +94,10 @@
 
 ### Added
 
+- **"Trajectory background image" toggle** (Preferences → Figures → Rendering &
+  quality). Turn off the raw microscope image behind the Trajectories and
+  Trajectories-by-D panels to draw the tracks on a plain background. Applies to
+  figures generated from then on — re-run the analysis to refresh existing ones.
 - **"Clear" button in the Visualiser** (next to "Reset view"). Wipes every
   loaded run, movie, cluster map and super-res layer back to an empty tab in one
   click (with a confirmation). Your files aren't touched and your settings are

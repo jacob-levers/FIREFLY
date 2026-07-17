@@ -99,6 +99,7 @@ Item {
         Settings.setValue("figures/font", "DejaVu Sans")
         Settings.setValue("figures/antialias", true)
         Settings.setValue("figures/transparent", false)
+        Settings.setValue("figures/traj_bg", true)
         Settings.setValue("figures/format", "PDF (vector)")
         Settings.setValue("figures/save_pdf", true)
         Settings.setValue("figures/per_panel", false)
@@ -648,6 +649,12 @@ Item {
                             text: (root.rev, Settings.getStr("figures/line_width", "0.8"))
                             onEditingFinished: Settings.setValue("figures/line_width", text)
                         }
+                    }
+                    PrefRow {
+                        label: "Trajectory background image"
+                        desc: "Show the raw microscope image behind the trajectory panels (Trajectories / Trajectories by D). Off draws the tracks on a plain background. Applies to figures generated from now on — re-run the analysis to update existing ones."
+                        Switch { checked: (root.rev, Settings.getBool("figures/traj_bg", true))
+                                 onToggled: (c) => Settings.setValue("figures/traj_bg", c) }
                     }
                     PrefRow {
                         label: "Plot font"
