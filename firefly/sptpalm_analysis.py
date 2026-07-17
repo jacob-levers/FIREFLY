@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.12"
+__version__ = "2.76.44-rc.13"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -97,6 +97,15 @@ __version__ = "2.76.44-rc.12"
 #           intervals were vectorised so a first render / full report is ~2× faster.
 #           Output is unchanged (byte-identical stats/figures; only the wide
 #           small-n bootstrap CI bounds shift within Monte-Carlo noise).
+#           (20) FIX the live comparison scroller showed the WRONG graph for some
+#           panels (e.g. "Track count" drew the Diffusion-D scatter) and MSD graph-
+#           style changes appeared to do nothing — both because a panel was really
+#           displaying a different panel.  The rc.12 crash fix exposed a latent
+#           slice-mapping bug (the live tab used to render the whole grid once and
+#           crop each panel out by grid position, which mis-mapped the panels that
+#           re-lay-out their axes — MSD/AUC/logD facets, polar radial).  Now that
+#           per-panel compute is cached, each panel is rendered as its own figure —
+#           correct by construction; the exported report still draws the full grid.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

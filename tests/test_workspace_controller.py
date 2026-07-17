@@ -178,9 +178,11 @@ def test_figpref_change_invalidates_figure_caches(tmp_path):
     seen = []
     c.panelRevChanged.connect(lambda: seen.append(1))
 
+    dr0 = c._data_rev
     c._on_figpref_changed("figures/logd_style")
-    assert c._engfig_rev == rev0 + 1                  # data-rev bumped → cache key stale
-    assert c._engfig_cache == {} and c._slices == {}  # every cached render dropped
+    assert c._engfig_rev == rev0 + 1                  # render-rev bumped → cache key stale
+    assert c._engfig_cache == {}                      # every cached panel render dropped
+    assert c._data_rev == dr0                         # …but a pure style change keeps ReportData
     assert c._panel_rev == prev0 + 1 and seen         # thumbnails told to re-request
 
     # unrelated keys and the self-managed panel-selection key are ignored (no loop)
@@ -347,15 +349,17 @@ def test_engine_render_lane_produces_figure_and_warms_cache(tmp_path):
     live figure and leave the cache warm for the current data-rev."""
     import time
     c, ids = _ctrl_with_two_conditions(tmp_path)
-    c._metric = "msd"
+    c._metric = "track_count"                 # the panel that showed the wrong slice
     c._cg = c._build_groups()                 # what _recompute sets before rendering
-    c._launch_all_panels()
+    c._launch_figure()                        # real entry → per-panel engine render
     deadline = time.monotonic() + 40
     while not c.hasFigure and time.monotonic() < deadline:
         _app.processEvents(); time.sleep(0.02)
     _app.processEvents()
     assert c.hasFigure, "engine render lane produced no figure"
     assert c._rd_cache is not None and c._rd_cache_rev == c._data_rev
+    # the render is cached per (panel, rev) so a re-request is instant
+    assert ("track_count", c._engfig_rev) in c._engfig_cache
 
 
 def test_report_progress_drain():

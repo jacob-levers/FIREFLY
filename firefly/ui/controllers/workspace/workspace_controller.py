@@ -273,190 +273,6 @@ class _EngineFigJob(threading.Thread):
         self._done(img)
 
 
-def _pad_panels_uniform(crops, bg_hex):
-    """Pad a list of (key, QImage) panel crops to ONE common size — the max width
-    and height across them — centring each on a ``bg_hex`` fill.  Gives every
-    panel the same dimensions (and aspect) so they render at a consistent size in
-    the card; the fill matches the figure background so it blends into the mat."""
-    out = {}
-    try:
-        if not crops:
-            return out
-        from PySide6.QtGui import QImage, QPainter, QColor
-        maxW = max(im.width() for _, im in crops)
-        maxH = max(im.height() for _, im in crops)
-        bg = QColor(bg_hex)
-        for key, im in crops:
-            try:
-                if im.width() == maxW and im.height() == maxH:
-                    out[key] = im
-                    continue
-                framed = QImage(maxW, maxH, QImage.Format.Format_RGBA8888)
-                framed.fill(bg)
-                p = QPainter(framed)
-                p.drawImage((maxW - im.width()) // 2, (maxH - im.height()) // 2, im)
-                p.end()
-                out[key] = framed
-            except Exception:
-                out[key] = im                      # fall back to the unpadded crop
-        return out
-    except Exception:
-        return {k: im for k, im in crops}
-
-
-def _slice_engine_panels(fig, canvas, full_img, enabled_keys, bg_hex="#0d1117"):
-    """Slice a single ALL-panels comparison render into one cropped QImage per
-    panel key, so the whole figure's ~9s compute is paid ONCE and every panel
-    is then instant.
-
-    Each panel is cropped to its main Axes' tight bbox (which sits below the
-    shared header, so the "A vs B" title + summary band are excluded for free).
-    Mapping is robust: the panels are placed row-major into the top gridspec in
-    ``enabled_keys`` order, so the top-gridspec axes in creation order line up
-    1:1 with ``enabled_keys``.  Colorbars / faceted sub-axes live on OTHER
-    gridspecs and are filtered out.  If the count doesn't line up (e.g. faceted
-    log(D) splits one cell into several axes), we return only what we can map
-    confidently — the controller renders the rest via the single-panel path.
-    """
-    out = {}
-    try:
-        if full_img is None or full_img.isNull() or not enabled_keys:
-            return out
-        from matplotlib.transforms import Bbox
-        from PySide6.QtCore import QRect
-        r = canvas.get_renderer()
-        Hpx = float(fig.bbox.height)
-        W, H = full_img.width(), full_img.height()
-
-        if not fig.axes:
-            return out
-        top_gs = fig.axes[0].get_subplotspec().get_gridspec()
-
-        def _is_colorbar(ax):
-            # colorbars are tagged on their parent or have a _colorbar_info;
-            # be conservative and only treat clearly-colorbar axes as such.
-            return bool(getattr(ax, "_colorbar", None)) or \
-                getattr(ax, "_axes_locator", None) is not None and \
-                getattr(ax, "get_label", lambda: "")() == "<colorbar>"
-
-        main_axes = []
-        for ax in fig.axes:
-            try:
-                ss = ax.get_subplotspec()
-                if ss is None or ss.get_gridspec() is not top_gs:
-                    continue                       # colorbar / faceted sub-axes
-                if _is_colorbar(ax):
-                    continue
-                main_axes.append(ax)
-            except Exception:
-                continue
-
-        # Order by the gridspec CELL index, not fig.axes creation order: some
-        # panels re-create their axes out of order (radial_dist removes its
-        # cartesian cell and APPENDS a polar one at the end of fig.axes), which
-        # would otherwise shift every later panel by one.  Sorting by the cell
-        # (subplotspec.num1) puts each axes back at its true row-major position,
-        # so main_axes[:N] line up 1:1 with enabled_keys (the panel_order subset).
-        try:
-            main_axes.sort(key=lambda a: a.get_subplotspec().num1)
-        except Exception:
-            pass
-        if len(main_axes) < len(enabled_keys):
-            return out
-        main_axes = main_axes[:len(enabled_keys)]
-
-        pad = 4
-        crops = []                                 # (key, tight QImage)
-        for key, ax in zip(enabled_keys, main_axes):
-            try:
-                if not getattr(ax, "axison", True) and not ax.has_data():
-                    continue                       # a deactivated/empty cell
-                bb = ax.get_tightbbox(r)
-                if bb is None or bb.height <= 0 or bb.width <= 0:
-                    continue
-                x0 = max(0, int(round(bb.x0)) - pad)
-                x1 = min(W, int(round(bb.x1)) + pad)
-                # display (bottom-origin) → QImage rows (top-origin)
-                row_top = max(0, int(round(Hpx - bb.y1)) - pad)
-                row_bot = min(H, int(round(Hpx - bb.y0)) + pad)
-                if x1 - x0 < 8 or row_bot - row_top < 8:
-                    continue
-                sub = full_img.copy(QRect(x0, row_top, x1 - x0, row_bot - row_top))
-                if sub is not None and not sub.isNull():
-                    crops.append((key, sub))
-            except Exception:
-                continue
-        # Pad every panel to ONE common size (centred, on the figure-bg colour so
-        # the fill blends into the QML mat) → uniform aspect → all panels render
-        # at the same size in the card instead of per-cell-tightbbox sizes.
-        out = _pad_panels_uniform(crops, bg_hex)
-        return out
-    except Exception:
-        return out
-
-
-class _EngineAllPanelsJob(threading.Thread):
-    """Render the WHOLE comparison figure once (all requested panels) and slice
-    it into a per-panel ``{key: QImage}`` dict.  This amortises the engine's
-    monolithic ~9s compute across every panel: one render → all panels cached."""
-
-    def __init__(self, render_fn, render_kwargs, panel_order, done_cb):
-        super().__init__(daemon=True)
-        self._render = render_fn
-        self._render_kwargs = render_kwargs
-        self._panel_order = list(panel_order)
-        self._done = done_cb
-
-    def run(self):
-        slices = {}
-        try:
-            from matplotlib.backends.backend_agg import FigureCanvasAgg
-            import matplotlib.pyplot as plt
-            from PySide6.QtGui import QImage
-            requested = set(self._render_kwargs.get("panels") or self._panel_order)
-            with _COMPARE_LOCK:
-                fig, summary, _stats = self._render()
-                # Strip per-panel titles BEFORE drawing: the long ones overflow
-                # their narrow grid cell and a tight-bbox slice would bleed in the
-                # neighbour panels.  Title-less, each panel's tightbbox fits its
-                # cell → clean slices.  (Redundant with the scroller chip anyway.)
-                try:
-                    for ax in fig.axes:
-                        if ax.get_title():
-                            ax.set_title("")
-                except Exception:
-                    pass
-                try:
-                    canvas = FigureCanvasAgg(fig)
-                    canvas.draw()
-                    w, h = canvas.get_width_height()
-                    full = QImage(bytes(canvas.buffer_rgba()), w, h,
-                                  QImage.Format.Format_RGBA8888).copy()
-                    # panels that produce NO axes when their data is absent
-                    skipped = set()
-                    try:
-                        cols = set(getattr(summary, "columns", []))
-                        if "nongauss_alpha2" not in cols:
-                            skipped.add("van_hove")
-                        if "vacf_persistence" not in cols:
-                            skipped.add("vacf")
-                    except Exception:
-                        pass
-                    enabled = [k for k in self._panel_order
-                               if k in requested and k not in skipped]
-                    theme = self._render_kwargs.get("theme", "Dark")
-                    bg_hex = {"Dark": "#0d1117", "Light": "#ffffff",
-                              "Publication": "#ffffff",
-                              "OLED": "#000000"}.get(theme, "#0d1117")
-                    slices = _slice_engine_panels(fig, canvas, full, enabled, bg_hex)
-                finally:
-                    try:    plt.close(fig)
-                    except Exception: pass
-        except Exception:
-            slices = {}
-        self._done(slices)
-
-
 class AnalysisWorkspaceController(QObject):
     # right-rail / inputs
     conditionsChanged = Signal()
@@ -484,7 +300,6 @@ class AnalysisWorkspaceController(QObject):
     _groupRendered = Signal()          # group-averaged fa_figure panels ready
     _reportRendered = Signal()         # full-engine report finished (worker→GUI)
     _engfigRendered = Signal()         # live single-panel engine figure (worker→GUI)
-    _allpanelsRendered = Signal()      # all-panels slice dict ready (worker→GUI)
     _foldersLoaded = Signal()          # condition folders loaded (worker→GUI)
 
     def __init__(self, settings=None, parent=None):
@@ -596,18 +411,11 @@ class AnalysisWorkspaceController(QObject):
         self._rd_lock = threading.Lock()
         self._rd_cache = None              # the cached ReportData
         self._rd_cache_rev = -1            # the _data_rev it was computed for
-        self._allpanels_job = None
-        self._pending_slices: list = []    # [(rev, slices)] all-panels renders
-        self._allpanels_rev = -1
-        self._slices: dict = {}            # panel_key → QImage for self._slices_rev
-        self._slices_rev = -1
-        self._slice_missing: set = set()   # keys the slice didn't map → single-panel
         self._figureRendered.connect(self._on_figure_rendered)
         self._panelRendered.connect(self._on_panel_rendered)
         self._groupRendered.connect(self._on_group_rendered)
         self._reportRendered.connect(self._on_report_rendered)
         self._engfigRendered.connect(self._on_engfig_rendered)
-        self._allpanelsRendered.connect(self._on_allpanels_rendered)
         # async condition-folder loading: worker threads read run sidecars off
         # the GUI thread and hand back results through this queue + signal.
         self._load_q: queue.Queue = queue.Queue()
@@ -1156,75 +964,21 @@ class AnalysisWorkspaceController(QObject):
             else:
                 self._set_busy(False)
             return
-        # 1) already sliced from a prior all-panels render for THIS rev → instant.
-        if self._slices_rev == self._engfig_rev:
-            img = self._slices.get(panel)
-            if img is not None and not img.isNull():
-                self._fig_image = img
-                self._fig_token += 1
-                self._set_busy(False)
-                self.figureChanged.emit()
-                return
-            if panel in self._slice_missing:        # didn't map → render it alone
-                self._launch_single_panel(panel)
-                return
-        # 2) the single all-panels render is already in flight for this rev → wait.
-        if self._allpanels_job is not None and self._allpanels_rev == self._engfig_rev:
-            self._set_busy(True)
-            return
-        # 3) pay the engine's ~9s compute ONCE: render every panel, slice + cache.
-        self._launch_all_panels()
-
-    def _launch_all_panels(self):
-        if len(self._engine_groups()) < 2:
-            self._set_busy(False)
-            return
-        render_kwargs = self._render_report_kwargs(set(wd.PANEL_KEYS))
-        render_kwargs["output_dir"] = None
-        render_fn = self._make_engine_render(render_kwargs)
-        self._allpanels_rev = self._engfig_rev
-        rev = self._engfig_rev
-        ref = weakref.ref(self)
-
-        def deliver(slices):
-            c = ref()
-            if c is not None:
-                with c._fig_lock:
-                    c._pending_slices.append((rev, slices))
-                c._allpanelsRendered.emit()
-
-        self._allpanels_job = _EngineAllPanelsJob(render_fn, render_kwargs,
-                                                  wd.PANEL_KEYS, deliver)
-        self._set_busy(True)
-        self._allpanels_job.start()
-
-    def _on_allpanels_rendered(self):
-        # Apply only the freshest all-panels render whose rev still matches — a
-        # stale one (rev bumped mid-render) is dropped, never shown as if live.
-        fresh = [s for (r, s) in self._drain_pending(self._pending_slices)
-                 if r == self._engfig_rev]
-        if not fresh:
-            if self._allpanels_job is None:
-                self._launch_figure()      # only stale results arrived → redraw
-            return
-        slices = fresh[-1] or {}
-        self._allpanels_job = None
-        self._slices = slices
-        self._slices_rev = self._engfig_rev
-        self._slice_missing = set(wd.PANEL_KEYS) - set(slices.keys())
-        panel = self._metric
-        img = slices.get(panel)
-        if img is not None and not img.isNull():
-            self._fig_image = img
-            self._fig_token += 1
-            self._set_busy(False)
-            self.figureChanged.emit()
-        else:                                       # this key didn't slice → alone
-            self._launch_single_panel(panel)
+        # Render THIS panel as its own single-panel engine figure (cached per
+        # (panel, rev)).  Correct by construction — the panel IS what it draws, no
+        # slice-mapping — and cheap now that compute_report is cached (the heavy
+        # load + stats are shared across panels; a panel is just its ~10-30 ms draw).
+        # The old "render the whole 6×3 grid once and slice it" path was replaced:
+        # its geometry-based key→cell mapping mis-assigned panels (faceted/polar
+        # panels remove or reorder their axes), which had been masked while the
+        # all-panels render was crashing on the theme bug.
+        self._launch_single_panel(panel)
 
     def _launch_single_panel(self, panel):
-        """Exact render of ONE panel — fallback when the all-panels slice didn't
-        map this key (e.g. faceted log(D)).  Reuses _EngineFigJob + header crop."""
+        """Render ONE export panel via the real engine (compare_groups/render_report
+        with a single panel) and cache it per (panel, rev).  This is THE live-figure
+        path: correct by construction and cheap because compute_report is cached.
+        Reuses _EngineFigJob + header crop."""
         if not panel or len(self._engine_groups()) < 2:
             if self._has_metric():
                 self._launch_bespoke_figure(self._metric_obj())
@@ -1748,7 +1502,6 @@ class AnalysisWorkspaceController(QObject):
         self._engfig_rev += 1              # data changed → invalidate engine-fig cache
         self._data_rev += 1                # …and the cached ReportData (scalars/stats)
         self._engfig_cache.clear()
-        self._slices = {}; self._slice_missing = set()
         self._recompute()
 
     def _on_figpref_changed(self, key):
@@ -1773,7 +1526,6 @@ class AnalysisWorkspaceController(QObject):
         if key == "analysis/mobile_d":
             self._data_rev += 1
         self._engfig_cache.clear()
-        self._slices = {}; self._slice_missing = set()
         self._panel_rev += 1
         self._panel_thumb_cache.clear()
         self._group_cache.clear()
@@ -2317,7 +2069,6 @@ class AnalysisWorkspaceController(QObject):
         if key not in ("err", "groupBy", "outputStem", "plot", "logX"):
             self._data_rev += 1
         self._engfig_cache.clear()
-        self._slices = {}; self._slice_missing = set()
         self._recompute()
 
     @Slot()

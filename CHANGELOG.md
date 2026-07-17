@@ -59,6 +59,14 @@
   default panels (which includes both) produced nothing, and the Analysis tab
   quietly fell back to slower per-panel rendering. Fixed, and both now render the
   whole figure in one pass again.
+- **The live comparison scroller showed the wrong graph for some panels** (e.g.
+  "Track count" drew the Diffusion-D chart) and MSD graph-style changes seemed to
+  do nothing — because those panels were actually displaying a *different* panel.
+  The live tab used to render the whole grid once and crop each panel out by its
+  position, which mis-mapped panels that re-lay-out their axes (the MSD/AUC/log-D
+  facets and the polar radial plot). Each live panel is now drawn as its own
+  figure, so it always shows — and restyles — the right graph. (The exported
+  report still draws the full grid.)
 - **The MSD comparison drew every facet in the same blue** when the comparison
   collapsed to a one-way layout — e.g. two conditions that share a name and
   differ only by time point. Each facet is now drawn in its own condition
