@@ -79,6 +79,9 @@ Item {
     readonly property var msdValues: ["mean_faceted", "individual", "overlaid"]
     readonly property var groupLabels: ["Box + points", "Grouped by timepoint", "Violin + points", "Bar"]
     readonly property var groupValues: ["box_points", "grouped", "violin", "bar"]
+    // Per-graph mark for the scalar comparison panels (one control each, below).
+    readonly property var markLabels: ["Box + points", "Violin + points", "Bar"]
+    readonly property var markValues: ["box_points", "violin", "bar"]
     readonly property var lengthLabels: ["Density", "Box"]
     readonly property var lengthValues: ["density", "box"]
     readonly property var aucLabels: ["Paired", "Δ box"]
@@ -172,6 +175,18 @@ Item {
                    Layout.preferredHeight: childrenRect.height
                    Layout.alignment: Qt.AlignVCenter }
         }
+    }
+
+    // A per-graph "how is this scalar comparison drawn" row: box+points / violin /
+    // bar, bound to its OWN setting (figures/style_<panelKey>).
+    component MarkRow: PrefRow {
+        id: mrow
+        property string panelKey: ""
+        Select { implicitWidth: 170; model: root.markLabels
+                 currentIndex: (root.rev, Math.max(0, root.markValues.indexOf(
+                     Settings.getStr("figures/style_" + mrow.panelKey, "box_points"))))
+                 onPicked: (t) => { var i = root.markLabels.indexOf(t)
+                                    if (i >= 0) Settings.setValue("figures/style_" + mrow.panelKey, root.markValues[i]) } }
     }
 
     // ── dimmed backdrop ─────────────────────────────────────────────────────
@@ -589,14 +604,16 @@ Item {
                                  onPicked: (t) => { var i = root.msdLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/msd_style", root.msdValues[i]) } }
                     }
-                    PrefRow {
-                        label: "Group comparison"
-                        desc: "How per-metric group comparisons are drawn (D, step size, track length, tracks/dish, spot intensity, Rg, net displacement). Test + error come from the Analysis tab."
-                        Select { implicitWidth: 170; model: root.groupLabels
-                                 currentIndex: (root.rev, Math.max(0, root.groupValues.indexOf(Settings.getStr("figures/group_style", "box_points"))))
-                                 onPicked: (t) => { var i = root.groupLabels.indexOf(t)
-                                                    if (i >= 0) Settings.setValue("figures/group_style", root.groupValues[i]) } }
-                    }
+                    MarkRow { label: "MSD-AUC (per condition)"; panelKey: "auc"
+                              desc: "How each condition's area-under-the-MSD-curve comparison is drawn. (Pre/post timepoint designs use the 'MSD-AUC change' style below instead.)" }
+                    MarkRow { label: "Mobile fraction"; panelKey: "mob_immob"
+                              desc: "How the mobile/immobile-ratio comparison is drawn." }
+                    MarkRow { label: "Track count"; panelKey: "track_count"
+                              desc: "How the tracks-per-dish comparison is drawn." }
+                    MarkRow { label: "Non-Gaussian α₂"; panelKey: "van_hove"
+                              desc: "How the van-Hove non-Gaussian parameter comparison is drawn." }
+                    MarkRow { label: "Persistence (VACF)"; panelKey: "vacf"
+                              desc: "How the VACF directional-persistence comparison is drawn." }
                     PrefRow {
                         label: "Track-length distribution"
                         desc: "Overlaid density (with the filter-threshold line) or a per-group box."
@@ -606,8 +623,8 @@ Item {
                                                     if (i >= 0) Settings.setValue("figures/length_style", root.lengthValues[i]) } }
                     }
                     PrefRow {
-                        label: "MSD-AUC change"
-                        desc: "Area under each dish's MSD curve across timepoints: paired per-dish lines, or a Δ (later − earlier) box."
+                        label: "MSD-AUC change (timepoints)"
+                        desc: "Only for pre/post timepoint designs: area under each dish's MSD curve across timepoints — paired per-dish lines, or a Δ (later − earlier) box."
                         Select { implicitWidth: 170; model: root.aucLabels
                                  currentIndex: (root.rev, Math.max(0, root.aucValues.indexOf(Settings.getStr("figures/auc_style", "paired"))))
                                  onPicked: (t) => { var i = root.aucLabels.indexOf(t)

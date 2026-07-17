@@ -889,7 +889,22 @@ class AnalysisWorkspaceController(QObject):
             msd_err=self._cfg.get("err", "SEM"),
             auc_plot_style=(s.getStr("figures/auc_style", "paired") if s else "paired"),
             group_style=(s.getStr("figures/group_style", "box_points") if s else "box_points"),
+            panel_styles=self._panel_styles(),
             logd_clip_d_min=dlo, logd_clip_d_max=dhi)
+
+    # Comparison panels drawn as a scalar bar/box/violin — each gets its OWN
+    # format in Preferences (figures/style_<key>), so they aren't lumped under
+    # one "Group comparison" control.
+    SCALAR_STYLE_PANELS = ("auc", "mob_immob", "track_count", "van_hove", "vacf")
+
+    def _panel_styles(self) -> dict:
+        """Per-panel comparison mark (box_points / violin / bar) from Preferences —
+        one setting per scalar comparison graph."""
+        s = self._settings
+        if s is None:
+            return {}
+        return {k: s.getStr(f"figures/style_{k}", "box_points")
+                for k in self.SCALAR_STYLE_PANELS}
 
     def _cached_report_data(self, compute_kwargs, data_rev):
         """Return the ReportData for ``data_rev`` — reuse the cache when its rev

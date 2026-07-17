@@ -1214,6 +1214,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  panels=None, theme="Dark", pdf_report=True,
                  logd_plot_style="overlaid", msd_plot_style="mean_faceted",
                  msd_err="SEM", auc_plot_style="paired", group_style="box_points",
+                 panel_styles=None,
                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
@@ -1244,6 +1245,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     stats       : dict[str, dict]   — per-metric omnibus + pairwise tests
     """
     import matplotlib.pyplot as plt
+    # Per-panel comparison mark (box+points / violin / bar), keyed by panel key;
+    # any panel not overridden falls back to the global `group_style`.
+    panel_styles = panel_styles or {}
+    def _pstyle(key):
+        return panel_styles.get(key, group_style)
     cfg = rd.cfg
     groups = rd.groups
     n_groups = rd.n_groups
@@ -1449,7 +1455,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="AUC (µm²·s)",
-                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
+                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("auc"))
             ax.set_title("Area Under the Curve")
 
     # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────
@@ -1553,7 +1559,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Mobile/Immobile ratio",
-                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
+                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("mob_immob"))
         ax.set_title("Mobile/Immobile Ratio")
 
     # ── 5. Motion class fractions (stacked bars: x = population, colour = class) ─
@@ -1704,7 +1710,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Tracks (n)",
                              record_stats=stats_records, metric_name="n_tracks",
-                             xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
+                             xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("track_count"))
         ax.set_title("Tracks detected")
 
     # ── 7. JDD: per-population D + fraction (N groups) ────────────────────────
@@ -1971,7 +1977,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Non-Gaussian α₂",
                              record_stats=stats_records,
-                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
+                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("van_hove"))
         ax.set_title("Population heterogeneity (α₂)")
 
     # ── VACF persistence (directional memory) ─────────────────────────────────
@@ -1989,7 +1995,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="VACF persistence (lag 1)",
                              record_stats=stats_records,
-                             metric_name="vacf_persistence", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=group_style)
+                             metric_name="vacf_persistence", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("vacf"))
         ax.set_title("Directional persistence (VACF lag 1)")
 
     # ── Drop per-panel legends (the top band is the shared key) ───────────────
@@ -2452,6 +2458,7 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
                   panels=None, theme="Dark", pdf_report=True,
                   logd_plot_style="overlaid", msd_plot_style="mean_faceted",
                   msd_err="SEM", auc_plot_style="paired", group_style="box_points",
+                  panel_styles=None,
                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
     """Draw (+ optionally save) a comparison from a precomputed `ReportData`.
     Only theme / graph style / panel selection vary here, so this is the cheap
@@ -2465,6 +2472,7 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
             panels=panels, theme=theme, pdf_report=pdf_report,
             logd_plot_style=logd_plot_style, msd_plot_style=msd_plot_style,
             msd_err=msd_err, auc_plot_style=auc_plot_style, group_style=group_style,
+            panel_styles=panel_styles,
             logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
             progress_cb=progress_cb)
     finally:
@@ -2476,6 +2484,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                    logd_plot_style="overlaid", msd_plot_style="mean_faceted",
                    msd_err="SEM", auc_plot_style="paired", group_style="box_points",
+                   panel_styles=None,
                    logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
                    progress_cb=None, stats_config=None, use_native=False,
                    report_data=None):
@@ -2493,7 +2502,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
         rd, output_dir=output_dir, output_stem=output_stem, panels=panels,
         theme=theme, pdf_report=pdf_report, logd_plot_style=logd_plot_style,
         msd_plot_style=msd_plot_style, msd_err=msd_err, auc_plot_style=auc_plot_style,
-        group_style=group_style,
+        group_style=group_style, panel_styles=panel_styles,
         logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
         progress_cb=progress_cb)
 

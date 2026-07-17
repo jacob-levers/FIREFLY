@@ -242,6 +242,35 @@ def test_group_style_changes_the_scalar_panel_mark(tmp_path, group_style, want):
     plt.close(fig)
 
 
+def test_panel_styles_are_independent_per_panel(tmp_path):
+    """Each scalar comparison panel has its OWN format (Preferences per-graph):
+    `panel_styles` routes each panel key to its own mark, independently."""
+    from firefly.analysis.fa_compare import compute_report, render_report
+    from test_workspace_data import make_run_folder
+    g0 = [make_run_folder(str(tmp_path), f"c{k}", seed=k, d_centre=0.05) for k in range(4)]
+    g1 = [make_run_folder(str(tmp_path), f"d{k}", seed=9 + k, d_centre=0.4) for k in range(4)]
+    groups = [{"folders": g0, "label": "A", "color": "#58a6ff"},
+              {"folders": g1, "label": "B", "color": "#f78166"}]
+    rd = compute_report(groups)
+    ps = {"auc": "box_points", "mob_immob": "bar", "track_count": "violin", "vacf": "bar"}
+
+    def mark(fig):
+        ax = next(a for a in fig.axes if a.get_ylabel())
+        if any(type(p).__name__ == "PathPatch" for p in ax.patches):
+            return "box"
+        if any(type(p).__name__ == "Rectangle" for p in ax.patches):
+            return "bar"
+        if len(ax.collections) >= 2 and not ax.patches:
+            return "violin"
+        return "?"
+
+    for key, want in [("auc", "box"), ("mob_immob", "bar"),
+                      ("track_count", "violin"), ("vacf", "bar")]:
+        fig, _s, _st = render_report(rd, panels={key}, pdf_report=False, panel_styles=ps)
+        assert mark(fig) == want, f"{key} drew {mark(fig)}, want {want}"
+        plt.close(fig)
+
+
 def test_compare_groups_default_panels_render_without_theme_clobber(tmp_path):
     """Regression: the msd/auc panels used to reassign the `theme` STRING to a
     palette dict, so a later panel that read `theme` as a string
