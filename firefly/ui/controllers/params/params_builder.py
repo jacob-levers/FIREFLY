@@ -123,6 +123,45 @@ def _i(settings, key, default):
     return int(round(settings.get_float(key, float(default))))
 
 
+def expand_roi_replicates(base_params: dict) -> list:
+    """Fan a multi-ROI file out into one params dict per ROI, for "analyse each
+    cell as its own replicate".
+
+    Each returned params is an ordinary SINGLE-polygon run writing to its OWN
+    output folder (``stem_override``), so two cells on one movie never pool into
+    each other's D-values.  When splitting is off, or there's a single ROI, the
+    input is returned unchanged (one run — polygons unioned into one mask, as
+    before).  Per-cell output name: ``roi_labels[i]`` if the user set one, else
+    ``<stem>_cell{i+1}``.
+    """
+    polys = base_params.get("roi_polygon") or []
+    # roi_polygon is either ONE polygon ([(y,x), …]) or a list of polygons —
+    # normalise to a list of polygons (mirrors firefly_worker's polygon handling).
+    if polys and not isinstance(polys[0][0], (list, tuple)):
+        polys = [polys]
+    if not base_params.get("roi_split_replicates") or len(polys) <= 1:
+        return [base_params]
+
+    labels = base_params.get("roi_labels") or []
+    base_stem = str(base_params.get("stem_override") or os.path.splitext(
+        os.path.basename(base_params.get("file") or "run"))[0])
+    seen, out = set(), []
+    for i, poly in enumerate(polys):
+        raw = (str(labels[i]).strip() if i < len(labels) and str(labels[i]).strip()
+               else f"cell{i + 1}")
+        stem = f"{base_stem}_{raw}"
+        while stem in seen:                       # never collide two cells' outputs
+            stem = f"{stem}_{i + 1}"
+        seen.add(stem)
+        p = dict(base_params)
+        p["roi_polygon"] = [poly]
+        p["roi_split_replicates"] = False         # each fanned-out run is one ROI
+        p["roi_labels"] = None
+        p["stem_override"] = stem
+        out.append(p)
+    return out
+
+
 def build_params(settings, importc, fpath: str | None = None,
                  out_dir: str | None = None, roi_store=None,
                  override_store=None) -> dict:
@@ -166,6 +205,10 @@ def build_params(settings, importc, fpath: str | None = None,
     roi_mask_mode   = g.get_str("analysis/roi_mask_mode", _DEFAULTS["roi_mask_mode"])
     roi_bg_sigma    = g.get_float("analysis/roi_bg_sigma", _DEFAULTS["roi_bg_sigma"])
     ovr = override_store.get(fpath) if (override_store and fpath) else None
+    # Multiple drawn ROIs → treat each as its own replicate (separate output).
+    # Per-file, set in the ROI viewer (flag + optional per-ROI labels).
+    roi_split_replicates = bool(ovr.get("roi_split_replicates", False)) if ovr else False
+    roi_labels = (list(ovr.get("roi_labels") or []) if ovr else []) or None
     if ovr:
         roi_mode_label  = ovr.get("roi_mode", roi_mode_label)
         roi_auto_method = ovr.get("roi_auto_method", roi_auto_method)
@@ -224,6 +267,8 @@ def build_params(settings, importc, fpath: str | None = None,
         "roi_sister_suffix":     "_green",
         "roi_imagej_autodetect": (roi_mode == "imagej"),
         "roi_polygon":    ((roi_store.get(fpath) if (roi_store and fpath) else None) or None),
+        "roi_split_replicates": roi_split_replicates,
+        "roi_labels":     roi_labels,
         "drift_correct":  g.get_bool("analysis/drift_correct", _DEFAULTS["drift_correct"]),
         "drift_segment":  _i(g, "analysis/drift_segment", _DEFAULTS["drift_segment"]),
         "cluster_eps_nm": g.get_float("analysis/cluster_eps_nm", _DEFAULTS["cluster_eps_nm"]),

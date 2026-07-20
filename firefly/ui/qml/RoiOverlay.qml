@@ -42,6 +42,11 @@ Item {
 
     function saveRoi() {
         if (root.isPoly && Roi.canClose) Roi.closeDraft()
+        // Drew more than one ROI and haven't decided how to treat them → ask once.
+        if (root.isPoly && Roi.polygonCount > 1 && !Roi.splitDecided) {
+            splitDialog.open()
+            return
+        }
         Roi.commit()
     }
 
@@ -425,6 +430,39 @@ Item {
                                      enabled: Roi.canClose; onClicked: Roi.closeDraft() }
                         }
 
+                        // Multiple ROIs → analyse each as its own replicate.
+                        ColumnLayout {
+                            Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp2
+                            visible: root.isPoly && Roi.polygonCount > 1
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: sc.sp3
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: 1
+                                    Text { text: "Analyse each ROI separately"; color: pal.TXT
+                                           font.pixelSize: sc.textSm }
+                                    Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                           text: "Individual replicates — one output per ROI, so the cells don't skew each other's D-values."
+                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
+                                }
+                                Switch { checked: Roi.splitReplicates
+                                         onToggled: (c) => Roi.splitReplicates = c }
+                            }
+                            Repeater {
+                                model: Roi.splitReplicates ? Roi.roiLabels.length : 0
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Text { text: "ROI " + (index + 1); color: pal.TXT_MUTED
+                                           font.pixelSize: sc.textXs; Layout.preferredWidth: 44 }
+                                    FieldInput {
+                                        Layout.fillWidth: true
+                                        placeholderText: "cell" + (index + 1)
+                                        text: Roi.roiLabels[index]
+                                        onEditingFinished: Roi.setRoiLabel(index, text)
+                                    }
+                                }
+                            }
+                        }
+
                         Item { Layout.fillHeight: true }
 
                         RowLayout {
@@ -452,6 +490,31 @@ Item {
         function onPolygonsChanged() { canvas.requestPaint() }
         function onDraftChanged() { canvas.requestPaint() }
         function onImageChanged() { canvas.requestPaint() }
+    }
+
+    // Asked once when saving >1 ROI: separate replicates vs one combined region.
+    Modal {
+        id: splitDialog
+        title: "Multiple ROIs"
+        Text {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
+            text: "You drew " + Roi.polygonCount + " ROIs on this movie. Analyse them as "
+                  + "individual replicates — a separate output per cell, so they don't skew "
+                  + "each other's D-values — or as one combined region?"
+            color: pal.TXT_MUTED; font.pixelSize: sc.textSm; lineHeight: 1.3
+        }
+        RowLayout {
+            Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp3
+            Button {
+                variant: "secondary"; text: "One combined region"
+                onClicked: { Roi.splitReplicates = false; splitDialog.close(); Roi.commit() }
+            }
+            Item { Layout.fillWidth: true }
+            Button {
+                variant: "primary"; text: "Individual replicates"
+                onClicked: { Roi.splitReplicates = true; splitDialog.close(); Roi.commit() }
+            }
+        }
     }
     Keys.onEscapePressed: Roi.cancel()
 }

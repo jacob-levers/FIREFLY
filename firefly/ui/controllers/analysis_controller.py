@@ -129,6 +129,13 @@ class AnalysisController(QObject):
         self._stop_requested_at = None
         self._stop_stage = 0
 
+        # Multiple-ROI-as-replicates: a single "Run" can fan a movie out into one
+        # analysis per drawn ROI, run back-to-back (each its own output folder).
+        self._cells: list = []         # remaining per-ROI params for this Run
+        self._cell_i = 0
+        self._cell_n = 1
+        self._cell_prefix = ""         # "Cell i/N · " progress label when n>1
+
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(33)
         self._poll_timer.timeout.connect(self._drain)
@@ -235,20 +242,38 @@ class AnalysisController(QObject):
             self.runFailed.emit("Pick an input file on the Import tab first.")
             return
 
-        params = params_builder.build_params(self._s, self._import,
-                                             roi_store=self._roi_store,
-                                             override_store=self._override_store)
+        base = params_builder.build_params(self._s, self._import,
+                                           roi_store=self._roi_store,
+                                           override_store=self._override_store)
+        # If the file has multiple ROIs flagged as individual replicates, this is a
+        # list — one single-ROI run per cell, launched back-to-back.  Otherwise [base].
+        self._cells = params_builder.expand_roi_replicates(base)
+        self._cell_i = 0
+        self._cell_n = len(self._cells)
 
+        # Persist settings before the long task (parity with _start_single_run).
+        try:
+            self._s.sync()
+        except Exception:
+            pass
+
+        self._launch_cell(self._cells[0])
+
+    def _launch_cell(self, params):
+        """Start ONE per-ROI (or the only) analysis subprocess + reset the cockpit.
+        Reused for each cell of a multi-ROI 'Run' (see start / _drain chaining)."""
+        self._cell_prefix = (f"Cell {self._cell_i + 1}/{self._cell_n} · "
+                             if self._cell_n > 1 else "")
         # Histogram threshold: only meaningful with a manual minmass.
         self._minmass = (-1.0 if params.get("auto_minmass")
                          else float(params.get("minmass") or 0.0))
         self.minmassChanged.emit()
 
-        # Reset cockpit state for the new run.
+        # Reset cockpit state for the (next) run.
         self._stage = -1
         self._complete = False
         self._progress = 0
-        self._progress_text = "Starting…"
+        self._progress_text = f"{self._cell_prefix}Starting…"
         self._stage_label = "Starting…"
         self._headline = ""
         self._out_dir = ""
@@ -262,12 +287,6 @@ class AnalysisController(QObject):
         self.resultChanged.emit()
         self.statsChanged.emit()
         self.frameTokenChanged.emit()
-
-        # Persist settings before the long task (parity with _start_single_run).
-        try:
-            self._s.sync()
-        except Exception:
-            pass
 
         from firefly import firefly_worker
         self._msg_queue = multiprocessing.Queue(maxsize=2000)
@@ -400,6 +419,7 @@ class AnalysisController(QObject):
             return
         budget = 1000
         worker_done = False
+        cell_succeeded = False
         log_buf: list[str] = []
         last_progress = None
 
@@ -425,6 +445,7 @@ class AnalysisController(QObject):
             elif kind == MsgKind.DONE:
                 self._handle_done(payload)
                 worker_done = True
+                cell_succeeded = True
             elif kind == MsgKind.STOPPED:
                 self._handle_stopped()
                 worker_done = True
@@ -447,7 +468,7 @@ class AnalysisController(QObject):
             worker_done = self._handle_dead_process()
 
         if worker_done:
-            self._cleanup_after_run()
+            self._advance_or_finish(cell_succeeded)
 
     def _apply_progress(self, payload):
         try:
@@ -458,7 +479,8 @@ class AnalysisController(QObject):
         m = (msg or "").strip()
         if len(m) > 48:
             m = m[:47] + "…"
-        self._progress_text = f"{m}  —  {pct}%" if m else f"{pct}%"
+        self._progress_text = (f"{self._cell_prefix}{m}  —  {pct}%" if m
+                               else f"{self._cell_prefix}{pct}%")
         self._stage_label = msg or ""
         self.progressChanged.emit()
         # Advance the connected stepper (furthest-reached wins).
@@ -714,14 +736,9 @@ class AnalysisController(QObject):
             self._torch = sys.modules.get("torch")
         return self._torch
 
-    def _cleanup_after_run(self):
-        self._poll_timer.stop()
-        self._elapsed_timer.stop()
-        # _res_timer stays running — the meters keep updating at idle.
-        if self._run_start is not None:
-            self._elapsed = _format_elapsed(time.monotonic() - self._run_start)
-            self.elapsedChanged.emit()
-        self._run_start = None
+    def _teardown_proc(self):
+        """Join + close THIS run's subprocess and message queue (shared by the
+        final cleanup and by the per-cell chaining, which starts a fresh proc)."""
         if self._proc is not None:
             try:
                 if self._proc.is_alive():
@@ -744,6 +761,30 @@ class AnalysisController(QObject):
                 pass
         self._msg_queue = None
         self._cancel_event = None
+
+    def _advance_or_finish(self, succeeded):
+        """A cell's subprocess ended.  If it succeeded and more ROIs remain, start
+        the next cell; otherwise finish the whole Run."""
+        if succeeded and self._cell_i + 1 < self._cell_n:
+            self._teardown_proc()
+            self._cell_i += 1
+            self._launch_cell(self._cells[self._cell_i])
+        else:
+            self._cleanup_after_run()
+
+    def _cleanup_after_run(self):
+        self._poll_timer.stop()
+        self._elapsed_timer.stop()
+        # _res_timer stays running — the meters keep updating at idle.
+        if self._run_start is not None:
+            self._elapsed = _format_elapsed(time.monotonic() - self._run_start)
+            self.elapsedChanged.emit()
+        self._run_start = None
+        self._teardown_proc()
         self._stop_requested_at = None
+        self._cells = []
+        self._cell_i = 0
+        self._cell_n = 1
+        self._cell_prefix = ""
         self._running = False
         self.runningChanged.emit()

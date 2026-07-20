@@ -40,6 +40,7 @@ class RoiController(QObject):
     statusMessage = Signal(str)
     cmapChanged = Signal()
     roiSettingsChanged = Signal()       # mode / method / threshold / mask mode / bg σ
+    splitChanged = Signal()             # "analyse each ROI separately" flag + labels
     maskChanged = Signal()              # threshold-mask preview
     viewChanged = Signal()              # proj ↔ raw + frame scrub
     detectChanged = Signal()            # detection on/off + minmass
@@ -76,6 +77,10 @@ class RoiController(QObject):
         self._threshold = 0.08
         self._mask_mode = "Max"
         self._bg_sigma = 25.0
+        # ── multiple-ROI → individual replicates (per file) ───────────────
+        self._split_replicates = False  # analyse each drawn ROI as its own output
+        self._split_decided = False     # user has answered the prompt for this file
+        self._roi_labels: list = []     # optional per-ROI names (parallel to _polys)
         self._mask = None               # green RGBA overlay QImage
         self._mask_token = 0
         self._mask_fraction = 0.0
@@ -119,11 +124,18 @@ class RoiController(QObject):
         self._threshold   = float(spec.get("roi_threshold", self._threshold))
         self._mask_mode   = spec.get("roi_mask_mode", self._mask_mode)
         self._bg_sigma    = float(spec.get("roi_bg_sigma", self._bg_sigma))
+        # Split-replicates + labels are per-FILE only (never in the global default),
+        # so a saved override carrying the key means the user already decided.
+        self._split_replicates = bool(spec.get("roi_split_replicates", False))
+        self._roi_labels = list(spec.get("roi_labels") or [])
+        self._split_decided = "roi_split_replicates" in spec
 
     def _current_spec(self):
         return {"roi_mode": self._roi_mode, "roi_auto_method": self._auto_method,
                 "roi_threshold": self._threshold, "roi_mask_mode": self._mask_mode,
-                "roi_bg_sigma": self._bg_sigma}
+                "roi_bg_sigma": self._bg_sigma,
+                "roi_split_replicates": self._split_replicates,
+                "roi_labels": list(self._roi_labels)}
 
     @staticmethod
     def _spec_differs(a, b):
@@ -188,8 +200,11 @@ class RoiController(QObject):
     def deletePolygon(self, idx: int):
         if 0 <= idx < len(self._polys):
             del self._polys[idx]
+            if idx < len(self._roi_labels):
+                del self._roi_labels[idx]        # keep labels aligned to polygons
             self._push_to_editor()
             self.polygonsChanged.emit()
+            self.splitChanged.emit()
 
     @Slot(int, int)
     def deleteVertex(self, poly_idx: int, vert_idx: int):
@@ -215,10 +230,12 @@ class RoiController(QObject):
     def clearPolygons(self):
         self._polys = []
         self._draft = []
+        self._roi_labels = []
         if self._editor is not None:
             self._editor.clear_polygons()
         self.polygonsChanged.emit()
         self.draftChanged.emit()
+        self.splitChanged.emit()
 
     @Slot("QVariantList")
     def setPolygons(self, polys):
@@ -237,6 +254,40 @@ class RoiController(QObject):
     @Property(int, notify=polygonsChanged)
     def polygonCount(self):
         return len(self._polys)
+
+    # ── multiple ROIs → individual replicates ─────────────────────────────
+    @Property(bool, notify=splitChanged)
+    def splitReplicates(self):
+        return self._split_replicates
+
+    @splitReplicates.setter
+    def splitReplicates(self, v):
+        v = bool(v)
+        if v != self._split_replicates or not self._split_decided:
+            self._split_replicates = v
+            self._split_decided = True          # a set (toggle or dialog) = decided
+            self.splitChanged.emit()
+
+    @Property(bool, notify=splitChanged)
+    def splitDecided(self):
+        """True once the user has chosen (toggle or prompt) how to treat this
+        file's multiple ROIs — so the save-time prompt only appears once."""
+        return self._split_decided
+
+    @Property("QStringList", notify=splitChanged)
+    def roiLabels(self):
+        # padded to the polygon count so QML can bind one label field per ROI
+        return [(self._roi_labels[i] if i < len(self._roi_labels) else "")
+                for i in range(len(self._polys))]
+
+    @Slot(int, str)
+    def setRoiLabel(self, idx, text):
+        if idx < 0:
+            return
+        while len(self._roi_labels) <= idx:
+            self._roi_labels.append("")
+        self._roi_labels[idx] = str(text).strip()
+        self.splitChanged.emit()
 
     @Property(int, notify=draftChanged)
     def draftLength(self):
@@ -313,6 +364,7 @@ class RoiController(QObject):
         self.polygonsChanged.emit()
         self.draftChanged.emit()
         self.editingChanged.emit()
+        self.splitChanged.emit()
 
     def _load_background(self, path):
         # A sampled max-intensity projection (never a full stack load — that froze
@@ -784,7 +836,8 @@ class RoiController(QObject):
             spec = self._current_spec()
             is_poly = ROI_MODE_MAP.get(self._roi_mode) == "polygon"
             custom = (self._spec_differs(spec, self._default_spec())
-                      or (is_poly and bool(self._polys)))
+                      or (is_poly and bool(self._polys))
+                      or self._split_replicates or any(self._roi_labels))
             if custom:
                 self._ovr.set(self._file, spec)
             else:

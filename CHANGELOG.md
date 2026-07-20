@@ -107,6 +107,14 @@
 
 ### Added
 
+- **Analyse multiple cells on one movie as separate replicates.** Draw more than
+  one ROI in the viewer and, when you save, FIREFLY asks whether to treat them as
+  individual replicates (there's also a persistent "Analyse each ROI separately"
+  toggle). If yes, each ROI is analysed as its own independent run to its own
+  output folder — named `<movie>_cell1`, `<movie>_cell2`, … or an optional label
+  you type per ROI — so two cells never pool into each other's D-values and each
+  lands as a separate replicate in the Analysis tab. Left off (or with a single
+  ROI), the ROIs are combined into one region exactly as before.
 - **"Trajectory background image" toggle** (Preferences → Figures → Rendering &
   quality). Turn off the raw microscope image behind the Trajectories and
   Trajectories-by-D panels to draw the tracks on a plain background. Applies to

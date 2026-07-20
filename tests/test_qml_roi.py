@@ -239,3 +239,52 @@ def test_import_fills_calibration_from_file_metadata():
     c._meta_fi = 0.5
     c._apply_metadata()
     assert c.frameInterval == keep
+
+
+# ── multiple ROIs → individual replicates ────────────────────────────────────
+def test_roi_controller_split_replicates_persists_and_expands(tmp_path):
+    from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
+    from firefly.ui.controllers.roi_controller import RoiController
+    from firefly.ui.controllers.params import params_builder as pb
+
+    store, ovr = RoiStore(), RoiOverrideStore()
+    f = str(tmp_path / "dish.tif")
+    c = RoiController(store, None, override_store=ovr)
+    c.editFile(f)
+    for tri in ([(0, 0), (0, 10), (10, 5)], [(20, 20), (20, 30), (30, 25)]):
+        for y, x in tri:
+            c.addVertex(y, x)
+        c.closeDraft()
+    assert c.polygonCount == 2
+    assert c.splitDecided is False                  # not answered yet
+    c.splitReplicates = True                         # user chooses "individual"
+    assert c.splitDecided is True
+    c.setRoiLabel(0, "nucleus")                       # optional label on ROI 1
+    c.commit()
+
+    spec = ovr.get(f)                                 # persisted in the per-file override
+    assert spec["roi_split_replicates"] is True
+    assert spec["roi_labels"][0] == "nucleus"
+
+    c2 = RoiController(store, None, override_store=ovr)
+    c2.editFile(f)                                    # re-open restores the decision
+    assert c2.splitReplicates is True and c2.splitDecided is True
+    assert c2.polygonCount == 2
+
+    class FakeSettings:
+        def get_str(self, k, d=""): return d
+        def get_float(self, k, d=0.0): return d
+        def get_bool(self, k, d=False): return d
+        def sync(self): pass
+
+    class Imp:
+        filePath = f; outDir = ""; isCsv = False
+        overridePx = False; pixelSize = 0.106; overrideFi = False; frameInterval = 0.02
+
+    p = pb.build_params(FakeSettings(), Imp(), fpath=f, roi_store=store, override_store=ovr)
+    assert p["roi_split_replicates"] is True
+    runs = pb.expand_roi_replicates({**p, "stem_override": "dish"})
+    assert len(runs) == 2
+    assert runs[0]["stem_override"] == "dish_nucleus"   # label
+    assert runs[1]["stem_override"] == "dish_cell2"     # auto
+    assert len(runs[0]["roi_polygon"]) == 1 and len(runs[1]["roi_polygon"]) == 1

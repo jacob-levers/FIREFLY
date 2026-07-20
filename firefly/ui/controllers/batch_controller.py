@@ -714,7 +714,9 @@ class BatchController(QObject):
             p["stem_override"] = s["key"]
             if not str(primary).lower().endswith((".csv", ".txt", ".tsv")):
                 p["series_files"] = list(checked_paths)
-            plist.append(p)
+            # Multiple ROIs flagged as individual replicates → one run per ROI,
+            # each writing to <key>_cell{n} (or the user's label).  No-op otherwise.
+            plist.extend(params_builder.expand_roi_replicates(p))
         return plist
 
     def _export_hyperfly_env(self):
