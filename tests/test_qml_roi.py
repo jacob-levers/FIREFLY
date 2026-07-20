@@ -283,8 +283,51 @@ def test_roi_controller_split_replicates_persists_and_expands(tmp_path):
 
     p = pb.build_params(FakeSettings(), Imp(), fpath=f, roi_store=store, override_store=ovr)
     assert p["roi_split_replicates"] is True
+    # The launcher sends ONE run carrying both polygons — the worker localises
+    # once and then splits it into a job (and an output) per ROI.
     runs = pb.expand_roi_replicates({**p, "stem_override": "dish"})
-    assert len(runs) == 2
-    assert runs[0]["stem_override"] == "dish_nucleus"   # label
-    assert runs[1]["stem_override"] == "dish_cell2"     # auto
-    assert len(runs[0]["roi_polygon"]) == 1 and len(runs[1]["roi_polygon"]) == 1
+    assert len(runs) == 1 and len(runs[0]["roi_polygon"]) == 2
+
+    from firefly.firefly_worker import _roi_replicate_jobs
+    jobs = _roi_replicate_jobs(runs[0])
+    assert len(jobs) == 2
+    assert [lbl for _poly, lbl in jobs] == ["nucleus", "cell2"]   # label, then auto
+    assert all(len(poly) == 1 for poly, _lbl in jobs)             # one ROI per job
+
+
+# ── split-replicates: the prompt must still fire after an earlier ROI save ────
+def test_saving_a_single_roi_does_not_mark_the_split_choice_as_decided(tmp_path):
+    """Regression: `commit()` always writes `roi_split_replicates` into the saved
+    spec, so inferring "the user already decided" from that key being PRESENT
+    marked every file that had ever saved ANY ROI as decided — silently
+    suppressing the save-time prompt when a 2nd ROI was later added.  Only an
+    explicit answer (toggle or dialog) counts."""
+    from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
+    from firefly.ui.controllers.roi_controller import RoiController
+    store, ovr = RoiStore(), RoiOverrideStore()
+    f = str(tmp_path / "twocells.tif")
+
+    # 1) Save a SINGLE ROI in polygon mode (the user never answered the split
+    #    question).  Polygon mode is what makes commit() persist the override.
+    c = RoiController(store, override_store=ovr)
+    c.editFile(f)
+    c.roiMode = "Manual polygon"
+    c.addVertex(0, 0); c.addVertex(0, 10); c.addVertex(10, 5); c.closeDraft()
+    c.commit()
+    assert not c.splitDecided                    # never asked → not decided
+    assert "roi_split_replicates" in (ovr.get(f) or {})   # the key IS persisted…
+
+    # 2) Reopen the file and draw a SECOND ROI — the prompt must still be due.
+    c2 = RoiController(store, override_store=ovr)
+    c2.editFile(f)
+    assert c2.splitDecided is False, "a prior single-ROI save must not pre-answer"
+    c2.addVertex(20, 20); c2.addVertex(20, 30); c2.addVertex(30, 25); c2.closeDraft()
+    assert c2.polygonCount == 2 and not c2.splitDecided   # QML opens the dialog here
+
+    # 3) Answering (toggle or dialog) sticks across reopen — asked only once.
+    c2.splitReplicates = True
+    assert c2.splitDecided is True
+    c2.commit()
+    c3 = RoiController(store, override_store=ovr)
+    c3.editFile(f)
+    assert c3.splitDecided is True and c3.splitReplicates is True

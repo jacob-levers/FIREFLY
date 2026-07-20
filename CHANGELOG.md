@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **The "individual replicates?" prompt never appeared** when you drew a second
+  ROI. FIREFLY decided you'd "already answered" based on a value it writes on
+  every ROI save, so any movie you'd ever saved an ROI for was silently treated as
+  answered. Your choice is now recorded explicitly, so the prompt appears the
+  first time a movie has more than one ROI — and only once, as intended.
 - **Visualiser couldn't load some runs** with `'utf-8' codec can't decode byte
   0xb0`. If a run's `params.json` or a CSV contained a non-UTF-8 byte — a degree
   or micro sign (`°` / `µ`) from a palmTRACER or Excel export — the load aborted.
@@ -114,7 +119,9 @@
   output folder — named `<movie>_cell1`, `<movie>_cell2`, … or an optional label
   you type per ROI — so two cells never pool into each other's D-values and each
   lands as a separate replicate in the Analysis tab. Left off (or with a single
-  ROI), the ROIs are combined into one region exactly as before.
+  ROI), the ROIs are combined into one region exactly as before. **The movie is
+  read and localised only once**, no matter how many cells you mark — only the
+  per-cell half of the analysis repeats, so two cells cost barely more than one.
 - **"Trajectory background image" toggle** (Preferences → Figures → Rendering &
   quality). Turn off the raw microscope image behind the Trajectories and
   Trajectories-by-D panels to draw the tracks on a plain background. Applies to

@@ -124,42 +124,20 @@ def _i(settings, key, default):
 
 
 def expand_roi_replicates(base_params: dict) -> list:
-    """Fan a multi-ROI file out into one params dict per ROI, for "analyse each
-    cell as its own replicate".
+    """The run list for one input file — now always a SINGLE run.
 
-    Each returned params is an ordinary SINGLE-polygon run writing to its OWN
-    output folder (``stem_override``), so two cells on one movie never pool into
-    each other's D-values.  When splitting is off, or there's a single ROI, the
-    input is returned unchanged (one run — polygons unioned into one mask, as
-    before).  Per-cell output name: ``roi_labels[i]`` if the user set one, else
-    ``<stem>_cell{i+1}``.
+    "Analyse each ROI as its own replicate" used to fan out HERE into one full
+    run per ROI, which re-decoded and re-localised the whole movie once per cell
+    — the expensive half of the pipeline repeated for data that is identical.
+    The worker now does the split internally (``_roi_replicate_jobs``): it
+    localises ONCE, then loops the per-ROI analysis and writes one output folder
+    per cell.  So the launcher hands it a single params carrying every polygon
+    plus ``roi_split_replicates`` / ``roi_labels``, and this returns it unchanged.
+
+    Kept as the launcher's seam so both call sites (batch + single run) stay
+    honest that one input file may produce several outputs.
     """
-    polys = base_params.get("roi_polygon") or []
-    # roi_polygon is either ONE polygon ([(y,x), …]) or a list of polygons —
-    # normalise to a list of polygons (mirrors firefly_worker's polygon handling).
-    if polys and not isinstance(polys[0][0], (list, tuple)):
-        polys = [polys]
-    if not base_params.get("roi_split_replicates") or len(polys) <= 1:
-        return [base_params]
-
-    labels = base_params.get("roi_labels") or []
-    base_stem = str(base_params.get("stem_override") or os.path.splitext(
-        os.path.basename(base_params.get("file") or "run"))[0])
-    seen, out = set(), []
-    for i, poly in enumerate(polys):
-        raw = (str(labels[i]).strip() if i < len(labels) and str(labels[i]).strip()
-               else f"cell{i + 1}")
-        stem = f"{base_stem}_{raw}"
-        while stem in seen:                       # never collide two cells' outputs
-            stem = f"{stem}_{i + 1}"
-        seen.add(stem)
-        p = dict(base_params)
-        p["roi_polygon"] = [poly]
-        p["roi_split_replicates"] = False         # each fanned-out run is one ROI
-        p["roi_labels"] = None
-        p["stem_override"] = stem
-        out.append(p)
-    return out
+    return [base_params]
 
 
 def build_params(settings, importc, fpath: str | None = None,

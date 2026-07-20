@@ -856,6 +856,33 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
     }
 
 
+def _roi_replicate_jobs(p: dict) -> list:
+    """ROI "jobs" for one input file: ``[(polygons | None, label | None), ...]``.
+
+    Normally ONE job (``(None, None)`` — leave the params' polygons alone, so all
+    drawn shapes union into a single mask, the long-standing behaviour).  When the
+    user ticked "analyse each ROI separately" AND drew more than one, returns one
+    job per ROI so each cell becomes its own output — while the caller still
+    decodes + localises the movie only once.  The label names the output folder:
+    the user's ``roi_labels[i]`` if set, else ``cell{i+1}``.
+    """
+    polys = p.get("roi_polygon") or []
+    # `roi_polygon` is either a single polygon ([(y, x), ...]) or a list of them.
+    if polys and not isinstance(polys[0][0], (list, tuple)):
+        polys = [polys]
+    if not p.get("roi_split_replicates") or len(polys) <= 1:
+        return [(None, None)]
+    labels, jobs, seen = (p.get("roi_labels") or []), [], set()
+    for i, poly in enumerate(polys):
+        lbl = (str(labels[i]).strip() if i < len(labels) and str(labels[i]).strip()
+               else f"cell{i + 1}")
+        while lbl in seen:                       # never collide two output folders
+            lbl = f"{lbl}_{i + 1}"
+        seen.add(lbl)
+        jobs.append(([poly], lbl))
+    return jobs
+
+
 def _run_one_analysis(params: dict, msg_queue, cancel_event,
                       _log, _prog) -> dict:
     """Run the FIREFLY pipeline on one input file.
@@ -1375,1373 +1402,1446 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                              external=external_csv, log_cb=_log)
     _check_stop()
 
-    # ── ROI mask (optional) ───────────────────────────────────────────────
-    # Per-file polygon overrides the global mode: if a polygon was set
-    # for this file in the Import-tab ROI editor, treat it as polygon-mode
-    # regardless of what the sidebar says.
-    # Validate + normalise the ROI token through the enum (one source of truth;
-    # an unknown value now logs + falls back to 'none' instead of silently
-    # threading a bogus string through the dispatch below).  Kept as a string so
-    # the existing branch logic is unchanged.
-    roi_mode = ROIMode.parse(p.get("roi_mode", "none"), log=_log).value
-    roi_from_imagej = False                      # set when a sibling ImageJ ROI
-                                                 # is what produced the polygon
-    if p.get("roi_polygon"):
-        roi_mode = "polygon"
+    # ── multi-ROI replicates: localise ONCE, analyse each ROI separately ──
+    # Everything above (decode → localise) is SHARED.  The block below runs once
+    # per ROI "job": normally a single job (all drawn polygons unioned into one
+    # mask — the long-standing behaviour), but when the user asked to treat the
+    # ROIs as individual replicates, one job PER ROI, each writing its own output
+    # folder.  So a dish with two cells is decoded + localised ONCE instead of
+    # once per cell, and the cells still never pool into each other's stats.
+    _roi_jobs  = _roi_replicate_jobs(p)
+    _multi_roi = len(_roi_jobs) > 1
+    _p_base, _locs_base, _proj_base = p, locs, proj_sample
+    _stem_base, _prog_base, _log_base = stem, _prog, _log
+    _payloads = []
+    if _multi_roi:
+        _log(f"\n── {len(_roi_jobs)} ROIs → {len(_roi_jobs)} replicate outputs "
+             f"(localised once) ──")
+    for _job_i, (_job_polys, _job_label) in enumerate(_roi_jobs):
+        _check_stop()
+        # Fresh per-ROI state: the region below REASSIGNS `locs` (ROI mask, drift)
+        # and mutates `proj_sample` IN PLACE (drift alignment), so each job starts
+        # from the pristine shared copies.  A single job reuses them as-is, so the
+        # one-ROI path stays byte-identical (and pays no copy).
+        if _multi_roi:
+            p = dict(_p_base)
+            if _job_polys is not None:
+                p["roi_polygon"] = _job_polys
+            locs = _locs_base.copy()
+            proj_sample = (_proj_base.copy()
+                           if getattr(_proj_base, "ndim", 0) == 3 else _proj_base)
+        else:
+            p, locs, proj_sample = _p_base, _locs_base, _proj_base
+        if _job_label:
+            # This replicate gets its own stem + output folder.
+            stem = f"{_stem_base}_{_job_label}"
+            out_dir = _win_long_path(
+                os.path.join(raw_out_dir, stem)
+                if bool(p.get("wrap_in_stem_folder", True)) else raw_out_dir)
+            fig_dir    = os.path.join(out_dir, "figures")
+            data_dir   = os.path.join(out_dir, "data")
+            extras_dir = os.path.join(out_dir, "firefly_extras")
+            for _d in (fig_dir, data_dir, extras_dir):
+                os.makedirs(_d, exist_ok=True)
+            # Give each replicate its own slice of the 0-100 progress bar.
+            _lo, _span = _job_i * 100.0 / len(_roi_jobs), 100.0 / len(_roi_jobs)
+            _prog = (lambda pct, msg, _l=_lo, _s=_span, _f=_prog_base,
+                            _i=_job_i, _n=len(_roi_jobs):
+                     _f(int(_l + float(pct) * _s / 100.0), f"[{_i + 1}/{_n}] {msg}"))
+            _log = (lambda m, _f=_log_base, _t=_job_label: _f(f"[{_t}] {m}"))
+            _log(f"── ROI replicate {_job_i + 1}/{len(_roi_jobs)} → {stem} ──")
+        # ── ROI mask (optional) ───────────────────────────────────────────────
+        # Per-file polygon overrides the global mode: if a polygon was set
+        # for this file in the Import-tab ROI editor, treat it as polygon-mode
+        # regardless of what the sidebar says.
+        # Validate + normalise the ROI token through the enum (one source of truth;
+        # an unknown value now logs + falls back to 'none' instead of silently
+        # threading a bogus string through the dispatch below).  Kept as a string so
+        # the existing branch logic is unchanged.
+        roi_mode = ROIMode.parse(p.get("roi_mode", "none"), log=_log).value
+        roi_from_imagej = False                      # set when a sibling ImageJ ROI
+                                                     # is what produced the polygon
+        if p.get("roi_polygon"):
+            roi_mode = "polygon"
 
-    # "ImageJ ROI" mode: pair a sibling ImageJ ROI (RoiSet.zip / a RoiSet/
-    # folder / *.roi) found next to the movie and use it as a polygon ROI — so
-    # a batch reuses ROIs drawn in ImageJ/Fiji without loading each by hand.
-    # If none is found, fall back to the whole image (logged).  Skipped for
-    # external-CSV inputs and when a polygon was already set for this file.
-    # A local copy of `p` is used so the polygon never leaks to the next file.
-    if (roi_mode == "imagej" and not external_csv and not p.get("roi_polygon")):
-        _found = False
-        try:
-            from firefly.analysis import fa_roi as _far
-            _roi_path = _far.find_sibling_imagej_roi(
-                os.path.dirname(fpath),
-                os.path.splitext(os.path.basename(fpath))[0])
-            if _roi_path:
-                _polys = _far.load_roi_polygons_any(_roi_path)
-                if _polys:
-                    p = dict(p)
-                    p["roi_polygon"] = [poly.tolist() for poly in _polys]
-                    roi_mode = "polygon"
-                    roi_from_imagej = True
-                    _found = True
-                    _log(f"  NOTE: ImageJ ROI '{os.path.basename(_roi_path)}' "
-                         f"({len(_polys)} region(s)) — using as polygon ROI.")
-        except Exception as _exc:
-            _log(f"  WARN: ImageJ ROI load failed: {_exc}")
-        if not _found:
-            _log("  NOTE: ROI mode 'ImageJ ROI' but no sibling RoiSet/.roi "
-                 "found — analysing the whole image.")
-            roi_mode = "none"
+        # "ImageJ ROI" mode: pair a sibling ImageJ ROI (RoiSet.zip / a RoiSet/
+        # folder / *.roi) found next to the movie and use it as a polygon ROI — so
+        # a batch reuses ROIs drawn in ImageJ/Fiji without loading each by hand.
+        # If none is found, fall back to the whole image (logged).  Skipped for
+        # external-CSV inputs and when a polygon was already set for this file.
+        # A local copy of `p` is used so the polygon never leaks to the next file.
+        if (roi_mode == "imagej" and not external_csv and not p.get("roi_polygon")):
+            _found = False
+            try:
+                from firefly.analysis import fa_roi as _far
+                _roi_path = _far.find_sibling_imagej_roi(
+                    os.path.dirname(fpath),
+                    os.path.splitext(os.path.basename(fpath))[0])
+                if _roi_path:
+                    _polys = _far.load_roi_polygons_any(_roi_path)
+                    if _polys:
+                        p = dict(p)
+                        p["roi_polygon"] = [poly.tolist() for poly in _polys]
+                        roi_mode = "polygon"
+                        roi_from_imagej = True
+                        _found = True
+                        _log(f"  NOTE: ImageJ ROI '{os.path.basename(_roi_path)}' "
+                             f"({len(_polys)} region(s)) — using as polygon ROI.")
+            except Exception as _exc:
+                _log(f"  WARN: ImageJ ROI load failed: {_exc}")
+            if not _found:
+                _log("  NOTE: ROI mode 'ImageJ ROI' but no sibling RoiSet/.roi "
+                     "found — analysing the whole image.")
+                roi_mode = "none"
 
-    # Sister ROI image (a microscope-exported companion, e.g. `<base>_green.tif`).
-    # Used ONLY when the user explicitly selects "Sister TIFF" — an Auto / Manual /
-    # Polygon / None choice is NEVER silently overridden with it.  (Detection is
-    # shared with the ROI-viewer preview via fa_roi.find_sister_roi_path so both
-    # agree on which file is the sister.)
-    roi_sister_suffix = str(p.get("roi_sister_suffix", "_green")).strip()
-    roi_sister_path: "str | None" = None
-    if roi_mode == "sister":
-        if not external_csv and roi_sister_suffix:
-            from firefly.analysis.fa_roi import find_sister_roi_path as _find_sister
-            roi_sister_path = _find_sister(fpath, roi_sister_suffix)
-        if roi_sister_path is None:
-            _log(f"  NOTE: ROI mode set to 'Sister TIFF' but no "
-                 f"`<base>{roi_sister_suffix}.tif` found — falling back "
-                 f"to no ROI.")
-            roi_mode = "none"
+        # Sister ROI image (a microscope-exported companion, e.g. `<base>_green.tif`).
+        # Used ONLY when the user explicitly selects "Sister TIFF" — an Auto / Manual /
+        # Polygon / None choice is NEVER silently overridden with it.  (Detection is
+        # shared with the ROI-viewer preview via fa_roi.find_sister_roi_path so both
+        # agree on which file is the sister.)
+        roi_sister_suffix = str(p.get("roi_sister_suffix", "_green")).strip()
+        roi_sister_path: "str | None" = None
+        if roi_mode == "sister":
+            if not external_csv and roi_sister_suffix:
+                from firefly.analysis.fa_roi import find_sister_roi_path as _find_sister
+                roi_sister_path = _find_sister(fpath, roi_sister_suffix)
+            if roi_sister_path is None:
+                _log(f"  NOTE: ROI mode set to 'Sister TIFF' but no "
+                     f"`<base>{roi_sister_suffix}.tif` found — falling back "
+                     f"to no ROI.")
+                roi_mode = "none"
 
-    _roi_skipped = False   # set True if a polygon ROI is dropped (shape mismatch)
-    if roi_mode != "none" and len(locs) > 0:
-        _log(f"\n── ROI mask ───────────────────────")
-        try:
-            from firefly.sptpalm_analysis import build_roi_mask_advanced
-            roi_mask = None
-            # These are populated ONLY by the threshold-projection branch
-            # below; the sister-TIFF and polygon paths leave them unset.
-            # Initialise here so the shared roi_mask.png save block can't hit
-            # an UnboundLocalError (it previously assumed only polygon or
-            # threshold mode existed).
-            mode_hint = None
-            bg_sigma  = None
-            info      = None
-            # Human-readable provenance of WHERE the ROI came from (sister TIFF
-            # vs polygon vs intensity threshold).  Set by whichever branch builds
-            # the mask, so the figure title names the real ROI source instead of
-            # the background image it's drawn over.
-            roi_source_label = None
+        _roi_skipped = False   # set True if a polygon ROI is dropped (shape mismatch)
+        if roi_mode != "none" and len(locs) > 0:
+            _log(f"\n── ROI mask ───────────────────────")
+            try:
+                from firefly.sptpalm_analysis import build_roi_mask_advanced
+                roi_mask = None
+                # These are populated ONLY by the threshold-projection branch
+                # below; the sister-TIFF and polygon paths leave them unset.
+                # Initialise here so the shared roi_mask.png save block can't hit
+                # an UnboundLocalError (it previously assumed only polygon or
+                # threshold mode existed).
+                mode_hint = None
+                bg_sigma  = None
+                info      = None
+                # Human-readable provenance of WHERE the ROI came from (sister TIFF
+                # vs polygon vs intensity threshold).  Set by whichever branch builds
+                # the mask, so the figure title names the real ROI source instead of
+                # the background image it's drawn over.
+                roi_source_label = None
 
-            # ── Sister TIFF ROI (microscope export, e.g. _green.tif) ─
-            # Shared with the ROI-viewer preview (fa_roi.build_sister_roi_mask)
-            # so what you see in the viewer is exactly what the run includes.
-            if roi_mode == "sister" and roi_sister_path is not None:
-                from firefly.analysis.fa_roi import (
-                    build_sister_roi_mask as _sister_mask)
-                _tgt = mean_proj.shape if mean_proj is not None else None
-                roi_mask, _note = _sister_mask(roi_sister_path, target_shape=_tgt)
-                if roi_mask is not None:
-                    roi_source_label = f"Sister TIFF · {_note}"
-                    _log(f"  Sister ROI: {_note}")
-                else:
-                    _log(f"  WARN: sister ROI {_note} — continuing without ROI.")
-
-            if roi_mode == "polygon":
-                # User-drawn polygon ROI.  `roi_polygon` is a list of
-                # (y, x) vertex pairs in pixel coordinates of the
-                # original frame (Y by X).  skimage's polygon2mask
-                # rasterises it into a boolean array of the same shape.
-                vertices = p.get("roi_polygon") or []
-                if not vertices:
-                    _log("  WARN: roi_mode is 'polygon' but no vertices "
-                         "were provided.  Skipping ROI.")
-                elif mean_proj is None:
-                    _log("  WARN: roi_mode is 'polygon' but no stack was "
-                         "loaded (external CSV?).  Skipping ROI.")
-                else:
-                    try:
-                        from skimage.draw import polygon2mask
-                        polys = vertices if isinstance(vertices[0][0],
-                                                       (list, tuple)) \
-                                          else [vertices]
-                        h, w = mean_proj.shape
-                        # NB: keep this `bool`, not `uint8` — see
-                        # apply_roi_mask for why uint8 breaks pandas
-                        # row indexing.
-                        # The polygon is in the coordinates of its ORIGINAL
-                        # movie.  If it was drawn on a differently-sized movie (a
-                        # full-frame ROI applied to a cropped/binned export, or
-                        # swapped Y/X), polygon2mask silently CLIPS out-of-frame
-                        # vertices and keeps the WRONG region with no error.
-                        # Detect that and skip the ROI — mirrors the sister-TIFF
-                        # shape check above.  (#13)
-                        _all_v = _np.concatenate(
-                            [_np.asarray(poly, dtype=float) for poly in polys],
-                            axis=0)
-                        _max_y = float(_all_v[:, 0].max())
-                        _max_x = float(_all_v[:, 1].max())
-                        if (_max_y > h + 1.0 or _max_x > w + 1.0
-                                or float(_all_v.min()) < -1.0):
-                            _log(f"  WARN: ROI polygon extent (y≤{_max_y:.0f}, "
-                                 f"x≤{_max_x:.0f}) exceeds the movie frame "
-                                 f"{h}×{w} — it was drawn on a differently-sized "
-                                 f"movie.  Skipping ROI to avoid masking the "
-                                 f"wrong region.")
-                            roi_mask = None
-                            _roi_skipped = True
-                        else:
-                            roi_mask = _np.zeros((h, w), dtype=bool)
-                            for poly in polys:
-                                m = polygon2mask((h, w), _np.asarray(poly))
-                                roi_mask |= m.astype(bool)
-                            n_polys = len(polys)
-                            roi_source_label = (
-                                f"ImageJ ROI ({n_polys} region(s))"
-                                if roi_from_imagej
-                                else f"Manual polygon ({n_polys} shape(s))")
-                            _log(f"  User polygon ROI: {n_polys} shape(s), "
-                                 f"{100.0 * roi_mask.mean():.1f}% of frame")
-                    except Exception as poly_exc:
-                        _log(f"  WARN: polygon ROI failed — {poly_exc}.")
-                        roi_mask = None
-
-            if roi_mask is None and mean_proj is not None:
-                # If a SPECIFIC ROI (polygon / sister / ImageJ) was requested but
-                # couldn't be applied (skipped above — e.g. a frame-size
-                # mismatch), this intensity-threshold pipeline runs as a fallback
-                # and would otherwise apply an ROI the user didn't ask for with
-                # no indication.  Say so explicitly.  (R2-13)
-                if roi_mode not in ("auto", "manual"):
-                    _log(f"  NOTE: the requested '{roi_mode}' ROI was not applied "
-                         f"(see the warning above) — falling back to an "
-                         f"intensity-threshold ROI for this file.")
-                # Shared GUI/worker ROI pipeline — DoG background
-                # subtraction + morphology + top-N components.
-                # Whatever the user tunes in the ROI preview viewer is
-                # what gets applied here, byte-for-byte identical.
-                mask_mode = MaskMode.parse(p.get("roi_mask_mode", "Max"), log=_log)
-                if mask_mode is MaskMode.BLINK:
-                    # Streaming Welford-based per-pixel mean+std baseline
-                    # gives us a real blink-density map in a single
-                    # pass over the stack (see preprocess_and_localise_
-                    # adaptive in sptpalm_analysis.py).  Approximation
-                    # only in that the threshold per pixel evolves as
-                    # the estimate stabilises — for 4000+ frame movies
-                    # the early-chunk transient is negligible.
-                    if blink_proj is not None:
-                        proj = blink_proj
-                        mode_hint = "blink"
+                # ── Sister TIFF ROI (microscope export, e.g. _green.tif) ─
+                # Shared with the ROI-viewer preview (fa_roi.build_sister_roi_mask)
+                # so what you see in the viewer is exactly what the run includes.
+                if roi_mode == "sister" and roi_sister_path is not None:
+                    from firefly.analysis.fa_roi import (
+                        build_sister_roi_mask as _sister_mask)
+                    _tgt = mean_proj.shape if mean_proj is not None else None
+                    roi_mask, _note = _sister_mask(roi_sister_path, target_shape=_tgt)
+                    if roi_mask is not None:
+                        roi_source_label = f"Sister TIFF · {_note}"
+                        _log(f"  Sister ROI: {_note}")
                     else:
-                        _log("  NOTE: Blink-density not available "
-                             "(no stack loaded?) — falling back to Max.")
+                        _log(f"  WARN: sister ROI {_note} — continuing without ROI.")
+
+                if roi_mode == "polygon":
+                    # User-drawn polygon ROI.  `roi_polygon` is a list of
+                    # (y, x) vertex pairs in pixel coordinates of the
+                    # original frame (Y by X).  skimage's polygon2mask
+                    # rasterises it into a boolean array of the same shape.
+                    vertices = p.get("roi_polygon") or []
+                    if not vertices:
+                        _log("  WARN: roi_mode is 'polygon' but no vertices "
+                             "were provided.  Skipping ROI.")
+                    elif mean_proj is None:
+                        _log("  WARN: roi_mode is 'polygon' but no stack was "
+                             "loaded (external CSV?).  Skipping ROI.")
+                    else:
+                        try:
+                            from skimage.draw import polygon2mask
+                            polys = vertices if isinstance(vertices[0][0],
+                                                           (list, tuple)) \
+                                              else [vertices]
+                            h, w = mean_proj.shape
+                            # NB: keep this `bool`, not `uint8` — see
+                            # apply_roi_mask for why uint8 breaks pandas
+                            # row indexing.
+                            # The polygon is in the coordinates of its ORIGINAL
+                            # movie.  If it was drawn on a differently-sized movie (a
+                            # full-frame ROI applied to a cropped/binned export, or
+                            # swapped Y/X), polygon2mask silently CLIPS out-of-frame
+                            # vertices and keeps the WRONG region with no error.
+                            # Detect that and skip the ROI — mirrors the sister-TIFF
+                            # shape check above.  (#13)
+                            _all_v = _np.concatenate(
+                                [_np.asarray(poly, dtype=float) for poly in polys],
+                                axis=0)
+                            _max_y = float(_all_v[:, 0].max())
+                            _max_x = float(_all_v[:, 1].max())
+                            if (_max_y > h + 1.0 or _max_x > w + 1.0
+                                    or float(_all_v.min()) < -1.0):
+                                _log(f"  WARN: ROI polygon extent (y≤{_max_y:.0f}, "
+                                     f"x≤{_max_x:.0f}) exceeds the movie frame "
+                                     f"{h}×{w} — it was drawn on a differently-sized "
+                                     f"movie.  Skipping ROI to avoid masking the "
+                                     f"wrong region.")
+                                roi_mask = None
+                                _roi_skipped = True
+                            else:
+                                roi_mask = _np.zeros((h, w), dtype=bool)
+                                for poly in polys:
+                                    m = polygon2mask((h, w), _np.asarray(poly))
+                                    roi_mask |= m.astype(bool)
+                                n_polys = len(polys)
+                                roi_source_label = (
+                                    f"ImageJ ROI ({n_polys} region(s))"
+                                    if roi_from_imagej
+                                    else f"Manual polygon ({n_polys} shape(s))")
+                                _log(f"  User polygon ROI: {n_polys} shape(s), "
+                                     f"{100.0 * roi_mask.mean():.1f}% of frame")
+                        except Exception as poly_exc:
+                            _log(f"  WARN: polygon ROI failed — {poly_exc}.")
+                            roi_mask = None
+
+                if roi_mask is None and mean_proj is not None:
+                    # If a SPECIFIC ROI (polygon / sister / ImageJ) was requested but
+                    # couldn't be applied (skipped above — e.g. a frame-size
+                    # mismatch), this intensity-threshold pipeline runs as a fallback
+                    # and would otherwise apply an ROI the user didn't ask for with
+                    # no indication.  Say so explicitly.  (R2-13)
+                    if roi_mode not in ("auto", "manual"):
+                        _log(f"  NOTE: the requested '{roi_mode}' ROI was not applied "
+                             f"(see the warning above) — falling back to an "
+                             f"intensity-threshold ROI for this file.")
+                    # Shared GUI/worker ROI pipeline — DoG background
+                    # subtraction + morphology + top-N components.
+                    # Whatever the user tunes in the ROI preview viewer is
+                    # what gets applied here, byte-for-byte identical.
+                    mask_mode = MaskMode.parse(p.get("roi_mask_mode", "Max"), log=_log)
+                    if mask_mode is MaskMode.BLINK:
+                        # Streaming Welford-based per-pixel mean+std baseline
+                        # gives us a real blink-density map in a single
+                        # pass over the stack (see preprocess_and_localise_
+                        # adaptive in sptpalm_analysis.py).  Approximation
+                        # only in that the threshold per pixel evolves as
+                        # the estimate stabilises — for 4000+ frame movies
+                        # the early-chunk transient is negligible.
+                        if blink_proj is not None:
+                            proj = blink_proj
+                            mode_hint = "blink"
+                        else:
+                            _log("  NOTE: Blink-density not available "
+                                 "(no stack loaded?) — falling back to Max.")
+                            proj = max_proj
+                            mode_hint = "max"
+                    elif mask_mode is MaskMode.MAX:
                         proj = max_proj
                         mode_hint = "max"
-                elif mask_mode is MaskMode.MAX:
-                    proj = max_proj
-                    mode_hint = "max"
-                elif mask_mode is MaskMode.SUM:
-                    # Sum is just mean × frame_count up to a scale that
-                    # normalisation removes, so route it to mean_proj.
-                    proj = mean_proj
-                    mode_hint = "sum"
-                else:  # MaskMode.MEAN (also the fallback for unknown values)
-                    proj = mean_proj
-                    mode_hint = "mean"
+                    elif mask_mode is MaskMode.SUM:
+                        # Sum is just mean × frame_count up to a scale that
+                        # normalisation removes, so route it to mean_proj.
+                        proj = mean_proj
+                        mode_hint = "sum"
+                    else:  # MaskMode.MEAN (also the fallback for unknown values)
+                        proj = mean_proj
+                        mode_hint = "mean"
 
-                if proj is None:
-                    proj = mean_proj  # final safety net
+                    if proj is None:
+                        proj = mean_proj  # final safety net
 
-                if roi_mode == "auto":
-                    method = (p.get("roi_auto_method") or "Li").lower()
-                    manual_thresh = None
-                else:  # manual threshold
-                    method = "li"
-                    manual_thresh = float(p.get("roi_threshold", 0.08))
-                bg_sigma = float(p.get("roi_bg_sigma", 25.0))
-                roi_mask, info = build_roi_mask_advanced(
-                    proj,
-                    threshold=manual_thresh,
-                    threshold_method=method,
-                    bg_sigma=bg_sigma,
-                    mode_hint=mode_hint)
-                _log(f"  Projection={mode_hint}, σ_bg={bg_sigma:.1f}, "
-                     f"threshold={info['threshold']:.4f}  |  "
-                     f"{100.0 * info['fraction']:.1f}% of frame")
+                    if roi_mode == "auto":
+                        method = (p.get("roi_auto_method") or "Li").lower()
+                        manual_thresh = None
+                    else:  # manual threshold
+                        method = "li"
+                        manual_thresh = float(p.get("roi_threshold", 0.08))
+                    bg_sigma = float(p.get("roi_bg_sigma", 25.0))
+                    roi_mask, info = build_roi_mask_advanced(
+                        proj,
+                        threshold=manual_thresh,
+                        threshold_method=method,
+                        bg_sigma=bg_sigma,
+                        mode_hint=mode_hint)
+                    _log(f"  Projection={mode_hint}, σ_bg={bg_sigma:.1f}, "
+                         f"threshold={info['threshold']:.4f}  |  "
+                         f"{100.0 * info['fraction']:.1f}% of frame")
 
-            if roi_mask is None:
-                _log("  WARN: could not build a ROI mask.  "
-                     "Continuing without ROI.")
-            else:
-                n_before = len(locs)
-                locs = apply_roi_mask(locs, roi_mask)
-                _log(f"  Locs after ROI : {len(locs):,}  "
-                     f"(dropped {n_before - len(locs):,})")
-                if len(locs) == 0:
-                    # Make the cause explicit — otherwise the run only shows the
-                    # generic "no tracks" stop downstream, which hides that the
-                    # ROI (threshold / sister mask / polygon) removed everything.
-                    _log(f"  WARNING: the ROI removed ALL {n_before:,} "
-                         f"localisations — check the ROI mode / threshold "
-                         f"(the run will stop with no tracks).")
+                if roi_mask is None:
+                    _log("  WARN: could not build a ROI mask.  "
+                         "Continuing without ROI.")
+                else:
+                    n_before = len(locs)
+                    locs = apply_roi_mask(locs, roi_mask)
+                    _log(f"  Locs after ROI : {len(locs):,}  "
+                         f"(dropped {n_before - len(locs):,})")
+                    if len(locs) == 0:
+                        # Make the cause explicit — otherwise the run only shows the
+                        # generic "no tracks" stop downstream, which hides that the
+                        # ROI (threshold / sister mask / polygon) removed everything.
+                        _log(f"  WARNING: the ROI removed ALL {n_before:,} "
+                             f"localisations — check the ROI mode / threshold "
+                             f"(the run will stop with no tracks).")
 
-                # ── Persist the exact mask that was applied ──────────
-                # Two artefacts:
-                #   * {stem}_roi_mask.npy   — raw bool array, for any
-                #     downstream re-analysis that wants pixel-perfect
-                #     reproducibility.
-                #   * {stem}_roi_mask.png   — overlay of projection +
-                #     mask outline + translucent fill, so a human
-                #     looking at the run folder can see at a glance
-                #     which pixels were kept and which excluded.
-                # Both live in firefly_extras/ (raw) and figures/ (PNG)
-                # to match the existing output-folder convention.
-                try:
-                    os.makedirs(extras_dir, exist_ok=True)
-                    _np.save(
-                        os.path.join(extras_dir, f"{stem}_roi_mask.npy"),
-                        roi_mask.astype(bool, copy=False))
-                except Exception as save_exc:
-                    _log(f"  NOTE: could not save roi_mask.npy "
-                         f"({save_exc}).")
+                    # ── Persist the exact mask that was applied ──────────
+                    # Two artefacts:
+                    #   * {stem}_roi_mask.npy   — raw bool array, for any
+                    #     downstream re-analysis that wants pixel-perfect
+                    #     reproducibility.
+                    #   * {stem}_roi_mask.png   — overlay of projection +
+                    #     mask outline + translucent fill, so a human
+                    #     looking at the run folder can see at a glance
+                    #     which pixels were kept and which excluded.
+                    # Both live in firefly_extras/ (raw) and figures/ (PNG)
+                    # to match the existing output-folder convention.
+                    try:
+                        os.makedirs(extras_dir, exist_ok=True)
+                        _np.save(
+                            os.path.join(extras_dir, f"{stem}_roi_mask.npy"),
+                            roi_mask.astype(bool, copy=False))
+                    except Exception as save_exc:
+                        _log(f"  NOTE: could not save roi_mask.npy "
+                             f"({save_exc}).")
 
-                # Pick a projection background for the PNG — prefer the
-                # same one used to BUILD the mask, falling back through
-                # max → mean.  If we get here, at least one is non-None.
-                try:
-                    import matplotlib
-                    matplotlib.use("Agg")
-                    import matplotlib.pyplot as _plt
-                    if mode_hint == "blink" and blink_proj is not None:
-                        bg = blink_proj
-                        bg_label = "Blink density"
-                    elif mode_hint == "max" and max_proj is not None:
-                        bg = max_proj
-                        bg_label = "Max projection"
-                    elif mean_proj is not None:
-                        bg = mean_proj
-                        bg_label = "Mean projection"
-                    elif max_proj is not None:
-                        bg = max_proj
-                        bg_label = "Max projection"
-                    else:
-                        bg = None
-                        bg_label = ""
-
-                    if bg is not None:
-                        os.makedirs(fig_dir, exist_ok=True)
-                        fig, ax = _plt.subplots(figsize=(6, 6),
-                                                facecolor="#0d1117")
-                        ax.set_facecolor("#0d1117")
-                        lo, hi = _np.percentile(bg, [1.0, 99.5])
-                        if hi <= lo:
-                            hi = lo + 1.0
-                        ax.imshow(bg, cmap="inferno",
-                                  vmin=float(lo), vmax=float(hi),
-                                  interpolation="nearest")
-                        # Translucent green fill + sharper green outline
-                        ax.imshow(
-                            _np.ma.masked_where(~roi_mask, roi_mask),
-                            cmap="Greens", alpha=0.30,
-                            interpolation="nearest")
-                        ax.contour(roi_mask.astype(float), levels=[0.5],
-                                   colors=["#39ff14"], linewidths=1.4)
-                        # Lead the title with the ROI SOURCE (sister TIFF /
-                        # polygon / intensity threshold), not the background
-                        # image — "{bg_label}" alone read as if a mean-projection
-                        # threshold made the ROI even when a sister TIFF did.
-                        _pct = 100.0 * float(roi_mask.mean())
-                        # Put the coverage metrics on their OWN second line, and
-                        # middle-ellipsise the ROI source, so a very long sister-
-                        # TIFF filename can never push the metrics off the title.
-                        if mode_hint is not None and info is not None:
-                            # Intensity-threshold ROI — full provenance, and name
-                            # the projection it thresholded explicitly.
-                            title = (
-                                f"ROI applied — {mode_hint.capitalize()} "
-                                f"projection threshold\n"
-                                f"σ_bg={bg_sigma:.0f}, "
-                                f"t={info['threshold']:.3f}, "
-                                f"{100.0 * info['fraction']:.1f}% of frame"
-                            )
+                    # Pick a projection background for the PNG — prefer the
+                    # same one used to BUILD the mask, falling back through
+                    # max → mean.  If we get here, at least one is non-None.
+                    try:
+                        import matplotlib
+                        matplotlib.use("Agg")
+                        import matplotlib.pyplot as _plt
+                        if mode_hint == "blink" and blink_proj is not None:
+                            bg = blink_proj
+                            bg_label = "Blink density"
+                        elif mode_hint == "max" and max_proj is not None:
+                            bg = max_proj
+                            bg_label = "Max projection"
+                        elif mean_proj is not None:
+                            bg = mean_proj
+                            bg_label = "Mean projection"
+                        elif max_proj is not None:
+                            bg = max_proj
+                            bg_label = "Max projection"
                         else:
-                            # Sister-TIFF / polygon / ImageJ ROI — name the
-                            # source; the projection is just the display backdrop.
-                            _src = _ellipsize(roi_source_label or (
-                                "Polygon" if roi_mode == "polygon"
-                                else "ROI"))
-                            title = (
-                                f"ROI applied — {_src}\n"
-                                f"{_pct:.1f}% of frame  (bg: {bg_label})"
-                            )
-                        ax.set_title(title, color="#e6edf3", fontsize=9, wrap=True)
-                        ax.set_xticks([]); ax.set_yticks([])
-                        for sp in ax.spines.values():
-                            sp.set_edgecolor("#30363d")
-                        fig.tight_layout()
-                        fig.savefig(
-                            os.path.join(fig_dir, f"{stem}_roi_mask.png"),
-                            dpi=150, facecolor=fig.get_facecolor())
-                        _plt.close(fig)
-                except Exception as save_exc:
-                    _log(f"  NOTE: could not save roi_mask.png "
-                         f"({save_exc}).")
-        except Exception as roi_exc:
-            import traceback as _tb, sys as _sys
-            _tb.print_exc(file=_sys.stderr)
-            _log(f"  WARN: ROI mask failed — {roi_exc}.  Continuing without ROI.")
+                            bg = None
+                            bg_label = ""
 
-    # ── Drift correction (optional) ───────────────────────────────────────
-    drift_df = None
-    if p.get("drift_correct", False) and len(locs) > 0:
-        _log(f"\n── Drift correction ───────────────")
-        _prog(40, "Correcting drift…")
-        try:
-            locs, drift_df = correct_drift(
-                locs, n_seg_frames=int(p.get("drift_segment", 500)))
-            atomic_to_csv(drift_df,
-                os.path.join(extras_dir, f"{stem}_drift.csv"), index=False)
-            _log(f"  Drift correction applied  |  saved {stem}_drift.csv")
-            # Re-align the figure-background sample by the SAME per-frame drift
-            # we just removed from the localisations — otherwise make_figure's
-            # projection stays smeared by the drift while the overlaid tracks are
-            # sharp.  Image inputs only (a CSV/histogram background has no
-            # per-frame image to shift).
-            if proj_idx is not None and getattr(proj_sample, "ndim", 0) == 3:
-                try:
-                    from firefly.analysis.fa_drift import align_frames_to_drift
-                    align_frames_to_drift(proj_sample, proj_idx, drift_df)
-                    _log("  Drift: re-aligned figure-background sample")
-                except Exception as _pexc:
-                    _log(f"  NOTE: couldn't drift-align figure background "
-                         f"({_pexc})")
-        except Exception as exc:
-            _log(f"  WARN: drift correction failed — {exc}")
+                        if bg is not None:
+                            os.makedirs(fig_dir, exist_ok=True)
+                            fig, ax = _plt.subplots(figsize=(6, 6),
+                                                    facecolor="#0d1117")
+                            ax.set_facecolor("#0d1117")
+                            lo, hi = _np.percentile(bg, [1.0, 99.5])
+                            if hi <= lo:
+                                hi = lo + 1.0
+                            ax.imshow(bg, cmap="inferno",
+                                      vmin=float(lo), vmax=float(hi),
+                                      interpolation="nearest")
+                            # Translucent green fill + sharper green outline
+                            ax.imshow(
+                                _np.ma.masked_where(~roi_mask, roi_mask),
+                                cmap="Greens", alpha=0.30,
+                                interpolation="nearest")
+                            ax.contour(roi_mask.astype(float), levels=[0.5],
+                                       colors=["#39ff14"], linewidths=1.4)
+                            # Lead the title with the ROI SOURCE (sister TIFF /
+                            # polygon / intensity threshold), not the background
+                            # image — "{bg_label}" alone read as if a mean-projection
+                            # threshold made the ROI even when a sister TIFF did.
+                            _pct = 100.0 * float(roi_mask.mean())
+                            # Put the coverage metrics on their OWN second line, and
+                            # middle-ellipsise the ROI source, so a very long sister-
+                            # TIFF filename can never push the metrics off the title.
+                            if mode_hint is not None and info is not None:
+                                # Intensity-threshold ROI — full provenance, and name
+                                # the projection it thresholded explicitly.
+                                title = (
+                                    f"ROI applied — {mode_hint.capitalize()} "
+                                    f"projection threshold\n"
+                                    f"σ_bg={bg_sigma:.0f}, "
+                                    f"t={info['threshold']:.3f}, "
+                                    f"{100.0 * info['fraction']:.1f}% of frame"
+                                )
+                            else:
+                                # Sister-TIFF / polygon / ImageJ ROI — name the
+                                # source; the projection is just the display backdrop.
+                                _src = _ellipsize(roi_source_label or (
+                                    "Polygon" if roi_mode == "polygon"
+                                    else "ROI"))
+                                title = (
+                                    f"ROI applied — {_src}\n"
+                                    f"{_pct:.1f}% of frame  (bg: {bg_label})"
+                                )
+                            ax.set_title(title, color="#e6edf3", fontsize=9, wrap=True)
+                            ax.set_xticks([]); ax.set_yticks([])
+                            for sp in ax.spines.values():
+                                sp.set_edgecolor("#30363d")
+                            fig.tight_layout()
+                            fig.savefig(
+                                os.path.join(fig_dir, f"{stem}_roi_mask.png"),
+                                dpi=150, facecolor=fig.get_facecolor())
+                            _plt.close(fig)
+                    except Exception as save_exc:
+                        _log(f"  NOTE: could not save roi_mask.png "
+                             f"({save_exc}).")
+            except Exception as roi_exc:
+                import traceback as _tb, sys as _sys
+                _tb.print_exc(file=_sys.stderr)
+                _log(f"  WARN: ROI mask failed — {roi_exc}.  Continuing without ROI.")
 
-    _check_stop()
-
-    def _drain_gpu():
-        """Force a GPU cache drain.  Cheap, mostly defensive — calling
-        between heavy stages prevents PyTorch's caching allocator from
-        sitting on multi-GB allocations long after they're needed,
-        which can push tight-RAM laptops over the edge."""
-        try:
-            import torch as _torch, gc as _gc
-            _gc.collect()
-            if hasattr(_torch.backends, "mps") and \
-                    _torch.backends.mps.is_available():
-                if hasattr(_torch.mps, "synchronize"): _torch.mps.synchronize()
-                if hasattr(_torch.mps, "empty_cache"):  _torch.mps.empty_cache()
-            if _torch.cuda.is_available():
-                _torch.cuda.synchronize(); _torch.cuda.empty_cache()
-        except Exception:
-            pass
-
-    # Belt-and-braces GPU drain before the long CPU-only linking stage.
-    _drain_gpu()
-
-    # ── Linking ───────────────────────────────────────────────────────────
-    # Fast path: the input already carries a `particle` column (e.g.
-    # TrackMate CSV imported via load_external_locs with the TRACK_ID
-    # mapping turned on).  In that case there's nothing to link —
-    # we just rename the existing IDs to dense 0..N-1 integers and
-    # honour the min/max track-length filter.  Everything downstream
-    # then runs against TrackMate's tracks instead of FIREFLY's
-    # re-linked tracks, which is the supported way to get
-    # "TrackMate detection + linking, FIREFLY analytics".
-    if "particle" in locs.columns:
-        _log(f"\n── Linking (skipped — pre-linked input) ─────────")
-        _log(f"  Input CSV already has TRACK_ID — using upstream "
-             f"linker's tracks directly.")
-        _prog(50, "Using pre-linked tracks from CSV…")
-        import pandas as _pd
-        # Densify particle IDs to 0..N-1 so downstream code that
-        # assumes integer-indexable particles (some clustering /
-        # MSD paths) doesn't choke on TrackMate's wide ID space.
-        _id_map = {old: new for new, old in enumerate(
-            sorted(locs["particle"].unique()))}
-        tracks = locs.copy()
-        tracks["particle"] = tracks["particle"].map(_id_map).astype("int64")
-        # Apply min/max track-length filter the same way the real
-        # linker would — keeps stats comparable across paths.
-        _min_len = int(p.get("min_track_len", 0) or 0)
-        _max_len = p.get("max_track_len") or 0
-        try:    _max_len = int(_max_len)
-        except Exception: _max_len = 0
-        if _min_len > 0 or _max_len > 0:
-            _counts = tracks.groupby("particle").size()
-            _keep = _counts.index[(_counts >= max(1, _min_len)) &
-                                   ((_counts <= _max_len)
-                                    if _max_len > 0 else True)]
-            n_before = int(tracks["particle"].nunique())
-            tracks = tracks[tracks["particle"].isin(_keep)].reset_index(
-                drop=True)
-            n_after = int(tracks["particle"].nunique())
-            _log(f"  Track-length filter ({_min_len}–"
-                 f"{'∞' if _max_len == 0 else _max_len} frames): "
-                 f"{n_after:,} / {n_before:,} tracks kept")
-    else:
-        _log(f"\n── Linking ───────────────────────")
-        _log(f"  Linking {len(locs):,} localisations — single-threaded, "
-             f"may take several minutes at high density")
-        if len(locs) > 100_000:
-            _log(f"  NOTE: very high spot density ({len(locs):,} locs). "
-                 f"Consider raising minmass to reduce false positives.")
-        _prog(50, f"Linking {len(locs):,} localisations…")
-
-        # Opt-in auto search-range: estimate it from the motion before linking,
-        # then RESOLVE it into the request (so a re-ROI reproduces the same value
-        # instead of re-estimating on different locs).  Best-effort — any failure
-        # falls back to the fixed value.
-        if p.get("auto_search_range"):
+        # ── Drift correction (optional) ───────────────────────────────────────
+        drift_df = None
+        if p.get("drift_correct", False) and len(locs) > 0:
+            _log(f"\n── Drift correction ───────────────")
+            _prog(40, "Correcting drift…")
             try:
-                from firefly.analysis.fa_linking_auto import estimate_link_params
-                _sr_auto, _ = estimate_link_params(
-                    locs, memory=int(p["memory"]),
-                    min_len=int(p["min_track_len"]), log_cb=_log)
-                p["search_range"] = int(round(_sr_auto))
-            except Exception as _e:
-                _log(f"  Auto search-range failed ({type(_e).__name__}: {_e}); "
-                     f"using fixed {p.get('search_range')}px.")
-            p["auto_search_range"] = False        # resolved (or fell back)
+                locs, drift_df = correct_drift(
+                    locs, n_seg_frames=int(p.get("drift_segment", 500)))
+                atomic_to_csv(drift_df,
+                    os.path.join(extras_dir, f"{stem}_drift.csv"), index=False)
+                _log(f"  Drift correction applied  |  saved {stem}_drift.csv")
+                # Re-align the figure-background sample by the SAME per-frame drift
+                # we just removed from the localisations — otherwise make_figure's
+                # projection stays smeared by the drift while the overlaid tracks are
+                # sharp.  Image inputs only (a CSV/histogram background has no
+                # per-frame image to shift).
+                if proj_idx is not None and getattr(proj_sample, "ndim", 0) == 3:
+                    try:
+                        from firefly.analysis.fa_drift import align_frames_to_drift
+                        align_frames_to_drift(proj_sample, proj_idx, drift_df)
+                        _log("  Drift: re-aligned figure-background sample")
+                    except Exception as _pexc:
+                        _log(f"  NOTE: couldn't drift-align figure background "
+                             f"({_pexc})")
+            except Exception as exc:
+                _log(f"  WARN: drift correction failed — {exc}")
 
-        # Map linker [0, 1] progress onto the overall progress bar's 50–65%
-        # range so the user sees genuine per-frame motion instead of a
-        # multi-minute black box.
-        def _link_progress(frac: float):
-            try:    pct = 50 + int(frac * 15)
-            except Exception: pct = 50
-            _prog(pct, f"Linking… {frac*100:.0f} %")
+        _check_stop()
 
-        tracks = link_trajectories(
-            locs,
-            search_range=int(p["search_range"]),
-            memory=int(p["memory"]),
-            min_len=int(p["min_track_len"]),
-            max_len=p.get("max_track_len"),
-            # The GUI always records "linker"; the "trackpy" fallback only fires
-            # when REPLAYING a pre-linker manifest that has no linker key (those
-            # runs were trackpy-era), so it stays trackpy for replay fidelity.
-            # (The forward default, fa_enums.DEFAULT_LINKER, is also "trackpy".)
-            linker=str(p.get("linker", "trackpy")),
-            link_params=p.get("link_params") or {},
-            progress_cb=_link_progress,
-            stop_event=cancel_event)
-    n_tracks_found = tracks['particle'].nunique() if len(tracks) else 0
-    _log(f"  → {n_tracks_found:,} trajectories")
-    _check_stop()
-    # Drain again before the MSD / figure stages — linking can leave
-    # large temporaries behind that the next stage doesn't need.
-    _drain_gpu()
+        def _drain_gpu():
+            """Force a GPU cache drain.  Cheap, mostly defensive — calling
+            between heavy stages prevents PyTorch's caching allocator from
+            sitting on multi-GB allocations long after they're needed,
+            which can push tight-RAM laptops over the edge."""
+            try:
+                import torch as _torch, gc as _gc
+                _gc.collect()
+                if hasattr(_torch.backends, "mps") and \
+                        _torch.backends.mps.is_available():
+                    if hasattr(_torch.mps, "synchronize"): _torch.mps.synchronize()
+                    if hasattr(_torch.mps, "empty_cache"):  _torch.mps.empty_cache()
+                if _torch.cuda.is_available():
+                    _torch.cuda.synchronize(); _torch.cuda.empty_cache()
+            except Exception:
+                pass
 
-    if n_tracks_found == 0:
-        _log("")
-        _log("  ⚠  No trajectories were formed.  Likely causes:")
-        _log("     • minmass is too LOW → too many noise spots, "
-             "linker can't form sensible tracks")
-        _log("     • minmass is too HIGH → real spots filtered out, "
-             "nothing left to link")
-        _log("     • search_range too small for actual particle motion")
-        _log("     • If using a GPU backend and only chunk 1 produced "
-             "spots, MPS may be in a degraded state on this hw/os "
-             "combo — retry with backend='trackpy' to confirm.")
-        _log("")
-        _log("── Stopping analysis (nothing more to do) ──")
-        # Raise a sentinel — caller will turn this into a sensible payload.
-        raise _NoTracks({
-            "stem": stem, "out_dir": _win_disp_path(out_dir),
-            "figure_path": "", "n_tracks": 0, "n_locs": int(len(locs)),
-        })
+        # Belt-and-braces GPU drain before the long CPU-only linking stage.
+        _drain_gpu()
 
-    # ── MSD + diffusion ───────────────────────────────────────────────────
-    _log(f"\n── MSD & diffusion ───────────────")
-    _prog(65, "Computing MSD + fits…")
-    imsd_df, emsd_df, diff_df = compute_msd_and_fit(
-        tracks, px, fi,
-        max_lagtime=int(p["max_lagtime"]),
-        n_fit=int(p["n_fit"]),
-        workers=int(p["workers"]),
-        alpha_thresholds=tuple(p.get("alpha_thresholds", (0.5, 0.9, 1.1))))
-
-    # Optional: filter tracks by diffusion coefficient
-    if p.get("filter_d_enabled", False) and len(diff_df):
-        d_min = float(p.get("filter_d_min", 0.0))
-        d_max = float(p.get("filter_d_max", 1.0))
-        n_before = len(diff_df)
-        mask = diff_df["D"].between(d_min, d_max)
-        keep_pids = set(diff_df.loc[mask, "particle"])
-        diff_df = diff_df[mask].reset_index(drop=True)
-        tracks  = tracks[tracks["particle"].isin(keep_pids)]
-        _log(f"  Filter by D [{d_min}, {d_max}]: "
-             f"{n_before} → {len(diff_df)} tracks")
-
-    # Ready-to-plot clamped LogD column (palmTRACER-style D-coefficient clip):
-    # clip(log10(D), log10(clip_min), log10(clip_max)), NaN where D≤0.  Written to
-    # diffusion_summary.csv alongside the untouched raw D so downstream plots (and
-    # the palmTRACER export's LogD column) match FIREFLY's LogD graph.
-    if len(diff_df) and "D" in diff_df.columns:
-        import numpy as _np
-        _dl = float(p.get("dcoeff_clip_min", 0.00001) or 0.00001)
-        _dh = float(p.get("dcoeff_clip_max", 10.0) or 10.0)
-        _dv = diff_df["D"].to_numpy(dtype=float)
-        with _np.errstate(divide="ignore", invalid="ignore"):
-            _lg = _np.where(_dv > 0, _np.log10(_np.where(_dv > 0, _dv, 1.0)), _np.nan)
-        diff_df["logD_clipped"] = _np.clip(
-            _lg, _np.log10(_dl) if _dl > 0 else -5.0,
-            _np.log10(_dh) if _dh > 0 else 1.0)
-
-    # ── Secondary analyses ────────────────────────────────────────────────
-    _log(f"\n── Secondary analyses ────────────")
-    _prog(80, "Secondary analyses…")
-    # Subtract the SAME static localisation-error offset (4σ² = median MSD0) the
-    # MSD fit removed, so the JDD D's are localisation-error-corrected and agree
-    # with the MSD D instead of being inflated by σ²/Δt.
-    _loc_offset = 0.0
-    if "MSD0" in diff_df.columns:
-        _m = diff_df["MSD0"]
-        _m = _m[_m.notna() & (_m > 0)]
-        if len(_m):
-            _loc_offset = float(_m.median())
-    jdd = compute_jdd(tracks, px, fi,
-                      n_components=int(p.get("jdd_components", 2)),
-                      loc_offset_um2=_loc_offset)
-    ta  = compute_turning_angles(tracks)
-    try:
-        van_hove = compute_van_hove(tracks, px, lag_frames=1)
-    except Exception:
-        van_hove = None
-    try:
-        vacf = compute_vacf(tracks, fi, px, max_lag=10)
-    except Exception:
-        vacf = None
-    mf  = compute_mobile_fraction_over_time(
-        tracks, diff_df, fi,
-        d_threshold=float(p.get("mobile_d_threshold", 0.05)))
-    # Guarded like van_hove/vacf above: a degenerate cluster input (e.g. a
-    # stray non-finite coordinate that slipped through) must not crash an
-    # otherwise-complete run after linking + MSD already succeeded.  (#6)
-    try:
-        cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(
-            locs, px,
-            eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
-            min_samples=int(p.get("cluster_min_samples", 10)))
-    except Exception as _cl_exc:
-        _log(f"  WARN: cluster analysis failed ({_cl_exc}) — skipping it; the "
-             f"localisation/track/diffusion results are unaffected.")
-        cluster_labels, cluster_stats_df, cluster_xy = None, None, None
-    # Honest subsample note: compute_clusters caps DBSCAN at 250k localisations.
-    _cl_attrs = getattr(cluster_stats_df, "attrs", {}) or {}
-    cluster_subsampled_n = (int(_cl_attrs["n_used_locs"])
-                            if _cl_attrs.get("subsampled") else None)
-    if cluster_subsampled_n is not None:
-        _log(f"  WARN: cluster analysis sub-sampled to "
-             f"{cluster_subsampled_n:,} of "
-             f"{int(_cl_attrs.get('n_input_locs', 0)):,} localisations "
-             f"(250k cap) — cluster counts/areas reflect the subsample.")
-    # Pass n_frames so dwell τ uses the right-censored MLE (tracks still present
-    # at the final frame are right-censored, not completed events).
-    dwell_df, dwell_tau = compute_dwell_times(tracks, diff_df, fi,
-                                              n_frames=int(n_frames))
-    # MSS slope per track — merged into diff_df so the figure's MSS
-    # panel and downstream CSVs see it.  Skipped silently when there
-    # are no tracks long enough (compute_mss returns an empty frame).
-    try:
-        mss_df = compute_mss(tracks, px, fi)
-        if mss_df is not None and len(mss_df) > 0:
-            diff_df = diff_df.merge(mss_df, on="particle", how="left")
-            _log(f"  MSS slopes computed for {len(mss_df):,} tracks")
+        # ── Linking ───────────────────────────────────────────────────────────
+        # Fast path: the input already carries a `particle` column (e.g.
+        # TrackMate CSV imported via load_external_locs with the TRACK_ID
+        # mapping turned on).  In that case there's nothing to link —
+        # we just rename the existing IDs to dense 0..N-1 integers and
+        # honour the min/max track-length filter.  Everything downstream
+        # then runs against TrackMate's tracks instead of FIREFLY's
+        # re-linked tracks, which is the supported way to get
+        # "TrackMate detection + linking, FIREFLY analytics".
+        if "particle" in locs.columns:
+            _log(f"\n── Linking (skipped — pre-linked input) ─────────")
+            _log(f"  Input CSV already has TRACK_ID — using upstream "
+                 f"linker's tracks directly.")
+            _prog(50, "Using pre-linked tracks from CSV…")
+            import pandas as _pd
+            # Densify particle IDs to 0..N-1 so downstream code that
+            # assumes integer-indexable particles (some clustering /
+            # MSD paths) doesn't choke on TrackMate's wide ID space.
+            _id_map = {old: new for new, old in enumerate(
+                sorted(locs["particle"].unique()))}
+            tracks = locs.copy()
+            tracks["particle"] = tracks["particle"].map(_id_map).astype("int64")
+            # Apply min/max track-length filter the same way the real
+            # linker would — keeps stats comparable across paths.
+            _min_len = int(p.get("min_track_len", 0) or 0)
+            _max_len = p.get("max_track_len") or 0
+            try:    _max_len = int(_max_len)
+            except Exception: _max_len = 0
+            if _min_len > 0 or _max_len > 0:
+                _counts = tracks.groupby("particle").size()
+                _keep = _counts.index[(_counts >= max(1, _min_len)) &
+                                       ((_counts <= _max_len)
+                                        if _max_len > 0 else True)]
+                n_before = int(tracks["particle"].nunique())
+                tracks = tracks[tracks["particle"].isin(_keep)].reset_index(
+                    drop=True)
+                n_after = int(tracks["particle"].nunique())
+                _log(f"  Track-length filter ({_min_len}–"
+                     f"{'∞' if _max_len == 0 else _max_len} frames): "
+                     f"{n_after:,} / {n_before:,} tracks kept")
         else:
-            _log(f"  MSS: no tracks long enough — panel N will be empty")
-    except Exception as exc:
-        _log(f"  WARN: MSS computation failed: {exc}")
-    _check_stop()
+            _log(f"\n── Linking ───────────────────────")
+            _log(f"  Linking {len(locs):,} localisations — single-threaded, "
+                 f"may take several minutes at high density")
+            if len(locs) > 100_000:
+                _log(f"  NOTE: very high spot density ({len(locs):,} locs). "
+                     f"Consider raising minmass to reduce false positives.")
+            _prog(50, f"Linking {len(locs):,} localisations…")
 
-    # ── Render figure ─────────────────────────────────────────────────────
-    _log(f"\n── Saving ────────────────────────")
-    _prog(90, "Rendering figure…")
-    fig_theme    = p.get("fig_theme", "Dark")
-    fig_proj_cmap = p.get("fig_proj_cmap", "Inferno")
-    fig_traj_bg  = bool(p.get("fig_traj_bg", True))
-    # Multi-file batches (HYPER-FLY included) auto-enable FIREFLY_BULK_FIGURES in
-    # run_batch_analysis; FIREFLY_BULK_FIGURES=0 forces it off.  When set, figure
-    # output follows the separate "Batch / HYPER-FLY figure" settings instead of
-    # the single-sample ones — defaulting to the historical fast behaviour
-    # (110 DPI, no PDF, no per-panel PNGs) but configurable for full-quality
-    # batch output.
-    _bulk_figs = os.environ.get("FIREFLY_BULK_FIGURES", "0").strip().lower() in (
-        "1", "true", "yes", "on")
-    if _bulk_figs:
-        _eff_fig_dpi   = int(p.get("batch_fig_dpi", 110)) or 110
-        _eff_save_pdf  = bool(p.get("batch_fig_save_pdf", False))
-        _eff_per_panel = bool(p.get("batch_fig_per_panel", False))
-    else:
-        _eff_fig_dpi   = int(p.get("fig_dpi", 150)) or 150
-        _eff_save_pdf  = bool(p.get("fig_save_pdf", False))
-        _eff_per_panel = bool(p.get("fig_per_panel", False))
-    want_pdf = _eff_save_pdf
-    # Per-panel PNG rendering is the dominant figure-save cost (one full figure
-    # rasterisation per panel).  Only render the panels that will be written:
-    # none unless per-panel output is on, and just the selected subset when
-    # fig_single_panels narrows it.
-    # Which panels appear in the combined figure (and so are available to export):
-    # an empty / full selection → None = all panels (historical 6×3 layout).
-    _sel_panels = p.get("fig_single_panels")
-    combined_panels = set(_sel_panels) if _sel_panels else None
-    if _eff_per_panel:
-        want_panels = combined_panels      # export exactly the drawn panels
-    else:
-        want_panels = set()                # combined figure only, no per-panel PNGs
-    # The figure is a DERIVED artifact; the CSV tables below are the
-    # irreplaceable output.  A render exception must NOT discard a complete,
-    # already-computed run — degrade to "figure skipped" and continue to the
-    # (individually fault-tolerant) saves with fig_data=None.  (#5)
-    try:
-        fig_data = make_figure(
-            proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
-            fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
-            jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
-            cluster_labels=cluster_labels, cluster_locs=cluster_xy,
-            cluster_subsampled_n=cluster_subsampled_n,
-            dwell_df=dwell_df, dwell_tau=dwell_tau,
-            van_hove=van_hove, vacf=vacf,
-            return_pdf_bytes=want_pdf, want_panels=want_panels,
-            traj_background=fig_traj_bg, combined_panels=combined_panels)
-    except _Cancelled:
-        raise
-    except Exception as _fig_exc:
-        _log(f"  WARN: figure rendering failed ({_fig_exc}) — saving the data "
-             f"tables anyway; the figure will be missing.\n{traceback.format_exc()}")
-        fig_data = None
-    del proj_sample
+            # Opt-in auto search-range: estimate it from the motion before linking,
+            # then RESOLVE it into the request (so a re-ROI reproduces the same value
+            # instead of re-estimating on different locs).  Best-effort — any failure
+            # falls back to the fixed value.
+            if p.get("auto_search_range"):
+                try:
+                    from firefly.analysis.fa_linking_auto import estimate_link_params
+                    _sr_auto, _ = estimate_link_params(
+                        locs, memory=int(p["memory"]),
+                        min_len=int(p["min_track_len"]), log_cb=_log)
+                    p["search_range"] = int(round(_sr_auto))
+                except Exception as _e:
+                    _log(f"  Auto search-range failed ({type(_e).__name__}: {_e}); "
+                         f"using fixed {p.get('search_range')}px.")
+                p["auto_search_range"] = False        # resolved (or fell back)
 
-    # ── Save outputs ──────────────────────────────────────────────────────
-    _prog(95, "Saving outputs…")
-    try:
-        save_palmtracer_csvs(data_dir, stem, locs, tracks, diff_df, imsd_df,
-                             pixel_size_um=float(px),
-                             frame_interval_s=float(fi),
-                             width=stack_w, height=stack_h,
-                             n_frames=int(n_frames),
-                             logd_clip_min=float(p.get("dcoeff_clip_min", 0.00001) or 0.00001),
-                             logd_clip_max=float(p.get("dcoeff_clip_max", 10.0) or 10.0))
-        _log("  Saved (data/): PALM-Tracer CSVs")
-    except Exception as exc:
-        _log(f"  WARN: PALM-Tracer export failed: {exc}\n{traceback.format_exc()}")
+            # Map linker [0, 1] progress onto the overall progress bar's 50–65%
+            # range so the user sees genuine per-frame motion instead of a
+            # multi-minute black box.
+            def _link_progress(frac: float):
+                try:    pct = 50 + int(frac * 15)
+                except Exception: pct = 50
+                _prog(pct, f"Linking… {frac*100:.0f} %")
 
-    # Core CSV outputs.  Each one is wrapped in its own try/except so a
-    # single disk-write failure (commonly ENOSPC mid-batch on a near-
-    # full drive) doesn't tear the whole run down at the very last
-    # moment.  Without this, a 5-minute analysis that produced 224k
-    # localisations got lost because the disk filled up between
-    # localising and writing.
-    extras_saved = []
-    def _safe_to_csv(df_obj, path, label):
-        """Atomically write df_obj to `path`; log + clean up on
-        ENOSPC, OSError, PermissionError etc.  Returns True on success.
+            tracks = link_trajectories(
+                locs,
+                search_range=int(p["search_range"]),
+                memory=int(p["memory"]),
+                min_len=int(p["min_track_len"]),
+                max_len=p.get("max_track_len"),
+                # The GUI always records "linker"; the "trackpy" fallback only fires
+                # when REPLAYING a pre-linker manifest that has no linker key (those
+                # runs were trackpy-era), so it stays trackpy for replay fidelity.
+                # (The forward default, fa_enums.DEFAULT_LINKER, is also "trackpy".)
+                linker=str(p.get("linker", "trackpy")),
+                link_params=p.get("link_params") or {},
+                progress_cb=_link_progress,
+                stop_event=cancel_event)
+        n_tracks_found = tracks['particle'].nunique() if len(tracks) else 0
+        _log(f"  → {n_tracks_found:,} trajectories")
+        _check_stop()
+        # Drain again before the MSD / figure stages — linking can leave
+        # large temporaries behind that the next stage doesn't need.
+        _drain_gpu()
 
-        Writes to `<path>.tmp` first, then `os.replace()` — so a
-        partially-written file from a mid-write failure (e.g. disk full)
-        never appears at the final path, and downstream loaders can't
-        be tricked into accepting a truncated CSV.
-        """
-        tmp = path + ".tmp"
+        if n_tracks_found == 0:
+            _log("")
+            _log("  ⚠  No trajectories were formed.  Likely causes:")
+            _log("     • minmass is too LOW → too many noise spots, "
+                 "linker can't form sensible tracks")
+            _log("     • minmass is too HIGH → real spots filtered out, "
+                 "nothing left to link")
+            _log("     • search_range too small for actual particle motion")
+            _log("     • If using a GPU backend and only chunk 1 produced "
+                 "spots, MPS may be in a degraded state on this hw/os "
+                 "combo — retry with backend='trackpy' to confirm.")
+            _log("")
+            _log("── Stopping analysis (nothing more to do) ──")
+            # Raise a sentinel — caller will turn this into a sensible payload.
+            raise _NoTracks({
+                "stem": stem, "out_dir": _win_disp_path(out_dir),
+                "figure_path": "", "n_tracks": 0, "n_locs": int(len(locs)),
+            })
+
+        # ── MSD + diffusion ───────────────────────────────────────────────────
+        _log(f"\n── MSD & diffusion ───────────────")
+        _prog(65, "Computing MSD + fits…")
+        imsd_df, emsd_df, diff_df = compute_msd_and_fit(
+            tracks, px, fi,
+            max_lagtime=int(p["max_lagtime"]),
+            n_fit=int(p["n_fit"]),
+            workers=int(p["workers"]),
+            alpha_thresholds=tuple(p.get("alpha_thresholds", (0.5, 0.9, 1.1))))
+
+        # Optional: filter tracks by diffusion coefficient
+        if p.get("filter_d_enabled", False) and len(diff_df):
+            d_min = float(p.get("filter_d_min", 0.0))
+            d_max = float(p.get("filter_d_max", 1.0))
+            n_before = len(diff_df)
+            mask = diff_df["D"].between(d_min, d_max)
+            keep_pids = set(diff_df.loc[mask, "particle"])
+            diff_df = diff_df[mask].reset_index(drop=True)
+            tracks  = tracks[tracks["particle"].isin(keep_pids)]
+            _log(f"  Filter by D [{d_min}, {d_max}]: "
+                 f"{n_before} → {len(diff_df)} tracks")
+
+        # Ready-to-plot clamped LogD column (palmTRACER-style D-coefficient clip):
+        # clip(log10(D), log10(clip_min), log10(clip_max)), NaN where D≤0.  Written to
+        # diffusion_summary.csv alongside the untouched raw D so downstream plots (and
+        # the palmTRACER export's LogD column) match FIREFLY's LogD graph.
+        if len(diff_df) and "D" in diff_df.columns:
+            import numpy as _np
+            _dl = float(p.get("dcoeff_clip_min", 0.00001) or 0.00001)
+            _dh = float(p.get("dcoeff_clip_max", 10.0) or 10.0)
+            _dv = diff_df["D"].to_numpy(dtype=float)
+            with _np.errstate(divide="ignore", invalid="ignore"):
+                _lg = _np.where(_dv > 0, _np.log10(_np.where(_dv > 0, _dv, 1.0)), _np.nan)
+            diff_df["logD_clipped"] = _np.clip(
+                _lg, _np.log10(_dl) if _dl > 0 else -5.0,
+                _np.log10(_dh) if _dh > 0 else 1.0)
+
+        # ── Secondary analyses ────────────────────────────────────────────────
+        _log(f"\n── Secondary analyses ────────────")
+        _prog(80, "Secondary analyses…")
+        # Subtract the SAME static localisation-error offset (4σ² = median MSD0) the
+        # MSD fit removed, so the JDD D's are localisation-error-corrected and agree
+        # with the MSD D instead of being inflated by σ²/Δt.
+        _loc_offset = 0.0
+        if "MSD0" in diff_df.columns:
+            _m = diff_df["MSD0"]
+            _m = _m[_m.notna() & (_m > 0)]
+            if len(_m):
+                _loc_offset = float(_m.median())
+        jdd = compute_jdd(tracks, px, fi,
+                          n_components=int(p.get("jdd_components", 2)),
+                          loc_offset_um2=_loc_offset)
+        ta  = compute_turning_angles(tracks)
         try:
-            df_obj.to_csv(tmp, index=False)
-            os.replace(tmp, path)
-            extras_saved.append(label)
-            return True
-        except OSError as exc:
-            _log(f"  WARN: {label} save failed: {exc}")
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except Exception:
-                pass
-            return False
-        except Exception as exc:
-            _log(f"  WARN: {label} save failed: {exc}")
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except Exception:
-                pass
-            return False
-
-    _safe_to_csv(locs,
-                 os.path.join(extras_dir, f"{stem}_localisations.csv"),
-                 "locs")
-    _safe_to_csv(tracks,
-                 os.path.join(extras_dir, f"{stem}_trajectories.csv"),
-                 "trajectories")
-    _safe_to_csv(diff_df,
-                 os.path.join(extras_dir, f"{stem}_diffusion_summary.csv"),
-                 "diffusion summary")
-
-    # ── Additional per-experiment artifacts ────────────────────────────────
-    # The Compare tab reads these by name to plot JDD / dwell-time CDF /
-    # turning-angle / radial-distribution / mobile-fraction-over-time
-    # panels.  Previously they were computed for the single-sample figure
-    # but never persisted, so a FIREFLY run dropped silently out of the
-    # corresponding Compare-tab panels.
-    try:
-        # compute_msd_and_fit returns the ensemble curve as a Series
-        # indexed by lag frame, NOT a DataFrame.  Compare expects a
-        # DataFrame with columns `lag_frame` + `msd_um2` (matching the
-        # PALM-Tracer summary loader), so we convert here.
-        if emsd_df is not None and len(emsd_df):
-            import pandas as _pd
-            if isinstance(emsd_df, _pd.Series):
-                emsd_out = (emsd_df.to_frame("msd_um2")
-                                   .reset_index(names="lag_frame"))
+            van_hove = compute_van_hove(tracks, px, lag_frames=1)
+        except Exception:
+            van_hove = None
+        try:
+            vacf = compute_vacf(tracks, fi, px, max_lag=10)
+        except Exception:
+            vacf = None
+        mf  = compute_mobile_fraction_over_time(
+            tracks, diff_df, fi,
+            d_threshold=float(p.get("mobile_d_threshold", 0.05)))
+        # Guarded like van_hove/vacf above: a degenerate cluster input (e.g. a
+        # stray non-finite coordinate that slipped through) must not crash an
+        # otherwise-complete run after linking + MSD already succeeded.  (#6)
+        try:
+            cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(
+                locs, px,
+                eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
+                min_samples=int(p.get("cluster_min_samples", 10)))
+        except Exception as _cl_exc:
+            _log(f"  WARN: cluster analysis failed ({_cl_exc}) — skipping it; the "
+                 f"localisation/track/diffusion results are unaffected.")
+            cluster_labels, cluster_stats_df, cluster_xy = None, None, None
+        # Honest subsample note: compute_clusters caps DBSCAN at 250k localisations.
+        _cl_attrs = getattr(cluster_stats_df, "attrs", {}) or {}
+        cluster_subsampled_n = (int(_cl_attrs["n_used_locs"])
+                                if _cl_attrs.get("subsampled") else None)
+        if cluster_subsampled_n is not None:
+            _log(f"  WARN: cluster analysis sub-sampled to "
+                 f"{cluster_subsampled_n:,} of "
+                 f"{int(_cl_attrs.get('n_input_locs', 0)):,} localisations "
+                 f"(250k cap) — cluster counts/areas reflect the subsample.")
+        # Pass n_frames so dwell τ uses the right-censored MLE (tracks still present
+        # at the final frame are right-censored, not completed events).
+        dwell_df, dwell_tau = compute_dwell_times(tracks, diff_df, fi,
+                                                  n_frames=int(n_frames))
+        # MSS slope per track — merged into diff_df so the figure's MSS
+        # panel and downstream CSVs see it.  Skipped silently when there
+        # are no tracks long enough (compute_mss returns an empty frame).
+        try:
+            mss_df = compute_mss(tracks, px, fi)
+            if mss_df is not None and len(mss_df) > 0:
+                diff_df = diff_df.merge(mss_df, on="particle", how="left")
+                _log(f"  MSS slopes computed for {len(mss_df):,} tracks")
             else:
-                emsd_out = emsd_df
-            atomic_to_csv(emsd_out, 
-                os.path.join(extras_dir, f"{stem}_ensemble_msd.csv"),
-                index=False)
-            extras_saved.append("ensemble MSD")
-    except Exception as exc:
-        _log(f"  WARN: ensemble-MSD save failed: {exc}")
-    try:
-        if jdd:
-            def _jsonable(x):
-                # numpy scalars / arrays / pandas → JSON-friendly
-                if hasattr(x, "tolist"):    return x.tolist()
-                if isinstance(x, (set,)):   return list(x)
-                return x
-            payload = {k: _jsonable(v) for k, v in jdd.items()}
-            _atomic_write_json(                # tmp + os.replace (R2-5)
-                payload, os.path.join(extras_dir, f"{stem}_jdd.json"),
-                indent=2, default=str)
-            extras_saved.append("JDD")
-    except Exception as exc:
-        _log(f"  WARN: JDD save failed: {exc}")
-    try:
-        if van_hove is not None:
-            # Compact payload: the histogram + scalars for plotting, but NOT
-            # the (potentially huge) raw displacement arrays.
-            vh = {k: v for k, v in van_hove.items()
-                  if k not in ("displacements_um", "dx_um", "dy_um")}
-            vh = {k: (v.tolist() if hasattr(v, "tolist") else v)
-                  for k, v in vh.items()}
-            _atomic_write_json(                # tmp + os.replace (R2-5)
-                vh, os.path.join(extras_dir, f"{stem}_van_hove.json"),
-                indent=2, default=str)
-            extras_saved.append(
-                f"van Hove (alpha2={van_hove['non_gaussian_alpha2']:.3f})")
-    except Exception as exc:
-        _log(f"  WARN: van Hove save failed: {exc}")
+                _log(f"  MSS: no tracks long enough — panel N will be empty")
+        except Exception as exc:
+            _log(f"  WARN: MSS computation failed: {exc}")
+        _check_stop()
 
-    try:
-        if vacf is not None:
-            vc = {k: (v.tolist() if hasattr(v, "tolist") else v)
-                  for k, v in vacf.items()}
-            _atomic_write_json(                # tmp + os.replace (R2-5)
-                vc, os.path.join(extras_dir, f"{stem}_vacf.json"),
-                indent=2, default=str)
-            extras_saved.append(
-                f"VACF (persistence={vacf['persistence']:.3f})")
-    except Exception as exc:
-        _log(f"  WARN: VACF save failed: {exc}")
-    try:
-        if dwell_df is not None and len(dwell_df):
-            atomic_to_csv(dwell_df, 
-                os.path.join(extras_dir, f"{stem}_dwell_times.csv"),
-                index=False)
-            extras_saved.append("dwell times")
-    except Exception as exc:
-        _log(f"  WARN: dwell-times save failed: {exc}")
-    try:
-        if ta is not None and len(ta) > 0:
-            import pandas as _pd
-            atomic_to_csv(_pd.DataFrame({"turning_angle_deg": ta}),
-                os.path.join(extras_dir, f"{stem}_turning_angles.csv"),
-                index=False)
-            extras_saved.append("turning angles")
-            # Circular-statistics report — same keys as the MATLAB
-            # CircStat toolbox a supervisor will already know how to
-            # read.  Two columns: `statistic, value`.  All angle
-            # statistics in degrees; rates/dispersions in their natural
-            # units (R̄ is dimensionless on [0,1], κ is dimensionless,
-            # etc.).  Saved alongside the raw turning-angles CSV so
-            # downstream code can join them on filename stem.
+        # ── Render figure ─────────────────────────────────────────────────────
+        _log(f"\n── Saving ────────────────────────")
+        _prog(90, "Rendering figure…")
+        fig_theme    = p.get("fig_theme", "Dark")
+        fig_proj_cmap = p.get("fig_proj_cmap", "Inferno")
+        fig_traj_bg  = bool(p.get("fig_traj_bg", True))
+        # Multi-file batches (HYPER-FLY included) auto-enable FIREFLY_BULK_FIGURES in
+        # run_batch_analysis; FIREFLY_BULK_FIGURES=0 forces it off.  When set, figure
+        # output follows the separate "Batch / HYPER-FLY figure" settings instead of
+        # the single-sample ones — defaulting to the historical fast behaviour
+        # (110 DPI, no PDF, no per-panel PNGs) but configurable for full-quality
+        # batch output.
+        _bulk_figs = os.environ.get("FIREFLY_BULK_FIGURES", "0").strip().lower() in (
+            "1", "true", "yes", "on")
+        if _bulk_figs:
+            _eff_fig_dpi   = int(p.get("batch_fig_dpi", 110)) or 110
+            _eff_save_pdf  = bool(p.get("batch_fig_save_pdf", False))
+            _eff_per_panel = bool(p.get("batch_fig_per_panel", False))
+        else:
+            _eff_fig_dpi   = int(p.get("fig_dpi", 150)) or 150
+            _eff_save_pdf  = bool(p.get("fig_save_pdf", False))
+            _eff_per_panel = bool(p.get("fig_per_panel", False))
+        want_pdf = _eff_save_pdf
+        # Per-panel PNG rendering is the dominant figure-save cost (one full figure
+        # rasterisation per panel).  Only render the panels that will be written:
+        # none unless per-panel output is on, and just the selected subset when
+        # fig_single_panels narrows it.
+        # Which panels appear in the combined figure (and so are available to export):
+        # an empty / full selection → None = all panels (historical 6×3 layout).
+        _sel_panels = p.get("fig_single_panels")
+        combined_panels = set(_sel_panels) if _sel_panels else None
+        if _eff_per_panel:
+            want_panels = combined_panels      # export exactly the drawn panels
+        else:
+            want_panels = set()                # combined figure only, no per-panel PNGs
+        # The figure is a DERIVED artifact; the CSV tables below are the
+        # irreplaceable output.  A render exception must NOT discard a complete,
+        # already-computed run — degrade to "figure skipped" and continue to the
+        # (individually fault-tolerant) saves with fig_data=None.  (#5)
+        try:
+            fig_data = make_figure(
+                proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
+                fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
+                jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
+                cluster_labels=cluster_labels, cluster_locs=cluster_xy,
+                cluster_subsampled_n=cluster_subsampled_n,
+                dwell_df=dwell_df, dwell_tau=dwell_tau,
+                van_hove=van_hove, vacf=vacf,
+                return_pdf_bytes=want_pdf, want_panels=want_panels,
+                traj_background=fig_traj_bg, combined_panels=combined_panels)
+        except _Cancelled:
+            raise
+        except Exception as _fig_exc:
+            _log(f"  WARN: figure rendering failed ({_fig_exc}) — saving the data "
+                 f"tables anyway; the figure will be missing.\n{traceback.format_exc()}")
+            fig_data = None
+        del proj_sample
+
+        # ── Save outputs ──────────────────────────────────────────────────────
+        _prog(95, "Saving outputs…")
+        try:
+            save_palmtracer_csvs(data_dir, stem, locs, tracks, diff_df, imsd_df,
+                                 pixel_size_um=float(px),
+                                 frame_interval_s=float(fi),
+                                 width=stack_w, height=stack_h,
+                                 n_frames=int(n_frames),
+                                 logd_clip_min=float(p.get("dcoeff_clip_min", 0.00001) or 0.00001),
+                                 logd_clip_max=float(p.get("dcoeff_clip_max", 10.0) or 10.0))
+            _log("  Saved (data/): PALM-Tracer CSVs")
+        except Exception as exc:
+            _log(f"  WARN: PALM-Tracer export failed: {exc}\n{traceback.format_exc()}")
+
+        # Core CSV outputs.  Each one is wrapped in its own try/except so a
+        # single disk-write failure (commonly ENOSPC mid-batch on a near-
+        # full drive) doesn't tear the whole run down at the very last
+        # moment.  Without this, a 5-minute analysis that produced 224k
+        # localisations got lost because the disk filled up between
+        # localising and writing.
+        extras_saved = []
+        def _safe_to_csv(df_obj, path, label):
+            """Atomically write df_obj to `path`; log + clean up on
+            ENOSPC, OSError, PermissionError etc.  Returns True on success.
+
+            Writes to `<path>.tmp` first, then `os.replace()` — so a
+            partially-written file from a mid-write failure (e.g. disk full)
+            never appears at the final path, and downstream loaders can't
+            be tricked into accepting a truncated CSV.
+            """
+            tmp = path + ".tmp"
             try:
-                cs = compute_circular_statistics(ta)
-
-                # Circular-linear correlation: per-track mean turning
-                # angle vs that track's diffusion coefficient D.
-                # Computed only when we have both tracks (with ≥ 3
-                # frames each) AND a diff_df with a D column.  Tells
-                # the user "do tracks with stronger turning bias also
-                # have different diffusion behaviour?".
-                circ_lin = None
+                df_obj.to_csv(tmp, index=False)
+                os.replace(tmp, path)
+                extras_saved.append(label)
+                return True
+            except OSError as exc:
+                _log(f"  WARN: {label} save failed: {exc}")
                 try:
-                    if (tracks is not None and len(tracks) >= 3
-                            and diff_df is not None
-                            and "D" in diff_df.columns):
-                        pairs = compute_per_track_mean_angle(tracks)
-                        if pairs:
-                            d_map = dict(zip(
-                                diff_df["particle"].astype(int),
-                                diff_df["D"].astype(float)))
-                            ang_list, d_list = [], []
-                            for pid, mu_deg in pairs:
-                                d_val = d_map.get(int(pid))
-                                if d_val is None or not _np.isfinite(d_val):
-                                    continue
-                                ang_list.append(float(mu_deg))
-                                d_list.append(float(d_val))
-                            if len(ang_list) >= 3:
-                                circ_lin = _circ_lin_correlation(
-                                    ang_list, d_list)
-                except Exception as cl_exc:
-                    _log(f"  NOTE: circ-lin correlation skipped "
-                         f"({cl_exc}).")
-                    circ_lin = None
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
+                return False
+            except Exception as exc:
+                _log(f"  WARN: {label} save failed: {exc}")
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
+                return False
 
-                # Build the CSV: base stats followed by circ-lin rows
-                # (if available).  The CSV stays a 2-column file —
-                # supervisors can search for "circ_lin_" rows.
-                cs_items = list(cs.items())
-                if circ_lin is not None:
-                    cs_items.extend([
-                        ("circ_lin_angle_vs_D_r",
-                         circ_lin.get("r")),
-                        ("circ_lin_angle_vs_D_r_squared",
-                         circ_lin.get("r2")),
-                        ("circ_lin_angle_vs_D_chi2",
-                         circ_lin.get("test_stat")),
-                        ("circ_lin_angle_vs_D_df",
-                         circ_lin.get("df")),
-                        ("circ_lin_angle_vs_D_p",
-                         circ_lin.get("p")),
-                        ("circ_lin_angle_vs_D_n",
-                         circ_lin.get("n")),
-                    ])
-                cs_df = _pd.DataFrame(
-                    cs_items, columns=["statistic", "value"])
-                atomic_to_csv(cs_df, 
-                    os.path.join(extras_dir,
-                                 f"{stem}_circular_statistics.csv"),
+        _safe_to_csv(locs,
+                     os.path.join(extras_dir, f"{stem}_localisations.csv"),
+                     "locs")
+        _safe_to_csv(tracks,
+                     os.path.join(extras_dir, f"{stem}_trajectories.csv"),
+                     "trajectories")
+        _safe_to_csv(diff_df,
+                     os.path.join(extras_dir, f"{stem}_diffusion_summary.csv"),
+                     "diffusion summary")
+
+        # ── Additional per-experiment artifacts ────────────────────────────────
+        # The Compare tab reads these by name to plot JDD / dwell-time CDF /
+        # turning-angle / radial-distribution / mobile-fraction-over-time
+        # panels.  Previously they were computed for the single-sample figure
+        # but never persisted, so a FIREFLY run dropped silently out of the
+        # corresponding Compare-tab panels.
+        try:
+            # compute_msd_and_fit returns the ensemble curve as a Series
+            # indexed by lag frame, NOT a DataFrame.  Compare expects a
+            # DataFrame with columns `lag_frame` + `msd_um2` (matching the
+            # PALM-Tracer summary loader), so we convert here.
+            if emsd_df is not None and len(emsd_df):
+                import pandas as _pd
+                if isinstance(emsd_df, _pd.Series):
+                    emsd_out = (emsd_df.to_frame("msd_um2")
+                                       .reset_index(names="lag_frame"))
+                else:
+                    emsd_out = emsd_df
+                atomic_to_csv(emsd_out, 
+                    os.path.join(extras_dir, f"{stem}_ensemble_msd.csv"),
                     index=False)
-                extras_saved.append("circular statistics")
-                # Echo the key numbers into the run log so they show up
-                # in the live console without the user having to crack
-                # open the CSV.
-                _log(
-                    "  Circular stats : "
-                    f"n={cs['n']:,}  μ={cs['mean_direction_deg']:.2f}°  "
-                    f"R̄={cs['mean_resultant_length']:.3f}  "
-                    f"κ={cs['concentration_kappa']:.2f}  "
-                    f"Rayleigh p={cs['rayleigh_p']:.3g}")
-                if circ_lin is not None:
-                    _log(
-                        "  Circ-lin r (angle vs D): "
-                        f"r={circ_lin['r']:.4f}  "
-                        f"χ²({circ_lin['df']})={circ_lin['test_stat']:.3g}  "
-                        f"p={circ_lin['p']:.3g}  "
-                        f"n={circ_lin['n']:,} tracks")
-                # Supervisor-facing PDF: single A4 page with the polar
-                # histogram, plain-English interpretation, and the
-                # CircStat-named statistics table (now including the
-                # circ-lin correlation block if we computed one).
+                extras_saved.append("ensemble MSD")
+        except Exception as exc:
+            _log(f"  WARN: ensemble-MSD save failed: {exc}")
+        try:
+            if jdd:
+                def _jsonable(x):
+                    # numpy scalars / arrays / pandas → JSON-friendly
+                    if hasattr(x, "tolist"):    return x.tolist()
+                    if isinstance(x, (set,)):   return list(x)
+                    return x
+                payload = {k: _jsonable(v) for k, v in jdd.items()}
+                _atomic_write_json(                # tmp + os.replace (R2-5)
+                    payload, os.path.join(extras_dir, f"{stem}_jdd.json"),
+                    indent=2, default=str)
+                extras_saved.append("JDD")
+        except Exception as exc:
+            _log(f"  WARN: JDD save failed: {exc}")
+        try:
+            if van_hove is not None:
+                # Compact payload: the histogram + scalars for plotting, but NOT
+                # the (potentially huge) raw displacement arrays.
+                vh = {k: v for k, v in van_hove.items()
+                      if k not in ("displacements_um", "dx_um", "dy_um")}
+                vh = {k: (v.tolist() if hasattr(v, "tolist") else v)
+                      for k, v in vh.items()}
+                _atomic_write_json(                # tmp + os.replace (R2-5)
+                    vh, os.path.join(extras_dir, f"{stem}_van_hove.json"),
+                    indent=2, default=str)
+                extras_saved.append(
+                    f"van Hove (alpha2={van_hove['non_gaussian_alpha2']:.3f})")
+        except Exception as exc:
+            _log(f"  WARN: van Hove save failed: {exc}")
+
+        try:
+            if vacf is not None:
+                vc = {k: (v.tolist() if hasattr(v, "tolist") else v)
+                      for k, v in vacf.items()}
+                _atomic_write_json(                # tmp + os.replace (R2-5)
+                    vc, os.path.join(extras_dir, f"{stem}_vacf.json"),
+                    indent=2, default=str)
+                extras_saved.append(
+                    f"VACF (persistence={vacf['persistence']:.3f})")
+        except Exception as exc:
+            _log(f"  WARN: VACF save failed: {exc}")
+        try:
+            if dwell_df is not None and len(dwell_df):
+                atomic_to_csv(dwell_df, 
+                    os.path.join(extras_dir, f"{stem}_dwell_times.csv"),
+                    index=False)
+                extras_saved.append("dwell times")
+        except Exception as exc:
+            _log(f"  WARN: dwell-times save failed: {exc}")
+        try:
+            if ta is not None and len(ta) > 0:
+                import pandas as _pd
+                atomic_to_csv(_pd.DataFrame({"turning_angle_deg": ta}),
+                    os.path.join(extras_dir, f"{stem}_turning_angles.csv"),
+                    index=False)
+                extras_saved.append("turning angles")
+                # Circular-statistics report — same keys as the MATLAB
+                # CircStat toolbox a supervisor will already know how to
+                # read.  Two columns: `statistic, value`.  All angle
+                # statistics in degrees; rates/dispersions in their natural
+                # units (R̄ is dimensionless on [0,1], κ is dimensionless,
+                # etc.).  Saved alongside the raw turning-angles CSV so
+                # downstream code can join them on filename stem.
                 try:
-                    os.makedirs(fig_dir, exist_ok=True)
-                    save_circular_statistics_pdf(
-                        ta, cs,
-                        pdf_path=os.path.join(
-                            fig_dir, f"{stem}_circular_statistics.pdf"),
-                        file_label=stem,
-                        fig_theme=p.get("fig_theme", "Dark"),
-                        circ_lin_result=circ_lin)
-                    extras_saved.append("circular stats PDF")
-                except Exception as pdf_exc:
-                    _log(f"  WARN: circular-stats PDF failed: {pdf_exc}")
-            except Exception as cs_exc:
-                _log(f"  WARN: circular-stats save failed: {cs_exc}")
-    except Exception as exc:
-        _log(f"  WARN: turning-angles save failed: {exc}")
-    try:
-        if mf is not None and len(mf):
-            atomic_to_csv(mf, 
-                os.path.join(extras_dir, f"{stem}_mobile_fraction.csv"),
-                index=False)
-            extras_saved.append("mobile fraction")
-    except Exception as exc:
-        _log(f"  WARN: mobile-fraction save failed: {exc}")
-    try:
-        if cluster_stats_df is not None and len(cluster_stats_df):
-            atomic_to_csv(cluster_stats_df, 
-                os.path.join(extras_dir, f"{stem}_cluster_stats.csv"),
-                index=False)
-            extras_saved.append("cluster stats")
-    except Exception as exc:
-        _log(f"  WARN: cluster-stats save failed: {exc}")
-    # Per-loc cluster labels: needed by the Visualise-tab interactive
-    # cluster map (colours each localisation by its cluster_id, with -1
-    # = noise).  cluster_xy is the µm-coordinate array compute_clusters
-    # used internally, aligned with cluster_labels.
-    #
-    # We ALSO attach per-loc motion class (Immobile/Confined/Brownian/
-    # Directed/Unknown) so the Visualise tab can colour clusters by
-    # their dominant motion class — the user's natural follow-up
-    # question after "what is each cluster?".  Locs that didn't end
-    # up in any track (filtered out by min_track_len) are tagged
-    # "Unmatched" and rendered as noise downstream.
-    try:
-        if (cluster_labels is not None and cluster_xy is not None
-                and len(cluster_labels) == len(cluster_xy)):
-            import pandas as _pd
-            # Build the per-loc motion class array.  `tracks` rows are a
-            # subset of the post-link locs (some dropped by min_len),
-            # and within tracks each row has a `particle` ID we can
-            # join against `diff_df` for the motion column.
-            motion_per_loc = ["Unmatched"] * len(cluster_labels)
-            try:
-                if (tracks is not None and len(tracks) > 0
-                        and diff_df is not None
-                        and "motion" in diff_df.columns):
-                    # particle → motion mapping
-                    motion_map = dict(zip(
-                        diff_df["particle"].astype(int),
-                        diff_df["motion"].astype(str)))
-                    # Build a quick (frame, x_rounded, y_rounded) → motion
-                    # lookup so we can match track rows to original locs.
-                    # Rounding to 4 dp handles float32 round-trip noise
-                    # without falsely merging spatially-distinct locs.
-                    key_to_motion = {}
-                    for f_, x_, y_, p_ in zip(
-                            tracks["frame"].to_numpy(),
-                            tracks["x"].to_numpy(),
-                            tracks["y"].to_numpy(),
-                            tracks["particle"].to_numpy()):
-                        key = (int(f_), round(float(x_), 4),
-                               round(float(y_), 4))
-                        m_ = motion_map.get(int(p_), "Unknown")
-                        key_to_motion[key] = m_
-                    # locs columns at this point: x, y, frame, mass.
-                    loc_xy_um = cluster_xy  # already in µm
-                    # locs.x / locs.y are in PIXELS — convert to µm to
-                    # match the keys we built (tracks is also in pixels
-                    # though; let's match in pixel space directly).
-                    if (len(locs) == len(cluster_labels)
-                            and "frame" in locs.columns
-                            and "x" in locs.columns
-                            and "y" in locs.columns):
-                        for i, (f_, x_, y_) in enumerate(zip(
-                                locs["frame"].to_numpy(),
-                                locs["x"].to_numpy(),
-                                locs["y"].to_numpy())):
+                    cs = compute_circular_statistics(ta)
+
+                    # Circular-linear correlation: per-track mean turning
+                    # angle vs that track's diffusion coefficient D.
+                    # Computed only when we have both tracks (with ≥ 3
+                    # frames each) AND a diff_df with a D column.  Tells
+                    # the user "do tracks with stronger turning bias also
+                    # have different diffusion behaviour?".
+                    circ_lin = None
+                    try:
+                        if (tracks is not None and len(tracks) >= 3
+                                and diff_df is not None
+                                and "D" in diff_df.columns):
+                            pairs = compute_per_track_mean_angle(tracks)
+                            if pairs:
+                                d_map = dict(zip(
+                                    diff_df["particle"].astype(int),
+                                    diff_df["D"].astype(float)))
+                                ang_list, d_list = [], []
+                                for pid, mu_deg in pairs:
+                                    d_val = d_map.get(int(pid))
+                                    if d_val is None or not _np.isfinite(d_val):
+                                        continue
+                                    ang_list.append(float(mu_deg))
+                                    d_list.append(float(d_val))
+                                if len(ang_list) >= 3:
+                                    circ_lin = _circ_lin_correlation(
+                                        ang_list, d_list)
+                    except Exception as cl_exc:
+                        _log(f"  NOTE: circ-lin correlation skipped "
+                             f"({cl_exc}).")
+                        circ_lin = None
+
+                    # Build the CSV: base stats followed by circ-lin rows
+                    # (if available).  The CSV stays a 2-column file —
+                    # supervisors can search for "circ_lin_" rows.
+                    cs_items = list(cs.items())
+                    if circ_lin is not None:
+                        cs_items.extend([
+                            ("circ_lin_angle_vs_D_r",
+                             circ_lin.get("r")),
+                            ("circ_lin_angle_vs_D_r_squared",
+                             circ_lin.get("r2")),
+                            ("circ_lin_angle_vs_D_chi2",
+                             circ_lin.get("test_stat")),
+                            ("circ_lin_angle_vs_D_df",
+                             circ_lin.get("df")),
+                            ("circ_lin_angle_vs_D_p",
+                             circ_lin.get("p")),
+                            ("circ_lin_angle_vs_D_n",
+                             circ_lin.get("n")),
+                        ])
+                    cs_df = _pd.DataFrame(
+                        cs_items, columns=["statistic", "value"])
+                    atomic_to_csv(cs_df, 
+                        os.path.join(extras_dir,
+                                     f"{stem}_circular_statistics.csv"),
+                        index=False)
+                    extras_saved.append("circular statistics")
+                    # Echo the key numbers into the run log so they show up
+                    # in the live console without the user having to crack
+                    # open the CSV.
+                    _log(
+                        "  Circular stats : "
+                        f"n={cs['n']:,}  μ={cs['mean_direction_deg']:.2f}°  "
+                        f"R̄={cs['mean_resultant_length']:.3f}  "
+                        f"κ={cs['concentration_kappa']:.2f}  "
+                        f"Rayleigh p={cs['rayleigh_p']:.3g}")
+                    if circ_lin is not None:
+                        _log(
+                            "  Circ-lin r (angle vs D): "
+                            f"r={circ_lin['r']:.4f}  "
+                            f"χ²({circ_lin['df']})={circ_lin['test_stat']:.3g}  "
+                            f"p={circ_lin['p']:.3g}  "
+                            f"n={circ_lin['n']:,} tracks")
+                    # Supervisor-facing PDF: single A4 page with the polar
+                    # histogram, plain-English interpretation, and the
+                    # CircStat-named statistics table (now including the
+                    # circ-lin correlation block if we computed one).
+                    try:
+                        os.makedirs(fig_dir, exist_ok=True)
+                        save_circular_statistics_pdf(
+                            ta, cs,
+                            pdf_path=os.path.join(
+                                fig_dir, f"{stem}_circular_statistics.pdf"),
+                            file_label=stem,
+                            fig_theme=p.get("fig_theme", "Dark"),
+                            circ_lin_result=circ_lin)
+                        extras_saved.append("circular stats PDF")
+                    except Exception as pdf_exc:
+                        _log(f"  WARN: circular-stats PDF failed: {pdf_exc}")
+                except Exception as cs_exc:
+                    _log(f"  WARN: circular-stats save failed: {cs_exc}")
+        except Exception as exc:
+            _log(f"  WARN: turning-angles save failed: {exc}")
+        try:
+            if mf is not None and len(mf):
+                atomic_to_csv(mf, 
+                    os.path.join(extras_dir, f"{stem}_mobile_fraction.csv"),
+                    index=False)
+                extras_saved.append("mobile fraction")
+        except Exception as exc:
+            _log(f"  WARN: mobile-fraction save failed: {exc}")
+        try:
+            if cluster_stats_df is not None and len(cluster_stats_df):
+                atomic_to_csv(cluster_stats_df, 
+                    os.path.join(extras_dir, f"{stem}_cluster_stats.csv"),
+                    index=False)
+                extras_saved.append("cluster stats")
+        except Exception as exc:
+            _log(f"  WARN: cluster-stats save failed: {exc}")
+        # Per-loc cluster labels: needed by the Visualise-tab interactive
+        # cluster map (colours each localisation by its cluster_id, with -1
+        # = noise).  cluster_xy is the µm-coordinate array compute_clusters
+        # used internally, aligned with cluster_labels.
+        #
+        # We ALSO attach per-loc motion class (Immobile/Confined/Brownian/
+        # Directed/Unknown) so the Visualise tab can colour clusters by
+        # their dominant motion class — the user's natural follow-up
+        # question after "what is each cluster?".  Locs that didn't end
+        # up in any track (filtered out by min_track_len) are tagged
+        # "Unmatched" and rendered as noise downstream.
+        try:
+            if (cluster_labels is not None and cluster_xy is not None
+                    and len(cluster_labels) == len(cluster_xy)):
+                import pandas as _pd
+                # Build the per-loc motion class array.  `tracks` rows are a
+                # subset of the post-link locs (some dropped by min_len),
+                # and within tracks each row has a `particle` ID we can
+                # join against `diff_df` for the motion column.
+                motion_per_loc = ["Unmatched"] * len(cluster_labels)
+                try:
+                    if (tracks is not None and len(tracks) > 0
+                            and diff_df is not None
+                            and "motion" in diff_df.columns):
+                        # particle → motion mapping
+                        motion_map = dict(zip(
+                            diff_df["particle"].astype(int),
+                            diff_df["motion"].astype(str)))
+                        # Build a quick (frame, x_rounded, y_rounded) → motion
+                        # lookup so we can match track rows to original locs.
+                        # Rounding to 4 dp handles float32 round-trip noise
+                        # without falsely merging spatially-distinct locs.
+                        key_to_motion = {}
+                        for f_, x_, y_, p_ in zip(
+                                tracks["frame"].to_numpy(),
+                                tracks["x"].to_numpy(),
+                                tracks["y"].to_numpy(),
+                                tracks["particle"].to_numpy()):
                             key = (int(f_), round(float(x_), 4),
                                    round(float(y_), 4))
-                            m_ = key_to_motion.get(key)
-                            if m_:
-                                motion_per_loc[i] = m_
-            except Exception as exc_join:
-                _log(f"  NOTE: cluster ↔ motion join skipped "
-                     f"({exc_join}) — saving cluster_labels without "
-                     f"motion column.")
-            atomic_to_csv(_pd.DataFrame({
-                "loc_index": _np.arange(len(cluster_labels),
-                                         dtype=_np.int64),
-                "x_um":      _np.asarray(cluster_xy[:, 0],
-                                          dtype=_np.float32),
-                "y_um":      _np.asarray(cluster_xy[:, 1],
-                                          dtype=_np.float32),
-                "cluster_id": _np.asarray(cluster_labels,
-                                           dtype=_np.int32),
-                "motion":    motion_per_loc,
-            }),
-                os.path.join(extras_dir, f"{stem}_cluster_labels.csv"),
-                index=False)
-            extras_saved.append("cluster labels")
-    except Exception as exc:
-        _log(f"  WARN: cluster-labels save failed: {exc}")
-    # Per-run params — Compare relies on this for per-folder pixel size /
-    # frame interval, etc.  Matches the schema written by the
-    # PALM-Tracer summary loader.
-    try:
-        _atomic_write_json({               # tmp + os.replace (#28)
-                "stem":             stem,
-                "pixel_size_um":    float(px),
-                "frame_interval_s": float(fi),
-                # Linking / MSD knobs ACTUALLY used for this run.  Post-process
-                # reads these back so a re-ROI reproduces the original
-                # link → MSD result instead of silently falling back to today's
-                # defaults (the linking half of the calibration bug fixed in
-                # 2.67.0).  Stored under the same request-side keys the analysis
-                # entry point reads — see _postproc_linking_params.
-                "diameter":         int(p.get("diameter", _POSTPROC_LINK_DEFAULTS["diameter"])),
-                "search_range":     int(p.get("search_range", _POSTPROC_LINK_DEFAULTS["search_range"])),
-                "auto_search_range": bool(p.get("auto_search_range", False)),
-                "memory":           int(p.get("memory", _POSTPROC_LINK_DEFAULTS["memory"])),
-                "min_track_len":    int(p.get("min_track_len", _POSTPROC_LINK_DEFAULTS["min_track_len"])),
-                "max_track_len":    (int(p["max_track_len"]) if p.get("max_track_len") else None),
-                "max_lagtime":      int(p.get("max_lagtime", _POSTPROC_LINK_DEFAULTS["max_lagtime"])),
-                "n_fit":            int(p.get("n_fit", _POSTPROC_LINK_DEFAULTS["n_fit"])),
-                "linker":           str(p.get("linker", _POSTPROC_LINK_DEFAULTS["linker"])),
-                "link_params":      (p.get("link_params") or _POSTPROC_LINK_DEFAULTS["link_params"]),
-                "n_localisations":  int(len(locs)),
-                "n_tracks":         int(diff_df.shape[0]) if diff_df is not None else 0,
-                "n_frames":         int(n_frames),
-                "width":            int(stack_w),
-                "height":           int(stack_h),
-                "source":           "firefly",
-                # Detection threshold actually used (per-file when auto).
-                "auto_minmass":     bool(p.get("auto_minmass", False)),
-                "minmass_used":     (float(minmass_arg)
-                                     if minmass_arg is not None else None),
-                "minmass_method":   (mm_diag.get("method") if mm_diag else "manual"),
-                "minmass_sensitivity": (mm_diag.get("sensitivity") if mm_diag else None),
-                "minmass_n_candidates": (mm_diag.get("n_candidates") if mm_diag else None),
-                # Linkability-sweep diagnostics (None on the static fallback).
-                "minmass_n_good":   (mm_diag.get("n_good") if mm_diag else None),
-                "minmass_spurious_rate": (mm_diag.get("spurious_rate") if mm_diag else None),
-                "minmass_score":    (mm_diag.get("score") if mm_diag else None),
-                "minmass_noise_floor": (mm_diag.get("noise_floor") if mm_diag else None),
-                "backend":          p.get("backend"),
-                # Path to the original input file/folder — Post-process
-                # tab uses this to reload a background image.  Stored as
-                # absolute path so the source location survives folder moves.
-                "input_file":       os.path.abspath(p.get("file", "")) if p.get("file") else None,
-            }, os.path.join(extras_dir, f"{stem}_params.json"), indent=2)
-        extras_saved.append("params")
-    except Exception as exc:
-        _log(f"  WARN: params save failed: {exc}")
-
-    # Auto-threshold audit histogram (always written when auto picked a value).
-    if mm_diag is not None and mm_diag.get("_log_masses") is not None:
-        try:
-            from firefly.analysis.fa_localize import render_minmass_audit
-            render_minmass_audit(
-                mm_diag,
-                os.path.join(extras_dir, f"{stem}_minmass_hist.png"),
-                theme=p.get("theme", "Dark"), stem=stem)
-            extras_saved.append("minmass_hist")
+                            m_ = motion_map.get(int(p_), "Unknown")
+                            key_to_motion[key] = m_
+                        # locs columns at this point: x, y, frame, mass.
+                        loc_xy_um = cluster_xy  # already in µm
+                        # locs.x / locs.y are in PIXELS — convert to µm to
+                        # match the keys we built (tracks is also in pixels
+                        # though; let's match in pixel space directly).
+                        if (len(locs) == len(cluster_labels)
+                                and "frame" in locs.columns
+                                and "x" in locs.columns
+                                and "y" in locs.columns):
+                            for i, (f_, x_, y_) in enumerate(zip(
+                                    locs["frame"].to_numpy(),
+                                    locs["x"].to_numpy(),
+                                    locs["y"].to_numpy())):
+                                key = (int(f_), round(float(x_), 4),
+                                       round(float(y_), 4))
+                                m_ = key_to_motion.get(key)
+                                if m_:
+                                    motion_per_loc[i] = m_
+                except Exception as exc_join:
+                    _log(f"  NOTE: cluster ↔ motion join skipped "
+                         f"({exc_join}) — saving cluster_labels without "
+                         f"motion column.")
+                atomic_to_csv(_pd.DataFrame({
+                    "loc_index": _np.arange(len(cluster_labels),
+                                             dtype=_np.int64),
+                    "x_um":      _np.asarray(cluster_xy[:, 0],
+                                              dtype=_np.float32),
+                    "y_um":      _np.asarray(cluster_xy[:, 1],
+                                              dtype=_np.float32),
+                    "cluster_id": _np.asarray(cluster_labels,
+                                               dtype=_np.int32),
+                    "motion":    motion_per_loc,
+                }),
+                    os.path.join(extras_dir, f"{stem}_cluster_labels.csv"),
+                    index=False)
+                extras_saved.append("cluster labels")
         except Exception as exc:
-            _log(f"  WARN: auto-threshold audit save failed: {exc}")
+            _log(f"  WARN: cluster-labels save failed: {exc}")
+        # Per-run params — Compare relies on this for per-folder pixel size /
+        # frame interval, etc.  Matches the schema written by the
+        # PALM-Tracer summary loader.
+        try:
+            _atomic_write_json({               # tmp + os.replace (#28)
+                    "stem":             stem,
+                    "pixel_size_um":    float(px),
+                    "frame_interval_s": float(fi),
+                    # Linking / MSD knobs ACTUALLY used for this run.  Post-process
+                    # reads these back so a re-ROI reproduces the original
+                    # link → MSD result instead of silently falling back to today's
+                    # defaults (the linking half of the calibration bug fixed in
+                    # 2.67.0).  Stored under the same request-side keys the analysis
+                    # entry point reads — see _postproc_linking_params.
+                    "diameter":         int(p.get("diameter", _POSTPROC_LINK_DEFAULTS["diameter"])),
+                    "search_range":     int(p.get("search_range", _POSTPROC_LINK_DEFAULTS["search_range"])),
+                    "auto_search_range": bool(p.get("auto_search_range", False)),
+                    "memory":           int(p.get("memory", _POSTPROC_LINK_DEFAULTS["memory"])),
+                    "min_track_len":    int(p.get("min_track_len", _POSTPROC_LINK_DEFAULTS["min_track_len"])),
+                    "max_track_len":    (int(p["max_track_len"]) if p.get("max_track_len") else None),
+                    "max_lagtime":      int(p.get("max_lagtime", _POSTPROC_LINK_DEFAULTS["max_lagtime"])),
+                    "n_fit":            int(p.get("n_fit", _POSTPROC_LINK_DEFAULTS["n_fit"])),
+                    "linker":           str(p.get("linker", _POSTPROC_LINK_DEFAULTS["linker"])),
+                    "link_params":      (p.get("link_params") or _POSTPROC_LINK_DEFAULTS["link_params"]),
+                    "n_localisations":  int(len(locs)),
+                    "n_tracks":         int(diff_df.shape[0]) if diff_df is not None else 0,
+                    "n_frames":         int(n_frames),
+                    "width":            int(stack_w),
+                    "height":           int(stack_h),
+                    "source":           "firefly",
+                    # Detection threshold actually used (per-file when auto).
+                    "auto_minmass":     bool(p.get("auto_minmass", False)),
+                    "minmass_used":     (float(minmass_arg)
+                                         if minmass_arg is not None else None),
+                    "minmass_method":   (mm_diag.get("method") if mm_diag else "manual"),
+                    "minmass_sensitivity": (mm_diag.get("sensitivity") if mm_diag else None),
+                    "minmass_n_candidates": (mm_diag.get("n_candidates") if mm_diag else None),
+                    # Linkability-sweep diagnostics (None on the static fallback).
+                    "minmass_n_good":   (mm_diag.get("n_good") if mm_diag else None),
+                    "minmass_spurious_rate": (mm_diag.get("spurious_rate") if mm_diag else None),
+                    "minmass_score":    (mm_diag.get("score") if mm_diag else None),
+                    "minmass_noise_floor": (mm_diag.get("noise_floor") if mm_diag else None),
+                    "backend":          p.get("backend"),
+                    # Path to the original input file/folder — Post-process
+                    # tab uses this to reload a background image.  Stored as
+                    # absolute path so the source location survives folder moves.
+                    "input_file":       os.path.abspath(p.get("file", "")) if p.get("file") else None,
+                }, os.path.join(extras_dir, f"{stem}_params.json"), indent=2)
+            extras_saved.append("params")
+        except Exception as exc:
+            _log(f"  WARN: params save failed: {exc}")
 
-    _log(f"  Saved (firefly_extras/): {', '.join(extras_saved)}")
+        # Auto-threshold audit histogram (always written when auto picked a value).
+        if mm_diag is not None and mm_diag.get("_log_masses") is not None:
+            try:
+                from firefly.analysis.fa_localize import render_minmass_audit
+                render_minmass_audit(
+                    mm_diag,
+                    os.path.join(extras_dir, f"{stem}_minmass_hist.png"),
+                    theme=p.get("theme", "Dark"), stem=stem)
+                extras_saved.append("minmass_hist")
+            except Exception as exc:
+                _log(f"  WARN: auto-threshold audit save failed: {exc}")
 
-    figure_path = ""
-    fig_dpi = _eff_fig_dpi
-    try:
-        figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
-        fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
-    except Exception as e:
-        _log(f"  WARN: figure save failed: {e}")
+        _log(f"  Saved (firefly_extras/): {', '.join(extras_saved)}")
+
         figure_path = ""
-
-    # Optional: vector PDF copy of the combined figure
-    if want_pdf and fig_data and fig_data.get("pdf_bytes"):
+        fig_dpi = _eff_fig_dpi
         try:
-            pdf_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.pdf")
-            with open(pdf_path, "wb") as _fh:
-                _fh.write(fig_data["pdf_bytes"])
-            _log(f"  Saved (figures/): vector PDF")
+            figure_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.png")
+            fig_data["combined"].save(figure_path, dpi=(fig_dpi, fig_dpi))
         except Exception as e:
-            _log(f"  WARN: PDF save failed: {e}")
+            _log(f"  WARN: figure save failed: {e}")
+            figure_path = ""
 
-    # Optional: per-panel PNGs (one image per labelled panel of the grid).
-    # The user can filter which panels get written via the Figures tab's
-    # "Single-sample panels to export individually" checkbox grid.
-    if _eff_per_panel and fig_data and fig_data.get("panels"):
+        # Optional: vector PDF copy of the combined figure
+        if want_pdf and fig_data and fig_data.get("pdf_bytes"):
+            try:
+                pdf_path = os.path.join(fig_dir, f"{stem}_sptpalm_figure.pdf")
+                with open(pdf_path, "wb") as _fh:
+                    _fh.write(fig_data["pdf_bytes"])
+                _log(f"  Saved (figures/): vector PDF")
+            except Exception as e:
+                _log(f"  WARN: PDF save failed: {e}")
+
+        # Optional: per-panel PNGs (one image per labelled panel of the grid).
+        # The user can filter which panels get written via the Figures tab's
+        # "Single-sample panels to export individually" checkbox grid.
+        if _eff_per_panel and fig_data and fig_data.get("panels"):
+            try:
+                allowed = p.get("fig_single_panels")
+                if allowed is None:
+                    wanted_keys = list(fig_data["panels"].keys())
+                else:
+                    allowed_set = set(allowed)
+                    wanted_keys = [k for k in fig_data["panels"].keys()
+                                   if k in allowed_set]
+                panel_dir = os.path.join(fig_dir, "panels")
+                os.makedirs(panel_dir, exist_ok=True)
+                n_saved = 0
+                for ltr in wanted_keys:
+                    fig_data["panels"][ltr].save(
+                        os.path.join(panel_dir, f"{stem}_panel_{ltr}.png"),
+                        dpi=(fig_dpi, fig_dpi))
+                    n_saved += 1
+                _log(f"  Saved (figures/panels/): {n_saved} panel PNGs")
+            except Exception as e:
+                _log(f"  WARN: per-panel save failed: {e}")
+
+        # ── Reproducibility manifest ──────────────────────────────────────────
+        # Write a self-contained JSON next to the outputs that records the
+        # exact parameters used + input-file checksum + FIREFLY version + git
+        # SHA + host info, so the run can be exactly replayed later via the
+        # "Load manifest…" button on the Import tab.
+        manifest_path = ""
         try:
-            allowed = p.get("fig_single_panels")
-            if allowed is None:
-                wanted_keys = list(fig_data["panels"].keys())
-            else:
-                allowed_set = set(allowed)
-                wanted_keys = [k for k in fig_data["panels"].keys()
-                               if k in allowed_set]
-            panel_dir = os.path.join(fig_dir, "panels")
-            os.makedirs(panel_dir, exist_ok=True)
-            n_saved = 0
-            for ltr in wanted_keys:
-                fig_data["panels"][ltr].save(
-                    os.path.join(panel_dir, f"{stem}_panel_{ltr}.png"),
-                    dpi=(fig_dpi, fig_dpi))
-                n_saved += 1
-            _log(f"  Saved (figures/panels/): {n_saved} panel PNGs")
+            manifest_path = _write_run_manifest(
+                out_dir=out_dir, stem=stem, fpath=fpath, params=p,
+                resolved_minmass=(float(minmass_arg)
+                                  if (p.get("auto_minmass", False)
+                                      and minmass_arg is not None) else None))
+            _log(f"  Saved (root): {os.path.basename(manifest_path)}")
         except Exception as e:
-            _log(f"  WARN: per-panel save failed: {e}")
+            _log(f"  WARN: manifest write failed: {e}")
 
-    # ── Reproducibility manifest ──────────────────────────────────────────
-    # Write a self-contained JSON next to the outputs that records the
-    # exact parameters used + input-file checksum + FIREFLY version + git
-    # SHA + host info, so the run can be exactly replayed later via the
-    # "Load manifest…" button on the Import tab.
-    manifest_path = ""
-    try:
-        manifest_path = _write_run_manifest(
-            out_dir=out_dir, stem=stem, fpath=fpath, params=p,
-            resolved_minmass=(float(minmass_arg)
-                              if (p.get("auto_minmass", False)
-                                  and minmass_arg is not None) else None))
-        _log(f"  Saved (root): {os.path.basename(manifest_path)}")
-    except Exception as e:
-        _log(f"  WARN: manifest write failed: {e}")
+        _log(f"\n  Output folder: {out_dir}")
+        _prog(100, "Complete!")
 
-    _log(f"\n  Output folder: {out_dir}")
-    _prog(100, "Complete!")
+        # ── Summary stats for the GUI results panel ──────────────────────────
+        # Computed defensively so a partial pipeline still returns a valid
+        # payload (e.g. when filter-by-D produced an empty diff_df).
+        summary = {
+            "n_tracks":     int(diff_df.shape[0]) if diff_df is not None else 0,
+            "n_locs":       int(len(locs))         if locs    is not None else 0,
+            "median_d":     None,
+            "median_alpha": None,
+            "median_loc_sigma_nm": None,
+            "nongauss_alpha2": None,
+            "vacf_persistence": None,
+            "motion_counts": {},
+            "mobile_fraction": None,
+            "n_clusters":   0,
+            "dwell_tau_s":  None,
+            "frames":       int(n_frames),
+            "px_um":        float(px),
+            "fi_s":         float(fi),
+        }
+        try:
+            if diff_df is not None and len(diff_df):
+                if "D" in diff_df.columns:
+                    summary["median_d"] = float(diff_df["D"].median())
+                if "alpha" in diff_df.columns:
+                    summary["median_alpha"] = float(diff_df["alpha"].median())
+                if "motion" in diff_df.columns:
+                    summary["motion_counts"] = {
+                        str(k): int(v) for k, v
+                        in diff_df["motion"].value_counts().to_dict().items()
+                    }
+                if "D" in diff_df.columns:
+                    d_thresh = float(p.get("mobile_d_threshold", 0.05))
+                    # Match the canonical definition used by the mobile-fraction
+                    # panel and the mob/immob ratio (fa_diffusion): D >= threshold
+                    # over FINITE, POSITIVE D only.  The old `(D > thresh).mean()`
+                    # used strict `>` and counted NaN-D failed fits in the
+                    # denominator (NaN > t is False), so the headline number was
+                    # biased low and disagreed with its own panel.  (#9)
+                    _d = diff_df["D"].to_numpy(dtype=float)
+                    _valid = np.isfinite(_d) & (_d > 0)
+                    summary["mobile_fraction"] = (
+                        float((_d[_valid] >= d_thresh).mean())
+                        if _valid.any() else None)
+                if "loc_sigma_nm" in diff_df.columns:
+                    _ls = diff_df["loc_sigma_nm"].dropna()
+                    if len(_ls):
+                        summary["median_loc_sigma_nm"] = float(_ls.median())
+            if van_hove is not None:
+                try:
+                    summary["nongauss_alpha2"] = float(
+                        van_hove["non_gaussian_alpha2"])
+                except Exception:
+                    pass
+            if vacf is not None:
+                try:
+                    summary["vacf_persistence"] = float(vacf["persistence"])
+                except Exception:
+                    pass
+            if cluster_stats_df is not None and len(cluster_stats_df):
+                summary["n_clusters"] = int(len(cluster_stats_df))
+            if cluster_subsampled_n is not None:
+                summary["cluster_subsampled_n"] = cluster_subsampled_n
+            if dwell_tau is not None:
+                try:
+                    summary["dwell_tau_s"] = float(dwell_tau)
+                except Exception:
+                    pass
+        except Exception:
+            # Best-effort: don't let a stats-computation hiccup break the run
+            pass
 
-    # ── Summary stats for the GUI results panel ──────────────────────────
-    # Computed defensively so a partial pipeline still returns a valid
-    # payload (e.g. when filter-by-D produced an empty diff_df).
-    summary = {
-        "n_tracks":     int(diff_df.shape[0]) if diff_df is not None else 0,
-        "n_locs":       int(len(locs))         if locs    is not None else 0,
-        "median_d":     None,
-        "median_alpha": None,
-        "median_loc_sigma_nm": None,
-        "nongauss_alpha2": None,
-        "vacf_persistence": None,
-        "motion_counts": {},
-        "mobile_fraction": None,
-        "n_clusters":   0,
-        "dwell_tau_s":  None,
-        "frames":       int(n_frames),
-        "px_um":        float(px),
-        "fi_s":         float(fi),
-    }
-    try:
-        if diff_df is not None and len(diff_df):
-            if "D" in diff_df.columns:
-                summary["median_d"] = float(diff_df["D"].median())
-            if "alpha" in diff_df.columns:
-                summary["median_alpha"] = float(diff_df["alpha"].median())
-            if "motion" in diff_df.columns:
-                summary["motion_counts"] = {
-                    str(k): int(v) for k, v
-                    in diff_df["motion"].value_counts().to_dict().items()
-                }
-            if "D" in diff_df.columns:
-                d_thresh = float(p.get("mobile_d_threshold", 0.05))
-                # Match the canonical definition used by the mobile-fraction
-                # panel and the mob/immob ratio (fa_diffusion): D >= threshold
-                # over FINITE, POSITIVE D only.  The old `(D > thresh).mean()`
-                # used strict `>` and counted NaN-D failed fits in the
-                # denominator (NaN > t is False), so the headline number was
-                # biased low and disagreed with its own panel.  (#9)
-                _d = diff_df["D"].to_numpy(dtype=float)
-                _valid = np.isfinite(_d) & (_d > 0)
-                summary["mobile_fraction"] = (
-                    float((_d[_valid] >= d_thresh).mean())
-                    if _valid.any() else None)
-            if "loc_sigma_nm" in diff_df.columns:
-                _ls = diff_df["loc_sigma_nm"].dropna()
-                if len(_ls):
-                    summary["median_loc_sigma_nm"] = float(_ls.median())
-        if van_hove is not None:
-            try:
-                summary["nongauss_alpha2"] = float(
-                    van_hove["non_gaussian_alpha2"])
-            except Exception:
-                pass
-        if vacf is not None:
-            try:
-                summary["vacf_persistence"] = float(vacf["persistence"])
-            except Exception:
-                pass
-        if cluster_stats_df is not None and len(cluster_stats_df):
-            summary["n_clusters"] = int(len(cluster_stats_df))
-        if cluster_subsampled_n is not None:
-            summary["cluster_subsampled_n"] = cluster_subsampled_n
-        if dwell_tau is not None:
-            try:
-                summary["dwell_tau_s"] = float(dwell_tau)
-            except Exception:
-                pass
-    except Exception:
-        # Best-effort: don't let a stats-computation hiccup break the run
-        pass
+        # ── Super-resolution reconstruction (deliverable) ────────────────────
+        # Render the full localisation cloud into a high-res image — the canonical
+        # PALM/STORM output.  Derived artifact: a failure must never break the run.
+        try:
+            if locs is not None and len(locs) and {"x", "y"} <= set(locs.columns):
+                from firefly.analysis.fa_render import render_superres
+                import matplotlib.image as _mpimg
+                try:
+                    _field = (int(proj_sample.shape[-2]), int(proj_sample.shape[-1]))
+                except Exception:
+                    _field = None
+                _sr = render_superres(
+                    locs["x"].to_numpy(), locs["y"].to_numpy(), px,
+                    sr_nm=float(p.get("superres_nm", 20.0) or 20.0),
+                    blur_nm=float(p.get("superres_blur_nm", 20.0) or 20.0),
+                    field_px=_field)
+                if _sr.size > 1 and (_sr > 0).any():
+                    _vmax = max(float(_np.percentile(_sr[_sr > 0], 99.5)), 1e-9)
+                    os.makedirs(fig_dir, exist_ok=True)
+                    _sr_path = os.path.join(fig_dir, f"{stem}_superres.png")
+                    _mpimg.imsave(_sr_path, _sr, cmap="inferno",
+                                  vmin=0.0, vmax=_vmax, origin="lower")
+                    summary["superres_png"] = os.path.basename(_sr_path)
+                    _log(f"  Saved (figures/): super-resolution reconstruction "
+                         f"({_sr.shape[1]}×{_sr.shape[0]} px)")
+        except Exception as _sr_exc:
+            _log(f"  WARN: super-resolution render failed: {_sr_exc}")
 
-    # ── Super-resolution reconstruction (deliverable) ────────────────────
-    # Render the full localisation cloud into a high-res image — the canonical
-    # PALM/STORM output.  Derived artifact: a failure must never break the run.
-    try:
-        if locs is not None and len(locs) and {"x", "y"} <= set(locs.columns):
-            from firefly.analysis.fa_render import render_superres
-            import matplotlib.image as _mpimg
-            try:
-                _field = (int(proj_sample.shape[-2]), int(proj_sample.shape[-1]))
-            except Exception:
-                _field = None
-            _sr = render_superres(
-                locs["x"].to_numpy(), locs["y"].to_numpy(), px,
-                sr_nm=float(p.get("superres_nm", 20.0) or 20.0),
-                blur_nm=float(p.get("superres_blur_nm", 20.0) or 20.0),
-                field_px=_field)
-            if _sr.size > 1 and (_sr > 0).any():
-                _vmax = max(float(_np.percentile(_sr[_sr > 0], 99.5)), 1e-9)
-                os.makedirs(fig_dir, exist_ok=True)
-                _sr_path = os.path.join(fig_dir, f"{stem}_superres.png")
-                _mpimg.imsave(_sr_path, _sr, cmap="inferno",
-                              vmin=0.0, vmax=_vmax, origin="lower")
-                summary["superres_png"] = os.path.basename(_sr_path)
-                _log(f"  Saved (figures/): super-resolution reconstruction "
-                     f"({_sr.shape[1]}×{_sr.shape[0]} px)")
-    except Exception as _sr_exc:
-        _log(f"  WARN: super-resolution render failed: {_sr_exc}")
+        # ── Quality-control metrics ──────────────────────────────────────────
+        # Cheap to compute from data we already have; surfaced as a QC panel
+        # in the GUI so the user can catch dud runs at a glance.
+        qc: dict = {"flags": []}
+        try:
+            n_locs    = int(len(locs)) if locs is not None else 0
+            n_tracked = 0
+            gap_frac  = None
+            median_len = None
+            stuck_frac = None
+            avg_locs_pf = None
+            if tracks is not None and len(tracks) > 0:
+                n_tracked = int(len(tracks))
+                # Track-length distribution (frames per particle)
+                lens = tracks.groupby("particle").size()
+                median_len = float(lens.median())
+                # Gap rate: a track has a gap when its frame range > its length
+                try:
+                    frames_per_p = tracks.groupby("particle")["frame"]
+                    spans = frames_per_p.max() - frames_per_p.min() + 1
+                    gap_mask = spans > lens
+                    gap_frac = float(gap_mask.mean())
+                except Exception:
+                    pass
+            if diff_df is not None and len(diff_df) > 0 and "D" in diff_df.columns:
+                stuck_frac = float((diff_df["D"] < 1e-3).mean())
+            if n_locs and n_frames:
+                avg_locs_pf = float(n_locs) / float(n_frames)
+            link_ratio = (float(n_tracked) / n_locs) if n_locs else None
 
-    # ── Quality-control metrics ──────────────────────────────────────────
-    # Cheap to compute from data we already have; surfaced as a QC panel
-    # in the GUI so the user can catch dud runs at a glance.
-    qc: dict = {"flags": []}
-    try:
-        n_locs    = int(len(locs)) if locs is not None else 0
-        n_tracked = 0
-        gap_frac  = None
-        median_len = None
-        stuck_frac = None
-        avg_locs_pf = None
-        if tracks is not None and len(tracks) > 0:
-            n_tracked = int(len(tracks))
-            # Track-length distribution (frames per particle)
-            lens = tracks.groupby("particle").size()
-            median_len = float(lens.median())
-            # Gap rate: a track has a gap when its frame range > its length
-            try:
-                frames_per_p = tracks.groupby("particle")["frame"]
-                spans = frames_per_p.max() - frames_per_p.min() + 1
-                gap_mask = spans > lens
-                gap_frac = float(gap_mask.mean())
-            except Exception:
-                pass
-        if diff_df is not None and len(diff_df) > 0 and "D" in diff_df.columns:
-            stuck_frac = float((diff_df["D"] < 1e-3).mean())
-        if n_locs and n_frames:
-            avg_locs_pf = float(n_locs) / float(n_frames)
-        link_ratio = (float(n_tracked) / n_locs) if n_locs else None
+            # Total spatial extent of the corrected drift over the movie (nm) — a
+            # QC read on how much stage/sample drift was present.  Only available
+            # when drift correction ran.
+            drift_total_nm = None
+            if drift_df is not None and len(drift_df) > 1:
+                try:
+                    ddx = drift_df["dx"].to_numpy(dtype=float)
+                    ddy = drift_df["dy"].to_numpy(dtype=float)
+                    span = float(np.hypot(ddx.max() - ddx.min(),
+                                          ddy.max() - ddy.min()))
+                    drift_total_nm = span * float(px) * 1000.0
+                except Exception:
+                    drift_total_nm = None
 
-        # Total spatial extent of the corrected drift over the movie (nm) — a
-        # QC read on how much stage/sample drift was present.  Only available
-        # when drift correction ran.
-        drift_total_nm = None
-        if drift_df is not None and len(drift_df) > 1:
-            try:
-                ddx = drift_df["dx"].to_numpy(dtype=float)
-                ddy = drift_df["dy"].to_numpy(dtype=float)
-                span = float(np.hypot(ddx.max() - ddx.min(),
-                                      ddy.max() - ddy.min()))
-                drift_total_nm = span * float(px) * 1000.0
-            except Exception:
-                drift_total_nm = None
+            qc.update({
+                "n_locs":              n_locs,
+                "n_tracked_locs":      n_tracked,
+                "link_ratio":          link_ratio,
+                "avg_locs_per_frame":  avg_locs_pf,
+                "median_track_length": median_len,
+                "gap_fraction":        gap_frac,
+                "stuck_fraction":      stuck_frac,
+                "drift_total_nm":      drift_total_nm,
+            })
 
-        qc.update({
-            "n_locs":              n_locs,
-            "n_tracked_locs":      n_tracked,
-            "link_ratio":          link_ratio,
-            "avg_locs_per_frame":  avg_locs_pf,
-            "median_track_length": median_len,
-            "gap_fraction":        gap_frac,
-            "stuck_fraction":      stuck_frac,
-            "drift_total_nm":      drift_total_nm,
+            # Threshold-based flags — surface as warnings in the GUI
+            flags: list[dict] = []
+            if link_ratio is not None and link_ratio < 0.10:
+                flags.append({"level": "warn",
+                    "msg": f"Only {link_ratio*100:.1f}% of localisations were "
+                           "linked into tracks — consider raising minmass or "
+                           "lowering search_range."})
+            if avg_locs_pf is not None and avg_locs_pf > 800:
+                flags.append({"level": "warn",
+                    "msg": f"Very high localisation density "
+                           f"({avg_locs_pf:.0f} locs/frame).  Linking accuracy "
+                           "degrades above ~1000/frame; consider raising minmass."})
+            if median_len is not None and median_len < 6:
+                flags.append({"level": "warn",
+                    "msg": f"Median track length is only {median_len:.1f} "
+                           "frames — MSD fits will be noisy.  Lower memory or "
+                           "search_range, or raise minmass."})
+            if stuck_frac is not None and stuck_frac > 0.30:
+                flags.append({"level": "warn",
+                    "msg": f"{stuck_frac*100:.1f}% of tracks have "
+                           "D < 1e-3 µm²/s (likely stuck / aggregated).  "
+                           "Consider enabling Filter-by-D in the sidebar."})
+            if gap_frac is not None and gap_frac > 0.50:
+                flags.append({"level": "info",
+                    "msg": f"{gap_frac*100:.1f}% of tracks contain gaps.  "
+                           "OK for blinking PALM probes; suspicious for "
+                           "constitutive markers."})
+            if drift_total_nm is not None and drift_total_nm > 500:
+                flags.append({"level": "info",
+                    "msg": f"{drift_total_nm:.0f} nm of sample drift was corrected "
+                           "over the acquisition — large drift can still leave "
+                           "residual blur; inspect the drift trace if D looks high."})
+            # Surface the silent caveats so a result isn't quietly misread.
+            if cluster_subsampled_n:
+                flags.append({"level": "info",
+                    "msg": f"Cluster analysis used a {int(cluster_subsampled_n):,}-"
+                           "localisation sub-sample (250k cap) — the cluster "
+                           "counts / areas / densities reflect that sub-sample, "
+                           "not every localisation."})
+            if _roi_skipped:
+                flags.append({"level": "warn",
+                    "msg": "ROI was SKIPPED — its polygon extends past this movie's "
+                           "frame (drawn on a differently-sized movie), so the WHOLE "
+                           "frame was analysed.  Re-draw the ROI on this movie if you "
+                           "meant to mask a region."})
+            if (p.get("auto_minmass", False) and avg_locs_pf is not None
+                    and avg_locs_pf > 40):
+                flags.append({"level": "info",
+                    "msg": f"Dense field ({avg_locs_pf:.0f} locs/frame) with "
+                           "auto-threshold — the auto minmass is less reliable above "
+                           "~40 emitters/frame; set minmass manually if detection "
+                           "looks off."})
+            qc["flags"] = flags
+        except Exception:
+            pass
+        summary["qc"] = qc
+
+        # ── Persist the headline metrics as a single machine-readable file ───
+        # Everything the GUI results panel shows (counts, median D/alpha, loc
+        # precision, alpha2, persistence, mobile fraction, QC flags) in one JSON,
+        # so a batch of N runs can be aggregated by globbing
+        # firefly_extras/*_summary_metrics.json — no need to re-open each CSV.
+        try:
+            _sm = dict(summary)
+            _sm["stem"] = stem
+            _atomic_write_json(                # tmp + os.replace (#28)
+                _sm, os.path.join(extras_dir, f"{stem}_summary_metrics.json"),
+                indent=2, default=str)
+        except Exception as exc:
+            _log(f"  WARN: summary-metrics save failed: {exc}")
+
+        _payloads.append({
+            "stem":        stem,
+            "out_dir":     _win_disp_path(out_dir),
+            "figure_path": _win_disp_path(figure_path),
+            "summary":     summary,
+            # Legacy top-level keys preserved for compatibility with callers
+            # that haven't been updated yet.
+            "n_tracks":    summary["n_tracks"],
+            "n_locs":      summary["n_locs"],
         })
 
-        # Threshold-based flags — surface as warnings in the GUI
-        flags: list[dict] = []
-        if link_ratio is not None and link_ratio < 0.10:
-            flags.append({"level": "warn",
-                "msg": f"Only {link_ratio*100:.1f}% of localisations were "
-                       "linked into tracks — consider raising minmass or "
-                       "lowering search_range."})
-        if avg_locs_pf is not None and avg_locs_pf > 800:
-            flags.append({"level": "warn",
-                "msg": f"Very high localisation density "
-                       f"({avg_locs_pf:.0f} locs/frame).  Linking accuracy "
-                       "degrades above ~1000/frame; consider raising minmass."})
-        if median_len is not None and median_len < 6:
-            flags.append({"level": "warn",
-                "msg": f"Median track length is only {median_len:.1f} "
-                       "frames — MSD fits will be noisy.  Lower memory or "
-                       "search_range, or raise minmass."})
-        if stuck_frac is not None and stuck_frac > 0.30:
-            flags.append({"level": "warn",
-                "msg": f"{stuck_frac*100:.1f}% of tracks have "
-                       "D < 1e-3 µm²/s (likely stuck / aggregated).  "
-                       "Consider enabling Filter-by-D in the sidebar."})
-        if gap_frac is not None and gap_frac > 0.50:
-            flags.append({"level": "info",
-                "msg": f"{gap_frac*100:.1f}% of tracks contain gaps.  "
-                       "OK for blinking PALM probes; suspicious for "
-                       "constitutive markers."})
-        if drift_total_nm is not None and drift_total_nm > 500:
-            flags.append({"level": "info",
-                "msg": f"{drift_total_nm:.0f} nm of sample drift was corrected "
-                       "over the acquisition — large drift can still leave "
-                       "residual blur; inspect the drift trace if D looks high."})
-        # Surface the silent caveats so a result isn't quietly misread.
-        if cluster_subsampled_n:
-            flags.append({"level": "info",
-                "msg": f"Cluster analysis used a {int(cluster_subsampled_n):,}-"
-                       "localisation sub-sample (250k cap) — the cluster "
-                       "counts / areas / densities reflect that sub-sample, "
-                       "not every localisation."})
-        if _roi_skipped:
-            flags.append({"level": "warn",
-                "msg": "ROI was SKIPPED — its polygon extends past this movie's "
-                       "frame (drawn on a differently-sized movie), so the WHOLE "
-                       "frame was analysed.  Re-draw the ROI on this movie if you "
-                       "meant to mask a region."})
-        if (p.get("auto_minmass", False) and avg_locs_pf is not None
-                and avg_locs_pf > 40):
-            flags.append({"level": "info",
-                "msg": f"Dense field ({avg_locs_pf:.0f} locs/frame) with "
-                       "auto-threshold — the auto minmass is less reliable above "
-                       "~40 emitters/frame; set minmass manually if detection "
-                       "looks off."})
-        qc["flags"] = flags
-    except Exception:
-        pass
-    summary["qc"] = qc
-
-    # ── Persist the headline metrics as a single machine-readable file ───
-    # Everything the GUI results panel shows (counts, median D/alpha, loc
-    # precision, alpha2, persistence, mobile fraction, QC flags) in one JSON,
-    # so a batch of N runs can be aggregated by globbing
-    # firefly_extras/*_summary_metrics.json — no need to re-open each CSV.
-    try:
-        _sm = dict(summary)
-        _sm["stem"] = stem
-        _atomic_write_json(                # tmp + os.replace (#28)
-            _sm, os.path.join(extras_dir, f"{stem}_summary_metrics.json"),
-            indent=2, default=str)
-    except Exception as exc:
-        _log(f"  WARN: summary-metrics save failed: {exc}")
-
-    return {
-        "stem":        stem,
-        "out_dir":     _win_disp_path(out_dir),
-        "figure_path": _win_disp_path(figure_path),
-        "summary":     summary,
-        # Legacy top-level keys preserved for compatibility with callers
-        # that haven't been updated yet.
-        "n_tracks":    summary["n_tracks"],
-        "n_locs":      summary["n_locs"],
-    }
+    # One ROI → the run's payload, exactly as before.  Several → report the first
+    # replicate but carry them all so the caller can surface every output folder.
+    if not _payloads:
+        raise RuntimeError("no ROI replicate produced a result")
+    if _multi_roi:
+        # The shared prologue pre-created <out>/<stem>/ (+ figures, data,
+        # firefly_extras) for the ordinary single-run case, but every replicate
+        # wrote to <out>/<stem>_<label>/ instead — drop the empty husk so the
+        # output folder shows only the real per-cell results.
+        try:
+            _husk = _win_long_path(os.path.join(raw_out_dir, _stem_base))
+            for _sub in ("figures", "data", "firefly_extras"):
+                _sd = os.path.join(_husk, _sub)
+                if os.path.isdir(_sd) and not os.listdir(_sd):
+                    os.rmdir(_sd)
+            if os.path.isdir(_husk) and not os.listdir(_husk):
+                os.rmdir(_husk)
+        except Exception:
+            pass
+    if len(_payloads) == 1:
+        return _payloads[0]
+    _combined = dict(_payloads[0])
+    _combined["roi_replicates"] = _payloads
+    return _combined
 
 
 # ══════════════════════════════════════════════════════════════════════════════

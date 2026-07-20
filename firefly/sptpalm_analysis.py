@@ -11,7 +11,7 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.19"
+__version__ = "2.76.44-rc.20"
 # v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
@@ -141,9 +141,16 @@ __version__ = "2.76.44-rc.19"
 #           toggle).  If yes, each ROI runs as its OWN single-ROI analysis to its
 #           own output folder (<stem>_cell1/2… or an optional per-ROI label), so
 #           two cells never pool into each other's D-values — they land as separate
-#           replicates in the Analysis tab.  Fan-out is at the params level
-#           (params_builder.expand_roi_replicates); the worker is unchanged.  Off /
-#           single-ROI keeps the old union-into-one-region behaviour.
+#           replicates in the Analysis tab.  Off / single-ROI keeps the old
+#           union-into-one-region behaviour.  (27) FIX the multi-ROI prompt never
+#           appeared: "already decided" was inferred from a key `commit()` ALWAYS
+#           writes, so any file that had ever saved an ROI was silently marked as
+#           answered.  The choice is now recorded explicitly.  (28) PERF a movie
+#           with several ROIs is decoded + localised ONCE instead of once per cell:
+#           the worker splits internally (`_roi_replicate_jobs`) and loops only the
+#           per-ROI half (mask → drift → link → analyse → outputs), so each cell
+#           still gets a fully independent output.  Verified byte-identical on the
+#           single-ROI path, and two ROIs partition the localisations exactly.
 # v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
 #           a new Log-D clip range.  Highlights since the last stable (2.76.38):
 #           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a

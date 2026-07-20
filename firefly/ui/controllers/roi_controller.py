@@ -124,17 +124,21 @@ class RoiController(QObject):
         self._threshold   = float(spec.get("roi_threshold", self._threshold))
         self._mask_mode   = spec.get("roi_mask_mode", self._mask_mode)
         self._bg_sigma    = float(spec.get("roi_bg_sigma", self._bg_sigma))
-        # Split-replicates + labels are per-FILE only (never in the global default),
-        # so a saved override carrying the key means the user already decided.
+        # Split-replicates + labels are per-FILE only (never in the global default).
+        # "Decided" must be an EXPLICIT record of the user answering (toggle or
+        # prompt) — inferring it from the presence of `roi_split_replicates` marked
+        # every file that had ever saved ANY ROI as decided (commit always writes
+        # that key), which silently suppressed the prompt when a 2nd ROI was added.
         self._split_replicates = bool(spec.get("roi_split_replicates", False))
         self._roi_labels = list(spec.get("roi_labels") or [])
-        self._split_decided = "roi_split_replicates" in spec
+        self._split_decided = bool(spec.get("roi_split_decided", False))
 
     def _current_spec(self):
         return {"roi_mode": self._roi_mode, "roi_auto_method": self._auto_method,
                 "roi_threshold": self._threshold, "roi_mask_mode": self._mask_mode,
                 "roi_bg_sigma": self._bg_sigma,
                 "roi_split_replicates": self._split_replicates,
+                "roi_split_decided": self._split_decided,
                 "roi_labels": list(self._roi_labels)}
 
     @staticmethod
