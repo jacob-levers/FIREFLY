@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.76.44 — 15 Jul 2026
+## v2.76.44 — 21 Jul 2026
 
 ### Fixed
 

@@ -11,8 +11,17 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44-rc.20"
-# v2.76.44 — (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
+__version__ = "2.76.44"
+# v2.76.44 — STABLE.  Consolidates the 2.76.44-rc.1 … rc.20 pre-release series.
+#           Headline changes since 2.76.43: the Visualiser loads big/awkward runs
+#           without freezing (and drift-corrects its max projection); Preferences →
+#           Figures gained per-graph styles; the Analysis tab's live figures got a
+#           compute/render split that makes restyling ~30× faster (and fixed a
+#           report-blocking crash + panels showing the wrong graph); the updater no
+#           longer downloads twice; and multiple ROIs on one movie can be analysed
+#           as individual replicates — localised once, one output per cell.
+#           Detail:
+#           (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
 #           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
 #           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
 #           to cp1252 → latin-1, so those files load.  (2) FIX updater progress
