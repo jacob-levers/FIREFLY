@@ -68,9 +68,13 @@ class RoiController(QObject):
         self._img_token = 0
         self._editing = False
         # ── view (proj ↔ raw) + scrub ─────────────────────────────────────
-        self._view_mode = "proj"        # "proj" | "raw"
+        self._view_mode = "proj"        # "proj" | "raw" | "green"
         self._n_frames = 0
         self._frame_idx = 0
+        # ── companion "green" image as a third view (see what the ROI covers) ─
+        self._green_path = ""           # sister image beside this file, if any
+        self._green_img = None          # lazily loaded, on the stack's pixel grid
+        self._green_note = ""           # provenance / why it couldn't be shown
         # ── per-file ROI settings (transient until commit) ────────────────
         self._roi_mode = "Auto threshold"
         self._auto_method = "Li"
@@ -348,6 +352,7 @@ class RoiController(QObject):
         self._raw_frame = None
         self._mask_proj = None
         self._mask_proj_mode = ""
+        self._detect_green(self._file)        # offer the companion image as a view
         self._load_background(self._file)     # sets self._proj + n_frames, renders proj
         self._recompute_mask()
         if self._s is not None:               # pick up the latest sidebar minmass
@@ -395,7 +400,12 @@ class RoiController(QObject):
         """(Re)render the active source (max projection or the current raw frame)
         with the current colormap into the display image + notify."""
         from firefly.ui.controllers.params.preview_loader import render_projection
-        src = self._raw_frame if self._view_mode == "raw" else self._proj
+        if self._view_mode == "raw":
+            src = self._raw_frame
+        elif self._view_mode == "green":
+            src = self._green_img
+        else:
+            src = self._proj
         self._image = None
         self._img_w = self._img_h = 0
         if src is not None:
@@ -409,10 +419,13 @@ class RoiController(QObject):
         self._img_token += 1
         self.imageChanged.emit()
 
-    # ── view: max projection ↔ raw frame + scrub ──────────────────────────
-    @Property("QStringList", constant=True)
+    # ── view: max projection ↔ raw frame ↔ companion green image + scrub ───
+    @Property("QStringList", notify=viewChanged)
     def viewModes(self):
-        return ["Max projection", "Raw frames"]
+        modes = ["Max projection", "Raw frames"]
+        if self._green_path:
+            modes.append("Green image")
+        return modes
 
     @Property(str, notify=viewChanged)
     def viewMode(self):
@@ -420,12 +433,20 @@ class RoiController(QObject):
 
     @Slot(str)
     def setViewMode(self, mode):
-        m = "raw" if str(mode).lower().startswith("raw") else "proj"
+        low = str(mode).lower()
+        if low.startswith("raw"):
+            m = "raw"
+        elif low.startswith("green") and self._green_path:
+            m = "green"
+        else:
+            m = "proj"
         if m == self._view_mode:
             return
         self._view_mode = m
         if m == "raw" and self._raw_frame is None:
             self._load_frame(self._frame_idx)
+        elif m == "green" and self._green_img is None:
+            self._load_green()
         self._render_display()
         self._recompute_mask()        # mask follows the displayed source (raw ↔ proj)
         if self._detect_on:
@@ -444,6 +465,8 @@ class RoiController(QObject):
     def frameLabel(self):
         if self._view_mode == "raw" and self._n_frames > 0:
             return f"frame {self._frame_idx + 1} / {self._n_frames}"
+        if self._view_mode == "green":
+            return self._green_note or self.greenName
         return "max projection"
 
     @Slot(int)
@@ -468,6 +491,51 @@ class RoiController(QObject):
             self._raw_frame = sampled_frame(self._file, i)
         except Exception:
             self._raw_frame = None
+
+    # ── companion "green" image view ──────────────────────────────────────
+    # Some recordings ship a companion widefield/marker image (…_green.tif)
+    # beside them.  Offering it as a third view lets you SEE the cell the ROI
+    # threshold is meant to cover — and in Sister-TIFF mode the green overlay
+    # is built from this very image, so mask + backdrop are the same picture.
+    def _sister_suffix(self):
+        return (self._s.get_str("analysis/roi_sister_suffix", "_green")
+                if self._s else "_green")
+
+    def _detect_green(self, path):
+        """Note whether a companion image exists (cheap path probe only — the
+        pixels are loaded lazily, the first time the view is selected)."""
+        self._green_path = ""
+        self._green_img = None
+        self._green_note = ""
+        if not path:
+            return
+        try:
+            from firefly.analysis.fa_roi import find_sister_roi_path
+            self._green_path = find_sister_roi_path(path, self._sister_suffix()) or ""
+        except Exception:
+            self._green_path = ""
+
+    def _load_green(self):
+        """Load the companion image onto the stack's pixel grid, so the mask
+        overlay and any drawn polygons land where they do in the other views."""
+        self._green_img = None
+        self._green_note = ""
+        if not self._green_path:
+            return
+        try:
+            from firefly.analysis.fa_roi import load_sister_image
+            target = self._proj.shape if self._proj is not None else None
+            arr, note = load_sister_image(self._green_path, target)
+        except Exception as exc:
+            self._green_note = f"Couldn't load companion image: {exc}"
+            self.statusMessage.emit(self._green_note)
+            return
+        if arr is None:
+            self._green_note = note
+            self.statusMessage.emit(note)
+            return
+        self._green_img = arr
+        self._green_note = f"{self.greenName}{note}"
 
     # ── colormap ──────────────────────────────────────────────────────────
     @Property("QStringList", constant=True)
@@ -626,6 +694,16 @@ class RoiController(QObject):
     @Property(str, notify=maskChanged)
     def sisterStatus(self):
         return self._sister_status
+
+    # ── companion "green" image view ──────────────────────────────────────
+    @Property(bool, notify=viewChanged)
+    def hasGreenImage(self):
+        return bool(self._green_path)
+
+    @Property(str, notify=viewChanged)
+    def greenName(self):
+        import os
+        return os.path.basename(self._green_path) if self._green_path else ""
 
     def _mask_projection(self):
         """The projection the mask is thresholded on, per the mask mode (Max ≈

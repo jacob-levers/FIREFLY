@@ -277,14 +277,21 @@ Item {
 
                         // view toggle
                         ColumnLayout {
-                            visible: Roi.nFrames > 1
+                            visible: Roi.nFrames > 1 || Roi.hasGreenImage
                             Layout.fillWidth: true; spacing: sc.sp2
                             PanelLabel { text: "VIEW" }
                             Segmented {
                                 Layout.fillWidth: true
-                                options: [{ v: "proj", t: "Max proj" }, { v: "raw", t: "Raw frames" }]
+                                // "Green" appears only when a companion image
+                                // sits beside this recording
+                                options: {
+                                    var o = [{ v: "proj", t: "Max proj" }]
+                                    if (Roi.nFrames > 1) o.push({ v: "raw", t: "Raw frames" })
+                                    if (Roi.hasGreenImage) o.push({ v: "green", t: "Green" })
+                                    return o
+                                }
                                 value: Roi.viewMode
-                                onPicked: (v) => Roi.setViewMode(v === "raw" ? "Raw frames" : "Max projection")
+                                onPicked: (v) => Roi.setViewMode(v)
                             }
                         }
 

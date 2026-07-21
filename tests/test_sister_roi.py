@@ -10,7 +10,8 @@ import pytest
 
 tifffile = pytest.importorskip("tifffile")
 
-from firefly.analysis.fa_roi import find_sister_roi_path, build_sister_roi_mask
+from firefly.analysis.fa_roi import (find_sister_roi_path, build_sister_roi_mask,
+                                     load_sister_image)
 
 
 def _write_tif(path, arr):
@@ -126,3 +127,39 @@ def test_missing_file_returns_reason(tmp_path):
     mask, note = build_sister_roi_mask(str(tmp_path / "nope_green.tif"),
                                        target_shape=(50, 50))
     assert mask is None and "could not load" in note
+
+
+# ── the shared loader (ROI viewer's "Green image" view + the mask builder) ────
+# The viewer DISPLAYS what the mask builder thresholds, so both go through
+# load_sister_image and normalise identically.
+def test_loader_max_projects_a_stack(tmp_path):
+    stack = np.zeros((3, 8, 8), np.uint16)
+    stack[1, 4, 4] = 900                          # only in the middle frame
+    path = _write_tif(tmp_path / "stk_green.tif", stack)
+    arr, note = load_sister_image(path)
+    assert arr.shape == (8, 8) and arr[4, 4] == 900 and note == ""
+
+
+def test_loader_puts_the_image_on_the_stack_grid(tmp_path):
+    # a half-resolution companion is resampled up, so overlays + drawn polygons
+    # (which live in RECORDING pixel coordinates) land in the right place
+    arr_in = np.zeros((100, 100), np.uint16); arr_in[20:80, 20:80] = 5
+    path = _write_tif(tmp_path / "half_green.tif", arr_in)
+    arr, note = load_sister_image(path, (200, 200))
+    assert arr.shape == (200, 200) and "resized" in note
+
+
+def test_loader_reports_why_it_cannot_show_an_image(tmp_path):
+    arr_in = np.zeros((100, 50), np.uint16)
+    path = _write_tif(tmp_path / "wrongfield_green.tif", arr_in)
+    arr, note = load_sister_image(path, (200, 200))
+    assert arr is None and "different field" in note
+    arr, note = load_sister_image(str(tmp_path / "nope_green.tif"))
+    assert arr is None and "could not load" in note
+
+
+def test_loader_leaves_a_matching_image_untouched(tmp_path):
+    arr_in = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    path = _write_tif(tmp_path / "same_green.tif", arr_in)
+    arr, note = load_sister_image(path, (8, 8))
+    assert note == "" and np.array_equal(arr, arr_in)

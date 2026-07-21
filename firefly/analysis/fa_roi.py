@@ -397,6 +397,56 @@ def find_sister_roi_path(fpath, suffix="_green"):
     return None
 
 
+def load_sister_image(sister_path, target_shape=None):
+    """Load a sister ROI image (e.g. ``<root>_green.tif``) as a single 2-D array.
+
+    Multi-frame stacks are max-projected, singleton dimensions squeezed, and —
+    when ``target_shape`` is given — the image is resampled onto the recording's
+    pixel grid so overlays and drawn polygons line up.  Shared by the mask builder
+    and the ROI viewer so the image you LOOK at is exactly the image the mask is
+    built from.
+
+    Returns ``(arr | None, note)`` — ``note`` is a short provenance suffix on
+    success (``" · resized to stack"``) or the reason on failure.
+    """
+    import os
+    import numpy as _np
+    name = os.path.basename(sister_path)
+    try:
+        import tifffile as _tf
+        with _tf.TiffFile(sister_path) as _t:
+            arr = _t.asarray()
+    except Exception as exc:
+        return None, f"could not load {name}: {exc}"
+    # Multi-frame → max projection; squeeze leading singleton dims first.
+    if arr.ndim == 3:
+        arr = arr.max(axis=0)
+    elif arr.ndim > 3:
+        arr = _np.squeeze(arr)
+        if arr.ndim == 3:
+            arr = arr.max(axis=0)
+    if arr.ndim != 2:
+        return None, f"{name}: unexpected shape {tuple(arr.shape)}"
+    if target_shape is None or tuple(arr.shape) == tuple(target_shape):
+        return arr, ""
+
+    # Resolution mismatch → resize only when the aspect ratio matches (same FOV,
+    # different binning); a different aspect means a different crop, so skip.
+    is_mask = arr.dtype == bool or _np.unique(arr).size <= 8
+    ah, aw = arr.shape
+    th, tw = target_shape
+    if not aw or not tw or abs((ah / aw) - (th / tw)) > 0.02:
+        return None, (f"{name}: shape {tuple(arr.shape)} ≠ stack "
+                      f"{tuple(target_shape)} (different field) — skipped")
+    try:
+        from skimage.transform import resize as _resize
+        arr = _resize(arr, tuple(target_shape), order=0 if is_mask else 1,
+                      preserve_range=True, anti_aliasing=not is_mask)
+    except Exception as exc:
+        return None, f"{name}: could not resize to {tuple(target_shape)}: {exc}"
+    return arr, " · resized to stack"
+
+
 def build_sister_roi_mask(sister_path, target_shape=None, *,
                           method="otsu", manual_threshold=None,
                           smooth_sigma=2.0, fill_holes=True, keep_largest=True):
@@ -427,44 +477,15 @@ def build_sister_roi_mask(sister_path, target_shape=None, *,
     import os
     import numpy as _np
     name = os.path.basename(sister_path)
-    try:
-        import tifffile as _tf
-        with _tf.TiffFile(sister_path) as _t:
-            arr = _t.asarray()
-    except Exception as exc:
-        return None, f"could not load {name}: {exc}"
-
-    # Multi-frame → max projection; squeeze leading singleton dims first.
-    if arr.ndim == 3:
-        arr = arr.max(axis=0)
-    elif arr.ndim > 3:
-        arr = _np.squeeze(arr)
-        if arr.ndim == 3:
-            arr = arr.max(axis=0)
-    if arr.ndim != 2:
-        return None, f"{name}: unexpected shape {tuple(arr.shape)}"
+    # Load + (when needed) resample onto the stack's grid — the SAME loader the
+    # ROI viewer displays from, so preview and analysis agree pixel for pixel.
+    arr, rs_note = load_sister_image(sister_path, target_shape)
+    if arr is None:
+        return None, rs_note
 
     # Is it ALREADY a mask / labelled segmentation?  Decide by the number of
     # distinct levels, not coverage — a real mask can fill most of the frame.
     is_mask = arr.dtype == bool or _np.unique(arr).size <= 8
-
-    # Resolution mismatch → resize only when the aspect ratio matches (same FOV,
-    # different binning); a different aspect means a different crop, so skip.
-    rs_note = ""
-    if target_shape is not None and tuple(arr.shape) != tuple(target_shape):
-        ah, aw = arr.shape
-        th, tw = target_shape
-        if not aw or not tw or abs((ah / aw) - (th / tw)) > 0.02:
-            return None, (f"{name}: shape {tuple(arr.shape)} ≠ stack "
-                          f"{tuple(target_shape)} (different field) — skipped")
-        try:
-            from skimage.transform import resize as _resize
-            arr = _resize(arr, tuple(target_shape),
-                          order=0 if is_mask else 1,
-                          preserve_range=True, anti_aliasing=not is_mask)
-            rs_note = " · resized to stack"
-        except Exception as exc:
-            return None, f"{name}: could not resize to {tuple(target_shape)}: {exc}"
 
     if is_mask:
         return (arr > 0), f"{name} · used directly as a mask{rs_note}"

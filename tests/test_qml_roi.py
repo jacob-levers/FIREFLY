@@ -295,6 +295,65 @@ def test_roi_controller_split_replicates_persists_and_expands(tmp_path):
     assert all(len(poly) == 1 for poly, _lbl in jobs)             # one ROI per job
 
 
+# ── companion "green" image as a third view ──────────────────────────────────
+def _green_pair(tmp_path):
+    """A recording plus a companion …_green.tif beside it."""
+    tifffile = pytest.importorskip("tifffile")
+    import numpy as np
+    rec = tmp_path / "cell.tif"
+    tifffile.imwrite(str(rec), np.zeros((4, 32, 32), np.uint16))
+    green = np.zeros((32, 32), np.uint16); green[8:24, 8:24] = 800
+    tifffile.imwrite(str(tmp_path / "cell_green.tif"), green)
+    return str(rec)
+
+
+def test_green_image_is_offered_as_a_view_only_when_one_exists(tmp_path):
+    from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
+    from firefly.ui.controllers.roi_controller import RoiController
+
+    c = RoiController(RoiStore(), None, override_store=RoiOverrideStore())
+    plain = tmp_path / "lonely.tif"
+    pytest.importorskip("tifffile").imwrite(str(plain), __import__("numpy")
+                                            .zeros((4, 32, 32), "uint16"))
+    c.editFile(str(plain))
+    assert c.hasGreenImage is False
+    assert "Green image" not in c.viewModes
+
+    c.editFile(_green_pair(tmp_path))
+    assert c.hasGreenImage is True
+    assert c.viewModes[-1] == "Green image"
+    assert c.greenName == "cell_green.tif"
+
+
+def test_selecting_the_green_view_shows_the_companion_image(tmp_path):
+    from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
+    from firefly.ui.controllers.roi_controller import RoiController
+
+    c = RoiController(RoiStore(), None, override_store=RoiOverrideStore())
+    c.editFile(_green_pair(tmp_path))
+    c.setViewMode("green")
+    assert c.viewMode == "green"
+    assert c.hasImage                              # the companion is what's drawn
+    # …on the RECORDING's pixel grid, so drawn polygons + the mask still line up
+    assert (c.imageWidth, c.imageHeight) == (32, 32)
+    assert "cell_green.tif" in c.frameLabel
+    c.setViewMode("Max projection")
+    assert c.viewMode == "proj"
+
+
+def test_green_view_is_refused_when_the_file_has_no_companion(tmp_path):
+    from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
+    from firefly.ui.controllers.roi_controller import RoiController
+    import numpy as np
+
+    c = RoiController(RoiStore(), None, override_store=RoiOverrideStore())
+    plain = tmp_path / "lonely.tif"
+    pytest.importorskip("tifffile").imwrite(str(plain), np.zeros((4, 32, 32), "uint16"))
+    c.editFile(str(plain))
+    c.setViewMode("green")
+    assert c.viewMode == "proj"                    # falls back, never blanks out
+
+
 # ── split-replicates: the prompt must still fire after an earlier ROI save ────
 def test_saving_a_single_roi_does_not_mark_the_split_choice_as_decided(tmp_path):
     """Regression: `commit()` always writes `roi_split_replicates` into the saved

@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.76.45-rc.1 — 21 Jul 2026
+
+### Added
+
+- **See the green image in the ROI viewer.** If a companion image (`…_green.tif`)
+  sits beside a recording, the ROI viewer now detects it and adds a **Green**
+  option to the VIEW switch, next to Max proj and Raw frames. Switch to it to see
+  the cell itself with the ROI overlay on top — so you can check what the
+  threshold is actually including before you run. The companion is drawn on the
+  recording's pixel grid, so the overlay and any ROIs you've drawn stay lined up
+  even when the two images have different resolutions. The option only appears
+  for files that have a companion image.
+
 ## v2.76.44 — 21 Jul 2026
 
 ### Fixed

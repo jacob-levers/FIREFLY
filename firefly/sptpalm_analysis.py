@@ -11,7 +11,13 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.44"
+__version__ = "2.76.45-rc.1"
+# v2.76.45-rc.1 — ROI viewer: view a recording's companion "green" image.  When a
+#           …_green.tif sits beside the file, a third VIEW segment appears next to
+#           Max proj / Raw frames, so you can see the cell the ROI threshold is
+#           meant to cover.  Viewer and analysis now share ONE loader
+#           (fa_roi.load_sister_image), which also puts the companion on the
+#           recording's pixel grid so the mask overlay + drawn ROIs line up.
 # v2.76.44 — STABLE.  Consolidates the 2.76.44-rc.1 … rc.20 pre-release series.
 #           Headline changes since 2.76.43: the Visualiser loads big/awkward runs
 #           without freezing (and drift-corrects its max projection); Preferences →
