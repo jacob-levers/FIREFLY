@@ -256,9 +256,7 @@ def test_roi_controller_split_replicates_persists_and_expands(tmp_path):
             c.addVertex(y, x)
         c.closeDraft()
     assert c.polygonCount == 2
-    assert c.splitDecided is False                  # not answered yet
-    c.splitReplicates = True                         # user chooses "individual"
-    assert c.splitDecided is True
+    c.splitReplicates = True                          # inline toggle → individual
     c.setRoiLabel(0, "nucleus")                       # optional label on ROI 1
     c.commit()
 
@@ -267,8 +265,8 @@ def test_roi_controller_split_replicates_persists_and_expands(tmp_path):
     assert spec["roi_labels"][0] == "nucleus"
 
     c2 = RoiController(store, None, override_store=ovr)
-    c2.editFile(f)                                    # re-open restores the decision
-    assert c2.splitReplicates is True and c2.splitDecided is True
+    c2.editFile(f)                                    # re-open restores the choice
+    assert c2.splitReplicates is True
     assert c2.polygonCount == 2
 
     class FakeSettings:
@@ -354,39 +352,30 @@ def test_green_view_is_refused_when_the_file_has_no_companion(tmp_path):
     assert c.viewMode == "proj"                    # falls back, never blanks out
 
 
-# ── split-replicates: the prompt must still fire after an earlier ROI save ────
-def test_saving_a_single_roi_does_not_mark_the_split_choice_as_decided(tmp_path):
-    """Regression: `commit()` always writes `roi_split_replicates` into the saved
-    spec, so inferring "the user already decided" from that key being PRESENT
-    marked every file that had ever saved ANY ROI as decided — silently
-    suppressing the save-time prompt when a 2nd ROI was later added.  Only an
-    explicit answer (toggle or dialog) counts."""
+# ── split-replicates defaults off; the inline toggle is the only way to enable ─
+def test_split_replicates_is_off_until_the_inline_toggle_is_used(tmp_path):
+    """Splitting is opt-in via the inline "Analyse each ROI separately" toggle.
+    A single-ROI save must never turn it on by itself."""
     from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
     from firefly.ui.controllers.roi_controller import RoiController
     store, ovr = RoiStore(), RoiOverrideStore()
     f = str(tmp_path / "twocells.tif")
 
-    # 1) Save a SINGLE ROI in polygon mode (the user never answered the split
-    #    question).  Polygon mode is what makes commit() persist the override.
     c = RoiController(store, override_store=ovr)
     c.editFile(f)
     c.roiMode = "Manual polygon"
     c.addVertex(0, 0); c.addVertex(0, 10); c.addVertex(10, 5); c.closeDraft()
     c.commit()
-    assert not c.splitDecided                    # never asked → not decided
-    assert "roi_split_replicates" in (ovr.get(f) or {})   # the key IS persisted…
+    assert c.splitReplicates is False                 # a single ROI never splits
+    assert (ovr.get(f) or {}).get("roi_split_replicates") is False
 
-    # 2) Reopen the file and draw a SECOND ROI — the prompt must still be due.
+    # Reopen, add a 2nd ROI, flip the inline toggle — the choice persists.
     c2 = RoiController(store, override_store=ovr)
     c2.editFile(f)
-    assert c2.splitDecided is False, "a prior single-ROI save must not pre-answer"
+    assert c2.splitReplicates is False
     c2.addVertex(20, 20); c2.addVertex(20, 30); c2.addVertex(30, 25); c2.closeDraft()
-    assert c2.polygonCount == 2 and not c2.splitDecided   # QML opens the dialog here
-
-    # 3) Answering (toggle or dialog) sticks across reopen — asked only once.
     c2.splitReplicates = True
-    assert c2.splitDecided is True
     c2.commit()
     c3 = RoiController(store, override_store=ovr)
     c3.editFile(f)
-    assert c3.splitDecided is True and c3.splitReplicates is True
+    assert c3.splitReplicates is True

@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.1"
+__version__ = "2.76.45-rc.2"
+# v2.76.45-rc.2 — ROI viewer: removed the dormant "individual replicates?" save-time
+#           popup (and its now-unused splitDecided plumbing).  Multiple-ROI
+#           splitting is chosen with the inline "Analyse each ROI separately"
+#           toggle, which is the single, reliable path.
 # v2.76.45-rc.1 — ROI viewer: view a recording's companion "green" image.  When a
 #           …_green.tif sits beside the file, a third VIEW segment appears next to
 #           Max proj / Raw frames, so you can see the cell the ROI threshold is

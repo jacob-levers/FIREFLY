@@ -42,11 +42,8 @@ Item {
 
     function saveRoi() {
         if (root.isPoly && Roi.canClose) Roi.closeDraft()
-        // Drew more than one ROI and haven't decided how to treat them → ask once.
-        if (root.isPoly && Roi.polygonCount > 1 && !Roi.splitDecided) {
-            splitDialog.open()
-            return
-        }
+        // Multiple-ROI handling is chosen inline via the "Analyse each ROI
+        // separately" toggle, so saving just commits.
         Roi.commit()
     }
 
@@ -499,29 +496,5 @@ Item {
         function onImageChanged() { canvas.requestPaint() }
     }
 
-    // Asked once when saving >1 ROI: separate replicates vs one combined region.
-    Modal {
-        id: splitDialog
-        title: "Multiple ROIs"
-        Text {
-            Layout.fillWidth: true; wrapMode: Text.WordWrap
-            text: "You drew " + Roi.polygonCount + " ROIs on this movie. Analyse them as "
-                  + "individual replicates — a separate output per cell, so they don't skew "
-                  + "each other's D-values — or as one combined region?"
-            color: pal.TXT_MUTED; font.pixelSize: sc.textSm; lineHeight: 1.3
-        }
-        RowLayout {
-            Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp3
-            Button {
-                variant: "secondary"; text: "One combined region"
-                onClicked: { Roi.splitReplicates = false; splitDialog.close(); Roi.commit() }
-            }
-            Item { Layout.fillWidth: true }
-            Button {
-                variant: "primary"; text: "Individual replicates"
-                onClicked: { Roi.splitReplicates = true; splitDialog.close(); Roi.commit() }
-            }
-        }
-    }
     Keys.onEscapePressed: Roi.cancel()
 }

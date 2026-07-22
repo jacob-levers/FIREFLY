@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.76.45-rc.2 — 21 Jul 2026
+
+### Changed
+
+- **Multiple-ROI splitting is now set only by the inline toggle.** The extra
+  "individual replicates?" popup that appeared when saving more than one ROI has
+  been removed — it was redundant with (and suppressed by) the inline "Analyse
+  each ROI separately" switch in the ROI panel, which stays as the single, clear
+  way to choose. No change to how splitting itself works.
+
 ## v2.76.45-rc.1 — 21 Jul 2026
 
 ### Added
