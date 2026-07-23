@@ -277,3 +277,59 @@ def test_progress_never_exceeds_100_when_a_ranged_request_is_ignored(tmp_path, m
     assert dest.read_bytes() == data                # completed correctly via fallback
     assert reports, "no progress reported"
     assert all(0 <= d <= t for d, t in reports)     # never below 0 or above 100%
+
+
+def test_status_announces_verification_after_100pct(tmp_path, monkeypatch):
+    """After the bytes are in (100%), the (possibly slow) validate + finalize
+    steps must announce themselves — otherwise the bar sits at 100% looking
+    frozen ('stays at 100% for ages').  Single-stream path."""
+    monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
+    monkeypatch.setenv("FIREFLY_NO_PARALLEL_DOWNLOAD", "1")
+    data = b"FIREFLY" * 5000
+    monkeypatch.setattr(nd.urllib.request, "urlopen",
+                        lambda req, timeout=20: _FakeResp(data))
+    statuses = []
+    order = []
+
+    def _validate(p):
+        order.append("validate")                    # ran AFTER "Verifying…"
+        return open(p, "rb").read() == data
+
+    nd.download_file("http://x/file", str(tmp_path / "out.bin"),
+                     status_cb=statuses.append, validate_cb=_validate,
+                     max_attempts=2)
+    assert any("verifying" in s.lower() for s in statuses), statuses
+    assert any("finish" in s.lower() for s in statuses), statuses
+    # the "Verifying…" line is emitted before validation actually runs
+    v_idx = next(i for i, s in enumerate(statuses) if "verifying" in s.lower())
+    assert v_idx == len(statuses) - 2 or "verifying" in statuses[v_idx]
+
+
+def test_parallel_path_also_announces_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
+    TOTAL = 12 * 1024 * 1024
+    data = os.urandom(TOTAL)
+
+    def fake_urlopen(req, timeout=None):
+        rng = req.get_header("Range")
+        if rng is None:
+            r = _FakeResp(data, status=200); r.headers = {"Content-Length": str(TOTAL)}
+            return r
+        s, _, e = rng.replace("bytes=", "").partition("-")
+        start = int(s); end = int(e) if e else TOTAL - 1
+        if start == 0 and end == 0:
+            r = _FakeResp(data[:1], status=206)
+            r.headers = {"Content-Range": f"bytes 0-0/{TOTAL}", "Content-Length": "1"}
+            return r
+        seg = data[start:end + 1]
+        r = _FakeResp(seg, status=206); r.headers = {"Content-Length": str(len(seg))}
+        return r
+
+    monkeypatch.setattr(nd.urllib.request, "urlopen", fake_urlopen)
+    statuses = []
+    nd.download_file("http://x/big", str(tmp_path / "out.bin"),
+                     status_cb=statuses.append,
+                     validate_cb=lambda p: open(p, "rb").read() == data,
+                     parallel_segments=4, max_attempts=2)
+    assert any("verifying" in s.lower() for s in statuses), statuses
+    assert any("finish" in s.lower() for s in statuses), statuses

@@ -274,14 +274,24 @@ def _looks_like_windows_exe(path: str) -> bool:
 
 def _looks_like_dmg(path: str) -> bool:
     """True if hdiutil can read the image header (rejects an HTML error
-    page or a truncated download)."""
+    page or a truncated download).
+
+    ``hdiutil imageinfo`` reads only the header, so it normally returns in well
+    under a second — but it CAN hang (a malformed/encrypted image, a stuck prior
+    hdiutil, disk pressure).  With no timeout that hang froze verification after
+    the download hit 100% ("stays at 100% for ages").  A generous timeout treats
+    a hang as a failed check → the download retries / the user is told to install
+    manually, instead of blocking forever."""
     try:
         if os.path.getsize(path) < 1_000_000:
             return False
         rc = subprocess.run(["hdiutil", "imageinfo", path],
                             stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL).returncode
+                            stderr=subprocess.DEVNULL,
+                            timeout=60).returncode
         return rc == 0
+    except subprocess.TimeoutExpired:
+        return False
     except Exception:
         return False
 

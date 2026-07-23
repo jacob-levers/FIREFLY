@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.76.45-rc.5 — 23 Jul 2026
+
+### Fixed
+
+- **Updater could reach 100% and then sit there for a long time.** After the
+  download finished, FIREFLY verifies the file (a checksum, plus a disk-image
+  header check on macOS) before installing. On macOS that header check
+  (`hdiutil`) had no timeout, so if it hung, verification never finished and the
+  progress bar stayed stuck at 100%. It now times out and fails safely (the
+  update retries or asks you to install manually) instead of hanging. The
+  verify and finalise steps also show their own status — "Verifying download…"
+  then "Finishing update…" — so it's clear the update is still working, not
+  frozen.
+
 ## v2.76.45-rc.4 — 23 Jul 2026
 
 ### Added

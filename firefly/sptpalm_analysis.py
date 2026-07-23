@@ -11,7 +11,13 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.4"
+__version__ = "2.76.45-rc.5"
+# v2.76.45-rc.5 — Updater: fix "100% then stuck for ages".  hdiutil imageinfo (the
+#           macOS DMG check that runs after the download completes) had no
+#           timeout, so a hung hdiutil froze verification forever; it now times
+#           out and fails closed.  The post-download verify + finalise steps also
+#           announce themselves ("Verifying download…" / "Finishing update…") so
+#           the progress line no longer looks frozen at 100%.
 # v2.76.45-rc.4 — Manual-polygon ROI: you can now draw vertices OFF the image (a
 #           margin is kept around it) to comfortably enclose samples pressed
 #           against an edge; on close the shape is clipped (Sutherland–Hodgman)

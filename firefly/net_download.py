@@ -190,7 +190,8 @@ def download_file(url: str,
             if _download_parallel(
                     url, dest_path, segments=int(parallel_segments),
                     progress_cb=progress_cb, cancel_cb=cancel_cb,
-                    validate_cb=validate_cb, headers=headers, timeout=timeout):
+                    validate_cb=validate_cb, headers=headers, timeout=timeout,
+                    status_cb=status_cb):
                 return
         except DownloadError as exc:
             _m = str(exc).lower()
@@ -211,7 +212,8 @@ def download_file(url: str,
                            progress_cb=progress_cb, cancel_cb=cancel_cb,
                            validate_cb=validate_cb, headers=headers,
                            attempt=attempt, max_attempts=max_attempts,
-                           timeout=timeout, read_stall_s=read_stall_s)
+                           timeout=timeout, read_stall_s=read_stall_s,
+                           status_cb=status_cb)
             return
         except DownloadError as exc:
             # User-cancel + permanent server errors (4xx) + terminal failures
@@ -274,7 +276,8 @@ def _download_once(url: str,
                    attempt: int,
                    max_attempts: int,
                    timeout: float,
-                   read_stall_s: float) -> None:
+                   read_stall_s: float,
+                   status_cb: Optional[Callable[[str], None]] = None) -> None:
     """One attempt: write to ``<dest>.part`` (resuming any prior one),
     verify, then atomic-rename to ``dest``.  Raises on any failure —
     ``download_file`` decides whether to retry."""
@@ -417,8 +420,13 @@ def _download_once(url: str,
                 f"Short read: got {actual/1e6:.1f} MB but Content-Length "
                 f"indicated {total/1e6:.1f} MB.")
         # 2) Caller-supplied format check (catches a captive-portal HTML
-        #    page that slipped through as a 200).
+        #    page that slipped through as a 200).  This can take a while — a
+        #    SHA-256 pass over a big installer + (macOS) an hdiutil header read —
+        #    so announce it: otherwise the bar sits at 100% looking frozen.
         if validate_cb is not None:
+            if status_cb is not None:
+                try: status_cb("Verifying download…")
+                except Exception: pass
             try:
                 ok = bool(validate_cb(part_path))
             except Exception:
@@ -433,6 +441,9 @@ def _download_once(url: str,
         # 3) Atomic finalize — only if every earlier check passed.  Retries a
         #    transient Windows file lock (Defender scanning the fresh .exe) and
         #    fails TERMINALLY if the OS keeps denying access (AV / policy).
+        if status_cb is not None:
+            try: status_cb("Finishing update…")
+            except Exception: pass
         _finalize_download(part_path, dest_path)
     except urllib.error.HTTPError as exc:
         progress_state["should_abort"] = True
@@ -473,7 +484,8 @@ def _download_parallel(url: str,
                        cancel_cb: Optional[Callable[[], bool]] = None,
                        validate_cb: Optional[Callable[[str], bool]] = None,
                        headers: Optional[dict] = None,
-                       timeout: float = 20.0) -> bool:
+                       timeout: float = 20.0,
+                       status_cb: Optional[Callable[[str], None]] = None) -> bool:
     """Download ``url`` in ``segments`` parallel byte-range requests, for higher
     throughput from a CDN that throttles per connection (GitHub releases).
 
@@ -684,6 +696,11 @@ def _download_parallel(url: str,
         return False
 
     if validate_cb is not None:
+        # Announce the (potentially slow) hash + format check so the bar doesn't
+        # look frozen at 100% while it runs.
+        if status_cb is not None:
+            try: status_cb("Verifying download…")
+            except Exception: pass
         try:    valid = bool(validate_cb(part_path))
         except Exception: valid = False
         if not valid:
@@ -698,6 +715,9 @@ def _download_parallel(url: str,
         except Exception: pass
     # Same robust finalize as the single-stream path — ride out a transient
     # Windows file lock, fail terminally if the OS keeps denying access.
+    if status_cb is not None:
+        try: status_cb("Finishing update…")
+        except Exception: pass
     _finalize_download(part_path, dest_path)
     _log(f"  ✓ parallel download complete: {total/1e6:.0f} MB")
     return True

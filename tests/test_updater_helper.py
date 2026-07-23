@@ -34,3 +34,24 @@ def test_macos_helper_unchanged_still_backs_up():
     s = updater.macos_helper_script(1, "/tmp/x.dmg", "/Applications/FIREFLY.app",
                                     "/tmp/log")
     assert "BACKUP" in s
+
+
+# ── DMG validation must not hang the updater (100%-then-stuck bug) ────────────
+def test_dmg_validation_times_out_instead_of_hanging(tmp_path, monkeypatch):
+    """`hdiutil imageinfo` runs after the download hits 100%.  With no timeout a
+    hung hdiutil froze verification forever ('stays at 100% for ages').  A
+    timeout must be passed, and a TimeoutExpired is treated as 'not a DMG'
+    (fail-closed → retry / manual install) rather than blocking."""
+    import subprocess
+    big = tmp_path / "FIREFLY-macOS.dmg"
+    big.write_bytes(b"\0" * 2_000_000)             # > 1 MB size gate
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+    monkeypatch.setattr(updater.subprocess, "run", fake_run)
+    assert updater._looks_like_dmg(str(big)) is False   # hang → fail, not block
+    assert seen.get("timeout"), "hdiutil imageinfo must be given a timeout"
