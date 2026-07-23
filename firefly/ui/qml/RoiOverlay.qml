@@ -113,6 +113,14 @@ Item {
                     Item {
                         id: imgArea
                         anchors.fill: parent
+                        // A border of empty stage kept AROUND the fitted image so
+                        // a polygon can be drawn slightly off every edge (the
+                        // shape is clipped back to the image on close).  The
+                        // image + all overlays share this inset, so they stay
+                        // aligned; offX/offY derive from the painted width, so
+                        // the coordinate transform is unaffected by the pad.
+                        readonly property real drawPad: root.isPoly
+                            ? Math.round(Math.min(width, height) * 0.07) : 0
                         readonly property real sscale: Roi.imageWidth > 0 ? bg.paintedWidth / Roi.imageWidth : 1
                         readonly property real offX: (width - bg.paintedWidth) / 2
                         readonly property real offY: (height - bg.paintedHeight) / 2
@@ -123,6 +131,7 @@ Item {
                         Image {
                             id: bg
                             anchors.fill: parent
+                            anchors.margins: imgArea.drawPad
                             fillMode: Image.PreserveAspectFit
                             smooth: false; cache: false; asynchronous: true
                             source: Roi.hasImage ? ("image://roibg/" + Roi.imageToken) : ""
@@ -134,6 +143,7 @@ Item {
                         // which particles the region keeps
                         Image {
                             anchors.fill: parent
+                            anchors.margins: imgArea.drawPad
                             fillMode: Image.PreserveAspectFit
                             smooth: false; cache: false; asynchronous: true
                             visible: (root.isThresh || root.isSister) && Roi.hasMask
@@ -145,6 +155,7 @@ Item {
                         // detected-spot overlay (green circles at the current minmass)
                         Image {
                             anchors.fill: parent
+                            anchors.margins: imgArea.drawPad
                             fillMode: Image.PreserveAspectFit
                             smooth: true; cache: false; asynchronous: true
                             visible: Roi.detectEnabled && Roi.hasSpots
@@ -153,7 +164,7 @@ Item {
                             source: Roi.hasSpots ? ("image://roispots/" + Roi.spotToken) : ""
                         }
 
-                        ScanLine { anchors.fill: parent; active: root.scanning }
+                        ScanLine { anchors.fill: parent; anchors.margins: imgArea.drawPad; active: root.scanning }
 
                         Text {
                             anchors.centerIn: parent
@@ -204,10 +215,13 @@ Item {
                             anchors.fill: parent
                             enabled: Roi.hasImage && root.isPoly
                             cursorShape: root.isPoly ? Qt.CrossCursor : Qt.ArrowCursor
+                            // Vertices MAY sit outside the image (in the margin
+                            // around it) so a region can comfortably enclose
+                            // samples pressed against an edge; closeDraft() clips
+                            // the finished shape back to the image rectangle.
                             onClicked: (m) => {
                                 var yx = imgArea.toImg(m.x, m.y)
-                                if (yx[0] >= 0 && yx[1] >= 0 && yx[0] <= Roi.imageHeight && yx[1] <= Roi.imageWidth)
-                                    Roi.addVertex(yx[0], yx[1])
+                                Roi.addVertex(yx[0], yx[1])
                             }
                         }
 

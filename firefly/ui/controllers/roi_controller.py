@@ -181,15 +181,65 @@ class RoiController(QObject):
 
     @Slot(result=bool)
     def closeDraft(self) -> bool:
-        """Commit the open draft as a polygon (needs ≥3 vertices)."""
+        """Commit the open draft as a polygon (needs ≥3 vertices).
+
+        Vertices may be drawn OFF the image (to comfortably enclose samples that
+        sit against an edge); on close the shape is clipped to the image
+        rectangle, so any part drawn past an edge is run along that edge.
+        """
         if len(self._draft) < 3:
             return False
-        self._polys.append(list(self._draft))
+        poly = self._clip_poly_to_image(self._draft)
+        if len(poly) < 3:                     # drawn entirely outside the image
+            return False
+        self._polys.append([(float(y), float(x)) for y, x in poly])
         self._draft = []
         self._push_to_editor()
         self.draftChanged.emit()
         self.polygonsChanged.emit()
         return True
+
+    def _clip_poly_to_image(self, poly):
+        """Clip a polygon to the image rectangle (x∈[0,W], y∈[0,H]) with the
+        Sutherland–Hodgman algorithm, so an ROI drawn past an edge follows that
+        edge instead of extending into empty space.  Points are ``(y, x)``.  A
+        polygon already inside the image is returned unchanged; if no image is
+        loaded (dimensions unknown) the polygon passes through untouched."""
+        W = float(self._img_w); H = float(self._img_h)
+        if W <= 0 or H <= 0 or len(poly) < 3:
+            return [(float(y), float(x)) for y, x in poly]
+
+        def _lerp(a, b, t):
+            return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+        def _clip(pts, inside, isect):
+            out = []
+            for i in range(len(pts)):
+                a, b = pts[i - 1], pts[i]      # edge a→b (i-1 wraps to last)
+                a_in, b_in = inside(a), inside(b)
+                if b_in:
+                    if not a_in:
+                        out.append(isect(a, b))
+                    out.append(b)
+                elif a_in:
+                    out.append(isect(a, b))
+                # isect is only called across the boundary, so the crossed
+                # coordinate differs → its denominator below is never zero.
+            return out
+
+        pts = [(float(y), float(x)) for y, x in poly]
+        pts = _clip(pts, lambda p: p[1] >= 0.0,                     # x ≥ 0
+                    lambda a, b: _lerp(a, b, (0.0 - a[1]) / (b[1] - a[1])))
+        if len(pts) >= 3:
+            pts = _clip(pts, lambda p: p[1] <= W,                  # x ≤ W
+                        lambda a, b: _lerp(a, b, (W - a[1]) / (b[1] - a[1])))
+        if len(pts) >= 3:
+            pts = _clip(pts, lambda p: p[0] >= 0.0,                 # y ≥ 0
+                        lambda a, b: _lerp(a, b, (0.0 - a[0]) / (b[0] - a[0])))
+        if len(pts) >= 3:
+            pts = _clip(pts, lambda p: p[0] <= H,                  # y ≤ H
+                        lambda a, b: _lerp(a, b, (H - a[0]) / (b[0] - a[0])))
+        return pts
 
     @Slot()
     def cancelDraft(self):

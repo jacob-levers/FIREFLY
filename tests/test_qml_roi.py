@@ -352,6 +352,61 @@ def test_green_view_is_refused_when_the_file_has_no_companion(tmp_path):
     assert c.viewMode == "proj"                    # falls back, never blanks out
 
 
+# ── manual polygon: draw off the image, clip to the edge on close ────────────
+def _fresh_ctrl(tmp_path, w=100, h=80):
+    from firefly.ui.controllers.roi_store import RoiStore, RoiOverrideStore
+    from firefly.ui.controllers.roi_controller import RoiController
+    c = RoiController(RoiStore(), None, override_store=RoiOverrideStore())
+    c.editFile(str(tmp_path / "cell.tif"))
+    c._img_w, c._img_h = w, h                     # pretend an image is loaded
+    return c
+
+
+def _draw(c, pts):
+    for y, x in pts:
+        c.addVertex(y, x)                          # no clamping — off-image OK
+    return c.closeDraft()
+
+
+def test_polygon_inside_the_image_is_unchanged(tmp_path):
+    c = _fresh_ctrl(tmp_path)
+    assert _draw(c, [(10, 10), (10, 60), (60, 60), (60, 10)])
+    poly = [[round(y), round(x)] for y, x in c.polygons[0]]
+    assert poly == [[10, 10], [10, 60], [60, 60], [60, 10]]
+
+
+def test_polygon_drawn_past_the_right_edge_runs_along_it(tmp_path):
+    c = _fresh_ctrl(tmp_path, w=100, h=80)
+    # rectangle x∈[50,150], y∈[10,70] — overflows the right edge (x>100)
+    assert _draw(c, [(10, 50), (10, 150), (70, 150), (70, 50)])
+    xs = [x for _y, x in c.polygons[0]]
+    ys = [y for y, _x in c.polygons[0]]
+    assert abs(max(xs) - 100) < 1e-6              # snapped to the right edge
+    assert abs(min(xs) - 50) < 1e-6              # interior side preserved
+    assert all(-1e-6 <= y <= 80 + 1e-6 for y in ys)
+
+
+def test_polygon_drawn_above_the_top_edge_runs_along_it(tmp_path):
+    c = _fresh_ctrl(tmp_path, w=100, h=80)
+    # y from -20 (above the image) down to 40
+    assert _draw(c, [(-20, 20), (-20, 80), (40, 80), (40, 20)])
+    ys = [y for y, _x in c.polygons[0]]
+    assert abs(min(ys) - 0.0) < 1e-6             # snapped to the top edge
+    assert all(-1e-6 <= x <= 100 + 1e-6 for _y, x in c.polygons[0])
+
+
+def test_polygon_entirely_outside_the_image_is_rejected(tmp_path):
+    c = _fresh_ctrl(tmp_path)
+    assert _draw(c, [(-50, -50), (-50, -10), (-10, -10)]) is False
+    assert c.polygonCount == 0
+
+
+def test_without_a_loaded_image_the_polygon_passes_through(tmp_path):
+    c = _fresh_ctrl(tmp_path, w=0, h=0)           # no image → no clipping
+    assert _draw(c, [(-5, -5), (-5, 10), (10, 5)])
+    assert c.polygonCount == 1
+
+
 # ── split-replicates defaults off; the inline toggle is the only way to enable ─
 def test_split_replicates_is_off_until_the_inline_toggle_is_used(tmp_path):
     """Splitting is opt-in via the inline "Analyse each ROI separately" toggle.

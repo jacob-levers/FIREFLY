@@ -11,7 +11,12 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.3"
+__version__ = "2.76.45-rc.4"
+# v2.76.45-rc.4 — Manual-polygon ROI: you can now draw vertices OFF the image (a
+#           margin is kept around it) to comfortably enclose samples pressed
+#           against an edge; on close the shape is clipped (Sutherland–Hodgman)
+#           to the image rectangle, so any part drawn past an edge runs along
+#           that edge.
 # v2.76.45-rc.3 — Analysis tab: drop an external localisation file (palmTRACER /
 #           ThunderSTORM / Picasso / TrackMate .csv/.txt/.tsv) straight onto a
 #           condition and it's analysed on the fly — with your current sidebar

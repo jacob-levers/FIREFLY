@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.76.45-rc.4 — 23 Jul 2026
+
+### Added
+
+- **Draw manual-polygon ROIs off the edge of the image.** When drawing a manual
+  ROI you can now place points in the margin *around* the image, not just on it —
+  so it's easy to fully enclose cells or samples that sit right against an edge.
+  When you close the shape, the part drawn past an edge is automatically run
+  along that edge (the polygon is clipped to the image), so the region is exactly
+  the image area you enclosed. Regions drawn entirely within the image are
+  unchanged.
+
 ## v2.76.45-rc.3 — 23 Jul 2026
 
 ### Added
