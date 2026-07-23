@@ -1273,10 +1273,15 @@ Item {
                 RowLayout {
                     anchors.centerIn: parent; spacing: 6
                     Icon { name: "folder-plus"; size: 13; color: cardDrop.containsDrag ? pal.ACC : pal.TXT_MUTED }
-                    Text { text: "Drop run folders, or"; color: pal.TXT_MUTED; font.pixelSize: 12 }
+                    Text { text: "Drop run folders or localisation files, or"; color: pal.TXT_MUTED; font.pixelSize: 12 }
                     Text {
-                        text: "Browse…"; color: pal.ACC; font.pixelSize: 12; font.bold: true
+                        text: "folder"; color: pal.ACC; font.pixelSize: 12; font.bold: true
                         TapHandler { onTapped: Analysis.browseAddFolder(gr.cond.id) }
+                    }
+                    Text { text: "·"; color: pal.TXT_MUTED; font.pixelSize: 12 }
+                    Text {
+                        text: "file"; color: pal.ACC; font.pixelSize: 12; font.bold: true
+                        TapHandler { onTapped: Analysis.browseAddFiles(gr.cond.id) }
                     }
                 }
             }

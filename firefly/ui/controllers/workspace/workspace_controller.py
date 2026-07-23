@@ -42,15 +42,18 @@ def _glabel(name: str, phase: str) -> str:
 
 # ── internal model ─────────────────────────────────────────────────────────
 class _Folder:
-    __slots__ = ("path", "run", "excluded", "loading")
+    __slots__ = ("path", "run", "excluded", "loading", "analysing")
 
-    def __init__(self, path, run, loading=False):
+    def __init__(self, path, run, loading=False, analysing=False):
         self.path = path
         self.run = run                       # wd.RunData | None
         # failed-QC folders start excluded (matches the prototype)
         self.excluded = bool(run is not None and run.qc_level == "error")
         # a placeholder chip while the run loads off the GUI thread
         self.loading = bool(loading)
+        # an external localisation file being analysed into a run (longer job
+        # than a folder load — same chip, different label)
+        self.analysing = bool(analysing)
 
 
 class _Condition:
@@ -1568,10 +1571,13 @@ class AnalysisWorkspaceController(QObject):
                 "ready": len(active) >= 2,
                 "folders": [{
                     "id": f.run.id if f.run else os.path.basename(f.path),
-                    "n": "…" if f.loading else (f.run.n_label if f.run else "—"),
-                    "qc": "loading" if f.loading else (
+                    "n": ("analysing…" if f.analysing else
+                          "…" if f.loading else
+                          (f.run.n_label if f.run else "—")),
+                    "qc": "loading" if (f.loading or f.analysing) else (
                         f.run.qc_level if f.run else "error"),
-                    "loading": f.loading,
+                    "loading": f.loading or f.analysing,
+                    "analysing": f.analysing,
                     "excluded": f.excluded, "path": f.path,
                 } for f in c.folders],
             })
@@ -1925,14 +1931,17 @@ class AnalysisWorkspaceController(QObject):
         c = self._cond(cid)
         if c is None:
             return
-        staged, flagged = self._stage_paths(c, [self._to_path(u) for u in urls])
-        if staged:
-            # Show the loading chips immediately, then read the (potentially
-            # large) run sidecars off the GUI thread so the tab never freezes
-            # and more folders can be dropped while these load.
+        staged, to_analyse, flagged = self._stage_paths(
+            c, [self._to_path(u) for u in urls])
+        if staged or to_analyse:
+            # Show the loading / analysing chips immediately, then do the work
+            # off the GUI thread so the tab never freezes and more can be
+            # dropped while these run.
             self.conditionsChanged.emit()
-            self._loading_n += len(staged)
+            self._loading_n += len(staged) + len(to_analyse)
             self.loadingChanged.emit()
+        if staged:
+            # Run FOLDERS: just read the (potentially large) sidecars.
             def _work(folders=staged):
                 for folder in folders:
                     try:
@@ -1948,23 +1957,67 @@ class AnalysisWorkspaceController(QObject):
                 self._foldersLoaded.emit()
             threading.Thread(target=_work, daemon=True,
                              name="FIREFLY-CondLoad").start()
-        elif flagged:
-            # only unrecognised (flagged) paths were added — no load needed
+        if to_analyse:
+            # External localisation FILES: analyse each into a run folder (using
+            # the current sidebar settings so D/α match the FIREFLY replicates)
+            # then load it as an ordinary replicate.  One thread keeps the
+            # analyses serial so N dropped files don't oversubscribe the CPU.
+            cache_root = self._external_cache_root()
+            def _analyse(folders=to_analyse, cache_root=cache_root):
+                for folder in folders:
+                    run = None
+                    try:
+                        run_dir = wd.analyse_external_file(
+                            folder.path, self._settings, cache_root=cache_root)
+                        if run_dir:
+                            run = wd.load_run(run_dir)
+                            if run is not None:
+                                folder.path = run_dir      # chip now IS the run
+                                try:
+                                    run.diff()
+                                except Exception:
+                                    pass
+                    except Exception:
+                        run = None
+                    self._load_q.put((folder, run))
+                self._foldersLoaded.emit()
+            threading.Thread(target=_analyse, daemon=True,
+                             name="FIREFLY-ExtAnalyse").start()
+        if flagged and not (staged or to_analyse):
+            # only unrecognised (flagged) paths were added — no work needed
             self._changed(conditions=True)
 
-    def _stage_paths(self, c, paths):
-        """Resolve *paths* to loading-placeholder folders using only the cheap
-        ``is_run_folder`` probe — the heavy ``load_run`` happens off-thread.
+    def _external_cache_root(self) -> str:
+        """Per-user cache dir for analyses of dropped localisation files, so we
+        never write into the user's source folder and can reuse a prior run."""
+        base = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.CacheLocation) or os.path.join(
+            os.path.expanduser("~"), ".firefly_cache")
+        d = os.path.join(base, "external_runs")
+        os.makedirs(d, exist_ok=True)
+        return d
 
-        A run folder and every run child of a parent folder become *loading*
-        chips (``staged``); an unrecognised path is shown once as a flagged
-        (invalid) chip (``flagged``).  Returns ``(staged, flagged)``.
+    def _stage_paths(self, c, paths):
+        """Resolve *paths* to placeholder chips using only cheap probes — the
+        heavy work happens off-thread.
+
+        * a run folder (or every run child of a parent folder) → a *loading*
+          chip (``staged``);
+        * an external localisation FILE (palmTRACER / ThunderSTORM / … export)
+          → an *analysing* chip (``to_analyse``) — it's analysed into a run;
+        * anything else → a flagged (invalid) chip (``flagged``).
+
+        Returns ``(staged, to_analyse, flagged)``.
         """
-        staged, flagged = [], False
+        staged, to_analyse, flagged = [], [], False
         for path in paths:
-            if not path or not os.path.isdir(path):
+            if not path or any(f.path == path for f in c.folders):
                 continue
-            if any(f.path == path for f in c.folders):
+            if wd.is_external_loc_file(path):           # a raw loc table → analyse
+                f = _Folder(path, None, analysing=True)
+                c.folders.append(f); to_analyse.append(f)
+                continue
+            if not os.path.isdir(path):
                 continue
             if wd.is_run_folder(path):                  # a run folder itself
                 f = _Folder(path, None, loading=True)
@@ -1984,7 +2037,7 @@ class AnalysisWorkspaceController(QObject):
                     c.folders.append(f); staged.append(f); found = True
             if not found:                               # show it anyway (flagged)
                 c.folders.append(_Folder(path, None)); flagged = True
-        return staged, flagged
+        return staged, to_analyse, flagged
 
     @Slot()
     def _on_folders_loaded(self):
@@ -1997,6 +2050,7 @@ class AnalysisWorkspaceController(QObject):
                 break
             folder.run = run
             folder.loading = False
+            folder.analysing = False
             folder.excluded = bool(run is not None and run.qc_level == "error")
             self._loading_n = max(0, self._loading_n - 1)
             got = True
@@ -2010,6 +2064,17 @@ class AnalysisWorkspaceController(QObject):
         d = QFileDialog.getExistingDirectory(None, "Add run folder")
         if d:
             self.addFolders(cid, [d])
+
+    @Slot(int)
+    def browseAddFiles(self, cid):
+        """Pick one or more external localisation files (palmTRACER / ThunderSTORM
+        / Picasso / TrackMate).  Each is analysed into a replicate on add."""
+        from PySide6.QtWidgets import QFileDialog
+        files, _ = QFileDialog.getOpenFileNames(
+            None, "Add localisation files", "",
+            "Localisations (*.csv *.txt *.tsv);;All files (*)")
+        if files:
+            self.addFolders(cid, files)
 
     @Slot(int, str)
     def toggleFolder(self, cid, fid):

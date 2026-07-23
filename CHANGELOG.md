@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.76.45-rc.3 — 23 Jul 2026
+
+### Added
+
+- **Compare external localisation files directly in the Analysis tab.** Drop a
+  palmTRACER, ThunderSTORM, Picasso, or TrackMate export (`.csv` / `.txt` /
+  `.tsv`) straight onto a condition — alongside your FIREFLY run folders — and
+  FIREFLY analyses it on the fly into a replicate. The file's format is
+  auto-detected, and the analysis uses your **current sidebar settings**, so its
+  D and α are computed the same way as the FIREFLY replicates it sits next to
+  (an apples-to-apples comparison). The chip shows "analysing…" while it runs,
+  then pools into the graphs like any other replicate. Each file is analysed
+  once and cached, so re-adding it is instant. There's a new **file** browse
+  link on each condition's drop zone as well as drag-and-drop.
+
 ## v2.76.45-rc.2 — 21 Jul 2026
 
 ### Changed

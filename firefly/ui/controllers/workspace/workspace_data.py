@@ -594,6 +594,127 @@ def is_run_folder(folder: str) -> bool:
     return _resolve_extras(folder) is not None
 
 
+# ── external localisation files → on-the-fly replicates ─────────────────────
+# The Analysis tab compares FIREFLY run folders.  A raw localisation table from
+# another tool (palmTRACER / ThunderSTORM / Picasso / TrackMate) carries no
+# diffusion metrics yet, so to be pooled as a replicate it must be ANALYSED
+# first.  We run the real pipeline (`_run_one_analysis`) on it — using the
+# caller's current sidebar settings, so its D/α are computed the SAME way as the
+# FIREFLY replicates it sits beside — into a cached run folder that then loads
+# as an ordinary RunData.  Analyse-once: a byte-identical file + settings reuse
+# the cache instead of re-running.
+_EXTERNAL_LOC_EXTS = (".csv", ".txt", ".tsv")
+
+
+def is_external_loc_file(path: str) -> bool:
+    """True when *path* is a localisation-table FILE (an external tool's export)
+    rather than a FIREFLY run folder — i.e. something we must analyse before it
+    can be a replicate."""
+    return (bool(path) and os.path.isfile(path)
+            and str(path).lower().endswith(_EXTERNAL_LOC_EXTS))
+
+
+class _ExternalImportStub:
+    """The handful of ImportController attributes `build_params` reads, for a
+    bare file.  Calibration is left to the file's embedded metadata (palmTRACER
+    encodes pixel size / frame interval; others fall back to FIREFLY defaults)."""
+    def __init__(self, path: str):
+        self.filePath = path
+        self.outDir = None
+        self.isCsv = True
+        self.overridePx = False
+        self.pixelSize = 0.0
+        self.overrideFi = False
+        self.frameInterval = 0.0
+
+
+def _external_run_dir(path: str, cache_root: str, sig: str) -> str:
+    """Deterministic cache folder for analysing *path* under *cache_root*, keyed
+    by the file's identity + mtime + a signature of the analysis settings, so an
+    unchanged file+settings reuse the cached run and a changed one re-runs."""
+    import hashlib
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+    key = hashlib.blake2b(
+        f"{os.path.abspath(path)}|{mtime}|{sig}".encode("utf-8"),
+        digest_size=10).hexdigest()
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return os.path.join(cache_root, f"{stem}__{key}")
+
+
+def analyse_external_file(path: str, settings, *, cache_root: str,
+                          log: "Callable[[str], None] | None" = None,
+                          cancel=None) -> Optional[str]:
+    """Analyse an external localisation file into a FIREFLY run folder and return
+    its path (or ``None`` on failure / no tracks).
+
+    Reuses a cached analysis when the file + settings are unchanged.  Runs the
+    real ``_run_one_analysis`` in-thread (the caller does this off the GUI
+    thread), writing outputs flat into the cache folder (``wrap_in_stem_folder``
+    off) so the returned path loads directly with :func:`load_run`.
+    """
+    import queue as _queue
+    import threading as _threading
+    _log = log or (lambda _m: None)
+    try:
+        from firefly.ui.controllers.params.params_builder import build_params
+        p = build_params(settings, _ExternalImportStub(path), fpath=path,
+                         out_dir=None)
+    except Exception as exc:
+        _log(f"  Couldn't build analysis parameters for "
+             f"{os.path.basename(path)}: {exc}")
+        return None
+
+    # Signature = the params that affect the NUMBERS (exclude per-run paths), so
+    # the cache key changes iff the analysis would produce different results.
+    _volatile = {"file", "out_dir", "stem_override", "widget_state",
+                 "wrap_in_stem_folder"}
+    try:
+        sig = json.dumps({k: v for k, v in sorted(p.items())
+                          if k not in _volatile}, default=str, sort_keys=True)
+    except Exception:
+        sig = repr(sorted((k, str(v)) for k, v in p.items()
+                          if k not in _volatile))
+    run_dir = _external_run_dir(path, cache_root, sig)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    cached = os.path.join(run_dir, "firefly_extras",
+                          f"{stem}_diffusion_summary.csv")
+    if os.path.isfile(cached):
+        _log(f"  Reusing cached analysis of {os.path.basename(path)}.")
+        return run_dir
+
+    p["out_dir"] = run_dir
+    p["wrap_in_stem_folder"] = False       # land outputs flat in run_dir
+    p["skip_figure"] = True                # the tab needs the data sidecars, not
+                                           # the per-file PNG — and this avoids a
+                                           # matplotlib pass on a background thread
+    try:
+        os.makedirs(run_dir, exist_ok=True)
+    except OSError as exc:
+        _log(f"  Couldn't create analysis cache folder: {exc}")
+        return None
+
+    from firefly import firefly_worker
+    cancel = cancel if cancel is not None else _threading.Event()
+    _log(f"  Analysing {os.path.basename(path)} …")
+    try:
+        payload = firefly_worker._run_one_analysis(
+            p, _queue.Queue(maxsize=100000), cancel,
+            lambda m: _log(m), lambda _pct, _m: None)
+    except firefly_worker._NoTracks:
+        _log(f"  {os.path.basename(path)} produced no trajectories.")
+        return None
+    except BaseException as exc:                       # noqa: BLE001
+        if type(exc).__name__ in ("_Cancelled", "_Stopped"):
+            return None
+        _log(f"  Analysis of {os.path.basename(path)} failed: {exc}")
+        return None
+    out = (payload or {}).get("out_dir")
+    return out if (out and os.path.isdir(out) and is_run_folder(out)) else None
+
+
 # ── statistics ─────────────────────────────────────────────────────────────
 def cliffs_delta(x: np.ndarray, y: np.ndarray) -> float:
     """Cliff's δ effect size in [-1, 1].  P(x>y) − P(x<y) over all pairs."""

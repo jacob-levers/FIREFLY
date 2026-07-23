@@ -2093,23 +2093,32 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # irreplaceable output.  A render exception must NOT discard a complete,
         # already-computed run — degrade to "figure skipped" and continue to the
         # (individually fault-tolerant) saves with fig_data=None.  (#5)
-        try:
-            fig_data = make_figure(
-                proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
-                fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
-                jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
-                cluster_labels=cluster_labels, cluster_locs=cluster_xy,
-                cluster_subsampled_n=cluster_subsampled_n,
-                dwell_df=dwell_df, dwell_tau=dwell_tau,
-                van_hove=van_hove, vacf=vacf,
-                return_pdf_bytes=want_pdf, want_panels=want_panels,
-                traj_background=fig_traj_bg, combined_panels=combined_panels)
-        except _Cancelled:
-            raise
-        except Exception as _fig_exc:
-            _log(f"  WARN: figure rendering failed ({_fig_exc}) — saving the data "
-                 f"tables anyway; the figure will be missing.\n{traceback.format_exc()}")
-            fig_data = None
+        # `skip_figure` bypasses the render entirely — used when a run only needs
+        # its data sidecars (e.g. the Analysis tab analysing a dropped
+        # localisation file into a replicate), avoiding a pointless (and
+        # off-main-thread) matplotlib pass.
+        fig_data = None
+        if p.get("skip_figure"):
+            pass                               # data-only run — no figure wanted
+        else:
+            try:
+                fig_data = make_figure(
+                    proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
+                    fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
+                    jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
+                    cluster_labels=cluster_labels, cluster_locs=cluster_xy,
+                    cluster_subsampled_n=cluster_subsampled_n,
+                    dwell_df=dwell_df, dwell_tau=dwell_tau,
+                    van_hove=van_hove, vacf=vacf,
+                    return_pdf_bytes=want_pdf, want_panels=want_panels,
+                    traj_background=fig_traj_bg, combined_panels=combined_panels)
+            except _Cancelled:
+                raise
+            except Exception as _fig_exc:
+                _log(f"  WARN: figure rendering failed ({_fig_exc}) — saving the "
+                     f"data tables anyway; the figure will be missing.\n"
+                     f"{traceback.format_exc()}")
+                fig_data = None
         del proj_sample
 
         # ── Save outputs ──────────────────────────────────────────────────────

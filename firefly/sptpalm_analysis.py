@@ -11,7 +11,13 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.2"
+__version__ = "2.76.45-rc.3"
+# v2.76.45-rc.3 — Analysis tab: drop an external localisation file (palmTRACER /
+#           ThunderSTORM / Picasso / TrackMate .csv/.txt/.tsv) straight onto a
+#           condition and it's analysed on the fly — with your current sidebar
+#           settings, so D/α match the FIREFLY replicates — into a cached run
+#           folder that pools as an ordinary replicate.  Auto-detected, analysed
+#           once (cached), shown with an "analysing…" chip.
 # v2.76.45-rc.2 — ROI viewer: removed the dormant "individual replicates?" save-time
 #           popup (and its now-unused splitDecided plumbing).  Multiple-ROI
 #           splitting is chosen with the inline "Analyse each ROI separately"
