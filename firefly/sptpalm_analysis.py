@@ -11,7 +11,15 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.7"
+__version__ = "2.76.45-rc.8"
+# v2.76.45-rc.8 — Analysis tab: added Net displacement, Path length, Directionality
+#           ratio, Track duration and Number-of-localisations comparison graphs
+#           (metric + panel each).  Net displacement is now the true first→last
+#           straight-line distance (was mislabelled — it computed mean radial
+#           displacement).  Fluorescence intensity is now per-track mean (Σ a
+#           track's intensities ÷ its localisations), matching the stated
+#           definition.  New per-track columns path_length_um /
+#           net_displacement_um / directionality_ratio in the diffusion table.
 # v2.76.45-rc.7 — Analysis tab: new Radius-of-gyration comparison panel (after
 #           Track length).  Per-replicate median R_g (the diffusion table's
 #           radius_of_gyration_um), matching the existing 'Radius of gyration'

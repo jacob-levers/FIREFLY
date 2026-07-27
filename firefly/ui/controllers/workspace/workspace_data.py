@@ -273,21 +273,46 @@ def _col_median(run: RunData, col: str) -> Optional[float]:
 
 
 def _fluor_dist(run: RunData) -> Optional[np.ndarray]:
-    """Per-localisation spot intensity (``mass`` column of localisations.csv) — a
-    relative fluorescence readout.  It's post-preprocessing integrated intensity
-    that scales with the detection threshold, so it's only meaningful COMPARED
-    across dishes analysed with identical settings."""
-    loc = run._read_csv("_localisations.csv")
-    if loc is None or "mass" not in getattr(loc, "columns", []):
+    """Per-TRACK fluorescence intensity: the mean of a track's localisation
+    intensities (``mass``), i.e. Σ intensities in the track ÷ its number of
+    localisations — one value per trajectory.  It's post-preprocessing integrated
+    intensity that scales with the detection threshold, so it's only meaningful
+    COMPARED across dishes analysed with identical settings."""
+    tr = run._read_csv("_trajectories.csv")
+    cols = getattr(tr, "columns", [])
+    if tr is None or "mass" not in cols or "particle" not in cols:
         return None
-    v = pd.to_numeric(loc["mass"], errors="coerce").to_numpy(float)
-    v = v[np.isfinite(v) & (v > 0)]
-    return v if len(v) else None
+    m = pd.to_numeric(tr["mass"], errors="coerce")
+    per_track = tr.assign(_m=m).groupby("particle")["_m"].mean().to_numpy(float)
+    per_track = per_track[np.isfinite(per_track) & (per_track > 0)]
+    return per_track if len(per_track) else None
 
 
 def _fluor_scalar(run: RunData) -> Optional[float]:
     v = _fluor_dist(run)
     return float(np.median(v)) if v is not None else None
+
+
+def _duration_dist(run: RunData) -> Optional[np.ndarray]:
+    """Per-track duration (s) = (localisations − 1) × frame interval."""
+    lens = _track_len_dist(run)
+    fi = run.fi_s
+    if lens is None or not fi:
+        return None
+    dur = (lens - 1.0) * float(fi)
+    return dur if dur.size else None
+
+
+def _duration_scalar(run: RunData) -> Optional[float]:
+    v = _duration_dist(run)
+    return float(np.median(v)) if v is not None and len(v) else None
+
+
+def _nlocs_scalar(run: RunData) -> Optional[float]:
+    """Number of localisations contained in all qualifying trajectories (the
+    trajectory table's row count)."""
+    tr = run._read_csv("_trajectories.csv")
+    return float(len(tr)) if tr is not None else None
 
 
 def _angle_cos(run: RunData) -> Optional[np.ndarray]:
@@ -509,9 +534,19 @@ METRICS: list[Metric] = [
            scalar=lambda r: _col_median(r, "radius_of_gyration_um"),
            dist=lambda r: r._diff_col("radius_of_gyration_um", positive=True)),
     Metric("netdisp", "Net displacement", "µm", 3, "net displacement (µm)", "Tracking",
-           scalar=lambda r: _col_median(r, "mean_radial_displacement_um"),
-           dist=lambda r: r._diff_col("mean_radial_displacement_um", positive=True)),
-    Metric("fluor", "Spot intensity", "a.u.", 0, "spot intensity (a.u.)", "Imaging",
+           scalar=lambda r: _col_median(r, "net_displacement_um"),
+           dist=lambda r: r._diff_col("net_displacement_um", positive=True)),
+    Metric("path", "Path length", "µm", 3, "path length (µm)", "Tracking",
+           scalar=lambda r: _col_median(r, "path_length_um"),
+           dist=lambda r: r._diff_col("path_length_um", positive=True)),
+    Metric("dir", "Directionality ratio", "", 3, "net ÷ path", "Tracking",
+           scalar=lambda r: _col_median(r, "directionality_ratio"),
+           dist=lambda r: r._diff_col("directionality_ratio")),
+    Metric("dur", "Track duration", "s", 3, "track duration (s)", "Tracking",
+           scalar=_duration_scalar, dist=_duration_dist),
+    Metric("nlocs", "Localisations", "", 0, "localisations (n)", "Tracking",
+           scalar=_nlocs_scalar),
+    Metric("fluor", "Fluorescence intensity", "a.u.", 0, "fluorescence (a.u.)", "Imaging",
            scalar=_fluor_scalar, dist=_fluor_dist, approx=True),
     Metric("angle", "Turning angle", "", 2, "mean |cos θ|", "Tracking",
            scalar=_angle_scalar, dist=_angle_dist),
@@ -892,7 +927,9 @@ COMPARE_PANELS = [
     ("logd_dist", "log₁₀(D) dist."),
     ("mob_immob", "Mobile / immobile"), ("motion_classes", "Motion classes"),
     ("track_length", "Track length"), ("rg", "Radius of gyration"),
-    ("track_count", "Track count"),
+    ("netdisp", "Net displacement"), ("path", "Path length"),
+    ("dir", "Directionality"), ("dur", "Track duration"),
+    ("track_count", "Track count"), ("nlocs", "Localisations"),
     ("jdd", "Jump distance"), ("dwell_cdf", "Dwell-time CDF"),
     ("turning_angles", "Turning angles"), ("radial_dist", "Radial dist."),
     ("van_hove", "Van Hove"), ("vacf", "VACF"),
@@ -914,6 +951,8 @@ METRIC_PANEL = {
     "D": "logd_dist", "mob": "mob_immob", "motion": "motion_classes",
     "len": "track_length", "msd": "msd", "angle": "turning_angles",
     "dwell": "dwell_cdf", "a2": "van_hove", "fluor": "fluor", "rg": "rg",
+    "netdisp": "netdisp", "path": "path", "dir": "dir", "dur": "dur",
+    "nlocs": "nlocs",
 }
 
 # The scroller IS the comparison-figure panels (key, chip label, scalar metric for
@@ -928,7 +967,12 @@ COMPARE_PANEL_TABS = [
     ("motion_classes", "Motion classes", "motion"),
     ("track_length", "Track length", "len"),
     ("rg", "Radius of gyration", "rg"),
+    ("netdisp", "Net displacement", "netdisp"),
+    ("path", "Path length", "path"),
+    ("dir", "Directionality ratio", "dir"),
+    ("dur", "Track duration", "dur"),
     ("track_count", "Track count", "count"),
+    ("nlocs", "Localisations", "nlocs"),
     ("jdd", "Jump distance", "jdd"),
     ("dwell_cdf", "Dwell time", "dwell"),
     ("turning_angles", "Turning angle", "angle"),

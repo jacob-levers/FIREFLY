@@ -163,7 +163,8 @@ def _parse_pt_native_d(path):
     df["alpha"]  = np.nan
     df["motion"] = "Unclassified"
     for c in ("loc_sigma_nm", "mean_radial_displacement_um",
-              "radius_of_gyration_um"):
+              "radius_of_gyration_um", "path_length_um",
+              "net_displacement_um", "directionality_ratio"):
         df[c] = np.nan
     return df
 

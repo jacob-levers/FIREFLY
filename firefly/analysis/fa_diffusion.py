@@ -195,6 +195,22 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     mean_radial = float(np.mean(np.sqrt(sq_dists)))
     rg          = float(np.sqrt(np.mean(sq_dists)))
 
+    # Path geometry (µm):
+    #   path_length_um       = Σ straight-line step distances (the polyline length)
+    #   net_displacement_um  = straight-line distance first → last position
+    #   directionality_ratio = net / path ∈ [0, 1]  (1 = perfectly straight;
+    #                          → 0 = returns near its start).  NaN when the path
+    #                          has zero length (a single-point or static track).
+    if n_pts >= 2:
+        _steps      = np.sqrt(np.sum(np.diff(xy_um, axis=0) ** 2, axis=1))
+        path_length = float(_steps.sum())
+        net_disp    = float(np.sqrt(np.sum((xy_um[-1] - xy_um[0]) ** 2)))
+        directionality = float(net_disp / path_length) if path_length > 0 else np.nan
+    else:
+        path_length = 0.0
+        net_disp    = 0.0
+        directionality = np.nan
+
     # Localisation precision from the fitted MSD offset.  Static localisation
     # error adds a constant 4·sigma² to the 2D MSD (sigma = 1D per-axis
     # precision), which is exactly the `offset` term of the joint fit.  So
@@ -210,7 +226,10 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     return pid, msd_vals, dict(particle=pid, D=D, alpha=alpha, motion=motion,
                                MSD0=msd0, MSE=mse, loc_sigma_nm=loc_sigma_nm,
                                mean_radial_displacement_um=mean_radial,
-                               radius_of_gyration_um=rg)
+                               radius_of_gyration_um=rg,
+                               path_length_um=path_length,
+                               net_displacement_um=net_disp,
+                               directionality_ratio=directionality)
 
 
 def _require_positive_finite(name, val):
@@ -278,7 +297,8 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
             index=np.arange(1, max_lagtime + 1))
         diff_empty = pd.DataFrame(columns=[
             "particle", "D", "alpha", "motion", "MSD0", "MSE", "loc_sigma_nm",
-            "mean_radial_displacement_um", "radius_of_gyration_um"])
+            "mean_radial_displacement_um", "radius_of_gyration_um",
+            "path_length_um", "net_displacement_um", "directionality_ratio"])
         return imsd_empty, emsd_empty, diff_empty
 
     # Threading vs processing trade-off:

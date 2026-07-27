@@ -982,25 +982,40 @@ def render_logd_preview(fig, style, theme="Dark"):
 
 
 def _spot_intensity(summary):
-    """Median per-localisation spot intensity (fluorescence, a.u.) for one
-    replicate — the localisations' ``mass`` column, which is palmTRACER's
-    Integrated_Intensity mapped through FIREFLY's canonical schema.  Computed the
-    SAME way as the 'Spot intensity' metric (finite, >0, median) so the panel and
-    the metric agree.  Reads only the ``mass`` column.  Returns NaN when no
-    localisations file is present (older runs / palmTRACER-native summaries)."""
-    data_dir = summary.get("data_dir")
-    stem = summary.get("stem")
-    if not data_dir or not stem:
+    """Per-replicate fluorescence intensity (a.u.): the median over tracks of each
+    track's MEAN spot intensity (Σ its localisation intensities ÷ its number of
+    localisations).  Uses the trajectories' ``mass`` column (palmTRACER's
+    Integrated_Intensity through FIREFLY's canonical schema) — the SAME definition
+    as the 'Fluorescence intensity' metric, so panel and metric agree.  NaN when
+    the trajectories carry no ``mass``."""
+    tr = summary.get("tracks")
+    cols = getattr(tr, "columns", [])
+    if tr is None or "mass" not in cols or "particle" not in cols:
         return float("nan")
-    path = os.path.join(data_dir, f"{stem}_localisations.csv")
-    if not os.path.isfile(path):
+    m = pd.to_numeric(tr["mass"], errors="coerce")
+    per_track = tr.assign(_m=m).groupby("particle")["_m"].mean().to_numpy(dtype=float)
+    per_track = per_track[np.isfinite(per_track) & (per_track > 0)]
+    return float(np.median(per_track)) if per_track.size else float("nan")
+
+
+def _track_duration_median(tracks, frame_interval):
+    """Per-replicate median track duration (s) = (localisations − 1) × Δt."""
+    if tracks is None or "particle" not in getattr(tracks, "columns", []):
         return float("nan")
-    try:
-        col = pd.read_csv(path, usecols=["mass"])["mass"]
-    except Exception:
+    lens = tracks.groupby("particle").size().to_numpy(dtype=float)
+    if not lens.size:
         return float("nan")
-    v = pd.to_numeric(col, errors="coerce").to_numpy(dtype=float)
-    v = v[np.isfinite(v) & (v > 0)]
+    return float(np.median((lens - 1.0) * float(frame_interval)))
+
+
+def _col_median_from(d, col, *, positive=False):
+    """Median of a per-track diffusion-table column for one replicate (NaN-safe)."""
+    if d is None or col not in getattr(d, "columns", []):
+        return float("nan")
+    v = pd.to_numeric(d[col], errors="coerce").to_numpy(dtype=float)
+    v = v[np.isfinite(v)]
+    if positive:
+        v = v[v > 0]
     return float(np.median(v)) if v.size else float("nan")
 
 
@@ -1161,6 +1176,12 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             "radius_of_gyration": (float(d["radius_of_gyration_um"].median())
                                    if d is not None and "radius_of_gyration_um" in d.columns
                                    else np.nan),
+            "net_displacement":   _col_median_from(d, "net_displacement_um", positive=True),
+            "path_length":        _col_median_from(d, "path_length_um", positive=True),
+            "directionality":     _col_median_from(d, "directionality_ratio"),
+            "track_duration":     _track_duration_median(summary["tracks"], fi),
+            "n_localisations":    (int(len(summary["tracks"]))
+                                   if summary["tracks"] is not None else np.nan),
             "mean_track_length_s": float(_track_lengths(summary["tracks"], fi).mean())
                                    if summary["tracks"] is not None else np.nan,
             "nongauss_alpha2":  nongauss_alpha2,
@@ -1308,12 +1329,14 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     stats_records = {}
     if panels is None:
         panels = {"msd", "auc", "fluor", "logd_dist", "mob_immob",
-                  "motion_classes", "track_length", "rg", "jdd", "dwell_cdf",
+                  "motion_classes", "track_length", "rg", "netdisp", "path",
+                  "dir", "dur", "nlocs", "jdd", "dwell_cdf",
                   "turning_angles", "radial_dist", "van_hove", "vacf"}
 
     # ── Render the figure ────────────────────────────────────────────────────
     panel_order = ["msd", "auc", "fluor", "logd_dist", "mob_immob",
-                   "motion_classes", "track_length", "rg", "track_count",
+                   "motion_classes", "track_length", "rg", "netdisp", "path",
+                   "dir", "dur", "track_count", "nlocs",
                    "jdd", "dwell_cdf", "turning_angles", "radial_dist",
                    "van_hove", "vacf"]
     enabled = [p for p in panel_order if p in panels]
@@ -1766,6 +1789,33 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                              annot_sink=panel_annots, style=_pstyle("rg"))
         ax.set_title("Radius of Gyration")
 
+    # ── 6a3. Track-geometry scalar panels (net displacement, path length,
+    #         directionality, track duration, localisation count) ──────────────
+    # Each is a per-replicate scalar drawn like the panels above: a group×time
+    # interaction plot in two-factor mode, else a per-condition bar-with-dots.
+    for _pkey, _col, _ylabel, _title in (
+            ("netdisp", "net_displacement", "Net displacement (µm)", "Net Displacement"),
+            ("path",    "path_length",      "Path length (µm)",      "Path Length"),
+            ("dir",     "directionality",   "Net ÷ path",            "Directionality Ratio"),
+            ("dur",     "track_duration",   "Track duration (s)",    "Track Duration"),
+            ("nlocs",   "n_localisations",  "Localisations (n)",     "Number of Localisations")):
+        if _pkey not in panels:
+            continue
+        ax = _next_ax()
+        if two_factor:
+            _interaction_plot(ax, summary_df, _col, group_order, tp_order,
+                              group_colors, pal, ylabel=_ylabel,
+                              headline=_twoway_headline(twoway_df, _col),
+                              card_colors=card_colors, stats_config=cfg)
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, _col].values
+                    for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal, ylabel=_ylabel,
+                             record_stats=stats_records, metric_name=_col,
+                             xtick_labels=bar_xticks, stats_config=cfg,
+                             annot_sink=panel_annots, style=_pstyle(_pkey))
+        ax.set_title(_title)
+
     # ── 6b. Track count (trajectories detected per group) ─────────────────────
     if "track_count" in panels:
         ax = _next_ax()
@@ -2201,6 +2251,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # the family size is reproducible and matches the "scalar metrics" framing.
     _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mob_immob_ratio",
                       "median_D", "median_alpha", "radius_of_gyration",
+                      "net_displacement", "path_length", "directionality",
+                      "track_duration", "n_localisations",
                       "mean_track_length_s", "n_tracks", "nongauss_alpha2",
                       "vacf_persistence"}
     across_pw = []

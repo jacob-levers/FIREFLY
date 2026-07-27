@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.76.45-rc.8 — 27 Jul 2026
+
+### Added
+
+- **Five more comparison graphs in the Analysis tab** — Net displacement, Path
+  length, Directionality ratio, Track duration, and Number of localisations —
+  each available as a selectable metric and as a panel, with a per-graph style in
+  Preferences → Figures.
+
+### Changed
+
+- **"Net displacement" now means what it should** — the straight-line distance
+  from a track's first to its last position. Previously this graph computed the
+  *mean radial displacement* (average distance from the track's centre), which is
+  a different quantity; it was mislabelled. (The Visualiser already reported the
+  correct first→last value, so the two now agree.)
+- **Fluorescence intensity is now per-track** — each track's mean spot intensity
+  (sum of its localisation intensities ÷ its number of localisations), then
+  compared across replicates. This matches the standard definition; the previous
+  version pooled all localisations instead. Still only comparable across dishes
+  analysed with identical detection settings.
+
 ## v2.76.45-rc.7 — 27 Jul 2026
 
 ### Added
