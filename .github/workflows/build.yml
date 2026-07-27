@@ -125,17 +125,24 @@ jobs:
 
       - name: Release notes from CHANGELOG
         # The release body (what the in-app "Updates" card shows) is the CHANGELOG
-        # section for this version.  Strip any -rc suffix so a pre-release reuses
-        # its target stable entry.  Exact-substring match (no regex → dots safe).
+        # section for this version.  Prefer the EXACT tag's entry (e.g. an -rc.N
+        # heading during a pre-release cycle); only fall back to the stable base
+        # heading (v2.76.45) when the exact one isn't present.  Exact-substring
+        # match (no regex → dots safe).
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          BASE="${GITHUB_REF#refs/tags/v}"; BASE="${BASE%%-*}"
-          awk -v v="$BASE" '
-            index($0, "## v" v " ")==1 {grab=1; print; next}
-            grab && /^## v/ {exit}
-            grab {print}
-          ' CHANGELOG.md > RELEASE_NOTES.md
-          if [ ! -s RELEASE_NOTES.md ]; then echo "See the CHANGELOG for details." > RELEASE_NOTES.md; fi
+          FULL="${GITHUB_REF#refs/tags/v}"      # e.g. 2.76.45-rc.6
+          BASE="${FULL%%-*}"                     # e.g. 2.76.45
+          extract() {
+            awk -v v="$1" '
+              index($0, "## v" v " ")==1 {grab=1; print; next}
+              grab && /^## v/ {exit}
+              grab {print}
+            ' CHANGELOG.md
+          }
+          extract "$FULL" > RELEASE_NOTES.md
+          [ -s RELEASE_NOTES.md ] || extract "$BASE" > RELEASE_NOTES.md
+          [ -s RELEASE_NOTES.md ] || echo "See the CHANGELOG for details." > RELEASE_NOTES.md
           echo "---- release notes ----"; cat RELEASE_NOTES.md
 
       - name: Upload to GitHub Release
@@ -344,14 +351,20 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
-          $base = ($env:GITHUB_REF -replace '^refs/tags/v','') -replace '-.*',''
-          $prefix = "## v$base "
-          $out = @(); $grab = $false
-          foreach ($l in (Get-Content CHANGELOG.md)) {
-            if ($l.StartsWith($prefix)) { $grab = $true; $out += $l; continue }
-            if ($grab -and $l -match '^## v') { break }
-            if ($grab) { $out += $l }
+          $full = ($env:GITHUB_REF -replace '^refs/tags/v','')   # 2.76.45-rc.6
+          $base = $full -replace '-.*',''                         # 2.76.45
+          function Extract($v) {
+            $prefix = "## v$v "
+            $out = @(); $grab = $false
+            foreach ($l in (Get-Content CHANGELOG.md)) {
+              if ($l.StartsWith($prefix)) { $grab = $true; $out += $l; continue }
+              if ($grab -and $l -match '^## v') { break }
+              if ($grab) { $out += $l }
+            }
+            return $out
           }
+          $out = Extract $full                       # prefer the exact tag's entry
+          if ($out.Count -eq 0) { $out = Extract $base }   # else the stable base
           if ($out.Count -eq 0) { $out = @("See the CHANGELOG for details.") }
           ($out -join "`n") | Set-Content -Encoding UTF8 RELEASE_NOTES.md
           Write-Host "---- release notes ----"; Get-Content RELEASE_NOTES.md
