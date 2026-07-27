@@ -31,6 +31,7 @@ def _run(root, stem, *, masses, seed=0):
     n = len(masses)
     pd.DataFrame({"particle": np.arange(n), "D": rng.random(n) * 0.5 + 0.01,
                   "alpha": rng.random(n) + 0.5,
+                  "radius_of_gyration_um": rng.random(n) * 0.2 + 0.05,
                   "motion": ["Brownian"] * n}).to_csv(
         os.path.join(extras, f"{stem}_diffusion_summary.csv"), index=False)
     pd.DataFrame({"frame": np.arange(n), "x": rng.random(n), "y": rng.random(n),
@@ -86,5 +87,35 @@ def test_compute_report_has_spot_intensity_and_panel_renders(tmp_path):
     fig, _sdf, stats = fc.render_report(rd, panels={"fluor"})
     assert fig is not None
     assert "spot_intensity" in stats
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+
+# ── radius of gyration: same pattern, per-track column already loaded ─────────
+def test_rg_panel_registered_after_track_length():
+    from firefly.ui.controllers.workspace import workspace_data as wd
+    keys = [k for k, _ in wd.COMPARE_PANELS]
+    assert "rg" in keys
+    assert keys.index("rg") == keys.index("track_length") + 1
+    tabs = [k for k, _l, _m in wd.COMPARE_PANEL_TABS]
+    assert "rg" in tabs and wd.PANEL_METRIC["rg"] == "rg"
+    assert "rg" in wd.DEFAULT_COMPARE_PANELS
+
+
+def test_compute_report_has_radius_of_gyration_and_panel_renders(tmp_path):
+    groups = [
+        {"label": "Ctrl", "color": "#3b6ed8", "folders": [
+            _run(str(tmp_path), "c0", masses=[100, 200, 300], seed=1),
+            _run(str(tmp_path), "c1", masses=[110, 210, 310], seed=2)]},
+        {"label": "Drug", "color": "#d8683b", "folders": [
+            _run(str(tmp_path), "d0", masses=[500, 600, 700], seed=3),
+            _run(str(tmp_path), "d1", masses=[520, 620, 720], seed=4)]},
+    ]
+    rd = fc.compute_report(groups)
+    assert "radius_of_gyration" in rd.summary_df.columns
+    vals = rd.summary_df["radius_of_gyration"].to_numpy(float)
+    assert np.isfinite(vals).all() and (vals > 0).all()   # per-replicate median R_g
+    fig, _sdf, stats = fc.render_report(rd, panels={"rg"})
+    assert fig is not None and "radius_of_gyration" in stats
     import matplotlib.pyplot as plt
     plt.close(fig)

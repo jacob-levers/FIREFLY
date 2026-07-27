@@ -607,6 +607,8 @@ Item {
                     }
                     MarkRow { label: "Fluorescence"; panelKey: "fluor"
                               desc: "How the fluorescence (spot-intensity) comparison is drawn." }
+                    MarkRow { label: "Radius of gyration"; panelKey: "rg"
+                              desc: "How the radius-of-gyration comparison is drawn." }
                     MarkRow { label: "Mobile fraction"; panelKey: "mob_immob"
                               desc: "How the mobile/immobile-ratio comparison is drawn." }
                     MarkRow { label: "Track count"; panelKey: "track_count"

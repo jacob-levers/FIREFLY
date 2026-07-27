@@ -1158,6 +1158,9 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             "mob_immob_ratio":  _mob_immob_ratio(d, mobile_d_threshold),
             "median_D":         float(d["D"].median()) if d is not None and "D" in d.columns else np.nan,
             "median_alpha":     float(d["alpha"].median()) if d is not None and "alpha" in d.columns else np.nan,
+            "radius_of_gyration": (float(d["radius_of_gyration_um"].median())
+                                   if d is not None and "radius_of_gyration_um" in d.columns
+                                   else np.nan),
             "mean_track_length_s": float(_track_lengths(summary["tracks"], fi).mean())
                                    if summary["tracks"] is not None else np.nan,
             "nongauss_alpha2":  nongauss_alpha2,
@@ -1305,12 +1308,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     stats_records = {}
     if panels is None:
         panels = {"msd", "auc", "fluor", "logd_dist", "mob_immob",
-                  "motion_classes", "track_length", "jdd", "dwell_cdf",
+                  "motion_classes", "track_length", "rg", "jdd", "dwell_cdf",
                   "turning_angles", "radial_dist", "van_hove", "vacf"}
 
     # ── Render the figure ────────────────────────────────────────────────────
     panel_order = ["msd", "auc", "fluor", "logd_dist", "mob_immob",
-                   "motion_classes", "track_length", "track_count",
+                   "motion_classes", "track_length", "rg", "track_count",
                    "jdd", "dwell_cdf", "turning_angles", "radial_dist",
                    "van_hove", "vacf"]
     enabled = [p for p in panel_order if p in panels]
@@ -1743,6 +1746,25 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     for lbl in labels]
             omn, pw = _STN(arrs, labels, cfg)
             stats_records["mean_track_length_s"] = {"omnibus": omn, "pairwise": pw}
+
+    # ── 6a2. Radius of gyration (per-replicate median track spread) ────────────
+    if "rg" in panels:
+        ax = _next_ax()
+        if two_factor:
+            _interaction_plot(ax, summary_df, "radius_of_gyration", group_order,
+                              tp_order, group_colors, pal,
+                              ylabel="R_g (µm)",
+                              headline=_twoway_headline(twoway_df, "radius_of_gyration"),
+                              card_colors=card_colors, stats_config=cfg)
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, "radius_of_gyration"].values
+                    for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal,
+                             ylabel="R_g (µm)",
+                             record_stats=stats_records, metric_name="radius_of_gyration",
+                             xtick_labels=bar_xticks, stats_config=cfg,
+                             annot_sink=panel_annots, style=_pstyle("rg"))
+        ax.set_title("Radius of Gyration")
 
     # ── 6b. Track count (trajectories detected per group) ─────────────────────
     if "track_count" in panels:
@@ -2178,7 +2200,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # SCALAR metrics (omnibus rows and per-class motion fractions excluded), so
     # the family size is reproducible and matches the "scalar metrics" framing.
     _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mob_immob_ratio",
-                      "median_D", "median_alpha",
+                      "median_D", "median_alpha", "radius_of_gyration",
                       "mean_track_length_s", "n_tracks", "nongauss_alpha2",
                       "vacf_persistence"}
     across_pw = []

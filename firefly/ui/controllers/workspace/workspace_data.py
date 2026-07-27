@@ -891,7 +891,8 @@ COMPARE_PANELS = [
     ("msd", "Ensemble MSD"), ("auc", "MSD AUC"), ("fluor", "Fluorescence"),
     ("logd_dist", "log₁₀(D) dist."),
     ("mob_immob", "Mobile / immobile"), ("motion_classes", "Motion classes"),
-    ("track_length", "Track length"), ("track_count", "Track count"),
+    ("track_length", "Track length"), ("rg", "Radius of gyration"),
+    ("track_count", "Track count"),
     ("jdd", "Jump distance"), ("dwell_cdf", "Dwell-time CDF"),
     ("turning_angles", "Turning angles"), ("radial_dist", "Radial dist."),
     ("van_hove", "Van Hove"), ("vacf", "VACF"),
@@ -912,7 +913,7 @@ LOGD_STYLES = [("overlaid", "Overlaid"), ("ridgeline", "Ridgeline"),
 METRIC_PANEL = {
     "D": "logd_dist", "mob": "mob_immob", "motion": "motion_classes",
     "len": "track_length", "msd": "msd", "angle": "turning_angles",
-    "dwell": "dwell_cdf", "a2": "van_hove", "fluor": "fluor",
+    "dwell": "dwell_cdf", "a2": "van_hove", "fluor": "fluor", "rg": "rg",
 }
 
 # The scroller IS the comparison-figure panels (key, chip label, scalar metric for
@@ -926,6 +927,7 @@ COMPARE_PANEL_TABS = [
     ("mob_immob", "Mobile fraction", "mob"),
     ("motion_classes", "Motion classes", "motion"),
     ("track_length", "Track length", "len"),
+    ("rg", "Radius of gyration", "rg"),
     ("track_count", "Track count", "count"),
     ("jdd", "Jump distance", "jdd"),
     ("dwell_cdf", "Dwell time", "dwell"),

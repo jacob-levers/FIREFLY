@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.76.45-rc.7 — 27 Jul 2026
+
+### Added
+
+- **Radius-of-gyration comparison graph in the Analysis tab**, sitting after the
+  Track length graph. It compares each replicate's median radius of gyration
+  (R_g — how spread-out a molecule's trajectory is) across your conditions, with
+  the usual stats card. Available both as a selectable metric and as a panel in
+  the "All panels" view, and you can choose how it's drawn (box + points /
+  violin / bar) in Preferences → Figures, like the other comparison graphs.
+
 ## v2.76.45-rc.6 — 23 Jul 2026
 
 ### Added
