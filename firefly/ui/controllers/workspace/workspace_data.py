@@ -248,22 +248,22 @@ def _msd_at_1s(run: RunData) -> Optional[float]:
     return float(np.interp(1.0, lag_s[ok], msd[ok]))
 
 
-def _step_scalar(run: RunData) -> Optional[float]:
-    """Mean single-frame step ≈ √(2·D·Δt) from the median D (derived)."""
-    d = _summary(run, "median_d")
+def _speed_measured_scalar(run: RunData) -> Optional[float]:
+    """Measured step speed = per-track mean step distance ÷ Δt (median over
+    tracks).  The straight-up geometric speed, no diffusion-model assumption."""
+    v = run._diff_col("mean_step_um", positive=True)
     fi = run.fi_s
-    if d is None or not fi:
+    if v is None or not len(v) or not fi:
         return None
-    return float(np.sqrt(max(0.0, 2.0 * d * fi)))
+    return float(np.median(v) / float(fi))
 
 
-def _speed_scalar(run: RunData) -> Optional[float]:
-    """Mean speed ≈ step/Δt ≈ √(2·D/Δt) from the median D (derived)."""
-    d = _summary(run, "median_d")
+def _speed_measured_dist(run: RunData) -> Optional[np.ndarray]:
+    v = run._diff_col("mean_step_um", positive=True)
     fi = run.fi_s
-    if d is None or not fi:
+    if v is None or not len(v) or not fi:
         return None
-    return float(np.sqrt(max(0.0, 2.0 * d / fi)))
+    return v / float(fi)
 
 
 def _col_median(run: RunData, col: str) -> Optional[float]:
@@ -526,10 +526,11 @@ METRICS: list[Metric] = [
            scalar=_track_len_median, dist=_track_len_dist),
     Metric("msd", "MSD @1s", "µm²", 3, "MSD @1s (µm²)", "Diffusion",
            scalar=_msd_at_1s),
-    Metric("step", "Step size", "µm", 3, "step size (µm)", "Tracking",
-           scalar=_step_scalar, approx=True),
-    Metric("speed", "Speed", "µm/s", 3, "speed (µm/s)", "Tracking",
-           scalar=_speed_scalar, approx=True),
+    Metric("step", "Step distance", "µm", 3, "step distance (µm)", "Tracking",
+           scalar=lambda r: _col_median(r, "mean_step_um"),
+           dist=lambda r: r._diff_col("mean_step_um", positive=True)),
+    Metric("speed", "Step speed", "µm/s", 3, "step speed (µm/s)", "Tracking",
+           scalar=_speed_measured_scalar, dist=_speed_measured_dist),
     Metric("rg", "Radius of gyration", "µm", 3, "R_g (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "radius_of_gyration_um"),
            dist=lambda r: r._diff_col("radius_of_gyration_um", positive=True)),
@@ -928,6 +929,7 @@ COMPARE_PANELS = [
     ("mob_immob", "Mobile / immobile"), ("motion_classes", "Motion classes"),
     ("track_length", "Track length"), ("rg", "Radius of gyration"),
     ("netdisp", "Net displacement"), ("path", "Path length"),
+    ("step", "Step distance"), ("speed", "Step speed"),
     ("dir", "Directionality"), ("dur", "Track duration"),
     ("track_count", "Track count"), ("nlocs", "Localisations"),
     ("jdd", "Jump distance"), ("dwell_cdf", "Dwell-time CDF"),
@@ -952,7 +954,7 @@ METRIC_PANEL = {
     "len": "track_length", "msd": "msd", "angle": "turning_angles",
     "dwell": "dwell_cdf", "a2": "van_hove", "fluor": "fluor", "rg": "rg",
     "netdisp": "netdisp", "path": "path", "dir": "dir", "dur": "dur",
-    "nlocs": "nlocs",
+    "nlocs": "nlocs", "step": "step", "speed": "speed",
 }
 
 # The scroller IS the comparison-figure panels (key, chip label, scalar metric for
@@ -969,6 +971,8 @@ COMPARE_PANEL_TABS = [
     ("rg", "Radius of gyration", "rg"),
     ("netdisp", "Net displacement", "netdisp"),
     ("path", "Path length", "path"),
+    ("step", "Step distance", "step"),
+    ("speed", "Step speed", "speed"),
     ("dir", "Directionality ratio", "dir"),
     ("dur", "Track duration", "dur"),
     ("track_count", "Track count", "count"),

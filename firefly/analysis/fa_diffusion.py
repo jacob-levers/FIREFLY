@@ -204,10 +204,12 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     if n_pts >= 2:
         _steps      = np.sqrt(np.sum(np.diff(xy_um, axis=0) ** 2, axis=1))
         path_length = float(_steps.sum())
+        mean_step   = float(_steps.mean())          # measured mean single-frame step
         net_disp    = float(np.sqrt(np.sum((xy_um[-1] - xy_um[0]) ** 2)))
         directionality = float(net_disp / path_length) if path_length > 0 else np.nan
     else:
         path_length = 0.0
+        mean_step   = np.nan                          # no step to measure
         net_disp    = 0.0
         directionality = np.nan
 
@@ -228,6 +230,7 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
                                mean_radial_displacement_um=mean_radial,
                                radius_of_gyration_um=rg,
                                path_length_um=path_length,
+                               mean_step_um=mean_step,
                                net_displacement_um=net_disp,
                                directionality_ratio=directionality)
 
@@ -298,7 +301,8 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
         diff_empty = pd.DataFrame(columns=[
             "particle", "D", "alpha", "motion", "MSD0", "MSE", "loc_sigma_nm",
             "mean_radial_displacement_um", "radius_of_gyration_um",
-            "path_length_um", "net_displacement_um", "directionality_ratio"])
+            "path_length_um", "mean_step_um", "net_displacement_um",
+            "directionality_ratio"])
         return imsd_empty, emsd_empty, diff_empty
 
     # Threading vs processing trade-off:

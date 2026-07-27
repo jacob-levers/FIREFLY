@@ -38,7 +38,11 @@ def make_run_folder(root, stem, *, seed=0, n_tracks=600, d_centre=0.12,
     diff = pd.DataFrame({"particle": np.arange(n_tracks), "D": D, "alpha": alpha,
                          "motion": motion, "MSD0": rng.random(n_tracks) * 1e-3,
                          "loc_sigma_nm": rng.normal(25, 4, n_tracks),
-                         "radius_of_gyration_um": rg})
+                         "radius_of_gyration_um": rg,
+                         "mean_step_um": np.abs(rng.normal(0.15, 0.05, n_tracks)),
+                         "path_length_um": np.abs(rng.normal(2.0, 0.5, n_tracks)),
+                         "net_displacement_um": np.abs(rng.normal(0.5, 0.2, n_tracks)),
+                         "directionality_ratio": rng.uniform(0.1, 0.9, n_tracks)})
     diff.to_csv(os.path.join(extras, f"{stem}_diffusion_summary.csv"), index=False)
 
     # ensemble MSD curve (lag 1..20 frames)
@@ -103,7 +107,7 @@ def test_metric_scalars_and_distributions(tmp_path):
     assert by_id["mob"].dist(run) is None          # scalar-only metric
     # mobile fraction surfaced as a percentage
     assert 0 <= by_id["mob"].scalar(run) <= 100
-    assert by_id["step"].approx is True            # derived → badged
+    assert by_id["step"].approx is False           # measured → not badged
 
 
 def test_cliffs_delta_bounds():
@@ -156,8 +160,8 @@ def test_recommend_config_paired_vs_unpaired():
 
 
 def test_new_metrics_read_their_data(tmp_path):
-    # Rg / net-displacement / speed metrics added to the registry read from the
-    # data FIREFLY already writes (radius_of_gyration_um column; D-derived speed).
+    # Rg / net-displacement / step / speed metrics read the per-track columns the
+    # analysis writes (radius_of_gyration_um, mean_step_um, net_displacement_um…).
     import numpy as np
     from firefly.ui.controllers.workspace import workspace_data as wd
     run = wd.load_run(make_run_folder(str(tmp_path), "m", seed=1, d_centre=0.1))
@@ -165,8 +169,12 @@ def test_new_metrics_read_their_data(tmp_path):
     # radius of gyration → per-track distribution present
     rg = by_id["rg"].dist(run)
     assert rg is not None and len(rg) > 0 and np.all(rg >= 0)
-    # speed → derived scalar from median D (√(2D/Δt))
+    # step distance → MEASURED (median of per-track mean step), not D-derived
+    step = by_id["step"].scalar(run)
+    assert step == pytest.approx(float(np.median(run._diff_col("mean_step_um", positive=True))))
+    # step speed → measured step ÷ Δt
     sp = by_id["speed"].scalar(run)
-    assert sp is not None and sp > 0
-    # net displacement column isn't in the minimal fixture → graceful None
-    assert by_id["netdisp"].dist(run) is None
+    assert sp == pytest.approx(step / run.fi_s) and sp > 0
+    # net displacement → the first→last column is present in the fixture now
+    nd = by_id["netdisp"].dist(run)
+    assert nd is not None and len(nd) > 0

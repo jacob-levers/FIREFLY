@@ -899,8 +899,9 @@ class AnalysisWorkspaceController(QObject):
     # format in Preferences (figures/style_<key>).  AUC is NOT here: its single
     # "MSD-AUC" control (figures/auc_style) also offers the paired/Δ timepoint
     # views, so it's handled through auc_plot_style instead.
-    SCALAR_STYLE_PANELS = ("fluor", "rg", "netdisp", "path", "dir", "dur",
-                           "nlocs", "mob_immob", "track_count", "van_hove", "vacf")
+    SCALAR_STYLE_PANELS = ("fluor", "rg", "netdisp", "path", "step", "speed",
+                           "dir", "dur", "nlocs", "mob_immob", "track_count",
+                           "van_hove", "vacf")
 
     def _panel_styles(self) -> dict:
         """Per-panel comparison mark (box_points / violin / bar) from Preferences —

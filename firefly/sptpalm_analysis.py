@@ -11,7 +11,11 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.8"
+__version__ = "2.76.45-rc.9"
+# v2.76.45-rc.9 — Step distance & Step speed are now MEASURED (per-track mean of
+#           the straight-line frame-to-frame steps, and that ÷ Δt) instead of the
+#           old √(2·D·Δt) approximation derived from the diffusion coefficient.
+#           Both are shown as metric + panel; new per-track column mean_step_um.
 # v2.76.45-rc.8 — Analysis tab: added Net displacement, Path length, Directionality
 #           ratio, Track duration and Number-of-localisations comparison graphs
 #           (metric + panel each).  Net displacement is now the true first→last

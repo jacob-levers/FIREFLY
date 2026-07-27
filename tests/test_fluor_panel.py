@@ -36,6 +36,7 @@ def _run(root, stem, *, masses, seed=0):
                   "radius_of_gyration_um": rng.random(n) * 0.2 + 0.05,
                   "net_displacement_um": rng.random(n) + 0.1,
                   "path_length_um": rng.random(n) * 2 + 1.0,
+                  "mean_step_um": rng.random(n) * 0.3 + 0.05,
                   "directionality_ratio": rng.random(n) * 0.5 + 0.25,
                   "motion": ["Brownian"] * n}).to_csv(
         os.path.join(extras, f"{stem}_diffusion_summary.csv"), index=False)
@@ -143,6 +144,26 @@ def test_track_geometry_net_path_directionality():
     assert abs(float(row["path_length_um"]) - 7.0) < 1e-9
     assert abs(float(row["net_displacement_um"]) - 5.0) < 1e-9
     assert abs(float(row["directionality_ratio"]) - 5.0 / 7.0) < 1e-9
+    # measured step distance = mean of the two steps (3, 4) = 3.5 — NOT derived from D
+    assert abs(float(row["mean_step_um"]) - 3.5) < 1e-9
+
+
+def test_step_metrics_are_measured_not_derived_from_D(tmp_path):
+    """Step distance / Step speed must read the MEASURED per-step column, not the
+    old √(2·D·Δt) approximation."""
+    from firefly.ui.controllers.workspace import workspace_data as wd
+    extras = tmp_path / "run" / "firefly_extras"; extras.mkdir(parents=True)
+    (extras / "run_summary_metrics.json").write_text(json.dumps(
+        {"fi_s": 0.5, "px_um": 0.1, "stem": "run"}))   # fi_s → run.fi_s
+    pd.DataFrame({"particle": [0, 1], "D": [0.1, 0.2], "alpha": [1.0, 1.0],
+                  "mean_step_um": [0.2, 0.4], "motion": ["Brownian"]*2}).to_csv(
+        extras / "run_diffusion_summary.csv", index=False)
+    run = wd.load_run(str(tmp_path / "run"))
+    step = next(m for m in wd.METRICS if m.id == "step")
+    speed = next(m for m in wd.METRICS if m.id == "speed")
+    assert step.scalar(run) == pytest.approx(0.3)        # median(0.2, 0.4)
+    assert speed.scalar(run) == pytest.approx(0.3 / 0.5)  # median step ÷ Δt
+    assert step.approx is False and speed.approx is False
 
 
 def test_net_displacement_metric_uses_first_to_last_not_centroid(tmp_path):
@@ -165,10 +186,10 @@ def test_net_displacement_metric_uses_first_to_last_not_centroid(tmp_path):
 def test_new_scalar_metrics_and_panels_registered():
     from firefly.ui.controllers.workspace import workspace_data as wd
     ids = {m.id for m in wd.METRICS}
-    assert {"netdisp", "path", "dir", "dur", "nlocs"} <= ids
+    assert {"netdisp", "path", "step", "speed", "dir", "dur", "nlocs"} <= ids
     keys = {k for k, _ in wd.COMPARE_PANELS}
-    assert {"netdisp", "path", "dir", "dur", "nlocs"} <= keys
-    for k in ("netdisp", "path", "dir", "dur", "nlocs"):
+    assert {"netdisp", "path", "step", "speed", "dir", "dur", "nlocs"} <= keys
+    for k in ("netdisp", "path", "step", "speed", "dir", "dur", "nlocs"):
         assert wd.PANEL_METRIC[k] == k
 
 
@@ -182,17 +203,17 @@ def test_compute_report_has_new_track_metrics_and_panels_render(tmp_path):
             _run(str(tmp_path), "b1", masses=[320, 420], seed=4)]},
     ]
     rd = fc.compute_report(groups)
-    for col in ("net_displacement", "path_length", "directionality",
-                "track_duration", "n_localisations"):
+    for col in ("net_displacement", "path_length", "step_distance", "step_speed",
+                "directionality", "track_duration", "n_localisations"):
         assert col in rd.summary_df.columns, col
     # 2 locs per track → duration = (2-1)*0.05 = 0.05 s; 2 tracks → 4 locs
     assert np.allclose(rd.summary_df["track_duration"].to_numpy(float), 0.05)
     assert set(rd.summary_df["n_localisations"].to_numpy(float)) == {4.0}
     fig, _sdf, stats = fc.render_report(
-        rd, panels={"netdisp", "path", "dir", "dur", "nlocs"})
+        rd, panels={"netdisp", "path", "step", "speed", "dir", "dur", "nlocs"})
     assert fig is not None
-    for col in ("net_displacement", "path_length", "directionality",
-                "track_duration", "n_localisations"):
+    for col in ("net_displacement", "path_length", "step_distance", "step_speed",
+                "directionality", "track_duration", "n_localisations"):
         assert col in stats, col
     import matplotlib.pyplot as plt
     plt.close(fig)

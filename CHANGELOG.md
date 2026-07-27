@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.76.45-rc.9 — 27 Jul 2026
+
+### Changed
+
+- **Step distance and Step speed are now measured, not estimated.** They used to
+  be derived from the diffusion coefficient (√(2·D·Δt)), which just re-expressed
+  D in other units and assumed Brownian motion. They now use the **actual**
+  straight-line distance between a molecule's positions in consecutive frames
+  (per-track mean), and that divided by the frame interval for speed — matching
+  the standard definitions and the rest of the geometry graphs (path length, net
+  displacement, directionality). Both are shown as a metric and a panel. Note the
+  measured step includes localisation error, so it's slightly inflated for very
+  slow/immobile molecules; the diffusion coefficient D remains the
+  localisation-error-corrected view.
+
 ## v2.76.45-rc.8 — 27 Jul 2026
 
 ### Added

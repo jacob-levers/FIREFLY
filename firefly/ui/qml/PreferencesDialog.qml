@@ -613,6 +613,10 @@ Item {
                               desc: "How the net-displacement (first→last) comparison is drawn." }
                     MarkRow { label: "Path length"; panelKey: "path"
                               desc: "How the path-length comparison is drawn." }
+                    MarkRow { label: "Step distance"; panelKey: "step"
+                              desc: "How the (measured) step-distance comparison is drawn." }
+                    MarkRow { label: "Step speed"; panelKey: "speed"
+                              desc: "How the (measured) step-speed comparison is drawn." }
                     MarkRow { label: "Directionality ratio"; panelKey: "dir"
                               desc: "How the directionality-ratio (net÷path) comparison is drawn." }
                     MarkRow { label: "Track duration"; panelKey: "dur"

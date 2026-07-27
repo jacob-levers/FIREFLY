@@ -1178,6 +1178,9 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                                    else np.nan),
             "net_displacement":   _col_median_from(d, "net_displacement_um", positive=True),
             "path_length":        _col_median_from(d, "path_length_um", positive=True),
+            "step_distance":      _col_median_from(d, "mean_step_um", positive=True),
+            "step_speed":         (_col_median_from(d, "mean_step_um", positive=True) / fi
+                                   if fi else np.nan),
             "directionality":     _col_median_from(d, "directionality_ratio"),
             "track_duration":     _track_duration_median(summary["tracks"], fi),
             "n_localisations":    (int(len(summary["tracks"]))
@@ -1330,13 +1333,13 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     if panels is None:
         panels = {"msd", "auc", "fluor", "logd_dist", "mob_immob",
                   "motion_classes", "track_length", "rg", "netdisp", "path",
-                  "dir", "dur", "nlocs", "jdd", "dwell_cdf",
+                  "step", "speed", "dir", "dur", "nlocs", "jdd", "dwell_cdf",
                   "turning_angles", "radial_dist", "van_hove", "vacf"}
 
     # ── Render the figure ────────────────────────────────────────────────────
     panel_order = ["msd", "auc", "fluor", "logd_dist", "mob_immob",
                    "motion_classes", "track_length", "rg", "netdisp", "path",
-                   "dir", "dur", "track_count", "nlocs",
+                   "step", "speed", "dir", "dur", "track_count", "nlocs",
                    "jdd", "dwell_cdf", "turning_angles", "radial_dist",
                    "van_hove", "vacf"]
     enabled = [p for p in panel_order if p in panels]
@@ -1796,6 +1799,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     for _pkey, _col, _ylabel, _title in (
             ("netdisp", "net_displacement", "Net displacement (µm)", "Net Displacement"),
             ("path",    "path_length",      "Path length (µm)",      "Path Length"),
+            ("step",    "step_distance",    "Step distance (µm)",    "Step Distance"),
+            ("speed",   "step_speed",       "Step speed (µm/s)",     "Step Speed"),
             ("dir",     "directionality",   "Net ÷ path",            "Directionality Ratio"),
             ("dur",     "track_duration",   "Track duration (s)",    "Track Duration"),
             ("nlocs",   "n_localisations",  "Localisations (n)",     "Number of Localisations")):
@@ -2251,7 +2256,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # the family size is reproducible and matches the "scalar metrics" framing.
     _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mob_immob_ratio",
                       "median_D", "median_alpha", "radius_of_gyration",
-                      "net_displacement", "path_length", "directionality",
+                      "net_displacement", "path_length", "step_distance",
+                      "step_speed", "directionality",
                       "track_duration", "n_localisations",
                       "mean_track_length_s", "n_tracks", "nongauss_alpha2",
                       "vacf_persistence"}
