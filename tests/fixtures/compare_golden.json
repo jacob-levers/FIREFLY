@@ -490,6 +490,46 @@
      }
     ]
    },
+   "spot_intensity": {
+    "omnibus": null,
+    "pairwise": [
+     {
+      "cliffs_delta": null,
+      "cliffs_delta_ci_high": null,
+      "cliffs_delta_ci_low": null,
+      "cohens_d": null,
+      "family": "pairwise",
+      "hedges_g": null,
+      "hedges_g_ci_high": null,
+      "hedges_g_ci_low": null,
+      "i": 0,
+      "j": 1,
+      "label_i": "Ctrl",
+      "label_j": "Drug",
+      "mean_i": "nan",
+      "mean_j": "nan",
+      "n_i": 0,
+      "n_j": 0,
+      "n_needed_80": null,
+      "n_needed_90": null,
+      "note": "n<2 replicates - no test possible",
+      "p": "nan",
+      "p_across": "nan",
+      "p_self": null,
+      "p_within": "nan",
+      "rank_biserial": null,
+      "self_corrected": false,
+      "sem_i": "nan",
+      "sem_j": "nan",
+      "stars": "",
+      "stars_across": "",
+      "stars_within": "",
+      "test": "n<2",
+      "tost_equivalent": null,
+      "tost_p": null
+     }
+    ]
+   },
    "vacf_persistence": {
     "omnibus": null,
     "pairwise": [
@@ -542,6 +582,7 @@
     "mob_immob_ratio": 1.531646,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "c0",
     "timepoint": "",
     "vacf_persistence": "nan"
@@ -556,6 +597,7 @@
     "mob_immob_ratio": 1.643172,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "c1",
     "timepoint": "",
     "vacf_persistence": "nan"
@@ -570,6 +612,7 @@
     "mob_immob_ratio": 1.362205,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "c2",
     "timepoint": "",
     "vacf_persistence": "nan"
@@ -584,6 +627,7 @@
     "mob_immob_ratio": "nan",
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "d0",
     "timepoint": "",
     "vacf_persistence": "nan"
@@ -598,6 +642,7 @@
     "mob_immob_ratio": 299.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "d1",
     "timepoint": "",
     "vacf_persistence": "nan"
@@ -612,6 +657,7 @@
     "mob_immob_ratio": "nan",
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "d2",
     "timepoint": "",
     "vacf_persistence": "nan"
@@ -631,6 +677,7 @@
     "mob_immob_ratio": 99.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "DMSO_post0",
     "timepoint": "post",
     "vacf_persistence": "nan"
@@ -645,6 +692,7 @@
     "mob_immob_ratio": 84.714286,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "DMSO_post1",
     "timepoint": "post",
     "vacf_persistence": "nan"
@@ -659,6 +707,7 @@
     "mob_immob_ratio": 119.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "DMSO_post2",
     "timepoint": "post",
     "vacf_persistence": "nan"
@@ -673,6 +722,7 @@
     "mob_immob_ratio": 7.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "DMSO_pre0",
     "timepoint": "pre",
     "vacf_persistence": "nan"
@@ -687,6 +737,7 @@
     "mob_immob_ratio": 7.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "DMSO_pre1",
     "timepoint": "pre",
     "vacf_persistence": "nan"
@@ -701,6 +752,7 @@
     "mob_immob_ratio": 6.692308,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "DMSO_pre2",
     "timepoint": "pre",
     "vacf_persistence": "nan"
@@ -715,6 +767,7 @@
     "mob_immob_ratio": 599.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "KCl_post0",
     "timepoint": "post",
     "vacf_persistence": "nan"
@@ -729,6 +782,7 @@
     "mob_immob_ratio": 149.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "KCl_post1",
     "timepoint": "post",
     "vacf_persistence": "nan"
@@ -743,6 +797,7 @@
     "mob_immob_ratio": 149.0,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "KCl_post2",
     "timepoint": "post",
     "vacf_persistence": "nan"
@@ -757,6 +812,7 @@
     "mob_immob_ratio": 6.058824,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "KCl_pre0",
     "timepoint": "pre",
     "vacf_persistence": "nan"
@@ -771,6 +827,7 @@
     "mob_immob_ratio": 6.792208,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "KCl_pre1",
     "timepoint": "pre",
     "vacf_persistence": "nan"
@@ -785,6 +842,7 @@
     "mob_immob_ratio": 7.450704,
     "n_tracks": 600,
     "nongauss_alpha2": "nan",
+    "spot_intensity": "nan",
     "stem": "KCl_pre2",
     "timepoint": "pre",
     "vacf_persistence": "nan"

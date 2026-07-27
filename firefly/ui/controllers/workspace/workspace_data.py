@@ -888,7 +888,8 @@ def es_magnitude(es: Optional[float]) -> str:
 
 # ── comparison-report figure panels (keys match fa_compare's panel_order) ───────
 COMPARE_PANELS = [
-    ("msd", "Ensemble MSD"), ("auc", "MSD AUC"), ("logd_dist", "log₁₀(D) dist."),
+    ("msd", "Ensemble MSD"), ("auc", "MSD AUC"), ("fluor", "Fluorescence"),
+    ("logd_dist", "log₁₀(D) dist."),
     ("mob_immob", "Mobile / immobile"), ("motion_classes", "Motion classes"),
     ("track_length", "Track length"), ("track_count", "Track count"),
     ("jdd", "Jump distance"), ("dwell_cdf", "Dwell-time CDF"),
@@ -911,7 +912,7 @@ LOGD_STYLES = [("overlaid", "Overlaid"), ("ridgeline", "Ridgeline"),
 METRIC_PANEL = {
     "D": "logd_dist", "mob": "mob_immob", "motion": "motion_classes",
     "len": "track_length", "msd": "msd", "angle": "turning_angles",
-    "dwell": "dwell_cdf", "a2": "van_hove",
+    "dwell": "dwell_cdf", "a2": "van_hove", "fluor": "fluor",
 }
 
 # The scroller IS the comparison-figure panels (key, chip label, scalar metric for
@@ -920,6 +921,7 @@ METRIC_PANEL = {
 COMPARE_PANEL_TABS = [
     ("msd", "Mean square displacement", "msd"),
     ("auc", "Mean square displacement AUC", "auc"),
+    ("fluor", "Fluorescence intensity", "fluor"),
     ("logd_dist", "Diffusion D", "D"),
     ("mob_immob", "Mobile fraction", "mob"),
     ("motion_classes", "Motion classes", "motion"),

@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.76.45-rc.6 — 23 Jul 2026
+
+### Added
+
+- **Fluorescence comparison graph in the Analysis tab**, sitting right next to
+  the MSD AUC graph. It compares spot intensity — the same fluorescence readout
+  palmTRACER emits (integrated spot intensity) — across your conditions, as one
+  point per replicate with the usual stats card. It's available both as a
+  selectable metric and as a panel in the "All panels" view, and you can choose
+  how it's drawn (box + points / violin / bar) in Preferences → Figures, like the
+  other comparison graphs. Note the value is only comparable across dishes
+  analysed with identical detection settings.
+
 ## v2.76.45-rc.5 — 23 Jul 2026
 
 ### Fixed

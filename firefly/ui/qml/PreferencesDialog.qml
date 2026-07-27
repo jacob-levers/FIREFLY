@@ -605,6 +605,8 @@ Item {
                                  onPicked: (t) => { var i = root.msdLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/msd_style", root.msdValues[i]) } }
                     }
+                    MarkRow { label: "Fluorescence"; panelKey: "fluor"
+                              desc: "How the fluorescence (spot-intensity) comparison is drawn." }
                     MarkRow { label: "Mobile fraction"; panelKey: "mob_immob"
                               desc: "How the mobile/immobile-ratio comparison is drawn." }
                     MarkRow { label: "Track count"; panelKey: "track_count"

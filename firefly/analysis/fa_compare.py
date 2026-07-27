@@ -981,6 +981,29 @@ def render_logd_preview(fig, style, theme="Dark"):
         pass
 
 
+def _spot_intensity(summary):
+    """Median per-localisation spot intensity (fluorescence, a.u.) for one
+    replicate — the localisations' ``mass`` column, which is palmTRACER's
+    Integrated_Intensity mapped through FIREFLY's canonical schema.  Computed the
+    SAME way as the 'Spot intensity' metric (finite, >0, median) so the panel and
+    the metric agree.  Reads only the ``mass`` column.  Returns NaN when no
+    localisations file is present (older runs / palmTRACER-native summaries)."""
+    data_dir = summary.get("data_dir")
+    stem = summary.get("stem")
+    if not data_dir or not stem:
+        return float("nan")
+    path = os.path.join(data_dir, f"{stem}_localisations.csv")
+    if not os.path.isfile(path):
+        return float("nan")
+    try:
+        col = pd.read_csv(path, usecols=["mass"])["mass"]
+    except Exception:
+        return float("nan")
+    v = pd.to_numeric(col, errors="coerce").to_numpy(dtype=float)
+    v = v[np.isfinite(v) & (v > 0)]
+    return float(np.median(v)) if v.size else float("nan")
+
+
 def comparison_grid(n):
     """(rows, cols) the comparison figure packs `n` panels into — the single
     source of truth shared with the UI panel-picker's live grid count."""
@@ -1131,6 +1154,7 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             "stem":             stem,
             "n_tracks":         len(d) if d is not None else 0,
             "auc_msd":          _msd_auc(summary["ensemble_msd"], fi),
+            "spot_intensity":   _spot_intensity(summary),
             "mob_immob_ratio":  _mob_immob_ratio(d, mobile_d_threshold),
             "median_D":         float(d["D"].median()) if d is not None and "D" in d.columns else np.nan,
             "median_alpha":     float(d["alpha"].median()) if d is not None and "alpha" in d.columns else np.nan,
@@ -1280,12 +1304,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     panel_annots = {}
     stats_records = {}
     if panels is None:
-        panels = {"msd", "auc", "logd_dist", "mob_immob", "motion_classes",
-                  "track_length", "jdd", "dwell_cdf", "turning_angles",
-                  "radial_dist", "van_hove", "vacf"}
+        panels = {"msd", "auc", "fluor", "logd_dist", "mob_immob",
+                  "motion_classes", "track_length", "jdd", "dwell_cdf",
+                  "turning_angles", "radial_dist", "van_hove", "vacf"}
 
     # ── Render the figure ────────────────────────────────────────────────────
-    panel_order = ["msd", "auc", "logd_dist", "mob_immob",
+    panel_order = ["msd", "auc", "fluor", "logd_dist", "mob_immob",
                    "motion_classes", "track_length", "track_count",
                    "jdd", "dwell_cdf", "turning_angles", "radial_dist",
                    "van_hove", "vacf"]
@@ -1462,6 +1486,25 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                              ylabel="AUC (µm²·s)",
                              record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=mark)
             ax.set_title("Area Under the Curve")
+
+    # ── 2b. Fluorescence (spot intensity) bar — sits next to MSD AUC ───────────
+    if "fluor" in panels:
+        ax = _next_ax()
+        if two_factor:
+            _interaction_plot(ax, summary_df, "spot_intensity", group_order,
+                              tp_order, group_colors, pal,
+                              ylabel="Spot intensity (a.u.)",
+                              headline=_twoway_headline(twoway_df, "spot_intensity"),
+                              card_colors=card_colors, stats_config=cfg)
+        else:
+            data = [summary_df.loc[summary_df["group"] == lbl, "spot_intensity"].values
+                    for lbl in labels]
+            _bar_with_dots_n(ax, data, labels, colors, pal,
+                             ylabel="Spot intensity (a.u.)",
+                             record_stats=stats_records, metric_name="spot_intensity",
+                             xtick_labels=bar_xticks, stats_config=cfg,
+                             annot_sink=panel_annots, style=_pstyle("fluor"))
+        ax.set_title("Fluorescence Intensity")
 
     # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────
     if "logd_dist" in panels:
@@ -2134,7 +2177,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # The across-metric family is the pairwise comparisons of the canonical
     # SCALAR metrics (omnibus rows and per-class motion fractions excluded), so
     # the family size is reproducible and matches the "scalar metrics" framing.
-    _ACROSS_FAMILY = {"auc_msd", "mob_immob_ratio", "median_D", "median_alpha",
+    _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mob_immob_ratio",
+                      "median_D", "median_alpha",
                       "mean_track_length_s", "n_tracks", "nongauss_alpha2",
                       "vacf_persistence"}
     across_pw = []

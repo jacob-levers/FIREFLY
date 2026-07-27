@@ -11,7 +11,13 @@ import os
 # ║  string against the latest GitHub tag — if they don't match, the nag      ║
 # ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.5"
+__version__ = "2.76.45-rc.6"
+# v2.76.45-rc.6 — Analysis tab: new Fluorescence comparison panel next to MSD AUC.
+#           Per-replicate spot intensity (the localisations' `mass` column =
+#           palmTRACER's Integrated_Intensity), the same value as the existing
+#           'Spot intensity' metric, so panel and metric agree.  Selectable as a
+#           metric AND shown as a panel (with a per-graph style in Preferences);
+#           joins the two-way ANOVA + across-metric family as `spot_intensity`.
 # v2.76.45-rc.5 — Updater: fix "100% then stuck for ages".  hdiutil imageinfo (the
 #           macOS DMG check that runs after the download completes) had no
 #           timeout, so a hung hdiutil froze verification forever; it now times
