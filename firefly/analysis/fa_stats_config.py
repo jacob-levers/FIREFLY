@@ -499,6 +499,32 @@ ANALYSIS_GLOSSARY = {
     "chunk size":
         "How many frames are processed per batch — trades memory use against "
         "per-batch overhead.",
+    # ── Time-like quantities: three DIFFERENT things, easily confused ─────────
+    # These read almost identically but differ once memory-linking bridges a
+    # gap, and two of them differ by exactly one frame by design.  Spell out
+    # each formula so a value can never be silently mistaken for another.
+    "track duration":
+        "How long a trajectory lasted: (last frame − first frame) × frame "
+        "interval — the elapsed time SPANNED between its first and last "
+        "localisation. Gaps are included, because a molecule missed in one "
+        "frame did not stop existing. For a gapless track this equals the "
+        "number of intervals between localisations × frame interval.",
+    "observed sampling time":
+        "Localisation count × frame interval — how much time was actually "
+        "SAMPLED, not how long the track lasted. It is shorter than the track "
+        "duration whenever there are gaps, and (being a rescaled localisation "
+        "count) it carries the same information as track length.",
+    "dwell time":
+        "Residence time of a confined/immobile track: (last frame − first "
+        "frame + 1) × frame interval — frames OCCUPIED, so it is one frame "
+        "longer than the track duration of the same track. The +1 is "
+        "deliberate: a molecule seen in a single frame occupied that frame, "
+        "whereas it spanned no interval.",
+    "censored (dwell)":
+        "A dwell time is right-censored when the molecule is still present in "
+        "the movie's last frame, so its true residence time is only a lower "
+        "bound. The reported τ uses the censored maximum-likelihood estimate "
+        "rather than averaging truncated dwells.",
 }
 
 

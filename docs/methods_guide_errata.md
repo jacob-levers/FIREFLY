@@ -105,6 +105,18 @@ descriptions should be updated to match:
   count and observed sampling time are distinct. Path length remains the
   observed polyline, so a gap is represented by a straight chord through an
   unknowable missing path.
+- **Three time-like quantities, deliberately different (§12/§13).** They are
+  easy to confuse and two of them differ by exactly one frame *by design*:
+  `track_duration_s = (max(frame) − min(frame)) × Δt` is the elapsed interval
+  **spanned**; observed sampling time (`n_observations × Δt`, reported per
+  replicate as `mean_observed_time_s`) is the time actually **sampled** and is
+  shorter whenever there are gaps; `dwell_time_total_s =
+  (max(frame) − min(frame) + 1) × Δt` counts frames **occupied** and is
+  therefore one frame longer than the duration of the same track. The `+1`
+  belongs to dwell alone: a molecule seen in a single frame occupied that frame
+  but spanned no interval. For a gapless track, duration equals the number of
+  intervals between localisations × Δt (the conventional definition). All three
+  are defined in the in-app glossary (Preferences → Glossary).
 - **Exact zero displacement (§12): below resolution, not D=0.** If every valid
   displacement bin is exactly zero, D and α are unavailable,
   `fit_status=below_resolution`, and the α-derived motion class is unclassified.

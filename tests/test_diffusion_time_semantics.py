@@ -319,3 +319,42 @@ def test_worker_prelinked_canonicalization_uses_the_same_branch_error():
 
     with pytest.raises(ValueError, match="branched TrackMate export"):
         _canonicalize_tracks(_tracks([0, 0, 1], [0.0, 1.0, 2.0]))
+
+
+# ── the three time-like quantities are documented and genuinely distinct ──────
+def test_glossary_disambiguates_the_three_time_quantities():
+    """duration (span), observed sampling time (count), dwell (occupancy, +1)
+    read almost identically — the glossary must state each formula so a value
+    can't be mistaken for another."""
+    from firefly.analysis.fa_stats_config import glossary_def
+    dur = glossary_def("track duration").lower()
+    obs = glossary_def("observed sampling time").lower()
+    dwell = glossary_def("dwell time").lower()
+    assert dur and obs and dwell
+    assert "last frame" in dur and "first frame" in dur      # span, no +1
+    assert "+ 1" not in dur
+    assert "localisation count" in obs                        # count-based
+    assert "+ 1" in dwell and "occupied" in dwell             # occupancy, +1
+
+
+def test_dwell_is_exactly_one_frame_longer_than_duration():
+    """Locks the deliberate off-by-one the glossary explains: dwell counts
+    frames OCCUPIED, duration counts the interval SPANNED."""
+    import numpy as np, pandas as pd
+    from firefly.analysis.fa_diffusion import compute_msd_and_fit, compute_dwell_times
+    dt, n = 0.02, 12
+    rng = np.random.default_rng(0)
+    # Jitter-dominated → classified Immobile, which is the confined/immobile
+    # population dwell times are computed for (a perfectly static track is
+    # below-resolution and carries no dwell row).  Gapless, so both formulas
+    # are unambiguous.
+    tr = pd.DataFrame({"particle": 0, "frame": np.arange(n),
+                       "x": rng.normal(0, 0.3, n), "y": rng.normal(0, 0.3, n)})
+    _i, _e, diff = compute_msd_and_fit(tr, 1.0, dt, max_lagtime=5, n_fit=4, workers=1)
+    duration = float(diff.iloc[0]["track_duration_s"])
+    assert duration == pytest.approx((n - 1) * dt)            # span = 11 × dt
+    dw, _tau = compute_dwell_times(tr, diff, dt)
+    assert dw is not None and len(dw), "no dwell row to compare against"
+    total = float(dw.iloc[0]["dwell_time_total_s"])
+    assert total == pytest.approx(n * dt)                      # occupancy = 12 × dt
+    assert total - duration == pytest.approx(dt)               # exactly one frame
