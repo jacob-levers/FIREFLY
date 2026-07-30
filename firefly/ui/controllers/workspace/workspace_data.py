@@ -784,7 +784,20 @@ def _palmtracer_cache_is_stale(folder: str, extras_dir: str, stem: str) -> bool:
         cols = set(pd.read_csv(path, nrows=0).columns)
     except Exception:
         return False
-    return not set(_CURRENT_TRACK_COLUMNS).issubset(cols)
+    if not set(_CURRENT_TRACK_COLUMNS).issubset(cols):
+        return True
+    # A cache built under a different minimum track length describes a different
+    # track set, so reusing it would silently mix filtering policies.
+    try:
+        from firefly.analysis.fa_palmtracer import PALMTRACER_MIN_TRACK_LEN
+        pj = os.path.join(extras_dir, f"{stem}_params.json")
+        if not os.path.isfile(pj):
+            return True
+        with open(pj) as fh:
+            cached = json.load(fh).get("min_track_len")
+        return int(cached or 0) != int(PALMTRACER_MIN_TRACK_LEN)
+    except Exception:
+        return False
 
 
 def load_run(folder: str) -> Optional[RunData]:

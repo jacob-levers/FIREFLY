@@ -229,7 +229,14 @@ def _parse_pt_native_msd(path, max_lagtime=20):
     return imsd_df, emsd_series
 
 
-def load_summary_from_palmtracer(folder, use_native=False, cache=True):
+#: Minimum localisations a palmTRACER track needs to be analysed.  Matches
+#: FIREFLY's own `min_track_len` default so an imported palmTRACER folder and a
+#: native FIREFLY run are filtered identically and stay comparable.
+PALMTRACER_MIN_TRACK_LEN = 8
+
+
+def load_summary_from_palmtracer(folder, use_native=False, cache=True,
+                                 min_track_len=PALMTRACER_MIN_TRACK_LEN):
     """
     Read a raw PALM-Tracer output folder and return the same dict shape as
     `load_summary_from_folder` so the Compare tab can treat it identically.
@@ -311,6 +318,29 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True):
         "mass":     trc_df["Integrated_Intensity"].astype(float).values,
     }).sort_values(["particle", "frame"]).reset_index(drop=True)
 
+    # ── Minimum track length ─────────────────────────────────────────────
+    # palmTRACER's raw `trc` export is UNFILTERED: it is typically ~half
+    # single-localisation entries, which are not trajectories and carry almost no
+    # information.  palmTRACER's own filtered outputs in the same folder are
+    # restricted (e.g. TrackLength [8,1000]), and FIREFLY's own pipeline defaults
+    # to min_track_len=8 — so reading the raw export unfiltered made the two
+    # pipelines silently incomparable.  Apply the same minimum here.
+    if min_track_len and int(min_track_len) > 1:
+        _min = int(min_track_len)
+        _sizes = tracks.groupby("particle")["frame"].transform("size")
+        n_before = int(tracks["particle"].nunique())
+        _longest = int(_sizes.max()) if len(_sizes) else 0
+        tracks = tracks[_sizes >= _min].reset_index(drop=True)
+        n_after = int(tracks["particle"].nunique())
+        print(f"  Min track length  : >= {_min} localisations  |  "
+              f"{n_after:,} of {n_before:,} tracks kept "
+              f"({n_before - n_after:,} dropped)")
+        if n_after == 0:
+            raise ValueError(
+                f"No palmTRACER track in {os.path.basename(str(disp))} reaches "
+                f"the {_min}-localisation minimum (longest is {_longest}). "
+                f"Lower the minimum track length to analyse this export.")
+
     # ── Derive D, alpha, motion via FIREFLY's own pipeline ───────────────
     # ALWAYS run FIREFLY's MSD fit so alpha / motion-class / loc_sigma / Rg are
     # populated — palmTRACER doesn't store those, but they are computable from
@@ -390,6 +420,9 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True):
                 "n_frames":         int(n_frames),
                 "width":            width,
                 "height":           height,
+                # Recorded so a cache built under a DIFFERENT minimum is
+                # detected as stale and re-derived rather than silently reused.
+                "min_track_len":    int(min_track_len or 0),
                 "source":           "palmtracer (re-derived)",
             }, _fp, indent=2)
         if jdd:

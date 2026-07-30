@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.76.45-rc.13 — 30 Jul 2026
+
+### Changed
+
+- **palmTRACER imports now use the same minimum track length as FIREFLY's own
+  analysis (8 localisations).** palmTRACER's raw export is unfiltered — on real
+  data about 88% of its entries are shorter than that, and roughly half are single
+  localisations, which are not trajectories at all. Reading it unfiltered meant an
+  imported palmTRACER folder and a native FIREFLY run were filtered differently and
+  were never really comparable, and the very short entries pulled every per-track
+  median toward zero. palmTRACER's own filtered outputs use the same kind of limit
+  (`TrackLength [8,1000]`), so this brings the three into line.
+
+  On a real file this kept 8,269 of 71,022 entries (median 12 localisations per
+  track instead of 2) and changed the reported medians substantially — radius of
+  gyration 0.020 to 0.101 um, track duration 0.02 to 0.22 s, path length 0.20 to
+  0.88 um, and directionality 0.62 to 0.19 (very short tracks look almost perfectly
+  directional, so removing them lowers it). Every metric is now measurable for
+  every kept track. Folders cached under the old behaviour refresh automatically.
+
 ## v2.76.45-rc.12 — 30 Jul 2026
 
 ### Fixed
