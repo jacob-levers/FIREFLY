@@ -725,9 +725,40 @@ def _resolve_extras(folder: str) -> Optional[tuple[str, str]]:
     return None
 
 
+def _is_palmtracer_dir(folder: str) -> bool:
+    """True when *folder* (or its ``data/`` subdir) holds raw palmTRACER output.
+
+    A raw palmTRACER folder carries no FIREFLY sidecars, so ``_resolve_extras``
+    cannot see it even though ``load_summary_from_folder`` reads it natively.
+    Probing for it here is what lets a never-before-opened ``.PT`` folder be
+    accepted instead of flagged as invalid.  Cheap: one directory listing.
+    """
+    try:
+        from firefly.analysis.fa_palmtracer import _is_palmtracer_folder
+    except Exception:
+        return False
+    try:
+        if _is_palmtracer_folder(folder):
+            return True
+        data = os.path.join(folder, "data")
+        return os.path.isdir(data) and _is_palmtracer_folder(data)
+    except Exception:
+        return False
+
+
 def load_run(folder: str) -> Optional[RunData]:
     """Load one analysis-output run folder, or ``None`` if it isn't one."""
     resolved = _resolve_extras(folder)
+    if resolved is None and _is_palmtracer_dir(folder):
+        # Raw palmTRACER: let the analysis loader derive FIREFLY's metrics.  It
+        # caches them into <folder>/firefly_extras (cache=True), after which the
+        # normal sidecar path resolves — so this conversion happens once.
+        try:
+            from firefly.analysis.fa_palmtracer import load_summary_from_folder
+            load_summary_from_folder(folder)
+        except Exception:
+            return None
+        resolved = _resolve_extras(folder)
     if resolved is None:
         return None
     extras_dir, stem = resolved
@@ -749,7 +780,10 @@ def load_run(folder: str) -> Optional[RunData]:
 
 
 def is_run_folder(folder: str) -> bool:
-    return _resolve_extras(folder) is not None
+    """True for anything :func:`load_run` can turn into a replicate — FIREFLY's
+    own output AND a raw palmTRACER folder.  The two must agree: a folder the
+    loader can read but this gate rejects shows up as an invalid (red) chip."""
+    return _resolve_extras(folder) is not None or _is_palmtracer_dir(folder)
 
 
 # ── external localisation files → on-the-fly replicates ─────────────────────

@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.76.45-rc.11 — 30 Jul 2026
+
+### Fixed
+
+- **palmTRACER folders can be used in the Analysis tab again.** Dropping raw
+  palmTRACER output onto a condition showed it as an invalid (red) chip. Two
+  causes: the Analysis tab only recognised FIREFLY's own output folders, so a
+  palmTRACER folder was rejected even though FIREFLY can read it natively — it
+  worked only if that folder happened to have been opened before; and the search
+  for run folders inside a dropped folder went one level deep, while a real
+  layout puts them two levels down (`<experiment>/02_Analysis/<cell>.PT`), so
+  dropping the experiment folder found nothing. Raw palmTRACER folders are now
+  accepted directly (converted on first load and cached), and dropping an
+  experiment folder finds the runs inside it.
+- **The same cells can no longer be added twice from one drop.** An experiment
+  folder often contains two analyses of the same movies — palmTRACER's in
+  `02_Analysis` and FIREFLY's own in `01_Raw/batch_results`. The folder search
+  now takes only the shallowest level that contains runs, so one drop adds one
+  coherent set instead of silently counting every cell twice from two different
+  pipelines. Drop the deeper folder directly to use the other set.
+
 ## v2.76.45-rc.10 — 30 Jul 2026
 
 ### Fixed

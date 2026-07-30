@@ -2076,21 +2076,65 @@ class AnalysisWorkspaceController(QObject):
                 f = _Folder(path, None, loading=True)
                 c.folders.append(f); staged.append(f)
                 continue
-            # not a run folder — accept a *parent* folder of runs by scanning one
-            # level down for child run folders.
+            # not a run folder — accept an ANCESTOR folder of runs.  One level is
+            # not enough for a real acquisition layout: an experiment folder
+            # typically holds 01_Raw/ + 02_Analysis/ with the run folders inside
+            # the latter, so dropping the experiment folder used to find nothing
+            # and show a red chip.  Search a bounded depth instead.
             found = False
-            try:
-                children = [os.path.join(path, x) for x in sorted(os.listdir(path))]
-            except OSError:
-                children = []
-            for ch in children:
-                if (os.path.isdir(ch) and wd.is_run_folder(ch)
-                        and not any(f.path == ch for f in c.folders)):
+            for ch in self._find_run_folders(path):
+                if not any(f.path == ch for f in c.folders):
                     f = _Folder(ch, None, loading=True)
                     c.folders.append(f); staged.append(f); found = True
             if not found:                               # show it anyway (flagged)
                 c.folders.append(_Folder(path, None)); flagged = True
         return staged, to_analyse, flagged
+
+    # How far below a dropped folder to look for run folders.  Deep enough for
+    # <experiment>/02_Analysis/<run>.PT, shallow enough that dropping a whole
+    # drive can't turn into an unbounded walk.
+    _RUN_SCAN_MAX_DEPTH = 3
+    # Never descend into a run's own output/sidecar directories.
+    _RUN_SCAN_SKIP = {"firefly_extras", "data", "figures", "__pycache__"}
+
+    def _find_run_folders(self, root, depth=None):
+        """Run folders below *root*, from the SHALLOWEST level that has any.
+
+        Breadth-first, bounded, and it never descends into a folder that is
+        itself a run.  Crucially it returns only one level: a real experiment
+        folder can hold the SAME cells analysed twice — e.g. palmTRACER output in
+        ``02_Analysis/<cell>.PT`` and FIREFLY's own run in
+        ``01_Raw/batch_results/<cell>``.  Collecting every depth would silently
+        add each cell twice, from two different pipelines, which is
+        pseudoreplication the statistics cannot see.  Taking the shallowest level
+        keeps one coherent set; the user can still drop a deeper folder directly
+        to choose the other.
+        """
+        depth = self._RUN_SCAN_MAX_DEPTH if depth is None else depth
+        frontier = [root]
+        for _level in range(depth):
+            found, nxt = [], []
+            for current in frontier:
+                try:
+                    children = sorted(os.listdir(current))
+                except OSError:
+                    continue
+                for name in children:
+                    if name.startswith(".") or name in self._RUN_SCAN_SKIP:
+                        continue
+                    child = os.path.join(current, name)
+                    if not os.path.isdir(child):
+                        continue
+                    if wd.is_run_folder(child):
+                        found.append(child)             # a run — never descend in
+                    else:
+                        nxt.append(child)
+            if found:
+                return found                            # shallowest level wins
+            frontier = nxt
+            if not frontier:
+                break
+        return []
 
     @Slot()
     def _on_folders_loaded(self):
