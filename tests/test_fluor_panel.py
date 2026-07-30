@@ -186,10 +186,13 @@ def test_net_displacement_metric_uses_first_to_last_not_centroid(tmp_path):
 def test_new_scalar_metrics_and_panels_registered():
     from firefly.ui.controllers.workspace import workspace_data as wd
     ids = {m.id for m in wd.METRICS}
-    assert {"netdisp", "path", "step", "speed", "dir", "dur", "nlocs"} <= ids
+    assert {"netdisp", "path", "step", "speed", "linkstep", "linkspeed",
+            "dir", "dur", "nlocs"} <= ids
     keys = {k for k, _ in wd.COMPARE_PANELS}
-    assert {"netdisp", "path", "step", "speed", "dir", "dur", "nlocs"} <= keys
-    for k in ("netdisp", "path", "step", "speed", "dir", "dur", "nlocs"):
+    assert {"netdisp", "path", "step", "speed", "linkstep", "linkspeed",
+            "dir", "dur", "nlocs"} <= keys
+    for k in ("netdisp", "path", "step", "speed", "linkstep", "linkspeed",
+              "dir", "dur", "nlocs"):
         assert wd.PANEL_METRIC[k] == k
 
 
@@ -217,3 +220,12 @@ def test_compute_report_has_new_track_metrics_and_panels_render(tmp_path):
         assert col in stats, col
     import matplotlib.pyplot as plt
     plt.close(fig)
+
+
+def test_single_run_zero_only_histogram_bins_are_strictly_increasing():
+    from firefly.analysis.fa_figure import _safe_linear_bins
+
+    bins = _safe_linear_bins(np.zeros(12), 40, nonnegative=True)
+    assert np.all(np.diff(bins) > 0)
+    assert bins[0] == 0.0
+    assert bins[-1] > 0.0

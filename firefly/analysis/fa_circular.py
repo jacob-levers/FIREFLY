@@ -9,6 +9,7 @@ from firefly.analysis.fa_io import atomic_to_csv
 
 import numpy as np
 import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats as _stats

@@ -1,36 +1,7 @@
-# sptPALM Analysis Pipeline — runtime dependencies
-# Install with:  pip install -r requirements.txt
-
-# SHIPPED STACK (frozen build / CI parity): numpy 2.x + torch 2.6 on Python
-# 3.12/3.13.  napari — which had pinned numpy 1.x / Python 3.12 — was removed in
-# favour of bespoke Qt viewers, so the stack now moves to numpy 2 + Python 3.13.
-# (Matches pyproject.toml and the CI test matrix, which already run numpy>=2 on
-# Python 3.12 and 3.13.)
-numpy>=2,<3        # numpy 2.x C-ABI; aligned with pyproject + the CI test matrix.
-pandas>=2.2,<3     # 2.2+ supports both numpy 1.x and 2.x (and Python 3.12/3.13)
-scipy
-matplotlib
-scikit-image
-trackpy
-numba>=0.61     # accelerates trackpy's locate/refine engine — WITHOUT it trackpy falls back to a pure-Python engine that is ~5-10x slower, which dominates the auto-threshold candidate harvest. 0.61+ is required for the numpy 2.x C-ABI.
-joblib
-tqdm
-czifile
-imagecodecs        # JPEG XR decompression for czifile (required for Zeiss Elyra CZI)
-aicspylibczi
-tifffile
-imageio
-Pillow
-psutil
-scikit-learn
-pingouin>=0.6,<0.7 # two-way mixed ANOVA (group × time point) for the Compare tab; 0.6 uses underscore column names (p_unc/p_GG_corr). Pulls statsmodels + pandas_flavor. Optional at runtime — fa_twoway guards the import.
-threadpoolctl      # dynamically expand BLAS pool during localisation
-torch>=2.6,<3      # GPU localiser backend; the in-app installer fetches CUDA cuXYZ wheels (download.pytorch.org/whl/cuXYZ).  2.6+ ships cp313 + numpy-2 wheels (required for the numpy 2 / Python 3.13 stack above).
-roifile>=2024.5.24 # ImageJ / palmTRACER .roi + .zip ROI file loader, used by _RoiViewer's "Load ROI…" button.
-
-# ── Qt UI stack ───────────────────────────────────────────────────────────────
-# FIREFLY uses PySide6 (Qt6).  The interactive viewers (Visualise tab + ROI
-# editor) are bespoke QGraphicsView/QImage widgets — no napari, no pyqtgraph,
-# no vispy.  Rendering uses only PySide6 + numpy + matplotlib (all above).
-PySide6>=6.7,<7
-
+# Source-install bootstrap.
+#
+# Runtime dependencies live only in pyproject.toml.  Keeping a second hand-made
+# list here let a ``git pull`` leave an otherwise healthy source virtualenv
+# without a newly added dependency.  Editable installation keeps source changes
+# visible while resolving the same dependency metadata as a normal wheel.
+-e .

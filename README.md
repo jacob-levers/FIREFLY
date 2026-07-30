@@ -31,7 +31,7 @@ tab + ROI editor) are bespoke QGraphicsView / QImage widgets — no napari.
 Localisation runs on the GPU via PyTorch — NVIDIA CUDA on Windows/Linux, Apple
 MPS on macOS, picked automatically — and falls back to trackpy on CPU.
 
-By Jacob Levers · macOS and Windows
+By Jacob Levers · Apple-Silicon macOS and Windows
 
 ---
 
@@ -62,13 +62,17 @@ By Jacob Levers · macOS and Windows
 No Python installation required. Pre-built binaries are attached to each
 release on the [Releases page](https://github.com/jacob-levers/FIREFLY/releases).
 
-**macOS**
+**macOS — Apple Silicon (M-series)**
 
-1. Download `FIREFLY-macOS.dmg` from the latest release.
+1. Download `FIREFLY-macOS-arm64.dmg` from the latest release.
 2. Double-click the `.dmg` to mount it.
 3. Drag `FIREFLY.app` into `/Applications`.
 4. First launch: right-click → **Open** if macOS warns that the developer
    can't be verified, then **Open anyway**.
+
+> The pre-built macOS app is arm64 (M1 and later). Intel Macs do not have a
+> supported pre-built installer yet; use the source path below if you need to
+> run FIREFLY there.
 
 **Windows**
 
@@ -94,8 +98,9 @@ FIREFLY checks GitHub for new releases on launch. When one is available an
 **Preferences → Updates**) and choose **Download & install**. The app downloads
 the new version, replaces itself, and restarts automatically — no need to
 re-download from the Releases page by hand. On macOS the first launch after an
-update no longer needs the right-click → **Open** step. (Source installs update
-with `git pull`.)
+update no longer needs the right-click → **Open** step. Source installs update
+with `git pull`; the launcher checks the project's dependency fingerprint and
+reconciles the local environment before it starts FIREFLY.
 
 ### From source (advanced)
 
@@ -113,8 +118,8 @@ cd FIREFLY
 
 First launch opens a terminal showing pip installing PySide6, PyTorch,
 scipy and friends (~3–8 minutes). The GUI starts automatically when the
-install finishes; subsequent launches skip the install and open
-immediately.
+install finishes. After `git pull`, the launcher also reconciles a changed
+dependency set before launching; ordinary source edits do not reinstall it.
 
 **Enabling CUDA (Windows + NVIDIA GPU)**
 
@@ -123,8 +128,7 @@ To get a CUDA-enabled torch, run *after* the first-launch install
 finishes (still inside the project's virtual environment):
 
 ```powershell
-.\venv\Scripts\activate
-pip install --upgrade --index-url https://download.pytorch.org/whl/cu124 "torch>=2.3,<3"
+.\sptpalm-env\Scripts\python.exe -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu124 "torch>=2.6,<3"
 ```
 
 Restart FIREFLY. The backend dropdown in the parameter sidebar will pick up
@@ -223,10 +227,13 @@ processes, each shown as a live tile with its own preview and progress.
   ranges and takes the smallest at which tracks stop fragmenting, capped below
   the inter-spot spacing. Off by default; the biggest accuracy win is on fast
   motion, where a fixed default is usually too small.
-- **Import external localisations** — analyse localisation tables produced
-  by other software (TrackMate, palmTRACER, Picasso, ThunderSTORM) without
-  re-detecting. Column conventions are auto-detected. The whole downstream
-  pipeline (linking, MSD, diffusion, figures) runs on the imported spots.
+- **Import external localisations** — analyse `.csv`, `.txt`, or `.tsv`
+  localisation tables produced by other software (TrackMate, palmTRACER,
+  Picasso, ThunderSTORM) without re-detecting. Column conventions are
+  auto-detected. The whole downstream pipeline (linking, MSD, diffusion,
+  figures) runs on the imported spots. The visible sidebar pixel size and
+  frame interval are authoritative; embedded palmTRACER calibration is retained
+  as advisory provenance and disagreements are logged, never silently applied.
   For palmTRACER `.PT` folders you can either **re-analyse** the localisations
   through FIREFLY's pipeline, or **reuse palmTRACER's own per-track D / MSD** to
   draw the matching FIREFLY figures without recomputation (offered for single
@@ -250,13 +257,42 @@ processes, each shown as a live tile with its own preview and progress.
 ### Diffusion & motion analysis
 
 - Per-track MSD with linear-LSQ fits for D and α.
+- **Frame-aware lag estimation.** The default **All timestamp pairs** policy
+  uses every position pair whose actual frame-number difference equals the
+  requested lag, including across missing observations. This is the standard
+  [lag-time MSD definition](https://pmc.ncbi.nlm.nih.gov/articles/PMC3055791/)
+  and is regression-tested against
+  [Trackpy](https://soft-matter.github.io/trackpy/dev/generated/trackpy.motion.imsd.html)
+  on gapless tracks. The
+  sidebar's **Contiguous observations (legacy)** mode keeps only uninterrupted
+  observed runs for compatibility. The policy is persisted in presets,
+  manifests, replay state, logs, and per-run metadata.
+- Trajectories are stable-sorted by particle/frame before analytics. Duplicate
+  `(particle, frame)` rows fail clearly because a particle cannot occupy two
+  positions at one timestamp; this commonly indicates a branched TrackMate
+  merge/split export that must first be resolved to non-branching tracks.
+- `mean_step_um` uses adjacent observations exactly one frame apart.
+  `mean_link_displacement_um` covers every adjacent observed localisation, and
+  `mean_link_speed_um_s` divides each link by its own `Δframe × Δt` before
+  averaging. Track duration is `(max(frame) − min(frame)) × Δt`; localisation
+  count and observed sampling time are separate. Path length is the observed
+  polyline, so a gap contributes an unknowable-path straight chord.
 - Motion classification (Immobile / Confined / Brownian / Directed) with
   configurable α thresholds.
+- Tracks whose valid displacement bins are all exactly zero are reported
+  separately as `below_resolution`: D and α remain unavailable, their
+  α-derived class is unclassified, and they are excluded from log-D and
+  mobile/immobile threshold denominators. The excluded count is shown.
 - Jump-distance distribution with 1, 2, or 3 mobility populations.
 - Mean-squared displacement scaling spectrum (MSS).
 - Dwell-time survival curves with exponential τ fit.
-- Turning-angle and signed-angle radial distributions.
+- Turning-angle and signed-angle radial distributions; VACF velocities carry
+  their true start frame and export a pair count at every lag.
 - DBSCAN clustering of localisations with per-cluster area / density.
+- New outputs use metrics schema 2 and manifest schema 4. Legacy runs remain
+  loadable and explicitly labelled. Stable metrics may still compare, while
+  incompatible MSD/D/MSS/VACF or step/speed definitions produce a warning and
+  no pooled inference.
 
 ### Drift correction
 
@@ -340,10 +376,12 @@ Every run produces a **17-panel analysis figure**. A selection:
 - **Per-series batch tree** — multi-file series (`name.tif`, `name(1).tif`,
   `name(2).tif`, …) are grouped under one parent node; expand to
   individually deselect sister files within a series. Loader concatenates
-  exactly the checked subset. Scans one level of subfolders, accepts
-  external `.csv` / `.txt` localisation tables alongside image stacks,
-  filters out other tools' derived/aux files, and flags + auto-skips
-  corrupt (all-null) files.
+  exactly the checked subset in natural numeric order. Direct selection and
+  drag/drop accept external `.csv` / `.txt` / `.tsv` localisation tables as
+  standalone jobs alongside image stacks. Recursive discovery intentionally
+  queues raw `.tif` / `.tiff` / `.czi` images only. Other tools' derived/aux
+  files are filtered; corrupt tables remain selected with a visible warning so
+  their individual failure is reported while the batch continues.
 - **Quality-control panel** — link ratio, locs / frame, median track
   length, gap fraction, stuck-track fraction, with colour-coded warnings
   for runs that look off (e.g. <10 % linked, >800 locs/frame).
@@ -407,7 +445,9 @@ another tool produced — no re-detection.
    `.txt` / `.tsv` exported by TrackMate, palmTRACER, Picasso or
    ThunderSTORM. The **Source preset** dropdown auto-detects the column
    convention (or pick it explicitly).
-2. Set pixel size / frame interval (external tables rarely embed them).
+2. Set pixel size / frame interval in the visible sidebar. Those values are
+   authoritative for an external table. If palmTRACER embeds different values,
+   FIREFLY records them as advisory metadata and logs the disagreement.
    Optionally point **Background image** at the original stack so the
    figure's projection panel isn't blank.
 3. Click **Start**. Detection is skipped; linking (with your chosen linker),
@@ -427,22 +467,24 @@ another tool produced — no re-detection.
 ### Batch a folder
 
 1. **Import** tab → **Batch (folder)** mode.
-2. Pick a folder. Both **image stacks** (`.czi` / `.tif`) and **external
-   localisation tables** (`.csv` / `.txt`) are picked up — each file is
-   dispatched to the right pipeline automatically. The tree groups files
-   into series; expand a series to deselect individual sister files.
-   - **Subfolders** one level deep are scanned too, so a layout like
-     `Experiment/Cell1/locPALMTracer.txt`, `Experiment/Cell2/...` works
-     when you pick `Experiment/`. Same-named files in different
-     subfolders stay distinct (output lands in
-     `batch_results/Cell1/`, `batch_results/Cell2/`, …).
+2. Pick a folder for **image stacks** (`.czi` / `.tif` / `.tiff`), or use
+   **Add files** / drag-and-drop for external localisation tables (`.csv`,
+   `.txt`, `.tsv`). Images and tables are always separate jobs. A matching CZI
+   suppresses TIFF only for that same acquisition. Recognised image companions
+   are naturally ordered (`file`, `(1)`, `(2)`, `(10)` and `-fileNNN`);
+   localisation tables remain standalone jobs.
+   - **Recursive subfolder discovery is raw-image-only** so analysis trees full
+     of derived tables are not accidentally re-analysed. Explicitly added
+     same-named tables from different folders stay distinct and use
+     source-qualified, collision-safe output IDs such as
+     `batch_results/Cell1__locPALMTracer/`.
    - palmTRACER's derived files (`trcPALMTracer-*`), visualisation TIFFs
      (`*-Tracks-Z*.tif`), logs and FIREFLY's own outputs are filtered out
      of the queue automatically.
-   - **Corrupt files are flagged ⚠ and auto-unchecked.** A cheap probe
+   - **Corrupt/unreadable tables remain selected and are flagged ⚠.** A cheap probe
      run at scan time catches the "full-size on disk but all-null"
-     failure mode (aborted acquisition / interrupted copy) so it can't
-     silently break the batch.
+     failure mode (aborted acquisition / interrupted copy). The failed job is
+     reported clearly and the rest of the batch continues.
    - An **input type** selector switches the scan between **raw images**
      (`.tif` / `.czi`) and **palmTRACER data**; in palmTRACER mode you pick
      **Re-analyse with FIREFLY** or **Use palmTRACER's own MSD/D** (above) for
@@ -496,7 +538,7 @@ manifest at the root:
 │   ├── <stem>_palm_tracer.csv
 │   └── ...
 ├── firefly_extras/                # everything not in PALM-Tracer format
-│   ├── <stem>_diffusion_summary.csv   # per-track D, α, motion class, ...
+│   ├── <stem>_diffusion_summary.csv   # D, α, fit status, geometry, duration
 │   ├── <stem>_ensemble_msd.csv
 │   ├── <stem>_cluster_stats.csv       # one row per DBSCAN cluster
 │   ├── <stem>_jdd.json                # JDD fit (D values + fractions)
@@ -524,6 +566,9 @@ with one row per series. Each run also writes a self-contained
 `firefly_extras/<stem>_summary_metrics.json` (counts, median D/α,
 localisation precision, α₂, VACF persistence, mobile fraction and QC
 flags), so a whole experiment can be aggregated by globbing those files.
+The manifest, params, and summary sidecars also persist the effective
+calibration, any embedded advisory calibration, metrics schema, gap policy, and
+the step/link/duration definitions used.
 
 **Compare mode** writes:
 
@@ -552,15 +597,18 @@ capture structure the per-track averages hide:
   `α₂ = ⟨r⁴⟩ / (2⟨r²⟩²) − 1`. α₂ ≈ 0 for a homogeneous Brownian ensemble and
   grows positive with heterogeneity (e.g. a mobile + trapped mixture) or
   anomalous transport — one scalar for *population* structure.
-- **Velocity autocorrelation (VACF)** (`<stem>_vacf.json`) — normalised
-  ensemble velocity autocorrelation; the reported `persistence` (lag-1 value)
-  is ≈ 0 for Brownian motion, positive for directed/persistent transport, and
-  negative for caged/anti-persistent motion.
+- **Velocity autocorrelation (VACF)** (`<stem>_vacf.json`) — built from
+  single-frame velocities carrying their true start frame. Velocities are
+  paired by actual start-frame lag and every exported lag includes its pair
+  count. The reported `persistence` (lag-1 value) is ≈ 0 for Brownian motion,
+  positive for directed/persistent transport, and negative for
+  caged/anti-persistent motion.
 
-> **α identifiability:** for effectively immobile tracks the dynamic term of
-> the MSD fit is unconstrained, so α is reported as `NaN` and the motion class
-> as *Immobile* rather than pinning α at the fit bound — this avoids a
-> spurious pile-up of α values at the upper limit.
+> **α identifiability:** when the dynamic term is not identifiable, α is
+> reported as `NaN` rather than pinned at a fit bound. A jitter-dominated fit
+> may be labelled immobile; an exactly zero-displacement track is instead
+> `below_resolution`, has no D/α-derived class, and is excluded from
+> D-threshold denominators.
 
 ---
 
@@ -611,7 +659,9 @@ back to trackpy.
 **Comparison panels show "no data" placeholders**
 → Older analysis folders (pre-v1.0.55) don't have every per-run JSON /
 CSV the Analysis tab needs. Re-run the affected experiments to regenerate
-the full set.
+the full set. An **incompatible metric contract** warning is deliberate:
+legacy/new schemas or gap policies change that metric's meaning, so FIREFLY
+withholds pooled inference while keeping stable panels comparable.
 
 **Hard freeze during analysis**
 → Almost always memory pressure or an MPS driver hang. Close other

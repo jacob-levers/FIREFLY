@@ -9,6 +9,7 @@ test asserts the *structure* handed to the renderer, no Qt/display needed.
 """
 import matplotlib
 matplotlib.use("Agg")
+from matplotlib.figure import Figure
 
 import numpy as np
 
@@ -68,3 +69,31 @@ def test_grouped_without_payload_falls_back_to_one_series(monkeypatch):
     assert seen["order"] == ["A", "B"]
     assert list(seen["values"]["A"]) == [""]          # single unnamed timepoint
     assert seen["kw"]["tp_order"] is None
+
+
+def test_zero_only_linear_histograms_use_real_bin_intervals():
+    bins = wf._safe_linear_bins(np.zeros(8), 40)
+    assert len(bins) == 40
+    assert np.all(np.diff(bins) > 0)
+    assert bins[0] <= 0 <= bins[-1]
+
+    fig = Figure()
+    ax = fig.subplots()
+    metric = type(
+        "_ZeroMetric", (),
+        {"axis": "step (µm)", "log_default": False, "label": "step", "unit": "µm"},
+    )()
+    wf._draw_hist(
+        ax,
+        [{"label": "static", "color": "#58a6ff", "dist": np.zeros(8)}],
+        metric,
+        log_x=False,
+    )
+    assert len(ax.patches) > 0
+
+
+def test_zero_only_single_distribution_renders_without_degenerate_bins():
+    fig = Figure()
+    ax = fig.subplots()
+    wf._draw_single_dist(ax, np.zeros(8), "#58a6ff", "path (µm)", False)
+    assert len(ax.patches) > 0

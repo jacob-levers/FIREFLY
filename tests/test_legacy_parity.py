@@ -128,6 +128,18 @@ def test_csv_preset_and_bg_flow_into_params(tmp_path):
     assert params["bg_image_path"] == str(bg)
 
 
+def test_gap_policy_flows_from_sidebar_to_worker_params(tmp_path):
+    s = _MemSettings()
+    s.set("analysis/gap_policy", "Contiguous observations (legacy)")
+    importc = ImportController(s)
+    image = tmp_path / "movie.tif"
+    image.write_text("x")
+    params = pb.build_params(s, importc, fpath=str(image))
+    assert params["gap_policy"] == "contiguous"
+    assert params["widget_state"]["analysis/gap_policy"] == (
+        "Contiguous observations (legacy)")
+
+
 def test_bg_clears_on_file_change_preset_persists(tmp_path):
     s = _MemSettings()
     importc = ImportController(s)

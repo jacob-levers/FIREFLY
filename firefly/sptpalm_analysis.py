@@ -5,13 +5,16 @@ import os
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║  RELEASE CHECKLIST                                                        ║
-# ║  Every release MUST bump this string so the in-app update checker         ║
-# ║  (app_qt._UpdateCheckThread → __version__) doesn't keep nagging users     ║
-# ║  who already installed the latest binary.  The check compares this        ║
-# ║  string against the latest GitHub tag — if they don't match, the nag      ║
-# ║  fires.  Always touch this line in the same commit as the `git tag`.     ║
+# ║  Every release MUST bump firefly/release.py so package metadata, the UI,  ║
+# ║  updater, and frozen bundle all report the same version. The release      ║
+# ║  helper must match the GitHub tag; scripts/stamp_version.py enforces this  ║
+# ║  for CI builds.                                                           ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-__version__ = "2.76.45-rc.9"
+from firefly.release import __version__
+# v2.76.45-rc.10 — Correctness + release hardening: true-frame MSD/MSS/VACF
+#           semantics, schema-2 metric contracts, below-resolution handling,
+#           authoritative external calibration, homogeneous collision-safe
+#           batches, wheel resources/python -m launch, and gated arm64 releases.
 # v2.76.45-rc.9 — Step distance & Step speed are now MEASURED (per-track mean of
 #           the straight-line frame-to-frame steps, and that ÷ Δt) instead of the
 #           old √(2·D·Δt) approximation derived from the diffusion coefficient.
@@ -747,8 +750,9 @@ from firefly.analysis.fa_diffusion import (
     compute_jdd, compute_turning_angles, compute_van_hove, compute_vacf,
     compute_mobile_fraction_over_time,
     compute_dwell_times, compute_mss, _msd_auc, _mob_immob_ratio,
-    _motion_fractions, _track_lengths, ALPHA_THRESHOLDS_DEFAULT,
-    MOBILE_D_THRESHOLD_DEFAULT,
+    _motion_fractions, _track_lengths, track_elapsed_durations,
+    ALPHA_THRESHOLDS_DEFAULT, MOBILE_D_THRESHOLD_DEFAULT,
+    DIFFUSION_METRICS_SCHEMA_VERSION,
 )
 
 

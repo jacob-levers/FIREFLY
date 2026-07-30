@@ -29,6 +29,16 @@ class FakeSettings:
     def sync(self): pass
 
 
+class CalibratedSettings(FakeSettings):
+    """Mutable sidebar-calibration double for workspace cache regression tests."""
+    def __init__(self, pixel_size=0.106, frame_interval=0.02):
+        self.values = {"analysis/pixel_size": pixel_size,
+                       "analysis/frame_interval": frame_interval}
+
+    def get_float(self, k, d=0.0):
+        return float(self.values.get(k, d))
+
+
 def _palmtracer_loc_csv(path, *, n_frames=40, n_spots=12, seed=1, step=0.5):
     """A palmTRACER-style loc table: diffusing spots, 1-indexed `Plane`,
     pixel-unit centroids, an intensity column — the PALM-Tracer preset's
@@ -96,6 +106,59 @@ def test_analyse_external_file_reuses_the_cache(tmp_path):
     assert second == first
     assert os.path.isfile(marker), "cache folder was rebuilt (should reuse)"
     assert any("Reusing cached" in m for m in logs)
+
+
+def test_workspace_external_cache_tracks_sidebar_calibration(tmp_path, monkeypatch):
+    """Workspace imports must carry the same effective calibration as normal
+    external-table runs, and changing either value must invalidate the cache."""
+    from firefly import firefly_worker
+
+    loc = _palmtracer_loc_csv(tmp_path / "cell_locPALMTracer.csv", n_frames=4)
+    cache = str(tmp_path / "cache")
+    settings = CalibratedSettings(pixel_size=0.25, frame_interval=0.05)
+    calls = []
+
+    def _fake_run(params, *_args):
+        calls.append(dict(params))
+        out = params["out_dir"]
+        extras = os.path.join(out, "firefly_extras")
+        os.makedirs(extras, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(params["file"]))[0]
+        open(os.path.join(extras, f"{stem}_diffusion_summary.csv"), "w").close()
+        return {"out_dir": out}
+
+    monkeypatch.setattr(firefly_worker, "_run_one_analysis", _fake_run)
+
+    first = wd.analyse_external_file(loc, settings, cache_root=cache)
+    assert first is not None
+    assert calls[-1]["pixel_size"] == pytest.approx(0.25)
+    assert calls[-1]["frame_interval"] == pytest.approx(0.05)
+
+    # Identical effective analysis params reuse the existing on-the-fly run.
+    assert wd.analyse_external_file(loc, settings, cache_root=cache) == first
+    assert len(calls) == 1
+
+    settings.values["analysis/pixel_size"] = 0.30
+    second = wd.analyse_external_file(loc, settings, cache_root=cache)
+    assert second is not None and second != first
+    assert len(calls) == 2
+    assert calls[-1]["pixel_size"] == pytest.approx(0.30)
+
+    settings.values["analysis/frame_interval"] = 0.10
+    third = wd.analyse_external_file(loc, settings, cache_root=cache)
+    assert third is not None and third != second
+    assert len(calls) == 3
+    assert calls[-1]["frame_interval"] == pytest.approx(0.10)
+
+    # Content, not path+mtime, is the source identity. Replacing a table while
+    # preserving its timestamp must still invalidate the numerical cache.
+    before = os.stat(loc)
+    with open(loc, "a", encoding="utf-8") as handle:
+        handle.write("\n")
+    os.utime(loc, ns=(before.st_atime_ns, before.st_mtime_ns))
+    fourth = wd.analyse_external_file(loc, settings, cache_root=cache)
+    assert fourth is not None and fourth != third
+    assert len(calls) == 4
 
 
 # ── controller: a dropped loc file becomes an analysing chip, then a replicate ─

@@ -35,6 +35,9 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
+from firefly.analysis.fa_constants import (DEFAULT_FRAME_INTERVAL_S,
+                                           DEFAULT_PIXEL_SIZE_UM)
+
 # ── canonical motion-class palette (dark theme — never recolour) ──────────
 # Mirrors firefly.analysis.fa_constants; hard-coded so this stays importable
 # without dragging in the plotting stack.
@@ -52,6 +55,19 @@ GROUP_COLORS = ["#58a6ff", "#f78166", "#56d364", "#27c0e8", "#f6a623", "#a371f7"
 # Raised 6 → 12 (matches the legacy Compare cap): conditions live in a scrollable
 # rail, so this is just a runaway guard, not a layout limit.
 MAX_CONDITIONS = 12
+
+
+def _normalise_step_definition(raw, schema: int) -> str:
+    """Canonical compatibility token for a persisted step definition."""
+    value = str(raw or "").strip().lower()
+    if int(schema) < 2:
+        return "adjacent_observation"
+    if (not value
+            or "unit_frame" in value
+            or "one frame" in value
+            or "single_frame" in value):
+        return "single_frame"
+    return value
 
 
 # ── one loaded run folder ─────────────────────────────────────────────────
@@ -74,6 +90,24 @@ class RunData:
         fi = self.summary.get("fi_s")
         self.fi_s = float(fi) if fi else None
         self._cache: dict = {}
+        try:
+            self.metrics_schema_version = int(
+                self.summary.get("metrics_schema_version") or 1)
+        except (TypeError, ValueError):
+            self.metrics_schema_version = 1
+        # Runs predating the explicit contract used the contiguous-observation
+        # estimator.  Treat a missing token as that legacy policy rather than
+        # silently pretending old numbers used the new all-pairs default.
+        self.gap_policy = str(
+            self.summary.get("gap_policy")
+            or ("contiguous" if self.metrics_schema_version < 2
+                else "all_pairs"))
+        self.metric_contract = str(
+            self.summary.get("metric_contract")
+            or f"firefly_metrics_schema_{self.metrics_schema_version}")
+        self.step_definition = _normalise_step_definition(
+            self.summary.get("step_definition"),
+            self.metrics_schema_version)
 
     # -- identity ----------------------------------------------------------
     @property
@@ -213,7 +247,10 @@ def _mobile_pct(run: RunData) -> Optional[float]:
 
 def _motion_frac(run: RunData, cls: str) -> Optional[float]:
     counts = run.summary.get("motion_counts") or {}
-    total = sum(int(c) for c in counts.values()) if counts else 0
+    # Unknown/below-resolution tracks are shown separately and are not part of
+    # an alpha-derived motion-class denominator.
+    classified = ("Immobile", "Confined", "Brownian", "Directed")
+    total = sum(int(counts.get(name, 0)) for name in classified)
     if not total:
         return None
     return 100.0 * int(counts.get(cls, 0)) / total
@@ -251,7 +288,7 @@ def _msd_at_1s(run: RunData) -> Optional[float]:
 def _speed_measured_scalar(run: RunData) -> Optional[float]:
     """Measured step speed = per-track mean step distance ÷ Δt (median over
     tracks).  The straight-up geometric speed, no diffusion-model assumption."""
-    v = run._diff_col("mean_step_um", positive=True)
+    v = run._diff_col("mean_step_um")
     fi = run.fi_s
     if v is None or not len(v) or not fi:
         return None
@@ -259,7 +296,7 @@ def _speed_measured_scalar(run: RunData) -> Optional[float]:
 
 
 def _speed_measured_dist(run: RunData) -> Optional[np.ndarray]:
-    v = run._diff_col("mean_step_um", positive=True)
+    v = run._diff_col("mean_step_um")
     fi = run.fi_s
     if v is None or not len(v) or not fi:
         return None
@@ -268,7 +305,10 @@ def _speed_measured_dist(run: RunData) -> Optional[np.ndarray]:
 
 def _col_median(run: RunData, col: str) -> Optional[float]:
     """Median of one per-track diffusion_summary column (for a scalar readout)."""
-    v = run._diff_col(col, positive=True)
+    # Zero is a valid physical value for linear geometry (a static step, a
+    # return to the origin, or zero radius of gyration).  Positivity filtering
+    # belongs only at log-D call sites.
+    v = run._diff_col(col)
     return float(np.median(v)) if v is not None and len(v) else None
 
 
@@ -294,13 +334,88 @@ def _fluor_scalar(run: RunData) -> Optional[float]:
 
 
 def _duration_dist(run: RunData) -> Optional[np.ndarray]:
-    """Per-track duration (s) = (localisations − 1) × frame interval."""
-    lens = _track_len_dist(run)
+    """Per-track elapsed duration: (last frame − first frame) × Δt."""
+    # Schema-2 runs persist the canonical value directly.
+    persisted = run._diff_col("track_duration_s")
+    if persisted is not None:
+        return persisted
+    tr = run._read_csv("_trajectories.csv")
     fi = run.fi_s
-    if lens is None or not fi:
+    if (tr is None or not fi
+            or {"particle", "frame"} - set(getattr(tr, "columns", []))):
         return None
-    dur = (lens - 1.0) * float(fi)
+    fr = pd.to_numeric(tr["frame"], errors="coerce")
+    tmp = tr.assign(_frame=fr).dropna(subset=["particle", "_frame"])
+    if tmp.empty:
+        return None
+    span = (tmp.groupby("particle")["_frame"].max()
+            - tmp.groupby("particle")["_frame"].min())
+    dur = span.to_numpy(dtype=float) * float(fi)
     return dur if dur.size else None
+
+
+def _link_speed_scalar(run: RunData) -> Optional[float]:
+    return _col_median(run, "mean_link_speed_um_s")
+
+
+def _link_speed_dist(run: RunData) -> Optional[np.ndarray]:
+    return run._diff_col("mean_link_speed_um_s")
+
+
+# Metrics whose numerical definition changed between the legacy implicit
+# schema and metrics schema 2.  Motion class and VACF belong here too: both are
+# temporal inferences derived from the same gap-aware trajectory semantics, not
+# source-stable labels.  The controller/report engine uses these keys to prevent
+# incompatible values from being silently pooled.
+_GAP_CONTRACT_METRICS = {
+    "D", "a", "mob", "motion", "msd", "mss", "auc", "vacf",
+}
+_STEP_CONTRACT_METRICS = {"step", "speed", "linkstep", "linkspeed"}
+
+
+def metric_contract_key(run: RunData, metric_id: str):
+    """Return the compatibility key for one run/metric, or ``None`` when the
+    metric is stable across the schema transition."""
+    if metric_id in _GAP_CONTRACT_METRICS:
+        return ("gap", int(run.metrics_schema_version), str(run.gap_policy),
+                str(run.metric_contract))
+    if metric_id in _STEP_CONTRACT_METRICS:
+        return ("step", int(run.metrics_schema_version),
+                str(run.step_definition), str(run.metric_contract))
+    return None
+
+
+def metric_contract_issue(runs, metric_id: str) -> str:
+    """Explain an incompatible mixed-run metric selection.
+
+    Stable metrics return ``""``.  A legacy-only cohort is allowed and labelled
+    by :func:`metric_contract_label`; only differing keys suppress pooling.
+    """
+    keyed = [(r, metric_contract_key(r, metric_id)) for r in runs]
+    keys = {k for _r, k in keyed if k is not None}
+    if len(keys) <= 1:
+        return ""
+    if metric_id in _STEP_CONTRACT_METRICS:
+        details = ", ".join(sorted({
+            f"schema {r.metrics_schema_version}/{r.step_definition}"
+            for r, k in keyed if k is not None
+        }))
+    else:
+        details = ", ".join(sorted({
+            f"schema {r.metrics_schema_version}/{r.gap_policy}"
+            for r, k in keyed if k is not None
+        }))
+    return (f"Incompatible metric definitions ({details}). Re-analyse legacy "
+            f"runs or select one contract before pooling this metric.")
+
+
+def metric_contract_label(runs, metric_id: str) -> str:
+    """Short badge text for a homogeneous legacy metric cohort."""
+    keys = [metric_contract_key(r, metric_id) for r in runs]
+    keys = [k for k in keys if k is not None]
+    if keys and all(getattr(r, "metrics_schema_version", 1) < 2 for r in runs):
+        return "legacy definition"
+    return ""
 
 
 def _duration_scalar(run: RunData) -> Optional[float]:
@@ -528,18 +643,25 @@ METRICS: list[Metric] = [
            scalar=_msd_at_1s),
     Metric("step", "Step distance", "µm", 3, "step distance (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "mean_step_um"),
-           dist=lambda r: r._diff_col("mean_step_um", positive=True)),
+           dist=lambda r: r._diff_col("mean_step_um")),
     Metric("speed", "Step speed", "µm/s", 3, "step speed (µm/s)", "Tracking",
            scalar=_speed_measured_scalar, dist=_speed_measured_dist),
+    Metric("linkstep", "Observed-link distance", "µm", 3,
+           "observed-link distance (µm)", "Tracking",
+           scalar=lambda r: _col_median(r, "mean_link_displacement_um"),
+           dist=lambda r: r._diff_col("mean_link_displacement_um")),
+    Metric("linkspeed", "Observed-link speed", "µm/s", 3,
+           "observed-link speed (µm/s)", "Tracking",
+           scalar=_link_speed_scalar, dist=_link_speed_dist),
     Metric("rg", "Radius of gyration", "µm", 3, "R_g (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "radius_of_gyration_um"),
-           dist=lambda r: r._diff_col("radius_of_gyration_um", positive=True)),
+           dist=lambda r: r._diff_col("radius_of_gyration_um")),
     Metric("netdisp", "Net displacement", "µm", 3, "net displacement (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "net_displacement_um"),
-           dist=lambda r: r._diff_col("net_displacement_um", positive=True)),
+           dist=lambda r: r._diff_col("net_displacement_um")),
     Metric("path", "Path length", "µm", 3, "path length (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "path_length_um"),
-           dist=lambda r: r._diff_col("path_length_um", positive=True)),
+           dist=lambda r: r._diff_col("path_length_um")),
     Metric("dir", "Directionality ratio", "", 3, "net ÷ path", "Tracking",
            scalar=lambda r: _col_median(r, "directionality_ratio"),
            dist=lambda r: r._diff_col("directionality_ratio")),
@@ -640,6 +762,7 @@ def is_run_folder(folder: str) -> bool:
 # as an ordinary RunData.  Analyse-once: a byte-identical file + settings reuse
 # the cache instead of re-running.
 _EXTERNAL_LOC_EXTS = (".csv", ".txt", ".tsv")
+_EXTERNAL_CACHE_SCHEMA = 2
 
 
 def is_external_loc_file(path: str) -> bool:
@@ -652,29 +775,42 @@ def is_external_loc_file(path: str) -> bool:
 
 class _ExternalImportStub:
     """The handful of ImportController attributes `build_params` reads, for a
-    bare file.  Calibration is left to the file's embedded metadata (palmTRACER
-    encodes pixel size / frame interval; others fall back to FIREFLY defaults)."""
-    def __init__(self, path: str):
+    bare external-localisation file.
+
+    External tables have no image-container calibration path.  Mirror the
+    Import tab's CSV branch by exposing the *current sidebar* calibration so
+    the on-the-fly workspace replicate is numerically identical to an ordinary
+    external-table run.  ``override*`` stays false: ``build_params`` already
+    applies these values for CSV inputs even without an image-style override.
+    """
+    def __init__(self, path: str, settings):
         self.filePath = path
         self.outDir = None
         self.isCsv = True
         self.overridePx = False
-        self.pixelSize = 0.0
+        self.pixelSize = float(settings.get_float(
+            "analysis/pixel_size", DEFAULT_PIXEL_SIZE_UM))
         self.overrideFi = False
-        self.frameInterval = 0.0
+        self.frameInterval = float(settings.get_float(
+            "analysis/frame_interval", DEFAULT_FRAME_INTERVAL_S))
 
 
 def _external_run_dir(path: str, cache_root: str, sig: str) -> str:
     """Deterministic cache folder for analysing *path* under *cache_root*, keyed
-    by the file's identity + mtime + a signature of the analysis settings, so an
-    unchanged file+settings reuse the cached run and a changed one re-runs."""
+    by the source-content digest + a signature of every number-affecting
+    analysis setting. Path/mtime alone is insufficient: a file can be replaced
+    in place while retaining its timestamp."""
     import hashlib
     try:
-        mtime = os.path.getmtime(path)
+        digest = hashlib.blake2b(digest_size=20)
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        content_digest = digest.hexdigest()
     except OSError:
-        mtime = 0.0
+        content_digest = "unreadable"
     key = hashlib.blake2b(
-        f"{os.path.abspath(path)}|{mtime}|{sig}".encode("utf-8"),
+        f"{content_digest}|{sig}".encode("utf-8"),
         digest_size=10).hexdigest()
     stem = os.path.splitext(os.path.basename(path))[0]
     return os.path.join(cache_root, f"{stem}__{key}")
@@ -696,7 +832,7 @@ def analyse_external_file(path: str, settings, *, cache_root: str,
     _log = log or (lambda _m: None)
     try:
         from firefly.ui.controllers.params.params_builder import build_params
-        p = build_params(settings, _ExternalImportStub(path), fpath=path,
+        p = build_params(settings, _ExternalImportStub(path, settings), fpath=path,
                          out_dir=None)
     except Exception as exc:
         _log(f"  Couldn't build analysis parameters for "
@@ -707,12 +843,18 @@ def analyse_external_file(path: str, settings, *, cache_root: str,
     # the cache key changes iff the analysis would produce different results.
     _volatile = {"file", "out_dir", "stem_override", "widget_state",
                  "wrap_in_stem_folder"}
+    signature_params = {k: v for k, v in sorted(p.items())
+                        if k not in _volatile}
+    # Bump this only when the interpretation of an external table changes.
+    # It prevents a cache made under an older calibration policy from being
+    # treated as reproducible merely because its other parameters match.
+    signature_payload = {"external_cache_schema": _EXTERNAL_CACHE_SCHEMA,
+                         "params": signature_params}
     try:
-        sig = json.dumps({k: v for k, v in sorted(p.items())
-                          if k not in _volatile}, default=str, sort_keys=True)
+        sig = json.dumps(signature_payload, default=str, sort_keys=True)
     except Exception:
-        sig = repr(sorted((k, str(v)) for k, v in p.items()
-                          if k not in _volatile))
+        sig = repr(("external_cache_schema", _EXTERNAL_CACHE_SCHEMA,
+                    sorted((k, str(v)) for k, v in signature_params.items())))
     run_dir = _external_run_dir(path, cache_root, sig)
     stem = os.path.splitext(os.path.basename(path))[0]
     cached = os.path.join(run_dir, "firefly_extras",
@@ -930,6 +1072,7 @@ COMPARE_PANELS = [
     ("track_length", "Track length"), ("rg", "Radius of gyration"),
     ("netdisp", "Net displacement"), ("path", "Path length"),
     ("step", "Step distance"), ("speed", "Step speed"),
+    ("linkstep", "Observed-link distance"), ("linkspeed", "Observed-link speed"),
     ("dir", "Directionality"), ("dur", "Track duration"),
     ("track_count", "Track count"), ("nlocs", "Localisations"),
     ("jdd", "Jump distance"), ("dwell_cdf", "Dwell-time CDF"),
@@ -942,7 +1085,9 @@ COMPARE_PANEL_PRESETS = {
     "Dynamics": ("turning_angles", "radial_dist", "van_hove", "vacf", "dwell_cdf"),
 }
 # the engine's default set is every panel EXCEPT track_count
-DEFAULT_COMPARE_PANELS = {k for k, _ in COMPARE_PANELS} - {"track_count"}
+DEFAULT_COMPARE_PANELS = {
+    k for k, _ in COMPARE_PANELS
+} - {"track_count", "linkstep", "linkspeed"}
 LOGD_STYLES = [("overlaid", "Overlaid"), ("ridgeline", "Ridgeline"),
                ("violin", "Violin"), ("faceted", "Faceted")]
 
@@ -955,6 +1100,7 @@ METRIC_PANEL = {
     "dwell": "dwell_cdf", "a2": "van_hove", "fluor": "fluor", "rg": "rg",
     "netdisp": "netdisp", "path": "path", "dir": "dir", "dur": "dur",
     "nlocs": "nlocs", "step": "step", "speed": "speed",
+    "linkstep": "linkstep", "linkspeed": "linkspeed",
 }
 
 # The scroller IS the comparison-figure panels (key, chip label, scalar metric for
@@ -973,6 +1119,8 @@ COMPARE_PANEL_TABS = [
     ("path", "Path length", "path"),
     ("step", "Step distance", "step"),
     ("speed", "Step speed", "speed"),
+    ("linkstep", "Observed-link distance", "linkstep"),
+    ("linkspeed", "Observed-link speed", "linkspeed"),
     ("dir", "Directionality ratio", "dir"),
     ("dur", "Track duration", "dur"),
     ("track_count", "Track count", "count"),

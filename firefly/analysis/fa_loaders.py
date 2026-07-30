@@ -638,13 +638,15 @@ def load_czi(path, channel=0, stop_event=None, files=None, dtype=np.float32,
     if files:
         seen = set()
         series = []
-        for f in sorted(files, key=lambda p: os.path.basename(p)):
+        # The scanner owns companion ordering.  Preserve its explicit sequence
+        # exactly; re-sorting here can silently change a reviewed/custom series.
+        for f in files:
             if f in seen or not os.path.isfile(f):
                 continue
             seen.add(f); series.append(f)
         if not series:
             series = [path]
-        print(f"  CZI series override: {len(series)} files",
+        print(f"  CZI series override: {len(series)} files (explicit order)",
               flush=True)
     else:
         # Detect multi-file series (Zeiss splits large datasets into companion files)
@@ -1400,11 +1402,11 @@ def _series_lazy_streamable(series, H, W):
         return False
 
 
-def _tif_series_nat_key(filepath):
-    """Sort key for sibling TIFFs of a single acquisition.
+def _series_nat_key(filepath):
+    """Sort key for sibling image chunks of a single acquisition.
 
-    Returns -1 for the bare `<root>.tif` (always frame 0) and the
-    integer suffix for `<root>(N).tif` / `<root>-fileNNN.tif` chunks,
+    Returns -1 for the bare ``<root>.<ext>`` (always frame 0) and the
+    integer suffix for ``<root>(N).<ext>`` / ``<root>-fileNNN.<ext>`` chunks,
     so the natural sort yields chronological frame order regardless of
     whether the input came in alphabetical order from os.listdir().
 
@@ -1427,13 +1429,23 @@ def _tif_series_nat_key(filepath):
     return -1   # bare <root>.tif sorts first
 
 
+def _tif_series_nat_key(filepath):
+    """Backward-compatible TIFF name for :func:`_series_nat_key`.
+
+    ``sptpalm_analysis`` re-exports this private helper for older callers, so
+    retain it while CZI explicit-series loading uses the shared implementation.
+    """
+    return _series_nat_key(filepath)
+
+
 def load_tif(path, stop_event=None, files=None, dtype=np.float32):
     """Load `path` and (when present) its sibling files into one stack.
 
     If `files` is a non-empty list, it overrides auto-discovery — the
     GUI uses this to honour per-file checkbox selections within a series.
-    The override is sorted to match _find_tif_series ordering so frame
-    indices line up with the user's expectation.
+    The override order is consumed exactly as supplied.  Auto-discovery is
+    natural-sorted by :func:`_find_tif_series`; callers that provide an
+    explicit scanner series therefore remain the single ordering authority.
 
     `dtype` is accepted for parity with :func:`load_czi` / :func:`load_file`,
     but TIF stacks always load as float32 for now — the native-dtype (uint16)
@@ -1441,22 +1453,16 @@ def load_tif(path, stop_event=None, files=None, dtype=np.float32):
     dtype switch here non-trivial), so a ``None`` request is treated as float32.
     """
     if files:
-        # De-dup and sort by the same NATURAL key the auto-discovery
-        # uses — bare <root>.tif first (key=-1), then -fileNNN / (N)
-        # in numeric order.  Basename-alphabetical was wrong: `-`
-        # (0x2D) sorts before `.` (0x2E), so `Post.tif` ended up
-        # AFTER `Post-file002.tif` and every later frame index was
-        # off by ~chunk_size.
         seen = set()
         series = []
-        for f in sorted(files, key=_tif_series_nat_key):
+        for f in files:
             if f in seen or not os.path.isfile(f):
                 continue
             seen.add(f); series.append(f)
         if not series:
             series = [path]
         print(f"  TIF series override: {len(series)} files "
-              f"(natural-sorted, bare <root>.tif first)",
+              f"(explicit order)",
               flush=True)
         for _f in series:
             print(f"    {os.path.basename(_f)}", flush=True)
@@ -1653,6 +1659,35 @@ def _autodetect_csv_preset(columns: "list[str]") -> "str | None":
     return None
 
 
+def probe_external_locs_text(csv_path: str, *, max_bytes: int = 65536) -> None:
+    """Cheaply reject a definitely-corrupt external localisation table.
+
+    This deliberately does not parse columns or validate every row: it is safe
+    for the batch queue's background probe and shares the worker's protection
+    against pandas' delimiter sniffer hanging on all-NUL / newline-free input.
+    A return value of ``None`` means only "looks like line-delimited text",
+    not that the table is semantically valid.
+    """
+    name = os.path.basename(csv_path) or str(csv_path)
+    try:
+        with open(csv_path, "rb") as fh:
+            head = fh.read(max(1, int(max_bytes)))
+    except OSError as exc:
+        raise ValueError(f"Couldn't read {name} as a localisations table.") from exc
+    if not head:
+        raise ValueError(
+            f"{name} is empty — it looks corrupt or incomplete, not a "
+            "localisations table.")
+    if head.count(b"\x00") > len(head) // 4:
+        raise ValueError(
+            f"{name} is mostly null bytes — the file looks corrupt "
+            "(interrupted copy / aborted acquisition), not a localisations table.")
+    if b"\n" not in head and b"\r" not in head:
+        raise ValueError(
+            f"{name} has no line breaks in its first {len(head):,} bytes — "
+            "the file looks corrupt or truncated, not a localisations table.")
+
+
 def load_external_locs(csv_path: str, preset: str = "auto",
                        pixel_size_um: float = DEFAULT_PIXEL_SIZE_UM,
                        column_map: "dict | None" = None,
@@ -1688,29 +1723,10 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     """
     import pandas as _pd
     # ── Corruption guard (fail fast, don't hang) ─────────────────────────────
-    # A valid localisations table is line-delimited text.  An interrupted copy
-    # / aborted acquisition can leave a full-size but all-NUL (zero-filled)
-    # file, or one with no line breaks.  pandas' sep=None python-engine sniffer
-    # (the fallback parser below) spins indefinitely on such input — which used
-    # to hang the worker, and a HYPER-FLY slot, FOREVER at "Reading
-    # localisations".  Probe the first 64 KB cheaply and reject it with a clear
-    # message instead of hanging.
-    try:
-        with open(csv_path, "rb") as _probe:
-            _head = _probe.read(65536)
-    except Exception:
-        _head = b""
-    if _head:
-        if _head.count(b"\x00") > len(_head) // 4:
-            raise ValueError(
-                f"{os.path.basename(csv_path)} is mostly null bytes — the file "
-                f"looks corrupt (interrupted copy / aborted acquisition), not a "
-                f"localisations table.")
-        if b"\n" not in _head and b"\r" not in _head:
-            raise ValueError(
-                f"{os.path.basename(csv_path)} has no line breaks in its first "
-                f"64 KB — the file looks corrupt or truncated, not a "
-                f"localisations table.")
+    # Shared with the batch queue's bounded preflight probe.  It catches the
+    # all-NUL / newline-free cases that can wedge pandas' python-engine sniffer
+    # without doing a costly full parse during a folder scan.
+    probe_external_locs_text(csv_path)
     # PALM-Tracer's `locPALMTracer.txt` has a 2-row metadata block at
     # the top before the actual data header:
     #     Width  Height  nb_Planes  ...  (8 cols)
@@ -1721,9 +1737,9 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     # ThunderSTORM and Picasso put their column header on line 1.  We
     # peek at the file's first ~20 lines, find the row whose column
     # count matches the maximum (i.e. the actual data header row), and
-    # tell pandas to start reading from there.  Bonus: extract pixel
-    # size / frame interval from the PALM-Tracer metadata block when
-    # present, and remember them on the returned DataFrame's attrs.
+    # tell pandas to start reading from there.  PALM-Tracer calibration in
+    # the metadata block is retained as advisory provenance on the returned
+    # frame; it never silently overrides the caller's effective calibration.
     pt_meta: dict = {}
     header_line = 0
     try:
@@ -1928,16 +1944,6 @@ def load_external_locs(csv_path: str, preset: str = "auto",
             f"Couldn't parse {csv_path} — single-column result on "
             f"every attempted separator / skiprows combination.")
 
-    # Apply PALM-Tracer's embedded metadata to pixel_size_um when the
-    # caller didn't specify one (or used the default).  This lets users
-    # drop a PALM-Tracer file in and have the units come out right
-    # without typing 0.106 again.
-    pt_px = pt_meta.get("pixel_size_um")
-    if pt_px and abs(pixel_size_um - DEFAULT_PIXEL_SIZE_UM) < 1e-9:
-        # Default value — replace with PALM-Tracer's value
-        print(f"  Using pixel size {pt_px:.4f} µm from PALM-Tracer metadata")
-        pixel_size_um = float(pt_px)
-
     if preset == "auto" or not preset:
         sniffed = _autodetect_csv_preset(list(df.columns))
         if sniffed is None:
@@ -2087,6 +2093,19 @@ def load_external_locs(csv_path: str, preset: str = "auto",
     print(f"  Loaded {len(out):,} external localisations "
           f"(preset={preset}, frames {int(out['frame'].min())}–"
           f"{int(out['frame'].max())})")
+    # The GUI/worker owns the effective sidebar calibration.  Keep any
+    # PALM-Tracer values visible to callers as advisory source provenance
+    # rather than changing only this loader's coordinate conversion and leaving
+    # downstream time/D calculations on a different scale.
+    for attr, key in (("embedded_pixel_size_um", "pixel_size_um"),
+                      ("embedded_frame_interval_s", "frame_interval_s")):
+        value = pt_meta.get(key)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and np.isfinite(value):
+            out.attrs[attr] = value
     return out
 
 

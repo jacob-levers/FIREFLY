@@ -171,10 +171,84 @@ def test_new_metrics_read_their_data(tmp_path):
     assert rg is not None and len(rg) > 0 and np.all(rg >= 0)
     # step distance → MEASURED (median of per-track mean step), not D-derived
     step = by_id["step"].scalar(run)
-    assert step == pytest.approx(float(np.median(run._diff_col("mean_step_um", positive=True))))
+    assert step == pytest.approx(float(np.median(run._diff_col("mean_step_um"))))
     # step speed → measured step ÷ Δt
     sp = by_id["speed"].scalar(run)
     assert sp == pytest.approx(step / run.fi_s) and sp > 0
     # net displacement → the first→last column is present in the fixture now
     nd = by_id["netdisp"].dist(run)
     assert nd is not None and len(nd) > 0
+
+
+def test_linear_metrics_keep_zero_and_duration_uses_frame_span(tmp_path):
+    extras = tmp_path / "z" / "firefly_extras"
+    extras.mkdir(parents=True)
+    (extras / "z_summary_metrics.json").write_text(json.dumps({
+        "n_tracks": 2, "fi_s": 0.5, "metrics_schema_version": 2,
+        "gap_policy": "all_pairs",
+    }))
+    pd.DataFrame({
+        "particle": [0, 1],
+        "D": [0.1, 0.2],
+        "mean_step_um": [0.0, 2.0],
+        "radius_of_gyration_um": [0.0, 1.0],
+        "net_displacement_um": [0.0, 4.0],
+        "path_length_um": [0.0, 5.0],
+        "directionality_ratio": [np.nan, 0.0],
+    }).to_csv(extras / "z_diffusion_summary.csv", index=False)
+    pd.DataFrame({
+        "particle": [0, 0, 0, 1, 1],
+        "frame": [0, 2, 5, 4, 4],
+        "x": [0, 0, 0, 1, 1],
+        "y": [0, 0, 0, 1, 1],
+    }).to_csv(extras / "z_trajectories.csv", index=False)
+    run = wd.load_run(str(tmp_path / "z"))
+
+    assert np.array_equal(wd.METRIC_BY_ID["step"].dist(run), [0.0, 2.0])
+    assert wd.METRIC_BY_ID["step"].scalar(run) == pytest.approx(1.0)
+    assert np.array_equal(wd.METRIC_BY_ID["netdisp"].dist(run), [0.0, 4.0])
+    # Track 0 spans 5 frames (=2.5 s); the one-observation track spans 0 s.
+    assert np.array_equal(np.sort(wd.METRIC_BY_ID["dur"].dist(run)),
+                          [0.0, 2.5])
+
+
+def test_metric_contract_detects_mixed_but_allows_stable_metrics(tmp_path):
+    legacy = wd.load_run(make_run_folder(str(tmp_path), "legacy", seed=1))
+    modern_path = make_run_folder(str(tmp_path), "modern", seed=2)
+    sm = tmp_path / "modern" / "firefly_extras" / "modern_summary_metrics.json"
+    data = json.loads(sm.read_text())
+    data.update({"metrics_schema_version": 2, "gap_policy": "all_pairs"})
+    sm.write_text(json.dumps(data))
+    modern = wd.load_run(modern_path)
+
+    assert wd.metric_contract_issue([legacy, modern], "D")
+    assert wd.metric_contract_issue([legacy, modern], "step")
+    assert wd.metric_contract_issue([legacy, modern], "rg") == ""
+    assert wd.metric_contract_label([legacy], "step") == "legacy definition"
+
+
+def test_metric_contract_detects_same_schema_different_step_definitions(tmp_path):
+    runs = []
+    definitions = (
+        "mean displacement between adjacent observations exactly one frame apart",
+        "mean displacement between every adjacent observed localisation",
+    )
+    for index, definition in enumerate(definitions):
+        stem = f"modern_{index}"
+        path = make_run_folder(str(tmp_path), stem, seed=index + 10)
+        summary_path = (tmp_path / stem / "firefly_extras"
+                        / f"{stem}_summary_metrics.json")
+        data = json.loads(summary_path.read_text())
+        data.update({
+            "metrics_schema_version": 2,
+            "gap_policy": "all_pairs",
+            "metric_contract": "firefly_metrics_schema_2",
+            "step_definition": definition,
+        })
+        summary_path.write_text(json.dumps(data))
+        runs.append(wd.load_run(path))
+
+    for metric_id in ("step", "speed", "linkstep", "linkspeed"):
+        assert wd.metric_contract_issue(runs, metric_id)
+    assert wd.metric_contract_issue(runs, "D") == ""
+    assert wd.metric_contract_issue(runs, "rg") == ""

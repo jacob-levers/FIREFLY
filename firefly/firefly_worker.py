@@ -35,7 +35,7 @@ import traceback
 # Qt-free, stdlib-only (imports `enum`); safe to load before the CUDA sidecar
 # block since it pulls in no torch.  MsgKind is the one source of truth for the
 # worker→GUI message-queue kinds emitted throughout this module.
-from firefly.analysis.fa_enums import MsgKind
+from firefly.analysis.fa_enums import MsgKind, GapPolicy
 from firefly.analysis.fa_io import atomic_to_csv, atomic_write   # stdlib-only
 from firefly.analysis.fa_constants import (
     DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S)
@@ -221,10 +221,70 @@ _POSTPROC_LINK_DEFAULTS = {
     "max_track_len": None,
     "max_lagtime":   20,
     "n_fit":         5,
+    "gap_policy":    GapPolicy.ALL_PAIRS.value,
     "linker":        "trackpy",   # reproduce the original run's linker on re-ROI
     "link_params":   {},          # …and its per-linker knobs (full_lap / sa / …)
     "auto_search_range": False,   # resolved to a fixed search_range during the run
 }
+
+RUN_MANIFEST_SCHEMA_VERSION = 4
+STEP_DEFINITION = "mean displacement between adjacent observations exactly one frame apart"
+LINK_DEFINITION = "mean displacement/speed across every adjacent observed localisation"
+DURATION_DEFINITION = "(max(frame)-min(frame))*frame_interval_s"
+OBSERVED_TIME_DEFINITION = "n_observations*frame_interval_s"
+CURRENT_METRIC_CONTRACT = "firefly_metrics_schema_2"
+
+# A PALM-Tracer native render preserves PALM-Tracer's own D/MSD tables rather
+# than rerunning FIREFLY's schema-2 estimator.  It must therefore never inherit
+# the schema-2/gap-policy values resolved for the normal pipeline before the
+# early return. GapPolicy deliberately retains only its two public wire values;
+# the separate metric-contract token identifies the native estimator.
+PALMTRACER_NATIVE_METRICS_SCHEMA_VERSION = 1
+PALMTRACER_NATIVE_GAP_POLICY = GapPolicy.CONTIGUOUS.value
+PALMTRACER_NATIVE_METRIC_CONTRACT = "palmtracer_native_legacy"
+PALMTRACER_NATIVE_CONTRACT_NOTE = (
+    "PALM-Tracer native D/MSD/LogD values were retained; this output was not "
+    "recalculated under FIREFLY metrics schema 2.")
+PALMTRACER_NATIVE_UNVERIFIED_DEFINITION = (
+    "not_recomputed_under_firefly_metrics_schema_2")
+
+
+def _resolved_gap_policy_message(policy) -> str:
+    """Human-readable audit line for the normal FIREFLY estimator."""
+    resolved = GapPolicy.parse(policy)
+    if resolved is GapPolicy.CONTIGUOUS:
+        detail = "contiguous observed runs (legacy compatibility)"
+    else:
+        detail = "all timestamp-matched pairs"
+    return f"  Resolved gap policy: {resolved.value} ({detail})."
+
+
+def _canonicalize_tracks(tracks):
+    """Stable-sort trajectories and reject ambiguous same-frame branches.
+
+    Pre-linked tables are allowed to arrive in arbitrary source order, but all
+    downstream temporal quantities require one ordered observation per particle
+    and frame.  A duplicate is commonly a branched/split TrackMate export;
+    silently retaining one branch would manufacture a trajectory, so provide a
+    direct remediation message instead.
+    """
+    required = {"particle", "frame", "x", "y"}
+    missing = required - set(getattr(tracks, "columns", []))
+    if missing:
+        raise ValueError(f"trajectory table is missing required columns: {sorted(missing)}")
+    ordered = (tracks.reset_index(drop=True)
+                     .sort_values(["particle", "frame"], kind="stable")
+                     .reset_index(drop=True))
+    duplicate = ordered.duplicated(["particle", "frame"], keep=False)
+    if duplicate.any():
+        sample = ordered.loc[duplicate, ["particle", "frame"]].head(3)
+        pairs = ", ".join(
+            f"({row.particle!r}, {row.frame!r})" for row in sample.itertuples(index=False))
+        raise ValueError(
+            "pre-linked trajectory has multiple localisations for the same "
+            "particle/frame (often a branched TrackMate export): "
+            f"{pairs}. Export linear tracks or resolve branches before analysis.")
+    return ordered
 
 
 def _ellipsize(text, limit=56):
@@ -360,7 +420,9 @@ class QueueLogStream:
 #  CORE PIPELINE (shared by single-file and batch entry points)
 # ══════════════════════════════════════════════════════════════════════════════
 def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
-                        params: dict, resolved_minmass=None) -> str:
+                        params: dict, resolved_minmass=None,
+                        metric_contract=None, metric_contract_note=None,
+                        definitions=None) -> str:
     """Write a `<stem>_run_manifest.json` file alongside the run outputs.
     The manifest captures everything needed to reproduce the run:
       • full parameters (worker-format kwargs + widget-state for the GUI)
@@ -461,8 +523,19 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
     worker_params = {k: _jsonify(v) for k, v in params.items()
                      if k != "widget_state"}
 
+    definitions = definitions or {}
     manifest = {
-        "schema_version":   3,
+        "schema_version":   RUN_MANIFEST_SCHEMA_VERSION,
+        "metrics_schema_version": int(params.get("metrics_schema_version", 2)),
+        "gap_policy":       str(params.get("gap_policy", GapPolicy.ALL_PAIRS.value)),
+        "step_definition":  str(definitions.get("step_definition", STEP_DEFINITION)),
+        "link_definition":  str(definitions.get("link_definition", LINK_DEFINITION)),
+        "duration_definition": str(definitions.get(
+            "duration_definition", DURATION_DEFINITION)),
+        "observed_time_definition": str(definitions.get(
+            "observed_time_definition", OBSERVED_TIME_DEFINITION)),
+        "effective_calibration": _jsonify(params.get("effective_calibration") or {}),
+        "embedded_calibration": _jsonify(params.get("embedded_calibration") or {}),
         "firefly_version":  _firefly_version(),
         "git_sha":          _git_sha(),
         "created_at":       _dt.datetime.now().isoformat(timespec="seconds"),
@@ -485,6 +558,16 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
         "parameters":    worker_params,
         "widget_state":  _jsonify(widget_state),
     }
+    resolved_metric_contract = metric_contract or params.get("metric_contract")
+    if resolved_metric_contract is not None:
+        manifest["metric_contract"] = _jsonify(resolved_metric_contract)
+    if metric_contract_note:
+        manifest["metric_contract_note"] = str(metric_contract_note)
+    manifest["fit_status_field"] = "firefly_extras/*_diffusion_summary.csv:fit_status"
+    manifest["fit_status_counts"] = _jsonify(
+        params.get("fit_status_counts") or {})
+    manifest["n_below_resolution"] = _jsonify(
+        params.get("n_below_resolution"))
 
     path = os.path.join(out_dir, f"{stem}_run_manifest.json")
     _atomic_write_json(manifest, path, indent=2)   # tmp + os.replace (#28)
@@ -749,6 +832,49 @@ def _win_disp_path(p):
         return p
 
 
+def _palmtracer_native_contract() -> dict:
+    """Metadata for a PALM-Tracer-native output.
+
+    The normal worker has already resolved FIREFLY's schema-2 gap policy when
+    this helper is reached.  Native D/MSD files have their own estimator and
+    must be labelled separately instead of borrowing that result.
+    """
+    return {
+        "metrics_schema_version": PALMTRACER_NATIVE_METRICS_SCHEMA_VERSION,
+        "gap_policy": PALMTRACER_NATIVE_GAP_POLICY,
+        "metric_contract": PALMTRACER_NATIVE_METRIC_CONTRACT,
+        "metric_contract_note": PALMTRACER_NATIVE_CONTRACT_NOTE,
+        "step_definition": PALMTRACER_NATIVE_UNVERIFIED_DEFINITION,
+        "link_definition": PALMTRACER_NATIVE_UNVERIFIED_DEFINITION,
+        "duration_definition": PALMTRACER_NATIVE_UNVERIFIED_DEFINITION,
+        "observed_time_definition": PALMTRACER_NATIVE_UNVERIFIED_DEFINITION,
+    }
+
+
+def _palmtracer_native_calibration(source_params: dict, px: float,
+                                   fi: float) -> tuple[dict, dict]:
+    """Return the calibration provenance for a native PALM-Tracer render.
+
+    Native D/MSD values are already calibrated by PALM-Tracer, so their
+    effective values are the source values, never the current sidebar values.
+    The duplicated embedded block makes that distinction machine-readable for
+    consumers that compare a normal external-table re-analysis with a native
+    preservation run.
+    """
+    effective = {
+        "pixel_size_um": float(px),
+        "frame_interval_s": float(fi),
+        "authority": "palmtracer_native_output",
+    }
+    embedded = {
+        "pixel_size_um": float(source_params.get("pixel_size_um", px) or px),
+        "frame_interval_s": float(source_params.get("frame_interval_s", fi) or fi),
+        "advisory_only": False,
+        "source": "palmtracer_native_output",
+    }
+    return effective, embedded
+
+
 def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, log):
     """Render the standard FIREFLY figure + CSVs for a palmTRACER folder using
     palmTRACER's OWN native MSD / D values (no re-localisation).  palmTRACER data
@@ -766,14 +892,22 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
     # Call the palmTRACER loader directly (forces native parse + gets imsd) and
     # cache=False so we never write firefly_extras into the user's source folder.
     s = load_summary_from_palmtracer(folder, use_native=True, cache=False)
-    params = s.get("params") or {}
-    px = float(params.get("pixel_size_um", DEFAULT_PIXEL_SIZE_UM) or DEFAULT_PIXEL_SIZE_UM)
-    fi = float(params.get("frame_interval_s", DEFAULT_FRAME_INTERVAL_S) or DEFAULT_FRAME_INTERVAL_S)
+    source_params = s.get("params") or {}
+    px = float(source_params.get("pixel_size_um", DEFAULT_PIXEL_SIZE_UM)
+               or DEFAULT_PIXEL_SIZE_UM)
+    fi = float(source_params.get("frame_interval_s", DEFAULT_FRAME_INTERVAL_S)
+               or DEFAULT_FRAME_INTERVAL_S)
+    native_contract = _palmtracer_native_contract()
+    effective_calibration, embedded_calibration = _palmtracer_native_calibration(
+        source_params, px, fi)
     locs    = s.get("locs")
     tracks  = s.get("tracks")
     diff_df = s.get("diffusion")
     imsd_df = s.get("imsd")
     emsd_df = s.get("ensemble_msd")
+    if diff_df is not None and "fit_status" not in diff_df.columns:
+        diff_df = diff_df.copy()
+        diff_df["fit_status"] = "native_unavailable"
 
     have_locs = locs is not None and len(locs)
     W = int(s.get("width") or 0) or (int(locs["x"].max()) + 1 if have_locs else 1)
@@ -842,10 +976,166 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
 
     n_tracks = int(diff_df.shape[0]) if diff_df is not None else 0
     n_locs   = int(len(locs)) if have_locs else 0
+    n_frames = int(s.get("n_frames") or 0)
+    if not n_frames and have_locs and "frame" in locs.columns:
+        try:
+            n_frames = int(locs["frame"].max()) + 1
+        except Exception:
+            n_frames = 0
+
+    def _native_median(column):
+        if diff_df is None or column not in diff_df.columns:
+            return None
+        try:
+            values = _np.asarray(diff_df[column], dtype=float)
+            values = values[_np.isfinite(values)]
+            return float(_np.median(values)) if values.size else None
+        except Exception:
+            return None
+
+    motion_counts = {}
+    if diff_df is not None and "motion" in diff_df.columns:
+        try:
+            motion_counts = {
+                str(label): int(count)
+                for label, count in diff_df["motion"].dropna().value_counts().items()
+            }
+        except Exception:
+            motion_counts = {}
+
+    mobile_fraction = None
+    if diff_df is not None and "D" in diff_df.columns:
+        try:
+            d_values = _np.asarray(diff_df["D"], dtype=float)
+            valid = _np.isfinite(d_values) & (d_values > 0)
+            if valid.any():
+                threshold = float(p.get("mobile_d_threshold", 0.05))
+                mobile_fraction = float((d_values[valid] >= threshold).mean())
+        except Exception:
+            mobile_fraction = None
+
+    # This is deliberately a legacy/native contract, even when the loader was
+    # able to derive auxiliary FIREFLY columns from the trajectory table.  The
+    # primary D/MSD values in this path came from PALM-Tracer, so claiming the
+    # current FIREFLY schema-2 estimator would make mixed analyses unsound.
+    metric_sources = {
+        "diffusion_d": "palmtracer_native",
+        "msd": "palmtracer_native",
+        "log_d": "palmtracer_native",
+        "auxiliary_track_metrics": "not_schema_2_contractual",
+    }
+    summary = {
+        **native_contract,
+        "effective_calibration": effective_calibration,
+        "embedded_calibration": embedded_calibration,
+        "metric_sources": metric_sources,
+        "n_tracks": n_tracks,
+        "n_locs": n_locs,
+        "median_d": _native_median("D"),
+        "median_alpha": _native_median("alpha"),
+        "median_loc_sigma_nm": _native_median("loc_sigma_nm"),
+        "nongauss_alpha2": None,
+        "vacf_persistence": None,
+        "motion_counts": motion_counts,
+        "fit_status_counts": {"native_unavailable": n_tracks},
+        "n_below_resolution": None,
+        "below_resolution_status": "not_available_from_native_source",
+        "mobile_fraction": mobile_fraction,
+        "n_clusters": 0,
+        "dwell_tau_s": None,
+        "frames": n_frames,
+        "px_um": float(px),
+        "fi_s": float(fi),
+        "source": "palmtracer_native",
+        "qc": {"flags": [{
+            "level": "info",
+            "msg": ("PALM-Tracer native D/MSD preserved; this run is "
+                    "legacy/native-compatible, not a FIREFLY schema-2 "
+                    "re-analysis."),
+        }]},
+    }
+    if tracks is not None and len(tracks):
+        _native_counts = tracks.groupby("particle").size().to_numpy(dtype=float)
+        _native_span = tracks.groupby("particle")["frame"].agg(["min", "max"])
+        _native_durations = (
+            _native_span["max"].to_numpy(dtype=float)
+            - _native_span["min"].to_numpy(dtype=float)
+        ) * float(fi)
+        summary["mean_observed_time_s"] = (
+            float(_np.mean(_native_counts * float(fi)))
+            if _native_counts.size else None)
+        summary["mean_track_duration_s"] = (
+            float(_np.mean(_native_durations))
+            if _native_durations.size else None)
+        summary["mean_track_length_s"] = summary["mean_observed_time_s"]
+    else:
+        summary["mean_observed_time_s"] = None
+        summary["mean_track_duration_s"] = None
+        summary["mean_track_length_s"] = None
+    params_sidecar = {
+        **native_contract,
+        "stem": stem,
+        "pixel_size_um": float(px),
+        "frame_interval_s": float(fi),
+        "effective_calibration": effective_calibration,
+        "embedded_calibration": embedded_calibration,
+        "metric_sources": metric_sources,
+        "fit_status_counts": {"native_unavailable": n_tracks},
+        "n_below_resolution": None,
+        "below_resolution_status": "not_available_from_native_source",
+        "mean_observed_time_s": summary["mean_observed_time_s"],
+        "mean_track_duration_s": summary["mean_track_duration_s"],
+        "mean_track_length_s": summary["mean_track_length_s"],
+        "n_localisations": n_locs,
+        "n_tracks": n_tracks,
+        "n_frames": n_frames,
+        "width": int(W),
+        "height": int(H),
+        "source": "palmtracer_native",
+        "palmtracer_source_folder": os.path.abspath(folder),
+        "input_file": os.path.abspath(fpath),
+    }
+
+    saved_sidecars = []
+    try:
+        _atomic_write_json(
+            params_sidecar, os.path.join(extras_dir, f"{stem}_params.json"),
+            indent=2, default=str)
+        saved_sidecars.append("params")
+    except Exception as exc:
+        log(f"  WARN: native params save failed: {exc}")
+    try:
+        summary_for_disk = dict(summary)
+        summary_for_disk["stem"] = stem
+        _atomic_write_json(
+            summary_for_disk,
+            os.path.join(extras_dir, f"{stem}_summary_metrics.json"),
+            indent=2, default=str)
+        saved_sidecars.append("summary metrics")
+    except Exception as exc:
+        log(f"  WARN: native summary-metrics save failed: {exc}")
+    try:
+        manifest_params = dict(p)
+        manifest_params.update(params_sidecar)
+        # Keep the replay-facing worker keys aligned with the native source
+        # calibration too; otherwise the manifest would simultaneously claim
+        # native effective calibration and preserve stale sidebar values.
+        manifest_params["pixel_size"] = float(px)
+        manifest_params["frame_interval"] = float(fi)
+        manifest_params["palmtracer_use_native"] = True
+        manifest_path = _write_run_manifest(
+            out_dir=out_dir, stem=stem, fpath=fpath, params=manifest_params,
+            metric_contract=native_contract["metric_contract"],
+            metric_contract_note=native_contract["metric_contract_note"],
+            definitions=native_contract)
+        saved_sidecars.append(os.path.basename(manifest_path))
+    except Exception as exc:
+        log(f"  WARN: native manifest write failed: {exc}")
+    if saved_sidecars:
+        log("  Saved native contract sidecars: " + ", ".join(saved_sidecars))
+
     log(f"  palmTRACER native render done: {n_tracks} tracks, {n_locs} locs "
-        f"(MSD/D from palmTRACER; alpha/motion-class unclassified).")
-    summary = {"stem": stem, "n_tracks": n_tracks, "n_locs": n_locs,
-               "source": "palmtracer_native"}
+        f"({PALMTRACER_NATIVE_CONTRACT_NOTE})")
     return {
         "stem":        stem,
         "out_dir":     _win_disp_path(out_dir),
@@ -905,9 +1195,16 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         compute_mobile_fraction_over_time, compute_clusters,
         compute_dwell_times, compute_mss, correct_drift,
         make_figure, save_palmtracer_csvs, apply_roi_mask, _Cancelled,
-        load_external_locs,
+        load_external_locs, DIFFUSION_METRICS_SCHEMA_VERSION,
     )
     from firefly.analysis.fa_enums import ROIMode, MaskMode
+
+    # Resolve once, persist it in all sidecars, and feed the same canonical
+    # value to both MSD and MSS.  Unknown replay-era values fall back loudly to
+    # the forward all-pairs policy through the enum parser.
+    p["gap_policy"] = GapPolicy.parse(p.get("gap_policy"), log=_log).value
+    p["metrics_schema_version"] = DIFFUSION_METRICS_SCHEMA_VERSION
+    p["metric_contract"] = CURRENT_METRIC_CONTRACT
 
     # Helper: check stop event at major pipeline boundaries.  Most of the
     # pipeline's interruptibility comes from passing `cancel_event` deep
@@ -967,6 +1264,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             msg_queue.put((MsgKind.LOG, f"  WARN: native palmTRACER render failed "
                                   f"({_pt_exc}); re-analysing instead."))
 
+    # Native PALM-Tracer renders return above with their own legacy/native
+    # contract.  Every normal run (including a native-render fallback) records
+    # the canonical policy that will govern both MSD and MSS below.
+    _log(_resolved_gap_policy_message(p["gap_policy"]))
+
     # ── Pre-flight disk-space check ────────────────────────────────────────
     # A 200k-localisation run produces ~50 MB of CSVs, plus PDFs / PNGs /
     # the optional ROI mask npy.  500 MB free is plenty; below that we
@@ -1018,6 +1320,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     import numpy as _np
     proj_idx = None          # frame indices behind proj_sample (image paths only);
                              # used to drift-align the figure background below
+    embedded_px = embedded_fi = None
     if not external_csv:
         # ── Load ──────────────────────────────────────────────────────────
         _log(f"\n── Load ──────────────────────────")
@@ -1100,6 +1403,29 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             pixel_size_um=px,
             column_map=p.get("csv_column_map"),
             frame_offset=p.get("csv_frame_offset"))
+        embedded_px = locs_extern.attrs.get("embedded_pixel_size_um")
+        embedded_fi = locs_extern.attrs.get("embedded_frame_interval_s")
+        embedded_parts = []
+        if embedded_px is not None:
+            embedded_parts.append(f"pixel size {float(embedded_px):g} µm")
+        if embedded_fi is not None:
+            embedded_parts.append(f"frame interval {float(embedded_fi):g} s")
+        if embedded_parts:
+            _log("  Embedded PALM-Tracer calibration (advisory): "
+                 + ", ".join(embedded_parts))
+        disagreements = []
+        if embedded_px is not None and not _np.isclose(
+                float(embedded_px), px, rtol=1e-6, atol=1e-12):
+            disagreements.append(
+                f"pixel size embedded={float(embedded_px):g} µm, sidebar={px:g} µm")
+        if embedded_fi is not None and not _np.isclose(
+                float(embedded_fi), fi, rtol=1e-6, atol=1e-12):
+            disagreements.append(
+                f"frame interval embedded={float(embedded_fi):g} s, sidebar={fi:g} s")
+        if disagreements:
+            _log("  WARNING: embedded calibration disagrees with the visible "
+                 "sidebar; FIREFLY uses the sidebar values ("
+                 + "; ".join(disagreements) + ").")
         n_frames = int(locs_extern["frame"].max()) + 1
         _log(f"  Frames: {n_frames:,}  |  px={px} µm  fi={fi} s")
         # If the user provided a background image, sample frames from it
@@ -1124,6 +1450,23 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 proj_sample = _make_loc_histogram_proj(locs_extern, p)
         else:
             proj_sample = _make_loc_histogram_proj(locs_extern, p)
+
+    # Persist one unambiguous calibration contract.  For external tables the
+    # visible sidebar is authoritative; any PALM-Tracer metadata is advisory
+    # provenance only.  Image inputs retain their existing metadata/override
+    # selection while still recording the effective numbers actually used.
+    p["effective_calibration"] = {
+        "pixel_size_um": float(px),
+        "frame_interval_s": float(fi),
+        "authority": ("visible_sidebar" if external_csv
+                      else "image_metadata_or_sidebar_override"),
+    }
+    p["embedded_calibration"] = {
+        "pixel_size_um": (float(embedded_px) if embedded_px is not None else None),
+        "frame_interval_s": (
+            float(embedded_fi) if embedded_fi is not None else None),
+        "advisory_only": bool(external_csv),
+    }
 
     # ── Localisation ──────────────────────────────────────────────────────
     _log(f"\n── Localisation ──────────────────")
@@ -1925,6 +2268,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 link_params=p.get("link_params") or {},
                 progress_cb=_link_progress,
                 stop_event=cancel_event)
+        # Canonical output order is part of the trajectory contract.  This is
+        # essential for pre-linked CSVs (which may be interleaved/shuffled) and
+        # harmless for native linkers that are already chronological.
+        if len(tracks):
+            tracks = _canonicalize_tracks(tracks)
         n_tracks_found = tracks['particle'].nunique() if len(tracks) else 0
         _log(f"  → {n_tracks_found:,} trajectories")
         _check_stop()
@@ -1959,7 +2307,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             max_lagtime=int(p["max_lagtime"]),
             n_fit=int(p["n_fit"]),
             workers=int(p["workers"]),
-            alpha_thresholds=tuple(p.get("alpha_thresholds", (0.5, 0.9, 1.1))))
+            alpha_thresholds=tuple(p.get("alpha_thresholds", (0.5, 0.9, 1.1))),
+            gap_policy=p["gap_policy"])
 
         # Optional: filter tracks by diffusion coefficient
         if p.get("filter_d_enabled", False) and len(diff_df):
@@ -2044,7 +2393,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # panel and downstream CSVs see it.  Skipped silently when there
         # are no tracks long enough (compute_mss returns an empty frame).
         try:
-            mss_df = compute_mss(tracks, px, fi)
+            mss_df = compute_mss(tracks, px, fi, gap_policy=p["gap_policy"])
             if mss_df is not None and len(mss_df) > 0:
                 diff_df = diff_df.merge(mss_df, on="particle", how="left")
                 _log(f"  MSS slopes computed for {len(mss_df):,} tracks")
@@ -2466,6 +2815,18 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # Per-run params — Compare relies on this for per-folder pixel size /
         # frame interval, etc.  Matches the schema written by the
         # PALM-Tracer summary loader.
+        _fit_status_counts = {}
+        _n_below_resolution = 0
+        if diff_df is not None and "fit_status" in diff_df.columns:
+            _fit_status = diff_df["fit_status"].fillna("unknown").astype(str)
+            _fit_status_counts = {
+                str(k): int(v)
+                for k, v in _fit_status.value_counts().to_dict().items()
+            }
+            _n_below_resolution = int(
+                (_fit_status == "below_resolution").sum())
+        p["fit_status_counts"] = _fit_status_counts
+        p["n_below_resolution"] = _n_below_resolution
         try:
             _atomic_write_json({               # tmp + os.replace (#28)
                     "stem":             stem,
@@ -2485,6 +2846,18 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "max_track_len":    (int(p["max_track_len"]) if p.get("max_track_len") else None),
                     "max_lagtime":      int(p.get("max_lagtime", _POSTPROC_LINK_DEFAULTS["max_lagtime"])),
                     "n_fit":            int(p.get("n_fit", _POSTPROC_LINK_DEFAULTS["n_fit"])),
+                    "gap_policy":       str(p.get("gap_policy", GapPolicy.ALL_PAIRS.value)),
+                    "metrics_schema_version": int(p.get("metrics_schema_version", 2)),
+                    "metric_contract": str(p.get(
+                        "metric_contract", CURRENT_METRIC_CONTRACT)),
+                    "step_definition":  STEP_DEFINITION,
+                    "link_definition":  LINK_DEFINITION,
+                    "duration_definition": DURATION_DEFINITION,
+                    "observed_time_definition": OBSERVED_TIME_DEFINITION,
+                    "effective_calibration": p.get("effective_calibration") or {},
+                    "embedded_calibration": p.get("embedded_calibration") or {},
+                    "fit_status_counts": _fit_status_counts,
+                    "n_below_resolution": _n_below_resolution,
                     "linker":           str(p.get("linker", _POSTPROC_LINK_DEFAULTS["linker"])),
                     "link_params":      (p.get("link_params") or _POSTPROC_LINK_DEFAULTS["link_params"]),
                     "n_localisations":  int(len(locs)),
@@ -2595,6 +2968,16 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # Computed defensively so a partial pipeline still returns a valid
         # payload (e.g. when filter-by-D produced an empty diff_df).
         summary = {
+            "metrics_schema_version": int(p.get("metrics_schema_version", 2)),
+            "gap_policy":    str(p.get("gap_policy", GapPolicy.ALL_PAIRS.value)),
+            "metric_contract": str(p.get(
+                "metric_contract", CURRENT_METRIC_CONTRACT)),
+            "step_definition": STEP_DEFINITION,
+            "link_definition": LINK_DEFINITION,
+            "duration_definition": DURATION_DEFINITION,
+            "observed_time_definition": OBSERVED_TIME_DEFINITION,
+            "effective_calibration": p.get("effective_calibration") or {},
+            "embedded_calibration": p.get("embedded_calibration") or {},
             "n_tracks":     int(diff_df.shape[0]) if diff_df is not None else 0,
             "n_locs":       int(len(locs))         if locs    is not None else 0,
             "median_d":     None,
@@ -2603,6 +2986,13 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             "nongauss_alpha2": None,
             "vacf_persistence": None,
             "motion_counts": {},
+            "fit_status_counts": {},
+            "n_below_resolution": 0,
+            "mean_observed_time_s": None,
+            "mean_track_duration_s": None,
+            # Deprecated schema-cycle alias: historically this meant observed
+            # sampling time, not elapsed first-to-last duration.
+            "mean_track_length_s": None,
             "mobile_fraction": None,
             "n_clusters":   0,
             "dwell_tau_s":  None,
@@ -2621,16 +3011,23 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                         str(k): int(v) for k, v
                         in diff_df["motion"].value_counts().to_dict().items()
                     }
+                if "fit_status" in diff_df.columns:
+                    _fs = diff_df["fit_status"].fillna("unknown")
+                    summary["fit_status_counts"] = {
+                        str(k): int(v) for k, v in _fs.value_counts().to_dict().items()
+                    }
+                    summary["n_below_resolution"] = int(
+                        (_fs == "below_resolution").sum())
                 if "D" in diff_df.columns:
                     d_thresh = float(p.get("mobile_d_threshold", 0.05))
                     # Match the canonical definition used by the mobile-fraction
                     # panel and the mob/immob ratio (fa_diffusion): D >= threshold
-                    # over FINITE, POSITIVE D only.  The old `(D > thresh).mean()`
+                    # over finite, positive D only.  The old `(D > thresh).mean()`
                     # used strict `>` and counted NaN-D failed fits in the
                     # denominator (NaN > t is False), so the headline number was
                     # biased low and disagreed with its own panel.  (#9)
                     _d = diff_df["D"].to_numpy(dtype=float)
-                    _valid = np.isfinite(_d) & (_d > 0)
+                    _valid = _np.isfinite(_d) & (_d > 0)
                     summary["mobile_fraction"] = (
                         float((_d[_valid] >= d_thresh).mean())
                         if _valid.any() else None)
@@ -2638,6 +3035,23 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     _ls = diff_df["loc_sigma_nm"].dropna()
                     if len(_ls):
                         summary["median_loc_sigma_nm"] = float(_ls.median())
+            if tracks is not None and len(tracks):
+                _obs_counts = tracks.groupby("particle").size().to_numpy(
+                    dtype=float)
+                _frame_span = tracks.groupby("particle")["frame"].agg(
+                    ["min", "max"])
+                _durations = (
+                    _frame_span["max"].to_numpy(dtype=float)
+                    - _frame_span["min"].to_numpy(dtype=float)
+                ) * float(fi)
+                if _obs_counts.size:
+                    summary["mean_observed_time_s"] = float(
+                        _np.mean(_obs_counts * float(fi)))
+                    summary["mean_track_length_s"] = summary[
+                        "mean_observed_time_s"]
+                if _durations.size:
+                    summary["mean_track_duration_s"] = float(
+                        _np.mean(_durations))
             if van_hove is not None:
                 try:
                     summary["nongauss_alpha2"] = float(
@@ -2658,9 +3072,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     summary["dwell_tau_s"] = float(dwell_tau)
                 except Exception:
                     pass
-        except Exception:
-            # Best-effort: don't let a stats-computation hiccup break the run
-            pass
+        except Exception as summary_exc:
+            # Best-effort: don't let a stats-computation hiccup break the run,
+            # but never hide a partially empty result panel from the run log.
+            _log(f"  WARN: GUI summary statistics were incomplete: {summary_exc}")
 
         # ── Super-resolution reconstruction (deliverable) ────────────────────
         # Render the full localisation cloud into a high-res image — the canonical
@@ -2715,7 +3130,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 except Exception:
                     pass
             if diff_df is not None and len(diff_df) > 0 and "D" in diff_df.columns:
-                stuck_frac = float((diff_df["D"] < 1e-3).mean())
+                _qc_d = _np.asarray(diff_df["D"], dtype=float)
+                _qc_valid = _np.isfinite(_qc_d) & (_qc_d > 0)
+                if _qc_valid.any():
+                    stuck_frac = float((_qc_d[_qc_valid] < 1e-3).mean())
             if n_locs and n_frames:
                 avg_locs_pf = float(n_locs) / float(n_frames)
             link_ratio = (float(n_tracked) / n_locs) if n_locs else None

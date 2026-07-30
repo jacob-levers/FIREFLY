@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 from firefly.analysis.fa_constants import N_CPUS, _tqdm, safe_process_workers
+from firefly.analysis.fa_enums import GapPolicy
 
 
 def msd_linear(t, D, offset):
@@ -38,6 +39,12 @@ ALPHA_THRESHOLDS_DEFAULT = (0.5, 0.9, 1.1)
 MOBILE_D_THRESHOLD_DEFAULT = 0.05
 
 
+# Bump whenever an existing output column changes scientific meaning.  The
+# worker persists this alongside the gap policy so Compare can distinguish a
+# legacy run from one made with the timestamp-aware estimators below.
+DIFFUSION_METRICS_SCHEMA_VERSION = 2
+
+
 def classify_motion(alpha, thresholds=ALPHA_THRESHOLDS_DEFAULT):
     """Classify a track by its anomalous exponent α.
 
@@ -54,23 +61,136 @@ def classify_motion(alpha, thresholds=ALPHA_THRESHOLDS_DEFAULT):
     else:                return "Directed"
 
 
+def _canonicalize_tracks(tracks, *, require_xy=True):
+    """Return trajectories in deterministic particle/frame order.
+
+    Time-dependent analyses have no meaningful answer when rows within a track
+    are not chronological.  Upstream linkers normally guarantee this, but an
+    imported pre-linked table does not have to.  We also reject duplicate
+    ``(particle, frame)`` observations: there is no unambiguous trajectory or
+    timestamp-lag pair definition for them, so silently picking a row would
+    fabricate a result.
+
+    ``reset_index(drop=True)`` is deliberate: trackpy can leave ``frame`` both
+    as an index level and a column, making ``sort_values`` otherwise ambiguous.
+    """
+    if not isinstance(tracks, pd.DataFrame):
+        raise ValueError("tracks must be a DataFrame with particle and frame columns")
+    required = {"particle", "frame"}
+    if require_xy:
+        required |= {"x", "y"}
+    missing = required - set(getattr(tracks, "columns", []))
+    if missing:
+        # Keep the public empty-result contract: a caller with no trajectories
+        # may naturally hand us ``pd.DataFrame()`` rather than an empty frame
+        # that already carries every trajectory column.  There is nothing to
+        # validate or sort in that case, but downstream groupby still needs the
+        # canonical empty schema to reach its deliberate empty-result branch.
+        if len(tracks) == 0:
+            ordered = tracks.copy()
+            for col in missing:
+                ordered[col] = pd.Series(dtype=float)
+            return ordered.reset_index(drop=True)
+        raise ValueError(f"tracks is missing required columns: {sorted(missing)}")
+    ordered = (tracks.reset_index(drop=True)
+                     .sort_values(["particle", "frame"], kind="stable")
+                     .reset_index(drop=True))
+    duplicate = ordered.duplicated(["particle", "frame"], keep=False)
+    if duplicate.any():
+        sample = ordered.loc[duplicate, ["particle", "frame"]].head(3)
+        pairs = ", ".join(
+            f"({row.particle!r}, {row.frame!r})" for row in sample.itertuples(index=False))
+        raise ValueError(
+            "trajectory has multiple localisations for the same particle/frame "
+            "(often a branched TrackMate export): "
+            f"{pairs}. Export linear tracks or resolve branches before analysis.")
+    return ordered
+
+
+def _timestamp_lag_indices(frames, lag):
+    """Return index pairs separated by exactly ``lag`` frame numbers.
+
+    ``frames`` must be sorted and unique.  The vectorised search keeps the
+    all-pairs estimator O(n log n) per requested lag instead of accidentally
+    treating row offsets as time offsets.
+    """
+    frames = np.asarray(frames)
+    n = len(frames)
+    if n == 0 or lag < 0:
+        return np.empty(0, dtype=int), np.empty(0, dtype=int)
+    if lag == 0:
+        idx = np.arange(n, dtype=int)
+        return idx, idx
+    targets = frames + lag
+    right = np.searchsorted(frames, targets, side="left")
+    possible = right < n
+    if not possible.any():
+        return np.empty(0, dtype=int), np.empty(0, dtype=int)
+    left = np.flatnonzero(possible)
+    right = right[possible]
+    matched = frames[right] == targets[left]
+    return left[matched], right[matched]
+
+
+def _lag_displacements(xy_um, frames, lag, gap_policy=GapPolicy.ALL_PAIRS):
+    """Displacements at one requested frame lag under a declared gap policy."""
+    policy = GapPolicy.parse(gap_policy)
+    frames = np.asarray(frames)
+    xy_um = np.asarray(xy_um)
+    n = len(frames)
+    if lag < 1 or n < 2:
+        return np.empty((0, 2), dtype=float)
+
+    if policy is GapPolicy.CONTIGUOUS:
+        # With sorted unique integer frame numbers, a row offset of ``lag``
+        # whose endpoint difference is also ``lag`` implies every intervening
+        # frame was observed.  This is the historical contiguous-run policy.
+        if lag >= n:
+            return np.empty((0, 2), dtype=float)
+        left = np.arange(n - lag, dtype=int)
+        right = left + lag
+        valid = (frames[right] - frames[left]) == lag
+        return xy_um[right[valid]] - xy_um[left[valid]]
+
+    left, right = _timestamp_lag_indices(frames, lag)
+    return xy_um[right] - xy_um[left]
+
+
+def _longest_contiguous_run_span(frames):
+    """Largest usable frame lag inside an uninterrupted observed run.
+
+    ``frames`` is expected to be sorted and unique by :func:`_canonicalize_tracks`.
+    A run containing N consecutive observations supports lags 1 through N - 1;
+    the value returned here is therefore a frame *span*, not an observation
+    count.  MSS's contiguous compatibility mode must be bounded by this actual
+    temporal availability, never by the total rows scattered across gaps.
+    """
+    frames = np.asarray(frames)
+    if len(frames) < 2:
+        return 0
+    run_starts = np.r_[0, np.flatnonzero(np.diff(frames) != 1) + 1]
+    run_lengths = np.diff(np.r_[run_starts, len(frames)])
+    return int(run_lengths.max() - 1)
+
+
 def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
-                     alpha_thresholds=ALPHA_THRESHOLDS_DEFAULT):
+                     alpha_thresholds=ALPHA_THRESHOLDS_DEFAULT,
+                     gap_policy=GapPolicy.ALL_PAIRS):
     """
     Compute per-track MSD array AND fit D + alpha in a single pass.
 
-    Uses actual frame numbers (not row indices) so that gaps in a trajectory
-    caused by memory-linking do not inflate the MSD.  Only pairs of positions
-    whose frame difference exactly equals the requested lag are included.
+    ``GapPolicy.ALL_PAIRS`` (the default) uses every pair of positions whose
+    *frame numbers* differ by the requested lag.  ``CONTIGUOUS`` retains the
+    old policy of using only uninterrupted observed runs.
     """
     msd_vals = np.full(max_lagtime, np.nan)
     n_pts = len(xy_um)
+    policy = GapPolicy.parse(gap_policy)
+    frame_interval = float(lag_times[0]) if len(lag_times) else np.nan
     # Fast path: a gapless track (consecutive frame numbers — the common case,
-    # and the ONLY case when memory=0) needs no per-lag frame-difference mask,
-    # so we skip that work and slice directly.  Numerically identical to the
-    # masked path below (which still handles memory-bridged gaps).
-    gapless = (n_pts >= 2
-               and int(frames[-1] - frames[0]) == n_pts - 1)
+    # and the ONLY case when memory=0) has equivalent pair sets under both
+    # policies, so direct slicing avoids repeated timestamp lookup.
+    gapless = n_pts >= 2 and np.all(np.diff(frames) == 1)
     if gapless:
         x = xy_um[:, 0]; y = xy_um[:, 1]
         for lag_idx, lag in enumerate(range(1, max_lagtime + 1)):
@@ -81,13 +201,14 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             msd_vals[lag_idx] = np.mean(dx * dx + dy * dy)
     else:
         for lag_idx, lag in enumerate(range(1, max_lagtime + 1)):
-            if lag >= n_pts:
+            # A two-observation track at frames 0 and 10 legitimately has a
+            # lag-10 MSD.  Stop only once the requested *time* exceeds the
+            # temporal span for the timestamp estimator.
+            if (policy is GapPolicy.ALL_PAIRS
+                    and lag > frames[-1] - frames[0]):
                 break
-            # Only use pairs where the actual frame separation equals lag
-            frame_diff = frames[lag:] - frames[:-lag]
-            valid      = frame_diff == lag
-            if valid.sum() > 0:
-                d = xy_um[lag:][valid] - xy_um[:-lag][valid]
+            d = _lag_displacements(xy_um, frames, lag, policy)
+            if len(d):
                 msd_vals[lag_idx] = np.mean(d[:, 0] ** 2 + d[:, 1] ** 2)
 
     # Fit using the first n_fit lag times.  ONE consistent model —
@@ -100,14 +221,33 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     # squared quantity).
     t   = lag_times[:n_fit]
     m   = msd_vals[:n_fit]
-    ok  = np.isfinite(m) & (m > 0)
     D = alpha = np.nan
     msd0 = np.nan        # localisation-error offset (4·sigma²) == PALM-Tracer "MSD(0)"
     mse  = np.nan        # mean squared residual of the fit
     immobile = False     # set when alpha can't be measured (jitter-dominated track)
+    fit_status = "insufficient_lags"
+    # The zero-MSD diagnosis is a property of the whole measured curve, not
+    # merely the user-selected fit window.  A track can sit still in the first
+    # five lags yet have a legitimate longer-lag displacement across a blink;
+    # calling that ``below_resolution`` would discard real geometry/data.
+    finite_msd = msd_vals[np.isfinite(msd_vals)]
+
+    # An exactly zero MSD is below the measurement resolution, not evidence for
+    # a numerically exact physical D=0.  Preserve the finite geometric zeros,
+    # but leave D/alpha unmeasured so mobility and log-D populations do not
+    # accidentally turn a degenerate fit into a hard biological class.
+    if finite_msd.size and np.all(finite_msd == 0.0):
+        D = np.nan
+        alpha = np.nan
+        msd0 = np.nan
+        mse = 0.0
+        immobile = False
+        fit_status = "below_resolution"
+
+    ok  = np.isfinite(m) & (m > 0)
     n_ok = int(ok.sum())
     t_ok, m_ok = t[ok], m[ok]
-    if n_ok >= 4:
+    if not immobile and n_ok >= 4:
         # Seed D and offset from a quick linear (alpha=1) fit; seed alpha=1.
         try:
             slope, intercept = np.polyfit(t_ok, m_ok, 1)
@@ -126,6 +266,7 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             D, alpha, msd0 = float(popt[0]), float(popt[1]), float(popt[2])
             _resid = m_ok - msd_anomalous(t_ok, *popt)
             mse = float(np.mean(_resid ** 2))
+            fit_status = "fit"
             # ── Identifiability guard ──────────────────────────────────────
             # For a near-immobile / jitter-dominated track the measured MSD is
             # essentially the flat localisation floor (offset): the dynamic
@@ -144,7 +285,15 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             if alpha <= 1e-3 or alpha >= 2.0 - 1e-3 or dyn_frac < 0.10:
                 alpha = np.nan
                 immobile = True
+                # A non-zero curve that is dominated by the fitted static
+                # offset is scientifically different from an exactly-zero MSD:
+                # D remains a finite (albeit floor-limited) fit, while alpha
+                # is not identifiable.  Keep that distinction in the output
+                # rather than conflating both cases as below-resolution.
+                fit_status = ("offset_dominated" if dyn_frac < 0.10
+                              else "alpha_unmeasurable")
         except Exception:
+            fit_status = "fit_failed"
             pass
     if not np.isfinite(D) and not immobile and n_ok >= 3:
         # Fallback for very short tracks (or a non-converging joint fit): the
@@ -175,6 +324,8 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             msd0 = float(popt[1])
             _resid = m_ok - msd_linear(t_ok, *popt)
             mse = float(np.mean(_resid ** 2))
+            fit_status = ("fit" if np.isfinite(alpha)
+                          else "alpha_unmeasurable")
         except Exception: pass
 
     # Motion class: a measurable alpha → threshold classification; an
@@ -199,19 +350,30 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     #   path_length_um       = Σ straight-line step distances (the polyline length)
     #   net_displacement_um  = straight-line distance first → last position
     #   directionality_ratio = net / path ∈ [0, 1]  (1 = perfectly straight;
-    #                          → 0 = returns near its start).  NaN when the path
-    #                          has zero length (a single-point or static track).
+    #                          → 0 = returns near its start).  A zero-length
+    #                          path is defined as 0: static/singleton tracks
+    #                          have no directed persistence, and a finite
+    #                          ratio keeps scalar summaries well-defined.
     if n_pts >= 2:
         _steps      = np.sqrt(np.sum(np.diff(xy_um, axis=0) ** 2, axis=1))
         path_length = float(_steps.sum())
-        mean_step   = float(_steps.mean())          # measured mean single-frame step
+        frame_gaps = np.diff(frames)
+        mean_link_displacement = float(_steps.mean())  # every observed link
+        mean_link_speed = float(np.mean(_steps / (frame_gaps * frame_interval)))
+        unit_step = frame_gaps == 1
+        n_single_frame_steps = int(unit_step.sum())
+        mean_step = (float(_steps[unit_step].mean())
+                     if n_single_frame_steps else np.nan)
         net_disp    = float(np.sqrt(np.sum((xy_um[-1] - xy_um[0]) ** 2)))
-        directionality = float(net_disp / path_length) if path_length > 0 else np.nan
+        directionality = float(net_disp / path_length) if path_length > 0 else 0.0
     else:
         path_length = 0.0
-        mean_step   = np.nan                          # no step to measure
+        mean_link_displacement = np.nan
+        mean_link_speed = np.nan
+        mean_step   = np.nan                          # no unit-frame step to measure
+        n_single_frame_steps = 0
         net_disp    = 0.0
-        directionality = np.nan
+        directionality = 0.0
 
     # Localisation precision from the fitted MSD offset.  Static localisation
     # error adds a constant 4·sigma² to the 2D MSD (sigma = 1D per-axis
@@ -225,12 +387,21 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     else:
         loc_sigma_nm = np.nan
 
+    track_duration_s = (float(frames[-1] - frames[0]) * frame_interval
+                        if n_pts else np.nan)
+
     return pid, msd_vals, dict(particle=pid, D=D, alpha=alpha, motion=motion,
+                               fit_status=fit_status,
                                MSD0=msd0, MSE=mse, loc_sigma_nm=loc_sigma_nm,
                                mean_radial_displacement_um=mean_radial,
                                radius_of_gyration_um=rg,
                                path_length_um=path_length,
+                               mean_link_displacement_um=mean_link_displacement,
+                               mean_link_speed_um_s=mean_link_speed,
                                mean_step_um=mean_step,
+                               n_single_frame_steps=n_single_frame_steps,
+                               track_duration_s=track_duration_s,
+                               n_observations=int(n_pts),
                                net_displacement_um=net_disp,
                                directionality_ratio=directionality)
 
@@ -246,10 +417,15 @@ def _require_positive_finite(name, val):
 
 def compute_msd_and_fit(tracks, pixel_size, frame_interval,
                         max_lagtime=20, n_fit=5, workers=N_CPUS,
-                        alpha_thresholds=ALPHA_THRESHOLDS_DEFAULT):
+                        alpha_thresholds=ALPHA_THRESHOLDS_DEFAULT,
+                        gap_policy=GapPolicy.ALL_PAIRS.value):
     """
     Single parallel pass that computes both MSD and diffusion fits.
     Replaces tp.imsd + tp.emsd + separate fit loop — all in one go.
+
+    ``gap_policy='all_pairs'`` (default) means each lag is formed from all
+    timestamp-separated observation pairs.  ``'contiguous'`` preserves the
+    historical uninterrupted-run estimator for reproducibility.
 
     Caveat: the per-track fit is an UNWEIGHTED least-squares over the first
     `n_fit` lags.  MSD points are heteroscedastic (longer lags average over
@@ -264,6 +440,7 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     # time axis) and yield meaningless D/alpha rather than an obvious error.
     _require_positive_finite("pixel_size", pixel_size)
     _require_positive_finite("frame_interval", frame_interval)
+    policy = GapPolicy.parse(gap_policy)
     if max_lagtime < 1:
         raise ValueError(f"max_lagtime must be >= 1 (got {max_lagtime!r})")
     # The MSD has only `max_lagtime` lags, so a fit window n_fit > max_lagtime
@@ -277,7 +454,8 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
         n_fit = int(max_lagtime)
 
     lag_times  = np.arange(1, max_lagtime + 1) * frame_interval
-    grouped    = tracks.groupby("particle")
+    ordered_tracks = _canonicalize_tracks(tracks)
+    grouped    = ordered_tracks.groupby("particle", sort=False)
     pid_list   = list(grouped.groups.keys())
     n_tracks   = len(pid_list)
 
@@ -299,9 +477,11 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
             np.full(max_lagtime, np.nan, dtype=float),
             index=np.arange(1, max_lagtime + 1))
         diff_empty = pd.DataFrame(columns=[
-            "particle", "D", "alpha", "motion", "MSD0", "MSE", "loc_sigma_nm",
+            "particle", "D", "alpha", "motion", "fit_status", "MSD0", "MSE", "loc_sigma_nm",
             "mean_radial_displacement_um", "radius_of_gyration_um",
-            "path_length_um", "mean_step_um", "net_displacement_um",
+            "path_length_um", "mean_link_displacement_um", "mean_link_speed_um_s",
+            "mean_step_um", "n_single_frame_steps", "track_duration_s",
+            "n_observations", "net_displacement_um",
             "directionality_ratio"])
         return imsd_empty, emsd_empty, diff_empty
 
@@ -349,7 +529,7 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
         _futs = [_exe.submit(
                     _msd_and_fit_one,
                     xy, fr, pid,
-                    lag_times, max_lagtime, n_fit, alpha_thresholds)
+                    lag_times, max_lagtime, n_fit, alpha_thresholds, policy)
                  for xy, fr, pid in per_track_inputs]
         results = [_f.result() for _f in
                    _tqdm(_futs, desc="  MSD + fitting", unit="track", ncols=70)]
@@ -365,15 +545,19 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
                               index=np.arange(1, max_lagtime + 1),
                               columns=[r[0] for r in results])
 
-    # Ensemble MSD = nanmean across tracks at each lag
-    emsd_series = pd.Series(np.nanmean(msd_matrix, axis=1),
-                            index=np.arange(1, max_lagtime + 1))
+    # Ensemble MSD = nanmean across tracks at each lag.  Avoid NumPy's
+    # all-NaN RuntimeWarning: sparse timestamp lags legitimately have no pairs.
+    valid_counts = np.isfinite(msd_matrix).sum(axis=1)
+    emsd_vals = np.full(max_lagtime, np.nan, dtype=float)
+    np.divide(np.nansum(msd_matrix, axis=1), valid_counts,
+              out=emsd_vals, where=valid_counts > 0)
+    emsd_series = pd.Series(emsd_vals, index=np.arange(1, max_lagtime + 1))
 
     diff_df = pd.DataFrame([r[2] for r in results])
 
     # Merge per-track mean localisation precision (pixels → nm)
-    if "ep" in tracks.columns:
-        ep_nm = (tracks.groupby("particle")["ep"].mean() * pixel_size * 1000
+    if "ep" in ordered_tracks.columns:
+        ep_nm = (ordered_tracks.groupby("particle")["ep"].mean() * pixel_size * 1000
                  ).rename("loc_precision_nm").reset_index()
         diff_df = diff_df.merge(ep_nm, on="particle", how="left")
 
@@ -382,9 +566,10 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     # camera-CRLB), reduced to a 1D-equivalent (hypot/√2) so it is directly
     # comparable to the MSD-offset `loc_sigma_nm`.  Three independent precision
     # estimates that should agree — a useful cross-check (kept distinct columns).
-    if {"loc_sigma_x_nm", "loc_sigma_y_nm"} <= set(tracks.columns):
-        _sm = np.hypot(tracks["loc_sigma_x_nm"], tracks["loc_sigma_y_nm"]) / np.sqrt(2.0)
-        meas = (tracks.assign(_loc_sigma_meas=_sm)
+    if {"loc_sigma_x_nm", "loc_sigma_y_nm"} <= set(ordered_tracks.columns):
+        _sm = (np.hypot(ordered_tracks["loc_sigma_x_nm"],
+                        ordered_tracks["loc_sigma_y_nm"]) / np.sqrt(2.0))
+        meas = (ordered_tracks.assign(_loc_sigma_meas=_sm)
                 .groupby("particle")["_loc_sigma_meas"].mean()
                 .rename("loc_sigma_meas_nm").reset_index())
         diff_df = diff_df.merge(meas, on="particle", how="left")
@@ -429,8 +614,9 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
     """
     _require_positive_finite("pixel_size_um", pixel_size_um)
     _require_positive_finite("frame_interval_s", frame_interval_s)
+    srt = _canonicalize_tracks(tracks)
     print(f"  JDD analysis      : {n_components} component(s)  "
-          f"|  {tracks['particle'].nunique():,} tracks"
+          f"|  {srt['particle'].nunique():,} tracks"
           + (f"  |  loc offset {loc_offset_um2:.2g} µm²"
              if loc_offset_um2 else ""))
     dt = frame_interval_s
@@ -443,16 +629,9 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
     #   3. Mask out any "step" that crossed a particle boundary OR
     #      isn't between consecutive frames (frame gap > 1)
     # …then compute the displacement magnitudes in one numpy call.
-    if len(tracks) < 2:
+    if len(srt) < 2:
         jumps = np.array([], dtype=np.float64)
     else:
-        # Drop the index level first — trackpy.link sets `frame` as
-        # both an index level AND a column, which makes sort_values
-        # raise "ambiguous" on those keys.  reset_index(drop=True)
-        # discards the index but keeps the column intact.
-        srt = (tracks
-               .reset_index(drop=True)
-               .sort_values(["particle", "frame"], kind="stable"))
         pid_arr   = srt["particle"].to_numpy()
         frame_arr = srt["frame"].to_numpy()
         x_arr     = srt["x"].to_numpy() * pixel_size_um
@@ -523,7 +702,7 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
             # fraction.
             print(f"  WARN: 3-component JDD gave a negative population fraction "
                   f"(f3 = {f3:.3f}); falling back to a 2-component fit.")
-            return compute_jdd(tracks, pixel_size_um, frame_interval_s,
+            return compute_jdd(srt, pixel_size_um, frame_interval_s,
                                n_components=2, loc_offset_um2=loc_offset_um2)
         # Tiny negative from optimiser noise → clamp + renormalise to a valid
         # simplex (fractions in [0,1] summing to 1).
@@ -616,10 +795,11 @@ def compute_van_hove(tracks, pixel_size_um, lag_frames=1, n_bins=80):
     Returns a dict (displacement samples in µm, a symmetric density histogram,
     the best-fit Gaussian sigma, alpha2, and counts) or None if too few pairs.
     """
-    if tracks is None or len(tracks) < 2:
+    if tracks is None:
         return None
-    srt = (tracks.reset_index(drop=True)
-                 .sort_values(["particle", "frame"], kind="stable"))
+    srt = _canonicalize_tracks(tracks)
+    if len(srt) < 2:
+        return None
     pid = srt["particle"].to_numpy()
     fr  = srt["frame"].to_numpy()
     x   = srt["x"].to_numpy() * pixel_size_um
@@ -684,11 +864,12 @@ def compute_vacf(tracks, frame_interval_s, pixel_size_um, max_lag=10):
     Returns a dict (lags in frames & seconds, normalised VACF, persistence,
     step count) or None if too few velocity pairs.
     """
-    if tracks is None or len(tracks) < 3:
+    if tracks is None:
         return None
     dt = float(frame_interval_s) if frame_interval_s and frame_interval_s > 0 else 1.0
-    srt = (tracks.reset_index(drop=True)
-                 .sort_values(["particle", "frame"], kind="stable"))
+    srt = _canonicalize_tracks(tracks)
+    if len(srt) < 2:
+        return None
     max_lag = int(max(1, max_lag))
     # numerator[tau] = sum over tracks & t of v(t)·v(t+tau); counts[tau] = #pairs
     num = np.zeros(max_lag + 1)
@@ -697,23 +878,29 @@ def compute_vacf(tracks, frame_interval_s, pixel_size_um, max_lag=10):
         fr = g["frame"].to_numpy()
         x  = g["x"].to_numpy() * pixel_size_um
         y  = g["y"].to_numpy() * pixel_size_um
-        if len(fr) < 3:
+        # A two-localisation trajectory contains one perfectly valid velocity.
+        # It contributes to the ensemble zero-lag normalisation even though it
+        # cannot by itself provide a positive-lag autocorrelation pair.
+        if len(fr) < 2:
             continue
-        # per-frame velocities from consecutive (gap == 1) steps only
-        gap1 = (fr[1:] - fr[:-1]) == 1
-        vx = (x[1:] - x[:-1]) / dt
-        vy = (y[1:] - y[:-1]) / dt
-        nv = len(vx)
+        # Keep the *start frame* of every real unit-frame velocity.  Array
+        # position is not a time coordinate once a track contains a gap.
+        unit = (fr[1:] - fr[:-1]) == 1
+        starts = fr[:-1][unit]
+        vx = ((x[1:] - x[:-1]) / dt)[unit]
+        vy = ((y[1:] - y[:-1]) / dt)[unit]
+        nv = len(starts)
+        if not nv:
+            continue
         for tau in range(0, max_lag + 1):
-            if tau >= nv:
+            if tau > starts[-1] - starts[0]:
                 break
-            # both the step at i and the step at i+tau must be real (gap==1)
-            ok = gap1[:nv - tau] & gap1[tau:]
-            if not ok.any():
+            left, right = _timestamp_lag_indices(starts, tau)
+            if not len(left):
                 continue
-            dot = vx[:nv - tau][ok] * vx[tau:][ok] + vy[:nv - tau][ok] * vy[tau:][ok]
+            dot = vx[left] * vx[right] + vy[left] * vy[right]
             num[tau] += float(dot.sum())
-            cnt[tau] += int(ok.sum())
+            cnt[tau] += int(len(left))
     if cnt[0] < 20 or num[0] <= 0:
         return None
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -726,6 +913,7 @@ def compute_vacf(tracks, frame_interval_s, pixel_size_um, max_lag=10):
         "vacf":          vacf,
         "persistence":   float(vacf[1]) if max_lag >= 1 and cnt[1] > 0 else np.nan,
         "n_velocities":  int(cnt[0]),
+        "n_pairs":       cnt.copy(),
     }
 
 
@@ -748,21 +936,16 @@ def compute_turning_angles(tracks):
     v1 × v2 (positive for counter-clockwise rotation). Returns a flat
     array of all angles across all tracks, in degrees.
     """
-    print(f"  Turning angles    : {tracks['particle'].nunique():,} tracks")
+    srt = _canonicalize_tracks(tracks)
+    print(f"  Turning angles    : {srt['particle'].nunique():,} tracks")
     # Vectorised across all tracks at once.  Sort by (particle, frame),
     # take np.diff over the full arrays, then mask out segments that
     # cross a track boundary (where particle id changed between
     # consecutive rows).  ~50× faster than the per-track loop on 100k
     # tracks because we never re-enter the Python interpreter.
-    if len(tracks) < 3:
+    if len(srt) < 3:
         result = np.array([], dtype=float)
     else:
-        # Drop the index level first — trackpy.link sets `frame` as
-        # both an index level AND a column, which makes sort_values
-        # raise "ambiguous" on those keys.
-        srt = (tracks
-               .reset_index(drop=True)
-               .sort_values(["particle", "frame"], kind="stable"))
         pid_arr = srt["particle"].to_numpy()
         frame_arr = srt["frame"].to_numpy()
         xy_arr  = srt[["x", "y"]].to_numpy()
@@ -831,13 +1014,15 @@ def compute_mobile_fraction_over_time(tracks, diff_df, frame_interval,
     if len(tracks) == 0 or len(diff_df) == 0:
         return pd.DataFrame(columns=["time_s", "mobile_fraction", "n_tracks"])
 
-    track_times = tracks.groupby("particle")["frame"].mean().reset_index()
+    ordered_tracks = _canonicalize_tracks(tracks, require_xy=False)
+    track_times = ordered_tracks.groupby("particle")["frame"].mean().reset_index()
     track_times.columns = ["particle", "mean_frame"]
     merged = track_times.merge(diff_df[["particle", "D"]], on="particle", how="inner")
-    # Drop tracks where D could not be fit
+    # A non-positive D is not log-/mobility-identifiable.  In particular,
+    # below-resolution zero-MSD tracks intentionally retain D=NaN upstream.
     merged = merged[np.isfinite(merged["D"]) & (merged["D"] > 0)]
 
-    max_frame = int(tracks["frame"].max())
+    max_frame = int(ordered_tracks["frame"].max())
     windows   = range(0, max_frame, window_frames)
     rows = []
     for w in windows:
@@ -887,9 +1072,10 @@ def compute_dwell_times(tracks, diff_df, frame_interval, n_frames=None):
     if len(confined_pids) == 0 or len(tracks) == 0:
         return pd.DataFrame(columns=_DWELL_COLS), np.nan
 
+    ordered_tracks = _canonicalize_tracks(tracks, require_xy=False)
     # Vectorised: one groupby pass for first/last frame + observation count
     # (replaces the per-pid get_group loop).
-    agg = tracks.groupby("particle")["frame"].agg(["min", "max", "count"])
+    agg = ordered_tracks.groupby("particle")["frame"].agg(["min", "max", "count"])
     agg = agg[agg.index.isin(set(confined_pids))]
     if len(agg) == 0:
         return pd.DataFrame(columns=_DWELL_COLS), np.nan
@@ -898,7 +1084,7 @@ def compute_dwell_times(tracks, diff_df, frame_interval, n_frames=None):
     f_max = agg["max"].to_numpy(dtype=float)
     n_obs = agg["count"].to_numpy(dtype=float)
     last_frame = (int(n_frames) - 1 if n_frames
-                  else int(tracks["frame"].max()))
+                  else int(ordered_tracks["frame"].max()))
     dur_total = (f_max - f_min + 1.0) * frame_interval
     dur_obs   = n_obs * frame_interval
     censored  = f_max >= last_frame            # still present at the movie end
@@ -934,10 +1120,19 @@ def _ols_slope(x_centered, denom, y):
     return float(np.dot(x_centered, yc) / denom)
 
 
-def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
+def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10,
+                gap_policy=GapPolicy.ALL_PAIRS.value):
+    """Compute per-track moment-scaling-spectrum slopes.
+
+    The default ``all_pairs`` policy shares MSD's timestamp-lag definition.
+    ``contiguous`` retains the legacy observed-run estimator for reproducible
+    re-analysis of older work.
+    """
     _require_positive_finite("pixel_size_um", pixel_size_um)
     _require_positive_finite("frame_interval", frame_interval)
-    n_tracks = tracks["particle"].nunique()
+    policy = GapPolicy.parse(gap_policy)
+    ordered_tracks = _canonicalize_tracks(tracks)
+    n_tracks = ordered_tracks["particle"].nunique()
     print(f"  MSS analysis      : {n_tracks:,} tracks")
     q_values = np.array([1.0, 2.0, 3.0, 4.0])
     # q-axis is constant across every track → pre-centre it once for the
@@ -945,45 +1140,33 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
     q_ctr   = q_values - q_values.mean()
     q_denom = float(np.dot(q_ctr, q_ctr))
     results = []
-    # Group with contiguous rows (sort by particle THEN frame) so groupby
-    # doesn't gather scattered rows, and frames within a track are ordered.
-    # reset_index(drop=True) FIRST: trackpy.link leaves `frame` as both an
-    # index level AND a column, which makes sort_values(["particle","frame"])
-    # raise "ambiguous" — the same guard compute_jdd/van_hove/vacf use.
-    for pid, grp in (tracks.reset_index(drop=True)
-                           .sort_values(["particle", "frame"], kind="stable")
-                           .groupby("particle", sort=False)):
+    for pid, grp in ordered_tracks.groupby("particle", sort=False):
         xy = grp[["x", "y"]].values * pixel_size_um
         fr = grp["frame"].to_numpy()
         n = len(xy)
         if n < 6:
             continue
-        # The per-track lag range is capped at n//2 regardless of max_lagtime,
-        # so gate on the number of *usable* lags (>=4 for a stable log-log
-        # moment fit), NOT on max_lagtime+2.  The old max_lagtime+2 gate was
-        # over-restrictive and inconsistent: it demanded >=12 frames (for the
-        # default max_lagtime=10) yet only ever used n//2 lags, so a 10-frame
-        # track — which yields 4 valid lags — was needlessly rejected.  Short
-        # single-molecule tracks (sptPALM) now contribute an MSS slope.
-        lag_arr = list(range(1, min(max_lagtime + 1, n // 2)))
+        # A timestamp-aware lag horizon is based on elapsed acquisition time,
+        # not the number of present observations.  In contiguous compatibility
+        # mode the only valid lags live inside uninterrupted observed runs, so
+        # cap by the longest such frame span rather than total row count.
+        available_span = (
+            int(fr[-1] - fr[0])
+            if policy is GapPolicy.ALL_PAIRS
+            else _longest_contiguous_run_span(fr)
+        )
+        lag_cap = min(int(max_lagtime), available_span)
+        lag_arr = list(range(1, lag_cap + 1))
         if len(lag_arr) < 4:
             continue
-        # Frame-aware pairing: at each lag use only position pairs whose ACTUAL
-        # frame separation equals the lag — a memory-bridged gap must not be
-        # treated as a `lag`-frame displacement (it spans more time).  The old
-        # code used row-index lags (xy[lag:] - xy[:-lag]), which over-counts the
-        # interval on gapped tracks and biases the MSS scaling exponent;
-        # this matches _msd_and_fit_one's masked path.  For a gapless track
-        # every pair is valid, so the result is numerically identical to before.
-        # r depends only on the lag, NOT on q — compute it once per lag and
-        # raise to each power.  Lags with no valid pair (gapped tracks) are
-        # dropped; a stable moment fit still needs >=4 usable lags.
+        # Share the exact same timestamp/contiguous pair definition as MSD.
+        # r depends only on lag, not q, so compute it once then raise to each
+        # requested moment.  A stable moment fit still needs four usable lags.
         good_lags, moment_cols = [], []
         for lag in lag_arr:
-            valid = (fr[lag:] - fr[:-lag]) == lag
-            if not valid.any():
+            d = _lag_displacements(xy, fr, lag, policy)
+            if not len(d):
                 continue
-            d = xy[lag:][valid] - xy[:-lag][valid]
             r = np.sqrt(d[:, 0] ** 2 + d[:, 1] ** 2)
             good_lags.append(lag)
             moment_cols.append([np.mean(r ** q) for q in q_values])
@@ -1001,8 +1184,8 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10):
                                     np.log(moments[qi] + 1e-15))
         mss_slope = _ols_slope(q_ctr, q_denom, gammas)
         results.append({"particle": int(pid), "mss_slope": float(mss_slope)})
-    print(f"  MSS: {len(results):,}/{n_tracks:,} tracks long enough "
-          f"(>= 10 frames) for a moment-scaling slope")
+    print(f"  MSS: {len(results):,}/{n_tracks:,} tracks with >=4 usable "
+          f"timestamp lag bins for a moment-scaling slope")
     return pd.DataFrame(results)
 
 
@@ -1029,6 +1212,8 @@ def _mob_immob_ratio(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
     if diff_df is None or "D" not in diff_df.columns:
         return np.nan
     d = diff_df["D"].values
+    # Keep the established population contract: only finite positive D values
+    # are mobile/immobile-classifiable; below-resolution tracks are excluded.
     valid = np.isfinite(d) & (d > 0)
     if valid.sum() == 0:
         return np.nan
@@ -1039,19 +1224,41 @@ def _mob_immob_ratio(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
 
 
 def _motion_fractions(diff_df):
-    """Return dict of fractions per motion class."""
+    """Fractions among alpha-classified tracks only.
+
+    Exact-zero trajectories carry ``motion='Unknown'`` and are reported through
+    the separate below-resolution fields; including them in this denominator
+    would make the four displayed classes sum to less than one.
+    """
     if diff_df is None or "motion" not in diff_df.columns:
         return {}
-    counts = diff_df["motion"].value_counts()
+    classified = ("Immobile", "Confined", "Brownian", "Directed")
+    counts = diff_df.loc[diff_df["motion"].isin(classified), "motion"].value_counts()
     total = counts.sum()
     if total == 0:
         return {}
     return {k: float(v / total) for k, v in counts.items()}
 
 
-def _track_lengths(tracks_df, frame_interval):
-    """Return per-track lengths in seconds."""
-    if tracks_df is None or "particle" not in tracks_df.columns:
+def track_elapsed_durations(tracks_df, frame_interval):
+    """Return elapsed per-track duration in seconds (last frame − first frame).
+
+    Observation count and elapsed time diverge as soon as a trajectory contains
+    a blink/memory-linked gap.  This helper is intentionally small and shared by
+    the reporting/UI layer so all duration cards use the same definition.
+    """
+    if (tracks_df is None
+            or not {"particle", "frame"} <= set(getattr(tracks_df, "columns", []))):
         return np.array([])
-    counts = tracks_df.groupby("particle").size().values
-    return counts * frame_interval
+    _require_positive_finite("frame_interval", frame_interval)
+    ordered_tracks = _canonicalize_tracks(tracks_df, require_xy=False)
+    span = ordered_tracks.groupby("particle")["frame"].agg(["min", "max"])
+    if not len(span):
+        return np.array([])
+    return ((span["max"].to_numpy(dtype=float) - span["min"].to_numpy(dtype=float))
+            * float(frame_interval))
+
+
+def _track_lengths(tracks_df, frame_interval):
+    """Legacy helper name for elapsed per-track durations in seconds."""
+    return track_elapsed_durations(tracks_df, frame_interval)

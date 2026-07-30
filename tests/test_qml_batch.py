@@ -120,6 +120,51 @@ def test_batch_csv_series_gets_csv_source(tmp_path):
     p = c._build_params_list()[0]
     assert p["source"] == "external_csv"          # derived from the .csv fpath
     assert "series_files" not in p                # CSVs don't get the image series list
+    _wait_probe(c)
+
+
+def test_batch_tsv_series_gets_external_source(tmp_path):
+    from firefly.ui.controllers.batch_controller import BatchController
+    (tmp_path / "locs.tsv").write_text("frame\tx\ty\n0\t1\t2\n")
+    c = BatchController(FakeSettings(), FakeImport())
+    c.scan(str(tmp_path)); _wait_scan(c)
+    p = c._build_params_list()[0]
+    assert p["source"] == "external_csv"
+    assert "series_files" not in p
+    _wait_probe(c)
+
+
+def test_batch_keeps_same_root_image_and_table_as_separate_jobs(tmp_path):
+    from firefly.ui.controllers.batch_controller import BatchController
+    _touch(os.path.join(tmp_path, "cell.tif"))
+    _touch(os.path.join(tmp_path, "cell_locPALMTracer.csv"))
+    c = BatchController(FakeSettings(), FakeImport())
+    c.scan(str(tmp_path)); _wait_scan(c)
+    rows = {s["key"]: s for s in c.series}
+    assert rows["cell"]["sourceType"] == "image"
+    assert rows["cell"]["canPreview"] is True
+    assert rows["cell_locPALMTracer"]["sourceType"] == "external_loc"
+    assert rows["cell_locPALMTracer"]["canPreview"] is False
+
+    params = {p["stem_override"]: p for p in c._build_params_list()}
+    assert params["cell"]["series_files"] == [str(tmp_path / "cell.tif")]
+    assert params["cell_locPALMTracer"]["source"] == "external_csv"
+    assert "series_files" not in params["cell_locPALMTracer"]
+    _wait_probe(c)
+
+
+def test_batch_append_does_not_drop_later_same_stem_table(tmp_path):
+    """Separate Add-files actions need the same collision protection as one
+    folder scan, whose local key allocator cannot see existing queue rows."""
+    from firefly.ui.controllers.batch_controller import BatchController
+    from firefly.ui.controllers.params import batch_scan
+    image = tmp_path / "cell.tif"; image.touch()
+    table = tmp_path / "cell.csv"; table.write_text("frame,x,y\n0,1,2\n")
+    c = BatchController(FakeSettings(), FakeImport())
+    assert c._append(batch_scan.scan_paths([str(image)])) == 1
+    assert c._append(batch_scan.scan_paths([str(table)])) == 1
+    assert {s["key"] for s in c.series} == {"cell", "cell__locs"}
+    _wait_probe(c)
 
 
 def _wait_probe(c, timeout=5.0):
@@ -149,3 +194,20 @@ def test_batch_flags_unreadable_file_eagerly(tmp_path):
     assert rows["bad"]["hasUnreadable"] is True
     assert rows["bad"]["parts"][0]["unreadable"] is True
     assert c.unreadableCount == 1                      # top-level signal for the footer
+    # Batch warnings are intentionally advisory: users may still attempt the
+    # item and the worker will report its per-file failure while continuing.
+    assert rows["bad"]["checked"] is True
+    assert c.selectedFileCount == 2
+
+
+def test_batch_flags_corrupt_localisation_table_but_keeps_it_selected(tmp_path):
+    from firefly.ui.controllers.batch_controller import BatchController
+    bad = tmp_path / "bad.tsv"
+    bad.write_bytes(b"\x00" * 4096)
+    c = BatchController(FakeSettings(), FakeImport())
+    c.scan(str(tmp_path)); _wait_scan(c); _wait_probe(c)
+    row = c.series[0]
+    assert row["sourceType"] == "external_loc"
+    assert row["hasUnreadable"] is True
+    assert row["parts"][0]["unreadable"] is True
+    assert row["checked"] is True

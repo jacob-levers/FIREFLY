@@ -18,6 +18,7 @@
   "analysis/max_track_len": 0,
   "analysis/max_lagtime": 20,
   "analysis/n_fit": 5,
+  "analysis/gap_policy": "All timestamp pairs",
   "analysis/alpha_immobile": 0.5,
   "analysis/alpha_confined": 0.9,
   "analysis/alpha_directed": 1.1,

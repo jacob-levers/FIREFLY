@@ -38,7 +38,8 @@ class BatchSeriesModel(QAbstractListModel):
 
     _ROLES = ["key", "name", "fileCount", "selState", "checked", "open",
               "status", "progress", "hasRoi", "roiLabel", "framesTotal",
-              "hasUnreadable", "sizeStr", "primaryPath", "parts", "removing"]
+              "hasUnreadable", "sizeStr", "primaryPath", "parts", "removing",
+              "sourceType", "canPreview"]
 
     def __init__(self, owner: "BatchController"):
         super().__init__(owner)
@@ -260,15 +261,24 @@ class BatchController(QObject):
 
         def _work():
             from firefly.ui.controllers.params.preview_loader import quick_frame_count
+            from firefly.analysis.fa_loaders import probe_external_locs_text
             for path in paths:
                 if self._probe_gen != gen:     # superseded → bail
                     return
                 is_csv = path.lower().endswith((".csv", ".txt", ".tsv"))
                 try:
-                    n = 0 if is_csv else quick_frame_count(path)
+                    if is_csv:
+                        # Text inputs have no cheap frame count, but do run the
+                        # same bounded corruption guard as the worker so an
+                        # all-NUL/truncated export is visible before Start.
+                        probe_external_locs_text(path)
+                        n, bad = 0, False
+                    else:
+                        n = quick_frame_count(path)
+                        bad = n <= 0
                 except Exception:
-                    n = 0
-                self._probe_q.put((gen, path, int(n), (not is_csv and n <= 0)))
+                    n, bad = 0, True
+                self._probe_q.put((gen, path, int(n), bool(bad)))
             self._probe_q.put((gen, None, 0, False))     # sentinel: done
         threading.Thread(target=_work, daemon=True).start()
 
@@ -320,9 +330,11 @@ class BatchController(QObject):
         status = self._series_status.get(k, "queued" if is_sel else "skipped")
         ftot = sum(self._frames.get(parts[i]["path"], 0)
                    for i in checked_idx if 0 <= i < n)
+        source_type = s.get("sourceType") or batch_scan.input_kind(s.get("primary", "")) or "image"
         rows = [{"name": p["name"], "sizeStr": p["sizeStr"],
                  "frames": self._frames.get(p["path"], 0),
                  "unreadable": p["path"] in self._unreadable,
+                 "sourceType": p.get("sourceType", source_type),
                  "checked": i in checked_idx}
                 for i, p in enumerate(parts)]
         return {"key": k, "name": s["name"], "fileCount": s["fileCount"],
@@ -333,7 +345,8 @@ class BatchController(QObject):
                 "framesTotal": ftot,
                 "hasUnreadable": any(p["path"] in self._unreadable for p in parts),
                 "sizeStr": s.get("sizeStr", ""), "primaryPath": s["primary"],
-                "parts": rows, "removing": k in self._removing}
+                "parts": rows, "removing": k in self._removing,
+                "sourceType": source_type, "canPreview": source_type == "image"}
 
     # short label for the per-file ROI override (empty when the file uses the
     # sidebar default), shown as a badge on the series row
@@ -473,15 +486,32 @@ class BatchController(QObject):
 
     # ── add / remove / clear ──────────────────────────────────────────────
     def _append(self, new_series):
-        """Append scanned series, skipping keys already in the queue.  New
-        series default to all-files-checked.  Returns how many were added.
-        Inserts only the new rows (existing delegates keep their state)."""
-        existing = {s["key"] for s in self._series}
+        """Append scanned series, preserving distinct same-stem inputs.
+
+        Scanner-local key allocation cannot see a queue populated by an earlier
+        Add-files action.  Treat an identical source as a duplicate, but qualify
+        a distinct image/table collision instead of silently dropping it.
+        """
+        existing = {s["key"]: s for s in self._series}
         to_add = []
         for s in new_series:
-            if s["key"] in existing:
-                continue
-            existing.add(s["key"])
+            key = s["key"]
+            old = existing.get(key)
+            if old is not None:
+                old_files = set(old.get("files") or [])
+                new_files = set(s.get("files") or [])
+                if (old_files == new_files and
+                        old.get("sourceType") == s.get("sourceType")):
+                    continue
+                tag = "locs" if s.get("sourceType") == "external_loc" else "image"
+                candidate, suffix = f"{key}__{tag}", 2
+                while candidate in existing:
+                    candidate = f"{key}__{tag}_{suffix}"
+                    suffix += 1
+                s = dict(s)
+                s["key"] = candidate
+                key = candidate
+            existing[key] = s
             to_add.append(s)
         if not to_add:
             return 0
@@ -515,7 +545,7 @@ class BatchController(QObject):
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             None, "Add files to the queue",
             self._folder or os.path.expanduser("~"),
-            "Recordings (*.tif *.tiff *.czi *.nd2 *.csv *.txt);;All files (*)")
+            "Recordings (*.tif *.tiff *.czi *.csv *.txt *.tsv);;All files (*)")
         if not paths:
             return
         if not self._folder:
@@ -707,12 +737,23 @@ class BatchController(QObject):
                 continue
             primary = (s["primary"] if s["primary"] in checked_paths
                        else checked_paths[0])
+            source_type = (s.get("sourceType") or
+                           batch_scan.input_kind(primary) or "image")
+            selected_types = {batch_scan.input_kind(p) for p in checked_paths}
+            # The scanner produces homogeneous rows.  Keep this validation at
+            # the launch boundary as a safety net: a mixed list would otherwise
+            # reach ``load_file`` as a bogus TIFF/CZI series.
+            if selected_types != {source_type}:
+                self.logLine.emit(
+                    f"Skipped mixed input series '{s['key']}' — queue images "
+                    "and localisation tables as separate runs.")
+                continue
             p = params_builder.build_params(self._s, self._import,
                                             fpath=primary, out_dir=out_root,
                                             roi_store=self._roi_store,
                                             override_store=self._override_store)
             p["stem_override"] = s["key"]
-            if not str(primary).lower().endswith((".csv", ".txt", ".tsv")):
+            if source_type == "image":
                 p["series_files"] = list(checked_paths)
             # Multiple ROIs flagged as individual replicates → one run per ROI,
             # each writing to <key>_cell{n} (or the user's label).  No-op otherwise.

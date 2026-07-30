@@ -12,6 +12,20 @@ import multiprocessing
 import os
 import sys
 
+# Every FIREFLY figure is rendered into an image/file, including the Analysis
+# workspace jobs that run on background threads.  Letting matplotlib auto-pick
+# QtAgg after QApplication exists makes those workers construct GUI objects off
+# the GUI thread, which can segfault inside a later processEvents() call.  Pin
+# the non-interactive backend before any controller imports matplotlib.  Some
+# embedders/tests may already have imported the lightweight matplotlib package;
+# switch that still-pyplot-free instance on the main thread as well.
+os.environ.setdefault("MPLBACKEND", "Agg")
+if "matplotlib" in sys.modules:
+    try:
+        sys.modules["matplotlib"].use("Agg", force=True)
+    except Exception:
+        pass
+
 # macOS + multiprocessing: spawn is the only safe context for the analysis
 # worker (clean interpreter for MPS/CUDA, no Qt/Metal claim) — same rationale as
 # the Widgets app.  The Widgets entry sets this when `app_qt` is imported; the

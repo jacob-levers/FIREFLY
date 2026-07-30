@@ -705,8 +705,9 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
         _lo = _np.log10(logd_clip_min) if logd_clip_min > 0 else -5.0
         _hi = _np.log10(logd_clip_max) if logd_clip_max > 0 else 1.0
         logD_arr = _np.clip(logD_arr, _lo, _hi)   # NaN stays NaN
-    mobile_n  = int(_np.sum(D_arr > mobile_D_threshold))
-    immob_n   = int(_np.sum(D_arr <= mobile_D_threshold))
+    _valid_D = _np.isfinite(D_arr) & (D_arr > 0)
+    mobile_n  = int(_np.sum(_valid_D & (D_arr >= mobile_D_threshold)))
+    immob_n   = int(_np.sum(_valid_D & (D_arr < mobile_D_threshold)))
     mob_ratio = (mobile_n / immob_n) if immob_n else _np.nan
 
     d1_path = _os.path.join(out_dir, f"{stem}_trcPALMTracer-1-D.csv")

@@ -10,6 +10,10 @@ from firefly.ui.ui_batch_filters import (is_analysis_output_dir,
                                           is_palmtracer_loc_table)
 
 
+def _touch(path):
+    path.touch()
+
+
 # ── analysis-output folders the recursive sweep must prune ──────────────
 def test_is_analysis_output_dir_palmtracer_dirs():
     # palmTRACER `.PT` analysis folders (real names from the lab tree)
@@ -64,6 +68,68 @@ def test_is_palmtracer_loc_table_rejects_others():
               "trcPALMTracer.txt", "trcPALMTracer-AllROI-MSD.csv",
               "trcPALMTracer-1-D.txt", "results.csv", "notes.txt"):
         assert not is_palmtracer_loc_table(n), n
+
+
+# ── QML batch scanner: source-aware grouping ───────────────────────────────
+def test_batch_scan_keeps_independent_inputs_beside_a_czi(tmp_path):
+    """A CZI only wins over its own matching image siblings, never a folder."""
+    from firefly.ui.controllers.params import batch_scan
+    for name in ("rawA.czi", "independentB.tif", "independentC.csv"):
+        _touch(tmp_path / name)
+    rows = {s["key"]: s for s in batch_scan.scan_series(str(tmp_path))}
+    assert set(rows) == {"rawA", "independentB", "independentC"}
+    assert rows["rawA"]["sourceType"] == "image"
+    assert rows["independentB"]["sourceType"] == "image"
+    assert rows["independentC"]["sourceType"] == "external_loc"
+
+
+def test_batch_scan_czi_preference_is_limited_to_matching_image_stem(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "cell.czi")
+    _touch(tmp_path / "cell.tif")
+    rows = batch_scan.scan_series(str(tmp_path))
+    assert len(rows) == 1
+    assert rows[0]["primary"].endswith("cell.czi")
+    assert rows[0]["files"] == [str(tmp_path / "cell.czi")]
+
+
+def test_batch_scan_never_mixes_images_and_localisation_tables(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "cell.tif")
+    _touch(tmp_path / "cell_locPALMTracer.csv")
+    rows = {s["key"]: s for s in batch_scan.scan_series(str(tmp_path))}
+    assert set(rows) == {"cell", "cell_locPALMTracer"}
+    assert rows["cell"]["sourceType"] == "image"
+    assert rows["cell"]["files"] == [str(tmp_path / "cell.tif")]
+    assert rows["cell_locPALMTracer"]["sourceType"] == "external_loc"
+    assert rows["cell_locPALMTracer"]["fileCount"] == 1
+
+
+def test_batch_scan_keeps_unknown_suffixes_but_skips_known_green_sister(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    for name in ("cell.tif", "cell_green.tif", "cell_control.tif"):
+        _touch(tmp_path / name)
+    rows = {s["key"] for s in batch_scan.scan_series(str(tmp_path))}
+    assert rows == {"cell", "cell_control"}
+
+
+def test_batch_scan_tables_are_standalone_and_tsv_is_supported(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    for name in ("same.csv", "same.txt", "table.tsv"):
+        _touch(tmp_path / name)
+    rows = batch_scan.scan_series(str(tmp_path))
+    assert len(rows) == 3
+    assert len({r["key"] for r in rows}) == 3
+    assert all(r["sourceType"] == "external_loc" for r in rows)
+    assert all(r["fileCount"] == 1 for r in rows)
+    assert any(r["primary"].endswith("table.tsv") for r in rows)
+
+
+def test_batch_scan_recursive_mode_remains_raw_images_only(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    nested = tmp_path / "nested"; nested.mkdir()
+    _touch(nested / "table.tsv")
+    assert batch_scan.scan_series(str(tmp_path), recursive=True) == []
 
 
 # ── HYPER-FLY hardware-eligibility gate (controls the UI exposure) ───────

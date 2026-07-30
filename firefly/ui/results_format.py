@@ -14,7 +14,9 @@ METRIC_DISPLAY = [
     ("mob_immob_ratio",      "Mobile / immobile ratio"),
     ("median_D",             "Median D"),
     ("median_alpha",         "Median α (mobile tracks)"),
-    ("mean_track_length_s",  "Mean track length"),
+    ("mean_track_duration_s", "Mean elapsed track duration"),
+    ("mean_observed_time_s", "Mean observed sampling time"),
+    ("mean_track_length_s",  "Mean observed time (legacy field)"),
     ("n_tracks",             "Track count"),
     ("nongauss_alpha2",      "Population heterogeneity (α₂)"),
     ("vacf_persistence",     "Directional persistence (VACF)"),
@@ -23,12 +25,19 @@ SUMMARY_COLS = [
     ("group", "Group"), ("timepoint", "Time"), ("cell", "Cell"),
     ("n_tracks", "# tracks"), ("auc_msd", "AUC MSD"),
     ("mob_immob_ratio", "Mob/Immob"), ("median_D", "Median D"),
-    ("median_alpha", "Median α"), ("mean_track_length_s", "Track len (s)"),
+    ("median_alpha", "Median α"),
+    ("mean_track_duration_s", "Duration (s)"),
+    ("mean_observed_time_s", "Observed (s)"),
+    ("n_below_resolution", "Below res."),
+    ("n_diffusion_eligible", "D eligible"),
+    ("metric_contract", "Metric contract"),
     ("nongauss_alpha2", "α₂"), ("vacf_persistence", "VACF"),
 ]
 SUMMARY_NUMERIC = {"n_tracks", "auc_msd", "mob_immob_ratio", "median_D",
-                   "median_alpha", "mean_track_length_s", "nongauss_alpha2",
-                   "vacf_persistence"}
+                   "median_alpha", "mean_track_duration_s",
+                   "mean_observed_time_s", "mean_track_length_s",
+                   "n_below_resolution", "n_diffusion_eligible",
+                   "nongauss_alpha2", "vacf_persistence"}
 
 
 def _isfinite(x):

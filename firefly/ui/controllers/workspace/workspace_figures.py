@@ -129,6 +129,35 @@ def _to_log(d):
     return np.log10(d[d > 0])
 
 
+def _safe_linear_bins(values, n):
+    """Strictly increasing finite bin edges for constant/zero populations."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if not v.size:
+        return int(n)
+    lo, hi = float(v.min()), float(v.max())
+    if hi <= lo:
+        pad = max(abs(lo) * 0.05, 1e-12)
+        lo = max(0.0, lo - pad) if lo >= 0 else lo - pad
+        hi = hi + pad
+        if hi <= lo:
+            hi = lo + pad
+    return np.linspace(lo, hi, max(int(n), 2))
+
+
+def _safe_log_bins(values, n):
+    """Strictly increasing logarithmic edges for finite positive values."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v) & (v > 0)]
+    if not v.size:
+        return int(n)
+    lo, hi = float(v.min()), float(v.max())
+    if hi <= lo:
+        factor = 10.0 ** 0.05
+        lo, hi = lo / factor, hi * factor
+    return np.logspace(np.log10(lo), np.log10(hi), max(int(n), 2))
+
+
 def _qimage_from_figure(fig):
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from PySide6.QtGui import QImage
@@ -211,7 +240,7 @@ def _render_group_comparison(groups, metric, style, err, width_px, height_px, dp
     For ``grouped`` we prefer ``grouped_data`` (per condition-NAME × timepoint,
     the "between-dish variability" split); it falls back to one series per group.
     """
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
     from firefly.analysis import fa_group_figures as _gf
     order, values, gcolors = [], {}, {}
     tp_order = None
@@ -240,7 +269,7 @@ def _render_group_comparison(groups, metric, style, err, width_px, height_px, dp
             stat_label = f"Kruskal–Wallis, p = {kruskal(*arrs).pvalue:.3g}"
         except Exception:
             pass
-    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
+    fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
     _gf.draw_group_comparison(fig, fig.add_gridspec(1, 1)[0], order, values, style=style,
                               stat_label=stat_label, group_colors=gcolors, tp_order=tp_order,
                               theme=_gf_theme(), ylabel=metric.axis, err=err)
@@ -250,7 +279,7 @@ def _render_group_comparison(groups, metric, style, err, width_px, height_px, dp
 
 def _render_length_density(groups, metric, width_px, height_px, dpi):
     """Overlaid per-group track-length density (Preferences figures/length_style)."""
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
     from firefly.analysis import fa_group_figures as _gf
     order, dists, gcolors = [], {}, {}
     for g in groups:
@@ -261,7 +290,7 @@ def _render_length_density(groups, metric, width_px, height_px, dpi):
         gcolors[g["label"]] = g.get("color")
     if not order:
         return None
-    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
+    fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
     _gf.draw_length_density(fig, fig.add_gridspec(1, 1)[0], order, dists,
                             group_colors=gcolors, theme=_gf_theme(), xlabel=metric.axis)
     fig.tight_layout(pad=1.1)
@@ -434,7 +463,7 @@ def _draw_hist(ax, groups, metric, log_x):
     rng = _robust_limits(alld)                       # alld already log10 when logd
     if alld.size:
         lo, hi = rng if rng else (float(alld.min()), float(alld.max()))
-        bins = np.linspace(lo, hi, 40)
+        bins = _safe_linear_bins([lo, hi], 40)
     else:
         bins = 30
     for g in groups:
@@ -550,13 +579,22 @@ def _draw_single_dist(ax, vals, color, axis, logd):
     med = float(np.median(vals)) if vals.size else 0.0
     pos = vals[vals > 0]
     rng = _robust_limits(pos if (logd and pos.size > 5) else vals, logd=logd)
-    if logd and pos.size > 5:
+    if logd:
+        if not pos.size:
+            ax.text(0.5, 0.5, "no positive fitted values", ha="center",
+                    va="center", transform=ax.transAxes, color=_FAINT,
+                    fontsize=10)
+            ax.set_xticks([]); ax.set_yticks([])
+            return
         ax.set_xscale("log"); vals = pos
-        lo, hi = rng if rng else (pos.min(), pos.max())
-        bins = np.logspace(np.log10(lo), np.log10(hi), 44)
+        lo, hi = rng if rng else (float(pos.min()), float(pos.max()))
+        bins = _safe_log_bins([lo, hi], 44)
+        med = float(np.median(pos))
     else:
-        lo, hi = rng if rng else ((vals.min(), vals.max()) if vals.size > 1 else (0, 1))
-        bins = np.linspace(lo, hi, 44) if vals.size > 1 else 10
+        lo, hi = rng if rng else (
+            (float(vals.min()), float(vals.max())) if vals.size else (0.0, 1.0)
+        )
+        bins = _safe_linear_bins([lo, hi], 44)
     ax.hist(vals, bins=bins, color=color, alpha=0.55, edgecolor=color, linewidth=0.8)
     ax.axvline(med, color=_INK, linewidth=1.2, linestyle="--", alpha=0.8)
     if rng:

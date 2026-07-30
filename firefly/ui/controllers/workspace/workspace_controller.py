@@ -68,6 +68,14 @@ class _Condition:
         return [f for f in self.folders if not f.excluded and f.run is not None]
 
 
+# Matplotlib keeps process-global font, style, and renderer state and is not
+# thread-safe. A workspace can have a live plot, group-panel warm-up, gallery
+# thumbnail, and report request in flight at once; tests can also construct
+# successive controllers before an older daemon render has returned. Serialize
+# every Matplotlib entry point across controller instances.
+_MATPLOTLIB_LOCK = threading.RLock()
+
+
 # ── async figure render ─────────────────────────────────────────────────────
 class _FigureJob(threading.Thread):
     """Render the live metric figure off the GUI thread."""
@@ -84,18 +92,19 @@ class _FigureJob(threading.Thread):
         img = None
         try:
             w, h = self._size
-            img = wf.render_metric(
-                self._groups, self._metric, plot=self._cfg.get("plot", "Violin"),
-                err=self._cfg.get("err", "95% CI"),
-                log_x=bool(self._cfg.get("logX", False)),
-                logd_style=self._cfg.get("_logd_style", "overlaid"),
-                mobile_d=float(self._cfg.get("_mobile_d", 0.05)),
-                logd_clip=(float(self._cfg.get("_logd_clip_min", 0.00001)),
-                           float(self._cfg.get("_logd_clip_max", 10.0))),
-                group_style=self._cfg.get("_group_style", "box_points"),
-                length_style=self._cfg.get("_length_style", "density"),
-                grouped_data=self._cfg.get("_grouped_data"),
-                width_px=w, height_px=h, dpi=110)
+            with _MATPLOTLIB_LOCK:
+                img = wf.render_metric(
+                    self._groups, self._metric, plot=self._cfg.get("plot", "Violin"),
+                    err=self._cfg.get("err", "95% CI"),
+                    log_x=bool(self._cfg.get("logX", False)),
+                    logd_style=self._cfg.get("_logd_style", "overlaid"),
+                    mobile_d=float(self._cfg.get("_mobile_d", 0.05)),
+                    logd_clip=(float(self._cfg.get("_logd_clip_min", 0.00001)),
+                               float(self._cfg.get("_logd_clip_max", 10.0))),
+                    group_style=self._cfg.get("_group_style", "box_points"),
+                    length_style=self._cfg.get("_length_style", "density"),
+                    grouped_data=self._cfg.get("_grouped_data"),
+                    width_px=w, height_px=h, dpi=110)
         except Exception:
             img = None
         self._done(img)
@@ -116,8 +125,9 @@ class _PanelJob(threading.Thread):
         img = None
         try:
             w, h = self._size
-            img = wf.render_panel(self._panel, self._runs, self._color,
-                                  width_px=w, height_px=h, dpi=110)
+            with _MATPLOTLIB_LOCK:
+                img = wf.render_panel(self._panel, self._runs, self._color,
+                                      width_px=w, height_px=h, dpi=110)
         except Exception:
             img = None
         self._done(img)
@@ -139,8 +149,10 @@ class _GroupAllPanelsJob(threading.Thread):
         out = {}
         try:
             from firefly.ui.controllers.workspace import workspace_group_figures as gpf
-            panels = gpf.render_group_panels(self._folders, gpf.AVERAGEABLE_LETTERS,
-                                             theme=self._theme, group_color=self._color)
+            with _MATPLOTLIB_LOCK:
+                panels = gpf.render_group_panels(
+                    self._folders, gpf.AVERAGEABLE_LETTERS,
+                    theme=self._theme, group_color=self._color)
             for letter, pil in panels.items():
                 try:
                     out[letter] = gpf.pil_to_qimage(pil)
@@ -180,9 +192,8 @@ class _ReportJob(threading.Thread):
         self._done(result)
 
 
-# compare_groups uses matplotlib's global state — serialise every engine render
-# (live single-panel figure + the full report) so they never run concurrently.
-_COMPARE_LOCK = threading.Lock()
+# Backwards-readable alias for the two compare-engine call sites below.
+_COMPARE_LOCK = _MATPLOTLIB_LOCK
 
 
 def _crop_engine_header(fig, canvas, img):
@@ -372,6 +383,7 @@ class AnalysisWorkspaceController(QObject):
         self._twoway_note = ""
         self._methods = ""
         self._legend: list[dict] = []
+        self._contract_issue = ""
 
         # figure
         self._fig_image: QImage | None = None
@@ -648,13 +660,15 @@ class AnalysisWorkspaceController(QObject):
 
     def _recompute(self):
         metric = self._metric_obj()
+        active_runs = [f.run for c in self._shown() for f in c.active()]
+        self._contract_issue = wd.metric_contract_issue(active_runs, metric.id)
         groups = self._build_groups()
         self._cg = groups
         n_cond = len(groups)
         alpha = float(self._cfg.get("alpha") or 0.05)
         has_metric = self._has_metric()
 
-        if has_metric and n_cond >= 2:
+        if has_metric and n_cond >= 2 and not self._contract_issue:
             all_vals = np.concatenate([g["values"] for g in groups if len(g["values"])]) \
                 if any(len(g["values"]) for g in groups) else np.array([])
             means = [float(np.mean(g["values"])) if len(g["values"]) else float("nan")
@@ -712,7 +726,33 @@ class AnalysisWorkspaceController(QObject):
                 self._sig_rows.insert(0, self._omnibus_row(self._omnibus, alpha))
             self._twoway, self._twoway_note = self._twoway_rows()
             self._methods = self._build_methods(groups, metric, alpha)
+            _legacy_label = wd.metric_contract_label(active_runs, metric.id)
+            if _legacy_label:
+                self._methods += (
+                    " Values use the legacy definition; re-analysis is "
+                    "recommended before combining them with schema-2 runs.")
             self._legend = self._build_legend(groups, metric)
+        elif self._contract_issue:
+            ntot = int(sum(f.run.n_tracks for c in self._shown()
+                           for f in c.active()))
+            legacy = wd.metric_contract_label(active_runs, metric.id)
+            self._headline = [
+                {"label": "Total tracks", "value": f"{ntot:,}", "unit": "",
+                 "color": "#58a6ff", "jump": False},
+                {"label": "Conditions", "value": str(n_cond), "unit": "",
+                 "color": "", "jump": False},
+                {"label": "Metric contract", "value": legacy or "mixed",
+                 "unit": "", "color": "#f6a623", "jump": False},
+            ]
+            self._stats_rows = self._sig_rows = []
+            self._twoway = []
+            self._twoway_note = self._contract_issue
+            self._verdict = {
+                "severity": "warning",
+                "html": self._contract_issue,
+            }
+            self._methods = self._contract_issue
+            self._legend = []
         else:
             self._headline = self._stats_rows = self._sig_rows = []
             self._twoway = []
@@ -900,6 +940,7 @@ class AnalysisWorkspaceController(QObject):
     # "MSD-AUC" control (figures/auc_style) also offers the paired/Δ timepoint
     # views, so it's handled through auc_plot_style instead.
     SCALAR_STYLE_PANELS = ("fluor", "rg", "netdisp", "path", "step", "speed",
+                           "linkstep", "linkspeed",
                            "dir", "dur", "nlocs", "mob_immob", "track_count",
                            "van_hove", "vacf")
 
@@ -978,6 +1019,16 @@ class AnalysisWorkspaceController(QObject):
         if len(self._cg) < 2 or self._paired:
             # paired view is drawn in QML (SVG); no matplotlib figure
             self._set_busy(False)
+            return
+        if self._contract_issue:
+            # Do not leave a previously rendered, pooled graph visible under an
+            # incompatibility warning.  A blank provider image plus the methods/
+            # verdict warning is intentionally safer than a mixed-schema plot.
+            self._fig_image = QImage(2, 2, QImage.Format.Format_RGB888)
+            self._fig_image.fill(0)
+            self._fig_token += 1
+            self._set_busy(False)
+            self.figureChanged.emit()
             return
         panel = self._metric                       # the scroller selects a panel key
         if not panel or len(self._engine_groups()) < 2:
@@ -1390,7 +1441,7 @@ class AnalysisWorkspaceController(QObject):
             empty = QImage(2, 2, QImage.Format.Format_ARGB32)
             empty.fill(0)
             return empty
-        with self._panel_render_lock:
+        with _MATPLOTLIB_LOCK, self._panel_render_lock:
             key = (cond_idx, panel_idx, w, h, self._panel_rev)
             cached = self._panel_thumb_cache.get(key)
             if cached is not None:

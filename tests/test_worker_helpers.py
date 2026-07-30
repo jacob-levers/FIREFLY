@@ -126,7 +126,10 @@ def test_postproc_linking_params_recovers_persisted_values():
         "auto_search_range": True,
     }
     recovered = _postproc_linking_params(orig)
-    assert recovered == orig
+    # ``gap_policy`` was introduced after this fixture's historic parameter
+    # set; a re-analysis must explicitly adopt the forward timestamp-aware
+    # policy rather than leaving that scientific choice implicit.
+    assert recovered == {**orig, "gap_policy": "all_pairs"}
     # And NONE of them silently collapsed to a default (the bug being guarded).
     for k, v in orig.items():
         assert recovered[k] != _POSTPROC_LINK_DEFAULTS[k], (

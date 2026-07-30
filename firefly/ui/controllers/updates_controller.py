@@ -421,9 +421,7 @@ class UpdatesController(QObject):
                     rel = updater.parse_release(chosen) if chosen else {}
                     asset = rel.get("asset")
                     if not asset:
-                        raise RuntimeError(
-                            "The latest release has no installer for your platform. "
-                            "Use 'Release notes' to download it manually.")
+                        raise RuntimeError(updater.installer_unavailable_message())
                     self._inst_status = "Downloading…"
                     path = updater.download_asset(
                         asset, progress_cb=_prog, status_cb=_status, cancel_cb=_cancel)

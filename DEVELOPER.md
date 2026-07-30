@@ -32,12 +32,13 @@ firefly/
     fa_figure       single-run master figure (matplotlib, panels A–Q)
     fa_loaders      image + external-localisation (CSV) loaders
     fa_stats_config / fa_twoway   stats config + two-way mixed ANOVA
-  ui/               PySide6 GUI: app_qt (MainWindow) + ui_mixin_* + ui_widgets,
-                    with an embedded napari viewer (Visualise tab).
+  ui/               PySide6 GUI: app_qml, QML controllers/views, and bespoke
+                    QGraphicsView/QImage viewers for Visualise and ROI editing.
   firefly_worker.py Runs the whole pipeline in a subprocess, streaming progress
                     back to the GUI via a queue (keeps the UI responsive).
-  sptpalm_analysis.py  Facade that re-exports the analysis functions AND holds
-                    the single-source __version__ (line ~14).
+  release.py         Single-source version plus bundle/release version helpers.
+  sptpalm_analysis.py  Facade that re-exports the analysis functions and imports
+                    the version from release.py for compatibility.
   crash_reporter.py  Global excepthook → crash reports + rotating log under
                     ~/Library/Logs/FIREFLY/ (macOS).
 ```
@@ -46,12 +47,11 @@ firefly/
 must NEVER import `firefly/ui` (keeps the analysis usable headless and avoids
 import cycles).
 
-**Threading invariant (important):** napari/vispy GL rendering is not
-thread-safe — heavy compute must run **either in the worker subprocess** (the
-main analysis run) **or synchronously on the GUI thread**, never on a background
-QThread that then touches napari. The Visualise tab's live DBSCAN re-cluster runs
-synchronously (kept bounded by an eps memory-guard in `compute_clusters`) for
-exactly this reason; an earlier QThread version segfaulted vispy on macOS.
+**Threading invariant (important):** Qt widgets and scene objects are not
+thread-safe. Heavy numerical work and image decoding may run in the analysis
+subprocess or a background worker, but all QWidget/QGraphicsScene mutation must
+be handed back to the GUI thread. The Visualise controller follows this split
+when applying decoded stacks and rendered cluster/super-resolution images.
 
 ## Adding an analysis step
 
@@ -64,15 +64,16 @@ exactly this reason; an earlier QThread version segfaulted vispy on macOS.
 ## Testing
 
 - `pytest` (CI runs it via `.github/workflows/tests.yml`).
-- Tests are headless: matplotlib uses the Agg backend; Qt logic uses
-  `QT_QPA_PLATFORM=offscreen`. Do NOT pump the offscreen GL event loop in tests —
-  it segfaults; build the window and assert wiring, don't drive napari rendering.
+- Tests are headless: matplotlib uses the Agg backend; Qt/QML logic uses
+  `QT_QPA_PLATFORM=offscreen`. Keep native Qt object lifetimes explicit in tests:
+  close windows, controllers, and QML engines, then process deferred events.
 - Keep tests deterministic (seeded RNG) and fast (small synthetic inputs).
 
 ## Releasing
 
-1. Bump `__version__` in `firefly/sptpalm_analysis.py` (single source — `pyproject.toml`
-   reads it, and the CI build job stamps the same line).
+1. Bump `__version__` in `firefly/release.py` (single source — `pyproject.toml`
+   reads it, and `scripts/stamp_version.py` plus the CI build jobs stamp that
+   same assignment).
 2. Add a `CHANGELOG.md` entry.
 3. Commit, `git tag vX.Y.Z`, `git push origin main --tags`.
 4. `.github/workflows/build.yml` builds the frozen apps from the tag.

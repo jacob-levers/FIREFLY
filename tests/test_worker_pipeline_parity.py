@@ -106,6 +106,10 @@ def test_pipeline_runs_and_is_reproducible(tmp_path):
     d1 = _digest(o1, pay1)
     assert d1["n_locs"] > 0, "no localisations — synthetic movie too weak"
     assert d1["n_tracks"] > 0, "no tracks — linking produced nothing"
+    summary = pay1["summary"]
+    assert summary["mean_observed_time_s"] is not None
+    assert summary["mean_track_duration_s"] is not None
+    assert summary["mean_track_length_s"] == summary["mean_observed_time_s"]
 
     o2 = str(tmp_path / "out2"); os.makedirs(o2, exist_ok=True)
     pay2 = _run(_params(mov, o2))

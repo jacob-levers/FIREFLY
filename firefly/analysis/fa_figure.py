@@ -12,6 +12,7 @@ from scipy.stats import gaussian_kde
 import numpy as np
 import pandas as pd
 import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
@@ -29,13 +30,27 @@ from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORD
 MC   = dict(MOTION_CLASS_COLORS)
 MORD = list(MOTION_CLASS_ORDER)
 
-# Resolution floor for the log10(D) distribution panels.  Below this, the
-# fitted D of a flat-MSD (immobile) track is indistinguishable from zero — both
-# FIREFLY and PALM-Tracer drive it down to ~1e-14.  The D-distribution panels
-# clip to this floor and label the immobile fraction rather than rendering a
-# misleading spike at an arbitrary clip value.  1e-5 µm²/s is well below what
-# localisation precision can resolve at typical sptPALM frame rates.
-_D_RES_FLOOR = 1e-5
+def _safe_linear_bins(values, n=40, *, nonnegative=False):
+    """Return strictly increasing histogram edges, including for constants.
+
+    ``numpy.linspace(min, max, ...)`` produces repeated edges for an all-zero
+    (or otherwise constant) population.  Matplotlib then raises or emits
+    misleading density warnings.  A tiny, scale-aware pad keeps the finite
+    value intact while giving the histogram a real interval.
+    """
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if not len(v):
+        return int(n)
+    lo, hi = float(v.min()), float(v.max())
+    if hi <= lo:
+        pad = max(abs(lo) * 0.05, 1e-12)
+        lo, hi = lo - pad, hi + pad
+        if nonnegative:
+            lo = max(0.0, lo)
+            if hi <= lo:
+                hi = lo + pad
+    return np.linspace(lo, hi, max(int(n), 2))
 
 
 def _draw_track(grp, color, ax, lw=0.8, alpha=0.6):
@@ -427,65 +442,60 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
 
     # E — D distribution
     ax = _ax("E")
-    dv = diff_df["D"].dropna()
-    dv = dv[(dv>0) & (dv<dv.quantile(0.995))]
-    if len(dv) > 5:
-        # Resolution floor.  Genuinely immobile tracks have a flat MSD, so the
-        # fit (here and in PALM-Tracer alike) drives D toward zero — values run
-        # down to ~1e-14, far below anything localisation precision can resolve.
-        # Rather than pile them into a misleading spike at an arbitrary clip
-        # value with the bars/KDE disagreeing, we clip EVERYTHING consistently
-        # to a single floor and label the immobile fraction honestly.  This is a
-        # real immobile population (PALM-Tracer's own D export shows the same
-        # ~10-12% below resolution), not an artifact.
-        n_total = int(len(dv))
-        n_imm   = int((dv <= _D_RES_FLOOR).sum())
-        pct_imm = 100.0 * n_imm / n_total
-        ld   = np.log10(dv.clip(lower=_D_RES_FLOOR))
-        bins = np.linspace(ld.min(), ld.max(), 40)
+    _fit_status = diff_df.get(
+        "fit_status", pd.Series("", index=diff_df.index, dtype=object)
+    ).astype(str)
+    n_total = int(len(diff_df))
+    n_below = int(_fit_status.eq("below_resolution").sum())
+    pct_below = 100.0 * n_below / n_total if n_total else 0.0
+    dv_all = pd.to_numeric(diff_df.get("D"), errors="coerce").dropna()
+    dv_all = dv_all[np.isfinite(dv_all) & (dv_all > 0)]
+    if len(dv_all):
+        # Remove only the extreme upper display tail.  There is deliberately no
+        # lower D floor: exact-zero tracks already carry fit_status
+        # ``below_resolution`` and have no D, while every finite positive D is a
+        # fitted result and must not be relabelled by a visual convention.
+        upper = float(dv_all.quantile(0.995))
+        dv = dv_all[dv_all <= upper]
+        ld = np.log10(dv)
+        bins = _safe_linear_bins(ld, 40)
         bw   = bins[1] - bins[0]
-        floor_x = float(np.log10(_D_RES_FLOOR))
         peaks = []
-        # Per-class filled KDE of the RESOLVED (mobile, D > floor) values only —
-        # the smooth curves aren't distorted by the hard pile-up at the floor.
-        mob_all = np.log10(dv[dv > _D_RES_FLOOR])
-        if len(mob_all):
-            _xlo, _xhi = float(mob_all.min()), float(ld.max())
-        else:
-            _xlo, _xhi = float(ld.min()), float(ld.max())
+        _xlo, _xhi = float(ld.min()), float(ld.max())
         # Pad the grid so each class's filled KDE tapers smoothly to ~0 at its
         # tails instead of being cut off vertically at the data min/max.
-        _xpad = 0.10 * (_xhi - _xlo)
+        _xpad = max(0.10 * (_xhi - _xlo), 0.10)
         xk = np.linspace(_xlo - _xpad, _xhi + _xpad, 300)
         for m in MORD:
-            sub = diff_df[(diff_df["motion"] == m) & (diff_df["D"] > _D_RES_FLOOR)]
+            sub = pd.to_numeric(
+                diff_df.loc[diff_df["motion"] == m, "D"], errors="coerce"
+            ).dropna()
+            sub = sub[np.isfinite(sub) & (sub > 0) & (sub <= upper)]
             if len(sub):
                 peaks.append(_filled_kde(
-                    ax, xk, bw, np.log10(sub["D"].clip(lower=_D_RES_FLOOR)),
+                    ax, xk, bw, np.log10(sub),
                     MC[m], m, bins=bins))
-        # Below-resolution (immobile) tracks are a true delta at the floor — they
-        # can't be resolved, so they're drawn as a hatched bar AT the floor (not
-        # smeared into a fake KDE bump), on the same count axis as the curves so
-        # the immobile peak is visible alongside the mobile distribution.
-        if n_imm > 0:
-            ax.bar(floor_x, n_imm, width=bw * 1.8,
-                   color=MC.get("Immobile", "#e05252"), edgecolor=PNL,
-                   linewidth=1.0, hatch="///", alpha=0.9, zorder=3,
-                   label="Immobile / below res.")
-            peaks.append(float(n_imm))
-        ax.axvline(np.log10(dv.median()),color=ACC,ls="--",lw=1.5,
-                   label=f"Median={dv.median():.4f}")
+        ax.axvline(np.log10(dv_all.median()), color=ACC, ls="--", lw=1.5,
+                   label=f"Median={dv_all.median():.4f}")
         # Headroom above the tallest peak so nothing (a sharp KDE peak or the
-        # floor bar) is clipped by the top axis.
+        # distribution curves is clipped by the top axis.
         ymax = max(peaks) if peaks else 1.0
         ax.set_ylim(0, ymax * 1.42)
-        # Label the floor bar directly with its share.
-        if pct_imm >= 0.5:
-            ax.text(floor_x, n_imm + ymax * 0.03, f"{pct_imm:.0f}%",
-                    ha="center", va="bottom", fontsize=7, color=TXT, alpha=0.9)
         ax.set_xlabel("log10(D)  [µm²/s]",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
         ax.legend(fontsize=7.5,loc="upper right",framealpha=0.9,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
+    else:
+        ax.text(0.5, 0.5, "No fitted positive D values",
+                transform=ax.transAxes, ha="center", va="center",
+                color=TXT, fontsize=9)
+    if n_below:
+        ax.text(
+            0.02, 0.97,
+            f"Below resolution: {n_below}/{n_total} ({pct_below:.1f}%)\n"
+            "D and α unavailable; excluded",
+            transform=ax.transAxes, fontsize=7, color=TXT,
+            va="top", ha="left", alpha=0.9,
+        )
     ax.grid(True,ls="--",alpha=0.22,lw=0.5)
     sax(ax,"E","Diffusion Coefficient Distribution")
 
@@ -526,9 +536,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     av = diff_df["alpha"].dropna()
     av = av[(av>-1) & (av<4)]
     if len(av) > 5:
-        ba = np.linspace(av.min(), av.max(), 40)
+        ba = _safe_linear_bins(av, 40)
         bw = ba[1] - ba[0]
-        _xpad = 0.10 * (float(av.max()) - float(av.min()))
+        _xpad = max(0.10 * (float(av.max()) - float(av.min())), 0.10)
         xk = np.linspace(float(av.min()) - _xpad, float(av.max()) + _xpad, 300)
         for m in MORD:
             sub = diff_df[(diff_df["motion"]==m) & diff_df["alpha"].notna()]
@@ -537,18 +547,20 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                             MC[m], m, bins=ba)
         for xv,lb,ls in [(0.5,"a=0.5",":"),(1.0,"a=1 Brownian","--"),(2.0,"a=2 directed",":")]:
             ax.axvline(xv,color=GRD,ls=ls,lw=1.2,label=lb)
-        # Honest note: immobile / jitter-dominated tracks have a flat MSD, so no
-        # anomalous exponent can be fitted (alpha = NaN) — they are NOT in this
-        # histogram (they're counted as Immobile in the motion-class bar F instead).
-        n_tot = int(len(diff_df)); n_nan = int(diff_df["alpha"].isna().sum())
-        if n_tot and (100.0 * n_nan / n_tot) >= 0.5:
-            ax.text(0.02, 0.97,
-                    f"α unmeasurable: {100.0*n_nan/n_tot:.0f}%\n(immobile, excluded)",
-                    transform=ax.transAxes, fontsize=7, color=TXT,
-                    va="top", ha="left", alpha=0.9)
         ax.set_xlabel("Anomalous exponent alpha",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
         ax.legend(fontsize=7,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
+    n_nan = int(diff_df["alpha"].isna().sum())
+    n_other_unavailable = max(0, n_nan - n_below)
+    if n_nan:
+        _alpha_note = (
+            f"Below resolution (unclassified): {n_below}/{n_total}"
+            if n_below else "Below resolution: 0"
+        )
+        if n_other_unavailable:
+            _alpha_note += f"\nOther α unavailable: {n_other_unavailable}"
+        ax.text(0.02, 0.97, _alpha_note, transform=ax.transAxes,
+                fontsize=7, color=TXT, va="top", ha="left", alpha=0.9)
     ax.grid(True,ls="--",alpha=0.22,lw=0.5)
     sax(ax,"G","Anomalous Exponent Alpha Distribution")
 
@@ -634,8 +646,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     if _has_jdd:
         _jdd_colors = ["#58a6ff", "#f78166", "#3fb950", "#d2a8ff"]
 
-        r_max_plot = np.percentile(jdd["jumps"], 99.5)
-        bins = np.linspace(0, r_max_plot, 60)
+        r_max_plot = float(np.percentile(jdd["jumps"], 99.5))
+        bins = _safe_linear_bins(jdd["jumps"], 60, nonnegative=True)
+        r_max_plot = max(r_max_plot, float(bins[-1]))
         ax.hist(jdd["jumps"], bins=bins, density=True,
                 color="#8b949e", alpha=0.45, edgecolor="none",
                 label=f"Observed  (n={jdd['n_jumps']:,})")
@@ -725,9 +738,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     if "mss_slope" in diff_df.columns and diff_df["mss_slope"].notna().sum() >= 5:
         ms = diff_df["mss_slope"].dropna()
         ms = ms[ms.between(-0.5, 1.5)]
-        bins = np.linspace(ms.min(), ms.max(), 40)
+        bins = _safe_linear_bins(ms, 40)
         bw = bins[1] - bins[0]
-        _xpad = 0.10 * (float(ms.max()) - float(ms.min()))
+        _xpad = max(0.10 * (float(ms.max()) - float(ms.min())), 0.10)
         xk = np.linspace(float(ms.min()) - _xpad, float(ms.max()) + _xpad, 300)
         for m in MORD:
             sub = diff_df[(diff_df["motion"] == m) & diff_df["mss_slope"].notna()]

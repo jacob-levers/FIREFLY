@@ -36,6 +36,27 @@ def test_macos_helper_unchanged_still_backs_up():
     assert "BACKUP" in s
 
 
+def test_arm64_macos_accepts_only_architecture_explicit_asset(monkeypatch):
+    monkeypatch.setattr(updater, "is_macos", lambda: True)
+    monkeypatch.setattr(updater, "is_windows", lambda: False)
+    monkeypatch.setattr(updater.platform, "machine", lambda: "arm64")
+    assert updater.current_os_asset_names() == ("FIREFLY-macOS-arm64.dmg",)
+    release = {"tag_name": "v1.0.0", "assets": [
+        {"name": "FIREFLY-macOS.dmg", "browser_download_url": "legacy"},
+        {"name": "FIREFLY-macOS-arm64.dmg", "browser_download_url": "arm"},
+    ]}
+    assert updater.parse_release(release)["asset"]["name"] == "FIREFLY-macOS-arm64.dmg"
+
+
+def test_intel_macos_has_no_arm64_installer(monkeypatch):
+    monkeypatch.setattr(updater, "is_macos", lambda: True)
+    monkeypatch.setattr(updater, "is_windows", lambda: False)
+    monkeypatch.setattr(updater.platform, "machine", lambda: "x86_64")
+    assert updater.current_os_asset_name() is None
+    assert "Apple Silicon" in updater.installer_unavailable_message()
+    assert "Intel" in updater.installer_unavailable_message()
+
+
 # ── DMG validation must not hang the updater (100%-then-stuck bug) ────────────
 def test_dmg_validation_times_out_instead_of_hanging(tmp_path, monkeypatch):
     """`hdiutil imageinfo` runs after the download hits 100%.  With no timeout a

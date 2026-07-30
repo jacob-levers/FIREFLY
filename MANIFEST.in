@@ -1,0 +1,8 @@
+include README.md
+include LICENSE.md
+recursive-include firefly/ui/qml *.qml *.png *.svg
+recursive-include firefly/ui/assets/preview_panels *.png
+recursive-include firefly/ui/presets *.json
+include scripts/dependency_fingerprint.py
+include scripts/runtime_import_check.py
+include scripts/stamp_version.py

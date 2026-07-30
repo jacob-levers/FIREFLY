@@ -39,6 +39,7 @@ def test_preset_save_load_roundtrip(tmp_path, monkeypatch):
     sb, pc = _make(tmp_path, monkeypatch)
     sb.setValue("analysis/diameter", 11)
     sb.setValue("analysis/backend", "Crocker–Grier — Trackpy (CPU)")
+    sb.setValue("analysis/gap_policy", "Contiguous observations (legacy)")
     assert pc.save("my preset") is True
     assert "my preset" in pc.names and pc.active == "my preset"
     assert os.path.isfile(os.path.join(tmp_path, "my preset.json"))
@@ -46,9 +47,11 @@ def test_preset_save_load_roundtrip(tmp_path, monkeypatch):
     # change values, then load the preset → restored
     sb.setValue("analysis/diameter", 5)
     sb.setValue("analysis/backend", "Auto")
+    sb.setValue("analysis/gap_policy", "All timestamp pairs")
     pc.load("my preset")
     assert sb.get("analysis/diameter") == 11
     assert sb.get("analysis/backend") == "Crocker–Grier — Trackpy (CPU)"
+    assert sb.get("analysis/gap_policy") == "Contiguous observations (legacy)"
 
 
 def test_preset_modified_flag(tmp_path, monkeypatch):
@@ -104,6 +107,7 @@ def test_seed_builtins_installs_shipped_presets(tmp_path, monkeypatch):
     assert pc12["analysis/roi_mode"] == "Manual threshold"
     assert pc12["analysis/roi_bg_sigma"] == 100.0
     assert pc12["analysis/roi_threshold"] == 0.02
+    assert pc12["analysis/gap_policy"] == "All timestamp pairs"
     # and it actually loads/applies cleanly through the sidebar
     pc.load("PC12 Cells")
     assert sb.get("analysis/search_range") == 3
@@ -147,3 +151,14 @@ def test_manifest_replay_manual_run_not_pinned():
     sb._apply_manifest(manifest, "m")
     assert sb.get("analysis/auto_minmass") is False
     assert abs(float(sb.get("analysis/minmass")) - 0.5) < 1e-9      # left untouched
+
+
+def test_manifest_replay_restores_gap_policy_from_wire_contract():
+    from firefly.ui.controllers.params.sidebar_controller import SidebarController
+    sb = SidebarController(FakeSettings())
+    sb._apply_manifest({
+        "schema_version": 4,
+        "gap_policy": "contiguous",
+        "widget_state": {},
+    }, "legacy-compatible")
+    assert sb.get("analysis/gap_policy") == "Contiguous observations (legacy)"

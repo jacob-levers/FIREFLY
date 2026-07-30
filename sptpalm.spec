@@ -16,6 +16,12 @@ from PyInstaller.utils.hooks import (
 import os
 import sys
 
+from firefly.release import (
+    __version__ as _FULL_VERSION,
+    numeric_build_version,
+    release_base,
+)
+
 
 def _collect_no_tests(pkg):
     """collect_submodules(pkg) MINUS test subpackages.
@@ -28,6 +34,14 @@ def _collect_no_tests(pkg):
     libraries import at run time) are deliberately KEPT.
     """
     return collect_submodules(pkg, filter=lambda n: "tests" not in n.split("."))
+
+
+# Apple's marketing version is the numeric release core. CI supplies its
+# numeric run number for CFBundleVersion; local builds fall back to the release
+# core. Keep the exact tag (including an rc suffix) in FIREFLY's dedicated key.
+_BUNDLE_VERSION = release_base(_FULL_VERSION)
+_CI_BUILD_VERSION = numeric_build_version(
+    os.environ.get("FIREFLY_BUILD_NUMBER"), fallback=_BUNDLE_VERSION)
 
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
@@ -334,8 +348,9 @@ else:
             info_plist={
                 "CFBundleName": "FIREFLY",
                 "CFBundleDisplayName": "FIREFLY — Fluorescence Inference & Reconstruction Engine",
-                "CFBundleVersion": "2.0.0",
-                "CFBundleShortVersionString": "2.0.0",
+                "CFBundleVersion": _CI_BUILD_VERSION,
+                "CFBundleShortVersionString": _BUNDLE_VERSION,
+                "FIREFLYReleaseVersion": _FULL_VERSION,
                 "NSHighResolutionCapable": True,
                 "LSMinimumSystemVersion": "11.0",
                 "NSAppleEventsUsageDescription": "Required for analysis.",

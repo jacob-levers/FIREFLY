@@ -12,8 +12,9 @@ license-files = ["LICENSE.md"]
 authors = [{ name = "jacob-levers" }]
 dynamic = ["version"]
 
-# Mirrors requirements.txt (kept in sync).  requirements.txt carries the
-# detailed rationale comments; this list is what `pip install -e .` resolves.
+# Runtime dependencies are declared here.  requirements.txt intentionally
+# installs this project in editable mode so source launchers resolve this same
+# metadata rather than maintaining a second dependency list.
 dependencies = [
     "numpy>=2,<3",
     "pandas>=2.2,<3",
@@ -40,20 +41,36 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "pypdf", "build"]
 
 [project.urls]
-Homepage = "https://github.com/jacob-levers/sptPALM"
+Homepage = "https://github.com/jacob-levers/FIREFLY"
 
-# Launch the GUI with:  python run_firefly.py
-# (run_firefly.py is the multiprocessing "spawn" main module — it carries the
-# freeze_support() guard worker children need, so it is NOT exposed as a plain
-# console-script entry point, which would re-launch the GUI in each spawn child.)
+# Launch the GUI with ``python -m firefly`` (or ``python run_firefly.py`` from a
+# source checkout).  We intentionally do not expose a console-script entry
+# point: the module-level ``__main__`` guard is the stable multiprocessing-spawn
+# boundary used by both normal Python and the frozen PyInstaller executable.
 
 [tool.setuptools]
-packages = ["firefly", "firefly.analysis", "firefly.ui"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["firefly*"]
+
+[tool.setuptools.package-data]
+# The QML front end resolves these files relative to its package at run time.
+# Keep the wheel manifest explicit: PyInstaller's own data collection only
+# covers frozen builds and cannot make a normal ``pip install`` runnable.
+firefly = [
+    "ui/qml/*.qml",
+    "ui/qml/**/*.qml",
+    "ui/qml/assets/figures/*.png",
+    "ui/qml/assets/icons/*.svg",
+    "ui/assets/preview_panels/*.png",
+    "ui/presets/*.json",
+]
 
 [tool.setuptools.dynamic]
-# Single source of truth for the version — read statically (no import) from the
-# same line the CI release job stamps (firefly/sptpalm_analysis.py).
-version = { attr = "firefly.sptpalm_analysis.__version__" }
+# Standard-library-only release metadata is shared by package builds, the UI,
+# updater, and PyInstaller spec.
+version = { attr = "firefly.release.__version__" }

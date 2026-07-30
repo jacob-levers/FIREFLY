@@ -179,6 +179,44 @@ class Linker(Enum):
         return cls.TRACKPY
 
 
+class GapPolicy(Enum):
+    """How trajectory gaps contribute to time-lag analyses.
+
+    ``all_pairs`` is the conventional timestamp-lag estimator: for a requested
+    lag ``L`` it uses every pair of observations whose frame numbers differ by
+    exactly ``L``, even when one or more intermediate observations are absent.
+    ``contiguous`` is retained for reproducibility with FIREFLY's historical
+    row-offset behaviour: it only uses pairs inside an uninterrupted observed
+    run.  The wire values are persisted in run metadata.
+    """
+    ALL_PAIRS = "all_pairs"
+    CONTIGUOUS = "contiguous"
+
+    @classmethod
+    def parse(cls, value, *, log=None) -> "GapPolicy":
+        # Internal callers deliberately pass the parsed enum through to lower
+        # level helpers.  ``str(GapPolicy.CONTIGUOUS)`` is not its wire value,
+        # so preserve an already-canonical member before normalising strings.
+        if isinstance(value, cls):
+            return value
+        s = str(value if value is not None else cls.ALL_PAIRS.value).strip().lower()
+        aliases = {
+            "all_pairs": cls.ALL_PAIRS,
+            "all-pairs": cls.ALL_PAIRS,
+            "actual_frame": cls.ALL_PAIRS,
+            "actual-frame": cls.ALL_PAIRS,
+            "timestamp": cls.ALL_PAIRS,
+            "frame_lag": cls.ALL_PAIRS,
+            "contiguous": cls.CONTIGUOUS,
+            "contiguous_runs": cls.CONTIGUOUS,
+            "contiguous-runs": cls.CONTIGUOUS,
+        }
+        if s in aliases:
+            return aliases[s]
+        _warn(log, f"  WARNING: unknown gap policy {value!r} — using all_pairs.")
+        return cls.ALL_PAIRS
+
+
 # Single source of truth for the FORWARD default linker (a fresh run that does
 # not specify one) — must match the GUI's first-listed combo entry and the
 # README.  The re-ROI / pre-linker-manifest REPLAY default

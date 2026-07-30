@@ -33,7 +33,7 @@ def test_manifest_records_determinism(tmp_path, monkeypatch):
     path = fw._write_run_manifest(out_dir=str(tmp_path), stem="stack",
                                   fpath=str(f), params={"diameter": 7})
     m = json.load(open(path, encoding="utf-8"))
-    assert m["schema_version"] == 3
+    assert m["schema_version"] == 4
     assert "determinism" in m
     det = m["determinism"]
     assert det["requested"] is True

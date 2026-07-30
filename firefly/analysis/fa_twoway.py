@@ -46,9 +46,10 @@ _LOGD_CENTERS = 0.5 * (_LOGD_BINS[:-1] + _LOGD_BINS[1:])
 SCALAR_METRICS = ["auc_msd", "spot_intensity", "mob_immob_ratio",
                   "median_D", "median_alpha", "radius_of_gyration",
                   "net_displacement", "path_length", "step_distance",
-                  "step_speed", "directionality",
+                  "step_speed", "link_displacement", "link_speed",
+                  "directionality",
                   "track_duration", "n_localisations",
-                  "mean_track_length_s", "n_tracks",
+                  "mean_observed_time_s", "mean_track_duration_s", "n_tracks",
                   "nongauss_alpha2", "vacf_persistence"]
 
 

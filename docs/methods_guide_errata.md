@@ -35,12 +35,13 @@ trackpy**; trackpy is a deliberate manual choice in the dropdown.
 **strike:** "Detections are linked into trajectories with trackpy's recursive
 subnet linker."
 
-**fix:** the **default linker is the Kalman LAP tracker** (TrackMate "Linear
-Motion"; `fa_enums.DEFAULT_LINKER = "kalman"`). FIREFLY offers six linkers:
-Kalman LAP (default), Crocker–Grier (trackpy), Jaqaman simple LAP, Jaqaman full
-LAP (optional merge/split), greedy nearest-neighbour, and a palmTRACER-style
-simulated-annealing tracker. trackpy is selectable manually and is also the
-replay fallback for pre-linker manifests (so old runs reproduce faithfully).
+**fix:** the **default linker is Crocker–Grier (trackpy)**, matching
+`fa_enums.DEFAULT_LINKER = "trackpy"` and the visible sidebar default. FIREFLY
+offers six linkers: Crocker–Grier (default), Kalman LAP (TrackMate "Linear
+Motion"), Jaqaman simple LAP, Jaqaman full LAP (optional merge/split), greedy
+nearest-neighbour, and a palmTRACER-style simulated-annealing tracker. Trackpy
+is also the replay fallback for pre-linker manifests, so old runs reproduce
+faithfully.
 
 ## §22 — Compute backends and reproducibility
 
@@ -85,9 +86,38 @@ descriptions should be updated to match:
   events) instead of an uncensored fit, which **under-estimated** τ for tracks
   still present at the last frame. A `censored` column flags those tracks.
   (Photobleaching truncation is still not corrected — out of scope.)
-- **Turning angles / MSS (§14): gap handling.** Both now use only
-  frame-contiguous (single-frame) steps, consistent with JDD/van Hove/VACF; a
-  memory-bridged gap is no longer mis-counted as one step.
+- **MSD / MSS (§12–14): true-frame lag handling.** The default `all_pairs`
+  estimator includes every position pair whose actual frame-number difference
+  equals lag `L`, including across missing intermediate observations. The
+  persisted `contiguous` compatibility mode keeps pairs inside uninterrupted
+  observed runs. MSD and MSS share this policy; elapsed frame span, not row
+  count, determines which lags can exist. Gapless results are identical under
+  both policies.
+- **Turning angles / VACF (§14): timestamps.** Turning angles still require
+  consecutive single-frame steps. VACF is rebuilt from single-frame velocities
+  carrying their start frame and pairs velocities by actual start-frame
+  difference; every exported lag includes its contributing pair count.
+- **Track geometry / duration (§12): explicit definitions.** `mean_step_um`
+  averages only adjacent observations exactly one frame apart.
+  `mean_link_displacement_um` averages every adjacent observed link, and
+  `mean_link_speed_um_s` averages each link displacement divided by its own
+  `Δframe × Δt`. `track_duration_s = (max(frame)-min(frame)) × Δt`; localisation
+  count and observed sampling time are distinct. Path length remains the
+  observed polyline, so a gap is represented by a straight chord through an
+  unknowable missing path.
+- **Exact zero displacement (§12): below resolution, not D=0.** If every valid
+  displacement bin is exactly zero, D and α are unavailable,
+  `fit_status=below_resolution`, and the α-derived motion class is unclassified.
+  These tracks are counted separately and excluded from log-D and
+  mobile/immobile threshold denominators.
+- **Imported-table calibration (§3): visible-sidebar authority.** For external
+  localisation tables, the sidebar pixel size and frame interval are the
+  effective calibration. Embedded palmTRACER values are advisory provenance,
+  are recorded separately, and produce a logged warning when they disagree.
+- **Versioned result contracts.** New runs use manifest schema 4 and metrics
+  schema 2. Missing metric metadata means legacy schema 1. Mixed schemas remain
+  loadable, but schema-sensitive MSD/D/MSS/VACF and step/speed inference is
+  suppressed rather than silently pooled; stable metrics can still compare.
 - **Clustering (§19): caveats.** Per-cluster `area_um2` / `density_locs_per_um2`
   are convex-hull (size-biased) quantities, and are **not comparable** for runs
   that exceed the 250k-localisation DBSCAN sub-sampling cap (logged per run).

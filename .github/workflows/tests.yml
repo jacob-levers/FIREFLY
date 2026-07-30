@@ -1,6 +1,5 @@
 name: Tests
 
-# Fast numerical-regression gate, independent of the release build.
 on:
   push:
     branches: [main]
@@ -8,13 +7,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  pytest:
+  pytest-core:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
-    name: pytest (py${{ matrix.python-version }})
+    name: pytest core (py${{ matrix.python-version }})
+    env:
+      MPLBACKEND: Agg
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,17 +25,129 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install test dependencies
-        # Only the analysis stack is needed — no Qt / napari / CZI loaders.
-        # numpy 2.x + CPU-only torch 2.6+; both ship cp313 wheels so the
-        # matrix validates Python 3.13 compatibility of the analysis core.
-        # (The engine-agreement test skips automatically if torch is absent.)
+      - name: Install analysis test environment
+        # Install the application metadata too.  The old hand-picked dependency
+        # list meant CI could pass while a normal ``pip install .`` was broken.
         run: |
           python -m pip install --upgrade pip
           pip install "numpy>=2,<3" "pandas>=2.2,<3" scipy matplotlib \
                       scikit-image trackpy joblib tqdm scikit-learn psutil \
                       threadpoolctl pytest pypdf
           pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
+          pip install --no-deps -e ".[dev]"
 
-      - name: Run tests
+      - name: Run analysis tests (including slow regressions)
         run: pytest
+
+  pytest-qt:
+    runs-on: ubuntu-latest
+    name: pytest Qt/QML (py3.12)
+    env:
+      MPLBACKEND: Agg
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install full application and test dependencies
+        # This lane intentionally installs PySide6.  The Qt tests use
+        # importorskip(), so a Qt-less runner otherwise reports green while
+        # exercising none of the QML/controller surface.
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
+          pip install -e ".[dev]"
+
+      - name: Run non-slow tests with Qt enabled
+        run: pytest -m "not slow"
+
+  wheel:
+    runs-on: ubuntu-latest
+    name: build and smoke-test wheel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          tar -tf dist/*.tar.gz | grep -q 'firefly/ui/qml/Main.qml'
+          tar -tf dist/*.tar.gz | grep -q 'firefly/ui/presets/PC12 Cells.json'
+
+      - name: Install wheel outside the checkout
+        shell: bash
+        run: |
+          venv="$RUNNER_TEMP/firefly-wheel-smoke"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install --upgrade pip
+          wheel="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          "$venv/bin/python" -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
+          "$venv/bin/python" -m pip install "$wheel"
+          "$venv/bin/python" -m pip check
+
+      - name: Verify installed package layout and runtime resources
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/firefly-wheel-smoke/bin/python" -c '
+          import os
+          from importlib.resources import files
+          import firefly
+          import firefly.__main__
+          import firefly.ui.controllers
+          root = files("firefly")
+          required = (
+              "ui/qml/Main.qml",
+              "ui/assets/preview_panels/A.png",
+              "ui/presets/PC12 Cells.json",
+              "ui/controllers/app_controller.py",
+          )
+          missing = [p for p in required if not root.joinpath(p).is_file()]
+          assert not missing, missing
+          assert not os.path.abspath(firefly.__file__).startswith(os.environ["GITHUB_WORKSPACE"])
+          print("wheel package/resources OK")
+          '
+
+      - name: Smoke-test python -m firefly outside the checkout
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          marker="$RUNNER_TEMP/firefly-wheel-ready.marker"
+          log="$RUNNER_TEMP/firefly-wheel-smoke.log"
+          rm -f "$marker" "$log"
+          QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+            LIBGL_ALWAYS_SOFTWARE=1 SPTPALM_READY_MARKER="$marker" \
+            "$RUNNER_TEMP/firefly-wheel-smoke/bin/python" -m firefly \
+            >"$log" 2>&1 &
+          pid=$!
+          ready=0
+          for _ in $(seq 1 120); do
+            if [[ -f "$marker" ]]; then ready=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || true
+              cat "$log" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" || true
+          if [[ "$ready" != 1 ]]; then
+            cat "$log" || true
+            exit 1
+          fi

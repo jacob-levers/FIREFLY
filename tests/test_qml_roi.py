@@ -193,6 +193,20 @@ def test_import_lone_file_has_no_series(tmp_path):
     assert c.seriesCount == 0                               # no series → nothing to show
 
 
+def test_import_rejects_unsupported_nd2_with_a_clear_error(tmp_path):
+    """Dropped files bypass the picker filter, so unsupported ND2 must not
+    leave Start analysis enabled behind a generic no-preview message."""
+    from firefly.ui.controllers.import_controller import ImportController
+    path = tmp_path / "movie.nd2"
+    path.write_bytes(b"not an ND2 fixture")
+    c = ImportController(_RecSettings())
+    c.filePath = str(path)
+    assert c.hasFile is True
+    assert c.hasReadError is True
+    assert "unsupported" in c.readError.lower()
+    assert ".nd2" in c.readError.lower()
+
+
 def test_import_flags_corrupt_series_part(tmp_path):
     """A corrupt PART of a single-analysis series is flagged unreadable (and blocks
     Start), even when the file you picked is fine — the combined run would fail on

@@ -1,5 +1,57 @@
 # Changelog
 
+## v2.76.45-rc.10 — 30 Jul 2026
+
+### Fixed
+
+- **Gapped trajectories now use true frame lags by default.** MSD and MSS use
+  every observation pair separated by the requested frame lag
+  (`gap_policy=all_pairs`); a persisted contiguous-only compatibility mode is
+  available in the sidebar, presets and replay state. Tracks are canonicalised
+  by particle/frame, duplicate timestamps fail with a branched-TrackMate hint,
+  and Trackpy chunk offsets no longer repeat or skip frames.
+- **Track geometry and time metrics now have explicit, gap-safe definitions.**
+  Single-frame step distance is separate from observed-link displacement and
+  per-link elapsed-time speed; duration uses the first/last frame span. VACF
+  pairs single-frame velocities by their true start-frame lag and exports pair
+  counts. Finite geometric zeros are retained.
+- **Exactly static trajectories are reported below resolution.** They keep
+  geometric zeros but no longer receive a fabricated `D=0` or α class.
+  `fit_status=below_resolution` is exported and these tracks are counted
+  separately from log-D and mobile/immobile denominators.
+- **Numerical outputs are versioned and mixed comparisons are guarded.** Run
+  manifests are schema 4 and metrics are schema 2. Legacy runs remain loadable
+  and labelled; incompatible MSD/D/MSS/VACF and step/speed contracts display a
+  warning and suppress pooled inference while stable metrics still compare.
+- **External-table calibration and caching are reproducible.** The visible
+  sidebar calibration is effective; embedded palmTRACER values are recorded as
+  advisory and disagreements are logged. External Analysis-tab cache keys now
+  include a content digest, calibration, gap policy and every number-affecting
+  parameter.
+- **Batch inputs can no longer be silently merged or discarded.** Image and
+  table jobs stay homogeneous, CZI preference is acquisition-scoped, explicit
+  companions use natural numeric order, same-stem outputs are collision-safe,
+  direct `.tsv` inputs work, and ND2 is no longer advertised. Corrupt tables
+  remain visibly selected, fail individually, and do not stop the batch.
+- **Source installs now repair stale dependencies after `git pull`.** The
+  Windows and macOS launchers fingerprint the project dependency metadata and
+  run `pip check`, rather than treating the presence of PySide6 as proof that a
+  virtual environment is current. This preserves a compatible user-installed
+  CUDA Torch while filling newly required packages.
+- **Normal pip wheels now contain the whole FIREFLY package and UI resources.**
+  Nested controllers, QML, presets, and preview assets are included and the
+  installed app can launch through `python -m firefly`; frozen builds retain
+  their spawn-safe root launcher.
+- **Release validation now covers the package, Qt/QML tests, and both frozen
+  startup paths.** Tagged builds wait for validation, macOS runs the same
+  ready-marker smoke handshake as Windows, and bundle plist version metadata is
+  derived from the shared release helper. `CFBundleShortVersionString` uses the
+  numeric release base, `CFBundleVersion` uses the numeric CI run number, and
+  dedicated metadata retains the full prerelease string.
+- **The macOS artifact is explicitly Apple-Silicon (`FIREFLY-macOS-arm64.dmg`).**
+  The updater selects the architecture-specific installer and gives Intel Mac
+  users an explicit source-install message.
+
 ## v2.76.45-rc.9 — 27 Jul 2026
 
 ### Changed

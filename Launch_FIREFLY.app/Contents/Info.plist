@@ -12,9 +12,11 @@
     <key>CFBundleIdentifier</key>
     <string>com.jacoblevers.firefly.launcher</string>
     <key>CFBundleVersion</key>
-    <string>2.0</string>
+    <string>10</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0</string>
+    <string>2.76.45</string>
+    <key>FIREFLYReleaseVersion</key>
+    <string>2.76.45-rc.10</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSMinimumSystemVersion</key>

@@ -16,8 +16,8 @@ files, so ``apply_update()`` stages a tiny detached helper script that:
   * swaps the new build into the current install location,
   * relaunches it,
   * deletes itself.
-The Qt layer spawns that helper, then quits cleanly (its closeEvent
-tears down the worker subprocess, napari/Metal, etc.).
+The Qt layer spawns that helper, then quits cleanly so the running application
+releases its files before the installer swaps them.
 
 macOS note: the app is unsigned/un-notarised, so the helper clears the
 Gatekeeper quarantine flag (``xattr -dr com.apple.quarantine``) on the
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import sys
 import urllib.error
@@ -61,14 +62,48 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def current_os_asset_name() -> Optional[str]:
-    """The GitHub release asset filename for this platform, or None on an
-    unsupported OS (the updater only ships macOS + Windows builds)."""
+def current_os_asset_names() -> tuple[str, ...]:
+    """Ordered release-asset names compatible with this exact platform.
+
+    macOS releases are Apple-Silicon builds with an architecture-explicit
+    artifact name.  A generic DMG is intentionally not accepted: it cannot
+    communicate whether the binary is compatible with the current Mac.
+    """
     if is_macos():
-        return "FIREFLY-macOS.dmg"
+        machine = platform.machine().lower()
+        if machine in {"arm64", "aarch64"}:
+            return ("FIREFLY-macOS-arm64.dmg",)
+        return ()
     if is_windows():
-        return "FIREFLY-Windows.exe"
+        return ("FIREFLY-Windows.exe",)
+    return ()
+
+
+def current_os_asset_name() -> Optional[str]:
+    """Primary release asset for this platform, or ``None`` if unsupported."""
+    names = current_os_asset_names()
+    if names:
+        return names[0]
     return None
+
+
+def installer_unavailable_message() -> str:
+    """Actionable platform/asset error for the updater UI."""
+    if is_macos():
+        machine = platform.machine().lower()
+        if machine not in {"arm64", "aarch64"}:
+            return (
+                "FIREFLY's pre-built macOS app supports Apple Silicon (arm64) "
+                "only; no Intel macOS installer is published. Use the source "
+                "installation instructions instead.")
+        return (
+            "This release is missing FIREFLY-macOS-arm64.dmg. "
+            "Open Release notes to download a published installer manually.")
+    if is_windows():
+        return (
+            "This release is missing FIREFLY-Windows.exe. "
+            "Open Release notes to download a published installer manually.")
+    return "No FIREFLY installer is published for this platform."
 
 
 def updates_dir() -> str:
@@ -252,11 +287,16 @@ def parse_release(release_json: dict) -> dict:
         return {"tag": "", "html_url": "", "body": "", "asset": None,
                 "rate_limited": True,
                 "rate_limit_reset": int(release_json.get("_reset") or 0)}
+    asset = None
+    for name in current_os_asset_names():
+        asset = select_asset(release_json, name)
+        if asset is not None:
+            break
     return {
         "tag": release_json.get("tag_name") or "",
         "html_url": release_json.get("html_url") or "",
         "body": release_json.get("body") or "",
-        "asset": select_asset(release_json, current_os_asset_name()),
+        "asset": asset,
     }
 
 
@@ -358,7 +398,7 @@ def download_asset(asset: dict,
     504 in bursts for a minute or two, and we want the update to ride that
     out rather than fail the user."""
     if not asset or not asset.get("url"):
-        raise UpdaterError("No installer is available for your platform.")
+        raise UpdaterError(installer_unavailable_message())
     dest = os.path.join(updates_dir(), asset["name"])
     digest = str(asset.get("digest") or "")
     # Fail CLOSED when GitHub didn't publish a verifiable SHA-256: the only other

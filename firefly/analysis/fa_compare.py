@@ -20,6 +20,7 @@ from firefly.analysis.fa_palmtracer import load_summary_from_folder, _win_long_p
 import numpy as np
 import pandas as pd
 import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats as _stats
@@ -73,6 +74,9 @@ class ReportData:
     pair_warn: object
     paired_df: object
     mobile_d_threshold: float
+    compatibility_warnings: dict = field(default_factory=dict)
+    metric_contract_labels: list = field(default_factory=list)
+    legacy_only: bool = False
     stat_cache: dict = field(default_factory=dict)
 
 
@@ -998,14 +1002,114 @@ def _spot_intensity(summary):
     return float(np.median(per_track)) if per_track.size else float("nan")
 
 
+def _track_durations(tracks, frame_interval):
+    """Elapsed per-track durations: ``(max(frame) - min(frame)) * Δt``."""
+    if (tracks is None
+            or not {"particle", "frame"} <= set(getattr(tracks, "columns", []))):
+        return np.array([], dtype=float)
+    span = tracks.groupby("particle")["frame"].agg(["min", "max"])
+    return ((span["max"].to_numpy(dtype=float) - span["min"].to_numpy(dtype=float))
+            * float(frame_interval))
+
+
 def _track_duration_median(tracks, frame_interval):
-    """Per-replicate median track duration (s) = (localisations − 1) × Δt."""
+    """Per-replicate median elapsed track duration in seconds."""
+    durations = _track_durations(tracks, frame_interval)
+    return float(np.median(durations)) if durations.size else float("nan")
+
+
+def _track_observed_times(tracks, frame_interval):
+    """Observed sampling time (localisation count × Δt), kept distinct from duration."""
     if tracks is None or "particle" not in getattr(tracks, "columns", []):
+        return np.array([], dtype=float)
+    counts = tracks.groupby("particle").size().to_numpy(dtype=float)
+    return counts * float(frame_interval)
+
+
+def _summary_metric_contract(summary):
+    """Return the persisted numerical contract for one analysis folder.
+
+    Missing contract metadata is deliberately interpreted as schema 1.  That
+    keeps old runs loadable while preventing a legacy estimator from being
+    silently pooled with schema-2 results.
+    """
+    params = summary.get("params") or {}
+    raw_schema = (params.get("metrics_schema_version")
+                  or summary.get("metrics_schema_version") or 1)
+    try:
+        schema = int(raw_schema)
+    except (TypeError, ValueError):
+        schema = 1
+    gap = str(params.get("gap_policy")
+              or summary.get("gap_policy")
+              or ("contiguous" if schema < 2 else "all_pairs"))
+    explicit_contract = str(
+        params.get("metric_contract")
+        or summary.get("metric_contract")
+        or ""
+    ).strip()
+    contract_id = explicit_contract or f"firefly_metrics_schema_{schema}"
+    raw_step_definition = str(
+        params.get("step_definition")
+        or summary.get("step_definition")
+        or ""
+    ).strip().lower()
+    if schema < 2:
+        step_definition = "adjacent_observation"
+    elif (not raw_step_definition
+          or "unit_frame" in raw_step_definition
+          or "one frame" in raw_step_definition
+          or "single_frame" in raw_step_definition):
+        step_definition = "single_frame"
+    else:
+        step_definition = raw_step_definition
+    if explicit_contract == "palmtracer_native_legacy":
+        label = f"PALM-Tracer native legacy (schema {schema}, {gap})"
+    else:
+        label = (f"legacy schema 1 ({gap})" if schema < 2
+                 else f"metrics schema {schema} ({gap})")
+    return {
+        "schema": schema,
+        "gap_policy": gap,
+        "contract_id": contract_id,
+        "step_definition": step_definition,
+        "diffusion": (schema, gap, contract_id),
+        "step": (schema, step_definition, contract_id),
+        "label": label,
+    }
+
+
+def _comparison_metric_contracts(all_summaries):
+    contracts = [
+        _summary_metric_contract(summary)
+        for summaries in all_summaries for summary in summaries
+    ]
+    diffusion = {contract["diffusion"] for contract in contracts}
+    step = {contract["step"] for contract in contracts}
+    labels = sorted({contract["label"] for contract in contracts})
+    warnings = {}
+    if len(diffusion) > 1:
+        warnings["diffusion"] = (
+            "MSD/MSS, D/alpha, motion-class and VACF inference was suppressed: "
+            "the selected runs use incompatible metric schemas or gap policies "
+            f"({'; '.join(labels)}). Stable metrics remain comparable."
+        )
+    if len(step) > 1:
+        warnings["step"] = (
+            "Step/link distance and speed inference was suppressed: the selected "
+            "runs use incompatible adjacent-observation and single-frame "
+            f"definitions ({'; '.join(labels)}). Stable metrics remain comparable."
+        )
+    legacy_only = bool(contracts) and all(c["schema"] < 2 for c in contracts)
+    return warnings, labels, legacy_only
+
+
+def _col_mean_from(d, col):
+    if d is None or col not in getattr(d, "columns", []):
         return float("nan")
-    lens = tracks.groupby("particle").size().to_numpy(dtype=float)
-    if not lens.size:
-        return float("nan")
-    return float(np.median((lens - 1.0) * float(frame_interval)))
+    values = pd.to_numeric(d[col], errors="coerce").to_numpy(dtype=float)
+    values = values[np.isfinite(values)]
+    return float(np.mean(values)) if values.size else float("nan")
 
 
 def _col_median_from(d, col, *, positive=False):
@@ -1133,6 +1237,14 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
     if progress_cb:
         progress_cb(total, total, "Computing scalars and rendering...")
 
+    compatibility_warnings, metric_contract_labels, legacy_only = (
+        _comparison_metric_contracts(all_summaries))
+    for warning in compatibility_warnings.values():
+        print(f"  Compare WARNING: {warning}")
+    if legacy_only:
+        print("  Compare: all selected runs use legacy metrics schema 1; "
+              "legacy estimators are labelled explicitly in exported results.")
+
     # ── Compute per-folder scalars (one row per replicate) ────────────────────
     # `group` holds the raw group factor; `timepoint` is the (optional) within
     # factor; `cell` is the subject key (the stem with the time-point token
@@ -1142,6 +1254,7 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
         p = summary["params"]
         fi = _fi_or_default(p, summary.get("stem", ""))
         d = summary["diffusion"]
+        contract = _summary_metric_contract(summary)
         stem = summary["stem"]
         cell, _matched = (fa_twoway.derive_subject_key(stem, timepoint_tokens)
                           if two_factor else (stem, True))
@@ -1161,32 +1274,60 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             vacf_persistence = float(_vc["persistence"]) if _vc else np.nan
         except Exception:
             vacf_persistence = np.nan
+        durations = _track_durations(trk, fi)
+        observed_times = _track_observed_times(trk, fi)
+        if d is not None and "fit_status" in getattr(d, "columns", []):
+            status = d["fit_status"].astype(str)
+            n_below_resolution = int((status == "below_resolution").sum())
+        else:
+            n_below_resolution = 0
+        if d is not None and "D" in getattr(d, "columns", []):
+            d_values = pd.to_numeric(d["D"], errors="coerce").to_numpy(dtype=float)
+            n_diffusion_eligible = int((np.isfinite(d_values) & (d_values > 0)).sum())
+        else:
+            n_diffusion_eligible = 0
+        n_tracks = len(d) if d is not None else 0
         return {
             "group":            group_label,
             "timepoint":        timepoint,
             "cell":             cell,
             "folder":           summary["folder"],
             "stem":             stem,
-            "n_tracks":         len(d) if d is not None else 0,
+            "metrics_schema_version": contract["schema"],
+            "gap_policy":       contract["gap_policy"],
+            "metric_contract":  contract["label"],
+            "legacy_metrics":   contract["schema"] < 2,
+            "n_tracks":         n_tracks,
+            "n_below_resolution": n_below_resolution,
+            "below_resolution_fraction": (
+                float(n_below_resolution / n_tracks) if n_tracks else np.nan),
+            "n_diffusion_eligible": n_diffusion_eligible,
             "auc_msd":          _msd_auc(summary["ensemble_msd"], fi),
             "spot_intensity":   _spot_intensity(summary),
             "mob_immob_ratio":  _mob_immob_ratio(d, mobile_d_threshold),
-            "median_D":         float(d["D"].median()) if d is not None and "D" in d.columns else np.nan,
-            "median_alpha":     float(d["alpha"].median()) if d is not None and "alpha" in d.columns else np.nan,
-            "radius_of_gyration": (float(d["radius_of_gyration_um"].median())
-                                   if d is not None and "radius_of_gyration_um" in d.columns
-                                   else np.nan),
-            "net_displacement":   _col_median_from(d, "net_displacement_um", positive=True),
-            "path_length":        _col_median_from(d, "path_length_um", positive=True),
-            "step_distance":      _col_median_from(d, "mean_step_um", positive=True),
-            "step_speed":         (_col_median_from(d, "mean_step_um", positive=True) / fi
+            "median_D":         _col_median_from(d, "D", positive=True),
+            "median_alpha":     _col_median_from(d, "alpha"),
+            "radius_of_gyration": _col_median_from(d, "radius_of_gyration_um"),
+            "net_displacement":   _col_median_from(d, "net_displacement_um"),
+            "path_length":        _col_median_from(d, "path_length_um"),
+            "step_distance":      _col_median_from(d, "mean_step_um"),
+            "step_speed":         (_col_median_from(d, "mean_step_um") / fi
                                    if fi else np.nan),
+            "link_displacement":  _col_median_from(
+                d, "mean_link_displacement_um"),
+            "link_speed":         _col_median_from(d, "mean_link_speed_um_s"),
             "directionality":     _col_median_from(d, "directionality_ratio"),
-            "track_duration":     _track_duration_median(summary["tracks"], fi),
-            "n_localisations":    (int(len(summary["tracks"]))
-                                   if summary["tracks"] is not None else np.nan),
-            "mean_track_length_s": float(_track_lengths(summary["tracks"], fi).mean())
-                                   if summary["tracks"] is not None else np.nan,
+            "track_duration":     (float(np.median(durations))
+                                   if durations.size else np.nan),
+            "n_localisations":    (int(len(trk)) if trk is not None else np.nan),
+            # Explicit schema-2 names.  The ambiguous legacy key is retained
+            # for one schema cycle with its historical observed-time meaning.
+            "mean_observed_time_s": (float(np.mean(observed_times))
+                                     if observed_times.size else np.nan),
+            "mean_track_duration_s": (float(np.mean(durations))
+                                      if durations.size else np.nan),
+            "mean_track_length_s": (float(np.mean(observed_times))
+                                    if observed_times.size else np.nan),
             "nongauss_alpha2":  nongauss_alpha2,
             "vacf_persistence": vacf_persistence,
         }
@@ -1244,7 +1385,19 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
         # to blank the primary figure.  If it fails (singular/underpowered design,
         # pingouin quirk, …) skip it and let every panel render regardless.
         try:
-            twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(paired_df, stats_config=cfg)
+            inference_df = paired_df.copy()
+            if "diffusion" in compatibility_warnings:
+                for column in ("auc_msd", "mob_immob_ratio", "median_D",
+                               "median_alpha", "vacf_persistence"):
+                    if column in inference_df:
+                        inference_df[column] = np.nan
+            if "step" in compatibility_warnings:
+                for column in ("step_distance", "step_speed",
+                               "link_displacement", "link_speed"):
+                    if column in inference_df:
+                        inference_df[column] = np.nan
+            twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(
+                inference_df, stats_config=cfg)
         except Exception as e:
             twoway_df, twoway_msg = None, f"skipped ({type(e).__name__}: {e})"
         print(f"  Two-way ANOVA: {twoway_msg}")
@@ -1258,7 +1411,10 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
         card_colors=card_colors, group_colors=group_colors, many_groups=many_groups,
         bar_xticks=bar_xticks, twoway_df=twoway_df, twoway_msg=twoway_msg,
         pair_warn=pair_warn, paired_df=paired_df,
-        mobile_d_threshold=mobile_d_threshold)
+        mobile_d_threshold=mobile_d_threshold,
+        compatibility_warnings=compatibility_warnings,
+        metric_contract_labels=metric_contract_labels,
+        legacy_only=legacy_only)
 
 
 def _draw_report(rd, *, output_dir=None, output_stem="comparison",
@@ -1326,6 +1482,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     pair_warn = rd.pair_warn
     paired_df = rd.paired_df
     mobile_d_threshold = rd.mobile_d_threshold
+    compatibility_warnings = dict(rd.compatibility_warnings)
     # Per-panel annotation handles + the returned per-metric stats dict are built
     # as the panels draw (the returned `stats` only ever covers RENDERED panels).
     panel_annots = {}
@@ -1335,14 +1492,42 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                   "motion_classes", "track_length", "rg", "netdisp", "path",
                   "step", "speed", "dir", "dur", "nlocs", "jdd", "dwell_cdf",
                   "turning_angles", "radial_dist", "van_hove", "vacf"}
+    requested_panels = set(panels)
+    if rd.legacy_only and requested_panels & {"linkstep", "linkspeed"}:
+        compatibility_warnings["link"] = (
+            "Observed-link distance/speed was introduced in metrics schema 2 "
+            "and is unavailable in these legacy schema-1 runs. Legacy step "
+            "values remain labelled and loadable."
+        )
+    contract_panel_families = {
+        "diffusion": {"msd", "auc", "logd_dist", "mob_immob",
+                      "motion_classes", "vacf"},
+        "step": {"step", "speed", "linkstep", "linkspeed"},
+        "link": {"linkstep", "linkspeed"},
+    }
+    suppressed_panels = {}
+    for family, family_panels in contract_panel_families.items():
+        if family in compatibility_warnings:
+            affected = requested_panels & family_panels
+            if affected:
+                suppressed_panels[family] = sorted(affected)
+    panels = requested_panels - {
+        panel for affected in suppressed_panels.values() for panel in affected
+    }
+    warning_panels = [f"__contract_{family}"
+                      for family in ("diffusion", "step", "link")
+                      if family in suppressed_panels]
 
     # ── Render the figure ────────────────────────────────────────────────────
-    panel_order = ["msd", "auc", "fluor", "logd_dist", "mob_immob",
+    panel_order = warning_panels + [
+                   "msd", "auc", "fluor", "logd_dist", "mob_immob",
                    "motion_classes", "track_length", "rg", "netdisp", "path",
-                   "step", "speed", "dir", "dur", "track_count", "nlocs",
+                   "step", "speed", "linkstep", "linkspeed",
+                   "dir", "dur", "track_count", "nlocs",
                    "jdd", "dwell_cdf", "turning_angles", "radial_dist",
                    "van_hove", "vacf"]
-    enabled = [p for p in panel_order if p in panels]
+    enabled = [p for p in panel_order
+               if p in panels or p in warning_panels]
     n_plots = len(enabled)
     if n_plots == 0:
         raise RuntimeError("No panels enabled")
@@ -1390,6 +1575,29 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         nonlocal panel_idx
         ax = axes[panel_idx]; panel_idx += 1
         return ax
+
+    # One visible warning card per incompatible metric family replaces all
+    # requested panels from that family.  Stable panels continue to render and
+    # retain their inference; incompatible values remain in the summary CSV
+    # with an explicit contract label but are never silently pooled.
+    for family in ("diffusion", "step", "link"):
+        key = f"__contract_{family}"
+        if key not in warning_panels:
+            continue
+        ax = _next_ax()
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.text(
+            0.5, 0.57, "Comparison suppressed",
+            ha="center", va="center", transform=ax.transAxes,
+            color=pal["TXT"], fontsize=13, fontweight="bold")
+        ax.text(
+            0.5, 0.39, compatibility_warnings[family],
+            ha="center", va="center", transform=ax.transAxes,
+            color=pal["MUT"], fontsize=9, wrap=True)
+        ax.set_title(
+            f"Incompatible {family} contract"
+            f" ({', '.join(suppressed_panels[family])})")
 
     def _zip_groups():
         """Iterator: (label, summaries, color) for each group."""
@@ -1643,7 +1851,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     if "motion_classes" in panels:
         ax = _next_ax()
         # Canonical motion-class colours/order — shared with the single-run
-        # figure AND the napari viewer (fa_constants) so a class is the same
+        # figure AND the FIREFLY viewer (fa_constants) so a class is the same
         # colour everywhere: Immobile=red, Confined=orange, Brownian=blue,
         # Directed=green.
         classes = list(MOTION_CLASS_ORDER)
@@ -1664,14 +1872,23 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                 if tot > 0:                 # skip replicates with no classifiable track
                     rows.append(named / tot)
             return np.array(rows) if rows else np.zeros((0, len(classes)))
-        per_group, unclassified = [], []
+        per_group, unclassified, below_resolution = [], [], []
         for ss in all_summaries:
             per_group.append(_fracs(ss))
-            uncl = []
+            uncl, below = [], []
             for s in ss:
                 f = _motion_fractions(s["diffusion"])
                 uncl.append(1.0 - sum(f.get(c, 0.0) for c in classes))
+                d = s["diffusion"]
+                if (d is not None
+                        and "fit_status" in getattr(d, "columns", [])
+                        and len(d)):
+                    below.append(float(
+                        (d["fit_status"].astype(str) == "below_resolution").mean()))
+                else:
+                    below.append(0.0)
             unclassified.append(float(np.mean(uncl)) if uncl else 0.0)
+            below_resolution.append(float(np.mean(below)) if below else 0.0)
         # Mean composition per group (each replicate's fractions sum to 1, so the
         # per-group means also sum to ~1 → each stacked bar reaches the top).
         means = np.array([fr.mean(axis=0) if len(fr) else np.zeros(len(classes))
@@ -1708,8 +1925,17 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         # Append the % of tracks that were too short to classify (the renormalised
         # "Unknown" share), so the composition bars stay honest about what was
         # excluded.  Only shown when it's non-trivial.
-        mc_labels = [(f"{lbl}\n({u*100:.0f}% uncl.)" if u >= 0.005 else str(lbl))
-                     for lbl, u in zip(labels, unclassified)]
+        mc_labels = []
+        for lbl, unclassified_fraction, below_fraction in zip(
+                labels, unclassified, below_resolution):
+            other_unclassified = max(0.0, unclassified_fraction - below_fraction)
+            notes = []
+            if below_fraction >= 0.005:
+                notes.append(f"{below_fraction*100:.0f}% below res.")
+            if other_unclassified >= 0.005:
+                notes.append(f"{other_unclassified*100:.0f}% other uncl.")
+            mc_labels.append(
+                f"{lbl}\n({'; '.join(notes)})" if notes else str(lbl))
         ax.set_xticklabels(mc_labels, rotation=_mc_rot,
                            ha="center" if _mc_rot == 0 else "right",
                            rotation_mode="anchor",
@@ -1765,13 +1991,16 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
             ax.set_title("Track Length Distribution")
-        # Stats: mean track length (per-replicate) — one-way only in flat mode;
-        # the two-way ANOVA report covers it in two-factor mode.
+        # Stats: mean elapsed track duration (per replicate).  The deprecated
+        # mean_track_length_s export retains its historical observed-time
+        # meaning but is no longer used for duration inference.
         if not two_factor:
-            arrs = [summary_df.loc[summary_df["group"] == lbl, "mean_track_length_s"].values
+            arrs = [summary_df.loc[
+                        summary_df["group"] == lbl, "mean_track_duration_s"].values
                     for lbl in labels]
             omn, pw = _STN(arrs, labels, cfg)
-            stats_records["mean_track_length_s"] = {"omnibus": omn, "pairwise": pw}
+            stats_records["mean_track_duration_s"] = {
+                "omnibus": omn, "pairwise": pw}
 
     # ── 6a2. Radius of gyration (per-replicate median track spread) ────────────
     if "rg" in panels:
@@ -1801,6 +2030,10 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             ("path",    "path_length",      "Path length (µm)",      "Path Length"),
             ("step",    "step_distance",    "Step distance (µm)",    "Step Distance"),
             ("speed",   "step_speed",       "Step speed (µm/s)",     "Step Speed"),
+            ("linkstep", "link_displacement", "Observed-link displacement (µm)",
+             "Observed-Link Displacement"),
+            ("linkspeed", "link_speed", "Observed-link speed (µm/s)",
+             "Observed-Link Speed"),
             ("dir",     "directionality",   "Net ÷ path",            "Directionality Ratio"),
             ("dur",     "track_duration",   "Track duration (s)",    "Track Duration"),
             ("nlocs",   "n_localisations",  "Localisations (n)",     "Number of Localisations")):
@@ -2151,6 +2384,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     f"({n_groups} cells)")
     else:
         suptitle = f"Comparison of {n_groups} groups"
+    if rd.legacy_only:
+        suptitle += "  [legacy metrics schema 1]"
     fig_h = base_h + band_h_in
     fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"],
                  y=1.0 - 0.16 / fig_h)
@@ -2176,34 +2411,44 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         sub = summary_df[m]
         n_cells = int(len(sub))
         n_trk = int(sub["n_tracks"].sum()) if "n_tracks" in sub else 0
-        med_D = (float(np.nanmedian(sub["median_D"]))
-                 if "median_D" in sub and sub["median_D"].notna().any() else np.nan)
-        med_a = (float(np.nanmedian(sub["median_alpha"]))
-                 if "median_alpha" in sub and sub["median_alpha"].notna().any() else np.nan)
-        return n_cells, n_trk, med_D, med_a
+        if "diffusion" in compatibility_warnings:
+            med_D = med_a = np.nan
+        else:
+            med_D = (float(np.nanmedian(sub["median_D"]))
+                     if "median_D" in sub
+                     and sub["median_D"].notna().any() else np.nan)
+            med_a = (float(np.nanmedian(sub["median_alpha"]))
+                     if "median_alpha" in sub
+                     and sub["median_alpha"].notna().any() else np.nan)
+        below = (int(sub["n_below_resolution"].sum())
+                 if "n_below_resolution" in sub else 0)
+        return n_cells, n_trk, med_D, med_a, below
 
-    def _band_entry(label, n_cells, n_trk, d, a, compact):
+    def _band_entry(label, n_cells, n_trk, d, a, n_below, compact):
         lab = label if len(label) <= 18 else label[:17] + "…"
+        below_s = f" · {n_below:,} below res." if n_below else ""
         if compact:
             d_s = f"{d:.3f}" if np.isfinite(d) else "—"
             a_s = f"{a:.2f}" if np.isfinite(a) else "—"
-            return f"●  {lab} — {n_trk:,} trk · D {d_s} · α {a_s}  (n={n_cells})"
+            return (f"●  {lab} — {n_trk:,} trk · D {d_s} · α {a_s}"
+                    f"{below_s}  (n={n_cells})")
         d_s = f"{d:.4f} µm²/s" if np.isfinite(d) else "—"
         a_s = f"{a:.3f}" if np.isfinite(a) else "—"
         return (f"●  {lab} — {n_trk:,} tracks · med D {d_s} · "
-                f"med α {a_s}   (n={n_cells})")
+                f"med α {a_s}{below_s}   (n={n_cells})")
 
     band_top = 1.0 - 0.52 / fig_h            # first band row, below the suptitle
     row_step = band_row_in / fig_h
     col_xs = [(c + 0.5) / band_ncol for c in range(band_ncol)]
     for i in range(n_groups):
         r, c = divmod(i, band_ncol)
-        n_cells, n_trk, med_D, med_a = _card_summary(i)
+        n_cells, n_trk, med_D, med_a, n_below = _card_summary(i)
         # When the bar panels use numeric x-tick tokens (>4 groups), number the
         # band entries to match — the band is then the key for those axes.
         lbl = f"{i + 1}. {labels[i]}" if many_groups else labels[i]
         fig.text(col_xs[c], band_top - r * row_step,
-                 _band_entry(lbl, n_cells, n_trk, med_D, med_a, band_compact),
+                 _band_entry(
+                     lbl, n_cells, n_trk, med_D, med_a, n_below, band_compact),
                  color=colors[i], fontsize=band_fs, ha="center", va="top")
 
     # No bottom strip (the band replaced the shared legend → legend_rows == 0);
@@ -2235,8 +2480,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # no comparison stats at all.  (#35)  The two-way report covers the
     # two-factor case separately.
     if not two_factor:
-        for _m in ("median_D", "median_alpha",
-                   "nongauss_alpha2", "vacf_persistence"):
+        hidden_metrics = ["nongauss_alpha2"]
+        if "diffusion" not in compatibility_warnings:
+            hidden_metrics.extend(
+                ["median_D", "median_alpha", "vacf_persistence"])
+        for _m in hidden_metrics:
             if _m in summary_df.columns and _m not in stats_records:
                 arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
                         .dropna().to_numpy() for lbl in labels]
@@ -2257,9 +2505,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mob_immob_ratio",
                       "median_D", "median_alpha", "radius_of_gyration",
                       "net_displacement", "path_length", "step_distance",
-                      "step_speed", "directionality",
+                      "step_speed", "link_displacement", "link_speed",
+                      "directionality",
                       "track_duration", "n_localisations",
-                      "mean_track_length_s", "n_tracks", "nongauss_alpha2",
+                      "mean_observed_time_s", "mean_track_duration_s",
+                      "n_tracks", "nongauss_alpha2",
                       "vacf_persistence"}
     across_pw = []
     for metric, rec in stats_records.items():
@@ -2476,7 +2726,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                                   panels=panels, theme=theme, palette=pal,
                                   twoway_df=twoway_df, twoway_msg=twoway_msg,
                                   drilldown=drilldown, pair_warn=pair_warn,
-                                  stats_config=cfg)
+                                  stats_config=cfg,
+                                  compatibility_warnings=compatibility_warnings,
+                                  metric_contract_labels=rd.metric_contract_labels)
                 print(f"  Saved: {report_path}")
             except Exception as exc:
                 print(f"  PDF report skipped ({type(exc).__name__}: {exc})")
@@ -2556,6 +2808,10 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                 "group_order": list(group_order),
                 "timepoints": list(tp_order),
                 "pair_warn": pair_warn or "",
+                "metric_contracts": list(rd.metric_contract_labels),
+                "legacy_only": bool(rd.legacy_only),
+                "compatibility_warnings": dict(compatibility_warnings),
+                "suppressed_panels": dict(suppressed_panels),
                 "files": {
                     "png":          f"{output_stem}.png",
                     "figure_pdf":   f"{output_stem}.pdf",
@@ -2693,7 +2949,9 @@ def _write_results_json(path, *, meta, config_summary, stats_config,
 def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
                       summary_df, stats_df, panels, theme, palette,
                       twoway_df=None, twoway_msg=None, drilldown=None,
-                      pair_warn=None, stats_config=None):
+                      pair_warn=None, stats_config=None,
+                      compatibility_warnings=None,
+                      metric_contract_labels=None):
     """Multi-page PDF: cover + figure, parameters & folders, statistics, and
     (in two-factor mode) the group × time-point ANOVA tables."""
     from matplotlib.backends.backend_pdf import PdfPages
@@ -2713,9 +2971,15 @@ def _write_pdf_report(path, fig, groups, all_summaries, labels, colors,
             f"Theme:              {theme}",
             f"Panels rendered:    {', '.join(sorted(panels))}",
             f"Number of groups:   {len(groups)}",
+            f"Metric contracts:   {', '.join(metric_contract_labels or [])}",
             "",
             "Groups:",
         ]
+        if compatibility_warnings:
+            meta_lines.append("")
+            meta_lines.append("Compatibility warnings:")
+            for warning in compatibility_warnings.values():
+                meta_lines.append(f"  • {warning}")
         for i, g in enumerate(groups):
             meta_lines.append(
                 f"  • {labels[i]}   "

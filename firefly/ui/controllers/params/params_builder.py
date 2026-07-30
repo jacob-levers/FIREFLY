@@ -57,6 +57,10 @@ LINKER_LABEL_TO_VALUE = {
     "Nearest-neighbour — greedy":                  "nn",
     "Simulated annealing — palmTRACER (inspired)": "sa",
 }
+GAP_POLICY_LABEL_TO_VALUE = {
+    "All timestamp pairs": "all_pairs",
+    "Contiguous observations (legacy)": "contiguous",
+}
 
 # Pristine widget-construction defaults — captured from a freshly-built Widgets
 # sidebar against an EMPTY QSettings store.  Used as the fallback for any key the
@@ -82,6 +86,7 @@ _DEFAULTS = {
     "max_track_len":         0,
     "max_lagtime":           20,
     "n_fit":                 5,
+    "gap_policy":            "All timestamp pairs",
     "alpha_immobile":        0.5,
     "alpha_confined":        0.9,
     "alpha_directed":        1.1,
@@ -224,6 +229,9 @@ def build_params(settings, importc, fpath: str | None = None,
         "max_track_len":  max_tl if max_tl > 0 else None,
         "max_lagtime":    _i(g, "analysis/max_lagtime", _DEFAULTS["max_lagtime"]),
         "n_fit":          _i(g, "analysis/n_fit", _DEFAULTS["n_fit"]),
+        "gap_policy":     GAP_POLICY_LABEL_TO_VALUE.get(
+            g.get_str("analysis/gap_policy", _DEFAULTS["gap_policy"]),
+            "all_pairs"),
         "alpha_thresholds": (
             g.get_float("analysis/alpha_immobile", _DEFAULTS["alpha_immobile"]),
             g.get_float("analysis/alpha_confined", _DEFAULTS["alpha_confined"]),
@@ -299,7 +307,8 @@ def _widget_state_snapshot(g, importc) -> dict:
     keys_str = [
         "analysis/bg_method", "analysis/minmass_sensitivity", "analysis/roi_mode",
         "analysis/roi_auto_method", "analysis/roi_mask_mode", "analysis/backend",
-        "analysis/linker", "figures/theme", "figures/proj_cmap",
+        "analysis/linker", "analysis/gap_policy",
+        "figures/theme", "figures/proj_cmap",
     ]
     keys_num = [
         "analysis/bg_radius", "analysis/camera_gain", "analysis/camera_qe",

@@ -360,6 +360,11 @@ class ImportController(QObject):
                 except Exception:
                     self._read_error = ("Couldn't read this file — it may be "
                                         "corrupt or incomplete.")
+            else:
+                shown = ext or "(no extension)"
+                self._read_error = (
+                    f"Unsupported input type {shown}. FIREFLY supports "
+                    ".czi, .tif, .tiff, .csv, .txt and .tsv files.")
         # Fill the sidebar's Imaging-metadata fields from the file (image inputs
         # only; CSVs carry no metadata) unless the user is overriding.
         self._apply_metadata()
@@ -372,7 +377,10 @@ class ImportController(QObject):
         metadata (falling back to the built-in default when the file has none) —
         matching exactly what the run will use when not overriding.  Skipped for
         CSV input (no image metadata) and for a field the user is overriding."""
-        if self._is_csv:
+        # A rejected drop must not reset the user's calibration to defaults.
+        # Keep the helper permissive for its existing direct/test use before a
+        # probe has assigned a format.
+        if self._is_csv or (self._read_error and self._fmt not in ("TIFF", "CZI")):
             return
         if px and not self.overridePx:
             self.pixelSize = float(self._meta_px or DEFAULT_PIXEL_SIZE_UM)

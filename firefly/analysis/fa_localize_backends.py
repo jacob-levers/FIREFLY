@@ -62,6 +62,21 @@ def _localise_chunk(chunk, diameter, minmass, percentile, frame_offset):
     return locs
 
 
+def _balanced_chunk_ranges(n_frames, n_chunks):
+    """Construct the canonical balanced ``[start, stop)`` ranges once."""
+    n_frames = int(n_frames)
+    n_chunks = max(1, min(int(n_chunks), max(n_frames, 1)))
+    base, extra = divmod(n_frames, n_chunks)
+    ranges = []
+    start = 0
+    for index in range(n_chunks):
+        stop = start + base + (1 if index < extra else 0)
+        if stop > start:
+            ranges.append((start, stop))
+        start = stop
+    return ranges
+
+
 def _localise_chunk_mp(args):
     """Picklable wrapper for multiprocessing.Pool.imap_unordered.
     Returns (index, dataframe) so we can preserve order despite unordered iteration."""
@@ -280,9 +295,16 @@ class TrackpyBackend(LocaliserBackend):
         print(f"  Chunks    : {n_chunks} x ~{chunk_size} frames")
 
         t0       = time.perf_counter()
-        chunks   = np.array_split(stack, n_chunks)
-        offsets  = [i * chunk_size for i in range(len(chunks))]
-        chunk_pairs = list(zip(chunks, offsets))
+        # One canonical set of actual ranges drives every path: ordinary MP,
+        # memmap MP, sequential fallback, localisation offsets, and previews.
+        # This prevents a non-divisible stack (1001 frames / 3 chunks) from
+        # acquiring different global frame starts in different branches.
+        chunk_ranges = _balanced_chunk_ranges(n_frames, n_chunks)
+        chunks = [stack[start:stop] for start, stop in chunk_ranges]
+        chunk_pairs = [
+            (chunk, start)
+            for chunk, (start, _stop) in zip(chunks, chunk_ranges)
+        ]
 
         # ── True multi-core via multiprocessing.Pool ──────────────────────
         # Each worker is a separate Python process with its own GIL — N workers
@@ -368,17 +390,12 @@ class TrackpyBackend(LocaliserBackend):
             _hb.start()
 
             if stack_is_memmap:
-                # Build a list of (start, end) slice indices that
-                # mirror what np.array_split would have produced —
-                # but never materialise the chunks in the parent.
-                splits = np.array_split(np.arange(n_frames), n_chunks)
-                slice_ranges = [(int(s[0]), int(s[-1]) + 1) for s in splits if len(s)]
                 dtype_str = str(stack.dtype)
                 shape     = tuple(stack.shape)
                 mp_args = [(i, memmap_path, dtype_str, shape,
                             start, end,
                             diameter, minmass, percentile, start)
-                           for i, (start, end) in enumerate(slice_ranges)]
+                           for i, (start, end) in enumerate(chunk_ranges)]
                 with ProcessPoolExecutor(
                         max_workers=safe_process_workers(n_workers),
                         mp_context=ctx) as pool:
@@ -411,7 +428,7 @@ class TrackpyBackend(LocaliserBackend):
                         # was covering for it on Mac, hence the platform-
                         # specific user-visible regression).
                         _emit_trackpy_chunk_preview(
-                            preview_cb, stack, slice_ranges[idx], result,
+                            preview_cb, stack, chunk_ranges[idx], result,
                             n_frames)
             else:
                 mp_args = [(i, c, diameter, minmass, percentile, o)

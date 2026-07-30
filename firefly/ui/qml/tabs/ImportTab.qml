@@ -242,6 +242,16 @@ Flickable {
                     state: srow.item.selState
                     onClicked: Batch.setChecked(srow.item.key, srow.item.selState !== "on")
                 }
+                Icon {                           // source kind stays visible when collapsed
+                    name: srow.item.sourceType === "external_loc" ? "circle-dot" : "image"
+                    size: 14; color: pal.TXT_MUTED
+                }
+                Badge {
+                    visible: srow.item.sourceType === "external_loc"
+                    text: "TABLE"
+                    tone: pal.ACC
+                    Layout.alignment: Qt.AlignVCenter
+                }
                 Item {                          // name + ROI badge (toggles drawer)
                     Layout.fillWidth: true; Layout.preferredHeight: 30
                     RowLayout {
@@ -270,7 +280,7 @@ Flickable {
                 }
                 Button {                        // Preview & ROI — left of the ×N/size meta
                     variant: "secondary"; text: "Preview & ROI"; icon: "scan-search"
-                    visible: rowHov.hovered || srow.item.hasRoi || srow.st === "running"
+                    visible: srow.item.canPreview && (rowHov.hovered || srow.item.hasRoi || srow.st === "running")
                     onClicked: Roi.editFile(srow.item.primaryPath)
                 }
                 Text { visible: srow.item.fileCount > 1; text: "×" + srow.item.fileCount
@@ -330,7 +340,8 @@ Flickable {
                                 state: modelData.checked ? "on" : "off"
                                 onClicked: Batch.setFileChecked(srow.item.key, index, !modelData.checked)
                             }
-                            Icon { name: modelData.unreadable ? "triangle-alert" : "image"; size: 13
+                            Icon { name: modelData.unreadable ? "triangle-alert"
+                                               : (modelData.sourceType === "external_loc" ? "circle-dot" : "image"); size: 13
                                    color: modelData.unreadable ? pal.DANGER : pal.TXT_MUTED }
                             Text { text: modelData.name
                                    color: modelData.unreadable ? pal.DANGER
@@ -441,7 +452,7 @@ Flickable {
                     spacing: sc.sp1
                     Text { text: "Drop a recording to analyse"; color: pal.TXT
                            font.pixelSize: sc.textLg; font.bold: true }
-                    Text { text: ".tif / .nd2 / .czi · or pick a file below"
+                    Text { text: ".tif / .czi · or pick a file below"
                            color: pal.TXT_MUTED; font.pixelSize: sc.textSm }
                 }
                 Item { Layout.fillWidth: true }
@@ -702,7 +713,7 @@ Flickable {
                             spacing: sc.sp3
                             Button {
                                 variant: "secondary"; text: "Open preview & ROI"; icon: "scan-search"
-                                enabled: Import.hasFile && !Import.isCsv
+                                enabled: Import.hasFile && !Import.isCsv && !Import.hasReadError
                                 onClicked: Roi.editFile(Import.filePath)
                             }
                             Button {
@@ -806,7 +817,7 @@ Flickable {
                         anchors.centerIn: parent; spacing: sc.sp3
                         Icon { name: "upload"; size: 16
                                color: queueDrop.containsDrag ? pal.ACC : pal.TXT_MUTED }
-                        Text { text: "Drag folders or .tif / .czi files here to add them to the queue"
+                        Text { text: "Drag folders or .tif / .czi / .csv / .txt / .tsv files here to add them to the queue"
                                color: queueDrop.containsDrag ? pal.ACC : pal.TXT_MUTED
                                font.pixelSize: sc.textSm }
                     }

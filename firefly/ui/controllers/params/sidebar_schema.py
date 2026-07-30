@@ -80,6 +80,7 @@ _TOOLTIPS = {
     # Diffusion & motion
     "analysis/max_lagtime": "Largest lag (frames) used when building the MSD curve.",
     "analysis/n_fit": "Number of initial MSD points fitted for D and α.",
+    "analysis/gap_policy": "All timestamp pairs uses every localisation pair at the requested true frame lag, including across missing observations. Contiguous observations keeps only uninterrupted runs for compatibility with legacy FIREFLY analyses.",
     "analysis/alpha_immobile": "Anomalous exponent α below this → classed Immobile.",
     "analysis/alpha_confined": "α below this (and above immobile) → Confined.",
     "analysis/alpha_directed": "α above this → Directed / super-diffusive.",
@@ -187,6 +188,9 @@ FIELDS = [
     # ── Diffusion & motion ───────────────────────────────────────────────
     _f("diffusion", "analysis/max_lagtime", "int", "Max lag-time", 20, min=5, max=100, step=1),
     _f("diffusion", "analysis/n_fit", "int", "MSD fit points", 5, min=2, max=20, step=1),
+    _f("diffusion", "analysis/gap_policy", "combo", "Gap handling",
+       "All timestamp pairs",
+       items=["All timestamp pairs", "Contiguous observations (legacy)"]),
     _f("diffusion", "analysis/alpha_immobile", "double", "α immobile", 0.5,
        min=0.0, max=2.0, step=0.01, decimals=2),
     _f("diffusion", "analysis/alpha_confined", "double", "α confined", 0.9,

@@ -14,14 +14,71 @@ import pytest                                          # noqa: E402
 pytest.importorskip("PySide6")
 pytest.importorskip("PySide6.QtQuickWidgets")
 from PySide6 import QtWidgets                           # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer, QUrl  # noqa: E402
 from PySide6.QtQuickWidgets import QQuickWidget         # noqa: E402
 
 _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
-def test_shell_loads_without_qml_errors():
+def test_qml_bootstrap_pins_noninteractive_matplotlib_backend():
+    """Analysis figures render on workers, so the app must never select QtAgg."""
+    import matplotlib
+    from firefly.ui import app_qml  # noqa: F401 - import performs bootstrap
+    assert matplotlib.get_backend().lower() == "agg"
+
+
+def _flush_deferred_deletes():
+    """Destroy Qt/QML objects while their QApplication is still healthy.
+
+    QQuickWidget owns a render-control and a QML engine with native resources.
+    Letting those objects survive until a later Python garbage-collection pass
+    leaves deferred native teardown in the shared event queue and can crash an
+    otherwise unrelated test that next calls ``processEvents()``.
+    """
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    _app.processEvents()
+
+
+@pytest.fixture
+def qml_window(monkeypatch):
+    # The shell's idle resource meter launches platform probes on daemon
+    # threads. It has dedicated controller coverage; a QML composition smoke
+    # should not leave native-process probes racing teardown.
+    from firefly.ui.controllers.analysis_controller import AnalysisController
+    monkeypatch.setattr(AnalysisController, "_sample_resources", lambda self: None)
     from firefly.ui.app_qml import build_main_window
     win, qw = build_main_window(_app)
+    yield win, qw
+    context_objects = tuple(win._firefly_ctx)
+    # Stop every controller-owned timer before dismantling its QML bindings.
+    # These controllers are deliberately unparented because the root context
+    # owns their logical lifetime.
+    for obj in context_objects:
+        for value in vars(obj).values():
+            if isinstance(value, QTimer):
+                value.stop()
+    win.hide()
+    win.close()
+    # Hold ``context_objects`` locally until after the window and both
+    # QQuickWidgets have been destroyed, then break the Python-side cycle.
+    win._firefly_ctx = ()
+    win.deleteLater()
+    _flush_deferred_deletes()
+    from shiboken6 import isValid
+    for obj in context_objects:
+        if isinstance(obj, QCoreApplication):
+            continue
+        if isValid(obj) and getattr(obj, "parent", lambda: None)() is None:
+            obj.deleteLater()
+    _flush_deferred_deletes()
+    # build_main_window installs providers that close over its window.
+    from firefly import crash_reporter
+    crash_reporter.set_app_state_provider(None)
+    crash_reporter.set_log_provider(None)
+
+
+def test_shell_loads_without_qml_errors(qml_window):
+    win, qw = qml_window
     assert qw.status() == QQuickWidget.Status.Ready
     assert qw.errors() == []
     assert qw.rootObject() is not None
@@ -103,28 +160,28 @@ def test_import_controller_probe_and_calibration(tmp_path):
     assert ic.isCsv and ic.fileFormat == "localisations"
 
 
-def test_analysis_tab_qml_loads_without_errors():
+def test_analysis_tab_qml_loads_without_errors(qml_window):
     # The Analysis cockpit only instantiates when routed to tab 1, so load it
     # directly through the configured engine to surface any QML binding errors.
     import os as _os
-    from PySide6.QtCore import QUrl
     from PySide6.QtQml import QQmlComponent
-    from firefly.ui.app_qml import build_main_window, _QML_DIR
-    win, qw = build_main_window(_app)
+    from firefly.ui.app_qml import _QML_DIR
+    _win, qw = qml_window
     comp = QQmlComponent(
         qw.engine(),
         QUrl.fromLocalFile(_os.path.join(_QML_DIR, "tabs", "AnalysisTab.qml")))
     obj = comp.create(qw.rootContext())
     assert comp.errors() == [], comp.errorString()
     assert obj is not None
+    obj.deleteLater()
+    comp.deleteLater()
 
 
-def test_visualise_tab_qml_loads_without_errors():
+def test_visualise_tab_qml_loads_without_errors(qml_window):
     import os as _os
-    from PySide6.QtCore import QUrl
     from PySide6.QtQml import QQmlComponent
-    from firefly.ui.app_qml import build_main_window, _QML_DIR
-    win, qw = build_main_window(_app)
+    from firefly.ui.app_qml import _QML_DIR
+    _win, qw = qml_window
     for rel in (("tabs", "ImportTab.qml"), ("tabs", "VisualiseTab.qml"),
                 ("tabs", "ProcessTab.qml"), ("tabs", "HyperflyTab.qml"),
                 ("HudOverlay.qml",), ("RoiOverlay.qml",),
@@ -134,6 +191,8 @@ def test_visualise_tab_qml_loads_without_errors():
         obj = comp.create(qw.rootContext())
         assert comp.errors() == [], comp.errorString()
         assert obj is not None
+        obj.deleteLater()
+        comp.deleteLater()
 
 
 def test_app_controller_navigation():

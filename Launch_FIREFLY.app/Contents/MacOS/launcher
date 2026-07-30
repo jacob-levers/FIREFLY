@@ -1,16 +1,15 @@
 #!/bin/bash
 # FIREFLY — macOS launcher
 #
-# On first run (or after upgrading from a v1.x install whose venv predates
-# PySide6 / napari / torch) this script:
-#   1. detects the missing venv (or stale one without PySide6),
+# On first run (or after a dependency change) this script:
+#   1. detects a missing or stale virtual environment,
 #   2. opens a Terminal window where the user can watch pip install
 #      progress live — installs take 3–8 minutes on first run depending on
-#      network speed because napari + PyTorch are large wheels,
+#      network speed because PySide6 + PyTorch are large wheels,
 #   3. launches FIREFLY when the install finishes.
 #
-# On subsequent runs (healthy venv present) it launches FIREFLY directly
-# with no Terminal window.
+# A fingerprint of pyproject.toml + the Python ABI detects dependency changes
+# after `git pull`; `pip check` catches a damaged environment.
 
 set -eu
 
@@ -20,7 +19,9 @@ FOLDER="$(cd "$(dirname "$0")/../../.." && pwd)"
 APP="$FOLDER/run_firefly.py"
 VENV="$FOLDER/sptpalm-env"
 VENV_PY="$VENV/bin/python3"
-REQ="$FOLDER/requirements.txt"
+FINGERPRINT_SCRIPT="$FOLDER/scripts/dependency_fingerprint.py"
+IMPORT_CHECK="$FOLDER/scripts/runtime_import_check.py"
+STAMP="$VENV/.firefly-deps.sha256"
 
 # Helper: GUI alert (dialog) via osascript
 alert() {
@@ -41,12 +42,19 @@ if [ -z "$SYS_PY" ]; then
     exit 1
 fi
 
-# ── Check if venv exists AND has PySide6 (i.e. it's a 2.x venv, not a 1.x one) ──
+# ── Check if the venv matches this checkout ──────────────────────────────────
+# An import of one package cannot detect a venv left behind by `git pull` without
+# a newly-added runtime dependency.
 NEEDS_SETUP=0
 if [ ! -f "$VENV_PY" ]; then
     NEEDS_SETUP=1
-elif ! "$VENV_PY" -c "import PySide6" 2>/dev/null; then
-    # venv exists but is from v1.x (Tkinter era) — needs to install Qt + napari
+elif ! CURRENT_FINGERPRINT="$("$VENV_PY" "$FINGERPRINT_SCRIPT" 2>/dev/null)"; then
+    NEEDS_SETUP=1
+elif [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$CURRENT_FINGERPRINT" ]; then
+    NEEDS_SETUP=1
+elif ! "$VENV_PY" "$IMPORT_CHECK" >/dev/null 2>&1; then
+    NEEDS_SETUP=1
+elif ! "$VENV_PY" -m pip check >/dev/null 2>&1; then
     NEEDS_SETUP=1
 fi
 
@@ -54,15 +62,15 @@ fi
 if [ "$NEEDS_SETUP" -eq 1 ]; then
     # Open a Terminal so the user can SEE pip install progress.  Without
     # this the launcher would appear frozen for ~5 minutes during a big
-    # napari + PyTorch download.
+    # PySide6 + PyTorch download.
     /usr/bin/osascript <<EOF
 tell application "Terminal"
     activate
     do script "set -e; cd '$FOLDER'; \
         echo ''; \
         echo '────────────────────────────────────────────────'; \
-        echo '  FIREFLY first-time setup'; \
-        echo '  Installs PySide6, PyTorch, scipy, etc.'; \
+        echo '  FIREFLY setup / dependency update'; \
+        echo '  Installs PySide6, PyTorch, scipy, and FIREFLY.'; \
         echo '  Expect 3-8 minutes depending on network speed.'; \
         echo '────────────────────────────────────────────────'; \
         echo ''; \
@@ -73,8 +81,12 @@ tell application "Terminal"
         echo '> upgrading pip'; \
         sptpalm-env/bin/python3 -m pip install --upgrade pip; \
         echo ''; \
-        echo '> installing requirements (this is the slow step)'; \
-        sptpalm-env/bin/python3 -m pip install -r requirements.txt; \
+        echo '> installing the current FIREFLY package and dependencies'; \
+        sptpalm-env/bin/python3 -m pip install -e .; \
+        sptpalm-env/bin/python3 scripts/runtime_import_check.py; \
+        sptpalm-env/bin/python3 -m pip check; \
+        CURRENT_FINGERPRINT=\$(sptpalm-env/bin/python3 scripts/dependency_fingerprint.py); \
+        printf '%s\\n' \"\$CURRENT_FINGERPRINT\" > sptpalm-env/.firefly-deps.sha256; \
         echo ''; \
         echo '────────────────────────────────────────────────'; \
         echo '  Setup complete — launching FIREFLY...'; \
@@ -87,8 +99,6 @@ EOF
 fi
 
 # ── Normal launch ────────────────────────────────────────────────────────────
-# FIREFLY_UI=qml selects the new QML / Qt Quick front-end.  This launcher is the
-# user-facing entry point; a bare `python run_firefly.py` from a terminal still
-# defaults to the Widgets app unless this env var is set.
+# FIREFLY_UI=qml is retained for compatibility with older launch scripts.
 cd "$FOLDER"
 exec env FIREFLY_UI=qml "$VENV_PY" "$APP"

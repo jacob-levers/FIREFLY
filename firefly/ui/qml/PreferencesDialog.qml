@@ -617,6 +617,10 @@ Item {
                               desc: "How the (measured) step-distance comparison is drawn." }
                     MarkRow { label: "Step speed"; panelKey: "speed"
                               desc: "How the (measured) step-speed comparison is drawn." }
+                    MarkRow { label: "Observed-link distance"; panelKey: "linkstep"
+                              desc: "How displacement between every adjacent observed localisation (including gap-spanning links) is drawn." }
+                    MarkRow { label: "Observed-link speed"; panelKey: "linkspeed"
+                              desc: "How each observed-link displacement divided by its actual elapsed frame time is drawn." }
                     MarkRow { label: "Directionality ratio"; panelKey: "dir"
                               desc: "How the directionality-ratio (net÷path) comparison is drawn." }
                     MarkRow { label: "Track duration"; panelKey: "dur"

@@ -162,7 +162,18 @@ class SidebarController(QObject):
         """Apply a parsed manifest to the sidebar (split out so it's testable
         without a file dialog)."""
         import os
-        self.applyState(manifest.get("widget_state") or {})
+        state = dict(manifest.get("widget_state") or {})
+        # Schema-4 manifests persist the estimator both as a wire value and in
+        # widget state.  Honour the wire value when replaying a manifest whose
+        # UI snapshot predates the sidebar control.
+        if "analysis/gap_policy" not in state:
+            wire = (manifest.get("gap_policy")
+                    or (manifest.get("parameters") or {}).get("gap_policy"))
+            if wire == "contiguous":
+                state["analysis/gap_policy"] = "Contiguous observations (legacy)"
+            elif wire == "all_pairs":
+                state["analysis/gap_policy"] = "All timestamp pairs"
+        self.applyState(state)
 
         # Pin an auto-minmass run's resolved threshold so the replay is exact.
         # An auto-minmass run re-runs the per-file threshold SEARCH on replay,
@@ -172,7 +183,7 @@ class SidebarController(QObject):
         # deterministic.  Only applies to schema≥3 manifests from auto runs.
         pinned = None
         rmm = manifest.get("resolved_minmass")
-        ws = manifest.get("widget_state") or {}
+        ws = state
         if rmm is not None and bool(ws.get("analysis/auto_minmass")):
             try:
                 pinned = float(rmm)

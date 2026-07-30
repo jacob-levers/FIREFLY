@@ -15,12 +15,17 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 before June 2026 deadline
 
 jobs:
-  # ──────────────────────────────────────────────────────────────────────────
-  #  macOS  →  FIREFLY.app  →  FIREFLY-macOS.dmg
-  # ──────────────────────────────────────────────────────────────────────────
-  build-macos:
-    runs-on: macos-latest          # arm64 (M-series); change to macos-13 for Intel
-
+  # Tags are a separate workflow from tests.yml, so they need their own gate.
+  # Without this job a tag can publish binaries from a commit that never passed
+  # either the normal test matrix or the Qt/QML surface.
+  release-validate:
+    runs-on: ubuntu-latest
+    name: release validation (tests + Qt + package metadata)
+    env:
+      MPLBACKEND: Agg
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      LIBGL_ALWAYS_SOFTWARE: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,51 +33,195 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          # MUST match the shipped stack in requirements.txt: numpy 1.x + napari
-          # 0.4 + torch 2.5 on Python 3.12.  3.13 breaks the build — numpy 1.26
-          # has no cp313 wheels, so pip builds it from source into an experimental
-          # MinGW numpy that segfaults inside PyInstaller's collect_submodules
-          # (exit 0xC0000005).  Bump to 3.13 only with the numpy-2 / napari-0.6
-          # migration (see requirements.txt).
+          python-version: "3.12"
+
+      - name: Validate tag, shared version, and changelog agreement
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          expected="${GITHUB_REF#refs/tags/v}"
+          actual="$(python -c 'from firefly.release import __version__; print(__version__)')"
+          if [[ "$expected" != "$actual" ]]; then
+            echo "Tag v${expected} does not match firefly.release ${actual}" >&2
+            exit 1
+          fi
+          awk -v heading="## v${expected} — " \
+            'index($0, heading) == 1 { found=1 } END { exit(found ? 0 : 1) }' \
+            CHANGELOG.md || {
+              echo "CHANGELOG.md has no exact heading for v${expected}" >&2
+              exit 1
+            }
+
+      - name: Install full application and test stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
+          pip install -e ".[dev]"
+
+      - name: Run release tests (including slow regressions)
+        run: pytest
+
+      - name: Build package distributions
+        run: |
+          python -m build
+          tar -tf dist/*.tar.gz | grep -q 'firefly/ui/qml/Main.qml'
+          tar -tf dist/*.tar.gz | grep -q 'firefly/ui/presets/PC12 Cells.json'
+
+      - name: Clean-install and smoke-test the wheel
+        shell: bash
+        run: |
+          venv="$RUNNER_TEMP/firefly-release-wheel"
+          python -m venv "$venv"
+          wheel="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          "$venv/bin/python" -m pip install --upgrade pip
+          "$venv/bin/python" -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
+          "$venv/bin/python" -m pip install "$wheel"
+          "$venv/bin/python" -m pip check
+          (
+            cd "$RUNNER_TEMP"
+            "$venv/bin/python" -c '
+          import os
+          from importlib.resources import files
+          import firefly
+          import firefly.__main__
+          import firefly.ui.controllers
+          root = files("firefly")
+          required = (
+              "ui/qml/Main.qml",
+              "ui/assets/preview_panels/A.png",
+              "ui/presets/PC12 Cells.json",
+              "ui/controllers/app_controller.py",
+          )
+          missing = [p for p in required if not root.joinpath(p).is_file()]
+          assert not missing, missing
+          assert not os.path.abspath(firefly.__file__).startswith(os.environ["GITHUB_WORKSPACE"])
+          '
+          )
+
+      - name: Start the clean-installed wheel outside the checkout
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          marker="$RUNNER_TEMP/firefly-release-ready.marker"
+          log="$RUNNER_TEMP/firefly-release-smoke.log"
+          rm -f "$marker" "$log"
+          QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+            LIBGL_ALWAYS_SOFTWARE=1 SPTPALM_READY_MARKER="$marker" \
+            "$RUNNER_TEMP/firefly-release-wheel/bin/python" -m firefly \
+            >"$log" 2>&1 &
+          pid=$!
+          ready=0
+          for _ in $(seq 1 120); do
+            if [[ -f "$marker" ]]; then ready=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || true
+              cat "$log" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" || true
+          if [[ "$ready" != 1 ]]; then
+            cat "$log" || true
+            exit 1
+          fi
+
+  # ──────────────────────────────────────────────────────────────────────────
+  #  macOS arm64  →  FIREFLY.app  →  FIREFLY-macOS-arm64.dmg
+  # ──────────────────────────────────────────────────────────────────────────
+  build-macos:
+    needs: release-validate
+    runs-on: macos-latest          # arm64 (M-series); change to macos-13 for Intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assert Apple-Silicon runner
+        run: |
+          test "$(uname -m)" = "arm64"
+          python -c 'import platform; assert platform.machine().lower() == "arm64"'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # PyInstaller is pinned and validated on 3.12; the runtime project
+          # itself supports 3.12/3.13 with NumPy 2 and no napari dependency.
           python-version: "3.12"
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -e .
           pip install "pyinstaller==6.11.1"   # pinned for reproducible Tcl/Tk bundling behaviour
 
-      - name: Inject release tag into __version__
-        # Rewrite `__version__ = "..."` in sptpalm_analysis.py to match
-        # the git tag this build was triggered by — guarantees the
-        # bundled binary always reports the exact version it shipped
-        # under, so the in-app update checker doesn't nag users who
-        # already have the latest release.
-        # Script is written to a temp .py file rather than passed via
-        # `python -c "…"` — keeps the regex out of shell escaping land
-        # and matches the Windows job's structure exactly so the two
-        # paths can't drift.
+      - name: Inject release tag into shared release metadata
+        # One shared helper keeps source metadata, the pyproject dynamic version,
+        # and the macOS bundle plist aligned with the release tag.
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          echo "Stamping __version__ = ${TAG}"
-          export FIREFLY_BUILD_TAG="${TAG}"
-          cat > stamp_version.py <<'PYEOF'
-          import os, re, pathlib
-          tag = os.environ['FIREFLY_BUILD_TAG']
-          p = pathlib.Path('firefly/sptpalm_analysis.py')
-          t = p.read_text(encoding='utf-8')
-          t = re.sub(r'^__version__ = ".*"',
-                     f'__version__ = "{tag}"',
-                     t, count=1, flags=re.M)
-          p.write_text(t, encoding='utf-8')
-          PYEOF
-          python stamp_version.py
-          rm stamp_version.py
-          grep '^__version__' firefly/sptpalm_analysis.py
+          echo "Stamping release version = ${TAG}"
+          python scripts/stamp_version.py "${TAG}"
+          grep '^__version__' firefly/release.py
 
       - name: Build .app
+        env:
+          FIREFLY_BUILD_NUMBER: ${{ github.run_number }}
         run: pyinstaller sptpalm.spec --noconfirm --clean
+
+      - name: Verify bundle version metadata
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            expected="${GITHUB_REF#refs/tags/v}"
+          else
+            expected="$(python -c 'from firefly.ui._appversion import app_version; print(app_version())')"
+          fi
+          short=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/FIREFLY.app/Contents/Info.plist)
+          build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/FIREFLY.app/Contents/Info.plist)
+          release=$(/usr/libexec/PlistBuddy -c 'Print :FIREFLYReleaseVersion' dist/FIREFLY.app/Contents/Info.plist)
+          [[ "$short" == "${expected%%-*}" ]]
+          [[ "$build" == "$GITHUB_RUN_NUMBER" ]]
+          [[ "$release" == "$expected" ]]
+          echo "Info.plist versions OK: ${short} (build ${build}; FIREFLY ${release})"
+
+      - name: Smoke test (.app)
+        shell: bash
+        run: |
+          marker="$RUNNER_TEMP/sptpalm_macos_ready.marker"
+          log="$RUNNER_TEMP/sptpalm_macos_smoke.log"
+          rm -f "$marker" "$log"
+          export SPTPALM_READY_MARKER="$marker"
+          export QT_QPA_PLATFORM=offscreen
+          export QT_QUICK_BACKEND=software
+          export LIBGL_ALWAYS_SOFTWARE=1
+          "dist/FIREFLY.app/Contents/MacOS/FIREFLY" >"$log" 2>&1 &
+          pid=$!
+          ready=0
+          for _ in $(seq 1 120); do
+            if [[ -f "$marker" ]]; then ready=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || true
+              echo "FATAL: FIREFLY.app exited before the ready marker"
+              cat "$log" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != 1 ]]; then
+            echo "FATAL: FIREFLY.app did not signal ready within 120 seconds"
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" || true
+            cat "$log" || true
+            exit 1
+          fi
+          echo "OK: FIREFLY.app wrote the ready marker"
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" || true
 
       - name: Create DMG
         # hdiutil intermittently returns "Resource busy" on GitHub's
@@ -103,7 +252,7 @@ jobs:
                 -volname "FIREFLY" \
                 -srcfolder "dist/FIREFLY.app" \
                 -ov -format UDZO \
-                "dist/FIREFLY-macOS.dmg"; then
+                "dist/FIREFLY-macOS-arm64.dmg"; then
               echo "DMG created on attempt $attempt"
               break
             fi
@@ -115,24 +264,20 @@ jobs:
             echo "  → 'Resource busy' or similar; sleeping ${backoff}s before retry"
             sleep $backoff
           done
-
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FIREFLY-macOS
-          path: dist/FIREFLY-macOS.dmg
+          name: FIREFLY-macOS-arm64
+          path: dist/FIREFLY-macOS-arm64.dmg
           retention-days: 30
 
       - name: Release notes from CHANGELOG
         # The release body (what the in-app "Updates" card shows) is the CHANGELOG
-        # section for this version.  Prefer the EXACT tag's entry (e.g. an -rc.N
-        # heading during a pre-release cycle); only fall back to the stable base
-        # heading (v2.76.45) when the exact one isn't present.  Exact-substring
-        # match (no regex → dots safe).
+        # section for this exact version. Release validation already requires
+        # that heading, so a fallback could only hide a broken release contract.
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           FULL="${GITHUB_REF#refs/tags/v}"      # e.g. 2.76.45-rc.6
-          BASE="${FULL%%-*}"                     # e.g. 2.76.45
           extract() {
             awk -v v="$1" '
               index($0, "## v" v " ")==1 {grab=1; print; next}
@@ -141,15 +286,14 @@ jobs:
             ' CHANGELOG.md
           }
           extract "$FULL" > RELEASE_NOTES.md
-          [ -s RELEASE_NOTES.md ] || extract "$BASE" > RELEASE_NOTES.md
-          [ -s RELEASE_NOTES.md ] || echo "See the CHANGELOG for details." > RELEASE_NOTES.md
+          test -s RELEASE_NOTES.md
           echo "---- release notes ----"; cat RELEASE_NOTES.md
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/FIREFLY-macOS.dmg
+          files: dist/FIREFLY-macOS-arm64.dmg
           body_path: RELEASE_NOTES.md
           # A tag with a pre-release suffix (e.g. v2.76.39-rc.1) publishes a
           # GitHub *pre-release* — the Pre-release update channel installs it,
@@ -159,15 +303,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ──────────────────────────────────────────────────────────────────────────
-  #  Windows  →  FIREFLY folder  →  FIREFLY-Windows.zip
+  #  Windows  →  FIREFLY.exe
   # ──────────────────────────────────────────────────────────────────────────
   build-windows:
+    needs: release-validate
     runs-on: windows-latest
-    # Independent of the macOS job — if the Mac build fails (or is
-    # skipped on a Windows-only run) we still want the Windows .exe
-    # to be built and attached to the release.  softprops/action-gh-release
-    # creates the release if it doesn't exist yet and appends assets to
-    # it if another job already did.
+    # Both platform artifacts wait for the release-validation job, but build and
+    # upload independently once that gate has passed.
 
     steps:
       - name: Checkout
@@ -176,9 +318,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          # Pin 3.12 to match requirements.txt's shipped stack — 3.13 has no
-          # numpy-1.26 wheel and pip's source build produces an experimental
-          # MinGW numpy that segfaults in PyInstaller (see the macOS job).
+          # PyInstaller is pinned and validated on 3.12; the runtime project
+          # itself supports 3.12/3.13 with NumPy 2 and no napari dependency.
           python-version: "3.12"
 
       - name: Install dependencies
@@ -196,52 +337,24 @@ jobs:
         # interpreter, which has no asset-size constraint.
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
+          pip install -e .
           pip install "pyinstaller==6.11.1"   # pinned for reproducible bundling behaviour
 
-      - name: Inject release tag into __version__
-        # Same idea as the macOS job — stamp the build with the git
-        # tag so the bundled binary reports its real version and the
-        # in-app update checker doesn't keep nagging users who have
-        # the latest release.
-        #
-        # The Python script is written to a TEMP .py file rather than
-        # being inlined into the run-script — earlier attempts at
-        # `python -c "…\".*\"…"` ran into PowerShell parsing the
-        # escaped quotes before Python ever saw the source.  Reading
-        # from a real file dodges every layer of shell escaping.
-        #
-        # UTF-8 explicit because the source contains non-ASCII box-
-        # drawing characters in the release-checklist comment block
-        # above `__version__` — Windows' default cp1252 chokes on
-        # them otherwise.
+      - name: Inject release tag into shared release metadata
+        # Use the same cross-platform stamping helper as the macOS build.
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
-          Write-Host "Stamping __version__ = $tag"
-          $env:FIREFLY_BUILD_TAG = $tag
-          # Heredoc-equivalent: ConvertFrom-StringData would mangle
-          # the Python source.  Just use a plain Set-Content with a
-          # multi-line literal, then run the file.
-          @'
-          import os, re, pathlib
-          tag = os.environ['FIREFLY_BUILD_TAG']
-          p = pathlib.Path('firefly/sptpalm_analysis.py')
-          t = p.read_text(encoding='utf-8')
-          t = re.sub(r'^__version__ = ".*"',
-                     f'__version__ = "{tag}"',
-                     t, count=1, flags=re.M)
-          p.write_text(t, encoding='utf-8')
-          '@ | Set-Content -Encoding UTF8 -Path stamp_version.py
-          python stamp_version.py
+          Write-Host "Stamping release version = $tag"
+          python scripts/stamp_version.py $tag
           if ($LASTEXITCODE -ne 0) { Write-Error "Version stamp failed"; exit 1 }
-          Remove-Item stamp_version.py
-          Select-String -Path firefly/sptpalm_analysis.py -Pattern '^__version__'
+          Select-String -Path firefly/release.py -Pattern '^__version__'
 
       - name: Build exe (onefile)
         # Spec produces a single self-contained FIREFLY.exe.  All binaries
-        # (Qt, napari, torch, scientific Python) bundled inside; extracted
+        # (Qt, torch, scientific Python) bundled inside; extracted
         # to %TEMP% at runtime — no chance of user extraction dropping files.
         run: pyinstaller sptpalm.spec --noconfirm --clean
 
@@ -299,7 +412,7 @@ jobs:
             Start-Sleep -Milliseconds 500
           }
           if (-not $ready) {
-            Write-Error "FATAL: app did not signal ready within 60s — startup crash hidden by error dialog"
+            Write-Error "FATAL: app did not signal ready within 120s — startup crash hidden by error dialog"
             try { $proc.Kill() } catch {}
             exit 1
           }
@@ -352,7 +465,6 @@ jobs:
         shell: pwsh
         run: |
           $full = ($env:GITHUB_REF -replace '^refs/tags/v','')   # 2.76.45-rc.6
-          $base = $full -replace '-.*',''                         # 2.76.45
           function Extract($v) {
             $prefix = "## v$v "
             $out = @(); $grab = $false
@@ -363,9 +475,8 @@ jobs:
             }
             return $out
           }
-          $out = Extract $full                       # prefer the exact tag's entry
-          if ($out.Count -eq 0) { $out = Extract $base }   # else the stable base
-          if ($out.Count -eq 0) { $out = @("See the CHANGELOG for details.") }
+          $out = Extract $full
+          if ($out.Count -eq 0) { throw "Missing exact CHANGELOG entry for v$full" }
           ($out -join "`n") | Set-Content -Encoding UTF8 RELEASE_NOTES.md
           Write-Host "---- release notes ----"; Get-Content RELEASE_NOTES.md
 
