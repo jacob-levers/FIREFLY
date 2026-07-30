@@ -367,13 +367,19 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
         net_disp    = float(np.sqrt(np.sum((xy_um[-1] - xy_um[0]) ** 2)))
         directionality = float(net_disp / path_length) if path_length > 0 else 0.0
     else:
-        path_length = 0.0
         mean_link_displacement = np.nan
         mean_link_speed = np.nan
         mean_step   = np.nan                          # no unit-frame step to measure
         n_single_frame_steps = 0
-        net_disp    = 0.0
-        directionality = 0.0
+        # A SINGLE localisation is not a trajectory: its geometry is
+        # unmeasurable, not measured-as-zero.  Reporting 0.0 here silently
+        # counted such entries as genuinely static tracks and dragged every
+        # geometry median toward zero — palmTRACER exports are ~46% one-point
+        # entries, so the distortion is large.  Retaining true zeros (a 2+ point
+        # track that did not move) is still correct and unaffected.
+        path_length = np.nan
+        net_disp    = np.nan
+        directionality = np.nan
 
     # Localisation precision from the fitted MSD offset.  Static localisation
     # error adds a constant 4·sigma² to the 2D MSD (sigma = 1D per-axis

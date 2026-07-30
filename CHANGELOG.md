@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.76.45-rc.12 — 30 Jul 2026
+
+### Fixed
+
+- **palmTRACER data now populates the new graphs.** Folders opened by an earlier
+  FIREFLY kept a cached results table that predated the newer measurements, and
+  FIREFLY reused it — so Net displacement, Path length, Directionality, Step
+  distance and Step speed were silently blank for palmTRACER data (Radius of
+  gyration, D, alpha and MSD-AUC were unaffected). A palmTRACER cache older than
+  the current measurement set is now refreshed automatically on load. FIREFLY's
+  own run folders are never recomputed — their raw movie may be gone, so what was
+  saved is what you see.
+- **Step speed, MSD@1s and duration no longer read blank for palmTRACER runs.**
+  Those folders record the frame interval in their parameters file rather than the
+  summary file, so every time-dependent metric had no Δt to work with.
+- **A single localisation is no longer treated as a stationary track.** One
+  localisation gives no displacement, so its path length, net displacement,
+  directionality and step distance are now reported as unavailable instead of
+  zero. palmTRACER exports are ~46% single-localisation entries, and counting
+  those as measured zeros pulled the reported medians down about five-fold — on
+  real data, directionality 0.62 to 0.11 and path length 0.20 to 0.04 um. A track
+  with two or more localisations that genuinely did not move still reports its
+  true zeros.
+
 ## v2.76.45-rc.11 — 30 Jul 2026
 
 ### Fixed

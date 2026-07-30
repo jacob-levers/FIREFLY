@@ -155,10 +155,22 @@ def test_offset_dominated_nonzero_track_has_its_own_status_and_finite_D():
     assert row["motion"] == "Immobile"
 
 
-def test_singleton_track_has_finite_zero_directionality():
+def test_singleton_track_geometry_is_unmeasurable_not_zero():
+    """REVERSAL of an earlier choice to report finite 0.0 here.
+
+    One localisation yields no displacement at all, so path / net / directionality
+    are undefined — 0/0 for the ratio.  Reporting 0.0 made these entries look like
+    genuinely static tracks and pulled them into every median.  Measured on real
+    palmTRACER output (46% of its exported entries are single localisations) the
+    distortion was ~5x: directionality 0.62 -> 0.11, path length 0.20 -> 0.04 µm.
+    Retaining true zeros for a 2+ point track that did not move is unaffected and
+    still correct (see the below-resolution test above)."""
     _, _, diff = compute_msd_and_fit(
         _tracks([4], [2.5]), 1.0, 1.0, max_lagtime=3, n_fit=3, workers=1)
-    assert diff.loc[0, "directionality_ratio"] == pytest.approx(0.0)
+    row = diff.loc[0]
+    for col in ("directionality_ratio", "path_length_um",
+                "net_displacement_um", "mean_step_um"):
+        assert np.isnan(row[col]), f"{col} must be NaN for a single localisation"
 
 
 def test_mss_shares_the_timestamp_gap_policy():
@@ -358,3 +370,35 @@ def test_dwell_is_exactly_one_frame_longer_than_duration():
     total = float(dw.iloc[0]["dwell_time_total_s"])
     assert total == pytest.approx(n * dt)                      # occupancy = 12 × dt
     assert total - duration == pytest.approx(dt)               # exactly one frame
+
+
+# ── a single localisation is not a trajectory ─────────────────────────────────
+def test_single_localisation_has_undefined_geometry_not_zero():
+    """One localisation cannot yield a displacement, so path/net/directionality
+    must be NaN.  Reporting 0.0 counted such entries as genuinely static tracks
+    and dragged geometry medians toward zero — palmTRACER exports are ~46%
+    one-point entries, so the distortion was large."""
+    import numpy as np, pandas as pd
+    from firefly.analysis.fa_diffusion import compute_msd_and_fit
+    tr = pd.DataFrame({"particle": [0], "frame": [5], "x": [1.0], "y": [2.0]})
+    _i, _e, diff = compute_msd_and_fit(tr, 1.0, 0.02, max_lagtime=5, n_fit=4,
+                                       workers=1)
+    row = diff.iloc[0]
+    for col in ("path_length_um", "net_displacement_um", "directionality_ratio",
+                "mean_step_um"):
+        assert not np.isfinite(row[col]), f"{col} should be NaN for a 1-point entry"
+
+
+def test_a_static_multi_point_track_still_reports_true_zeros():
+    """The counterpart: a track with 2+ localisations that genuinely did not move
+    keeps its measured zeros — those are data, not missing."""
+    import numpy as np, pandas as pd
+    from firefly.analysis.fa_diffusion import compute_msd_and_fit
+    tr = pd.DataFrame({"particle": [0]*4, "frame": [0, 1, 2, 3],
+                       "x": [1.0]*4, "y": [2.0]*4})
+    _i, _e, diff = compute_msd_and_fit(tr, 1.0, 0.02, max_lagtime=3, n_fit=3,
+                                       workers=1)
+    row = diff.iloc[0]
+    assert row["path_length_um"] == 0.0
+    assert row["net_displacement_um"] == 0.0
+    assert np.isfinite(row["mean_step_um"]) and row["mean_step_um"] == 0.0

@@ -90,6 +90,19 @@ class RunData:
         fi = self.summary.get("fi_s")
         self.fi_s = float(fi) if fi else None
         self._cache: dict = {}
+        if self.fi_s is None:
+            # palmTRACER-derived folders record calibration in <stem>_params.json
+            # and write no summary_metrics.json, so without this fallback every
+            # Δt-dependent metric (step speed, MSD@1s, duration) reads blank.
+            try:
+                pj = os.path.join(extras_dir, f"{stem}_params.json")
+                if os.path.isfile(pj):
+                    with open(pj) as fh:
+                        _p = json.load(fh)
+                    _fi = _p.get("frame_interval_s")
+                    self.fi_s = float(_fi) if _fi else None
+            except Exception:
+                pass
         try:
             self.metrics_schema_version = int(
                 self.summary.get("metrics_schema_version") or 1)
@@ -746,9 +759,51 @@ def _is_palmtracer_dir(folder: str) -> bool:
         return False
 
 
+# Per-track columns a CURRENT derivation writes.  A palmTRACER cache written by
+# an older FIREFLY lacks them, which silently blanks the graphs that read them.
+_CURRENT_TRACK_COLUMNS = ("path_length_um", "net_displacement_um",
+                          "directionality_ratio", "mean_step_um",
+                          "track_duration_s")
+
+
+def _palmtracer_cache_is_stale(folder: str, extras_dir: str, stem: str) -> bool:
+    """True when *folder* is palmTRACER output whose cached per-track table
+    predates the current metric set.
+
+    Only palmTRACER folders qualify: their source files sit right beside the
+    cache, so re-deriving is cheap and lossless.  A FIREFLY run folder is never
+    touched — its raw movie may be long gone, and silently recomputing someone's
+    recorded output would be worse than showing what was actually saved.
+    """
+    if not _is_palmtracer_dir(folder):
+        return False
+    path = os.path.join(extras_dir, f"{stem}_diffusion_summary.csv")
+    if not os.path.isfile(path):
+        return True
+    try:
+        cols = set(pd.read_csv(path, nrows=0).columns)
+    except Exception:
+        return False
+    return not set(_CURRENT_TRACK_COLUMNS).issubset(cols)
+
+
 def load_run(folder: str) -> Optional[RunData]:
     """Load one analysis-output run folder, or ``None`` if it isn't one."""
     resolved = _resolve_extras(folder)
+    # Refresh a palmTRACER cache that predates the current metrics, so the
+    # geometry/time graphs are populated instead of silently empty.
+    if resolved is not None and _palmtracer_cache_is_stale(folder, *resolved):
+        try:
+            # Must go through load_summary_from_palmtracer: the generic loader
+            # would find the existing firefly_extras and hand back the very
+            # stale cache we are trying to replace.  cache=True rewrites it.
+            from firefly.analysis.fa_palmtracer import (
+                load_summary_from_palmtracer, _is_palmtracer_folder)
+            if _is_palmtracer_folder(folder):
+                load_summary_from_palmtracer(folder, cache=True)
+                resolved = _resolve_extras(folder) or resolved
+        except Exception:
+            pass                            # keep the old cache rather than fail
     if resolved is None and _is_palmtracer_dir(folder):
         # Raw palmTRACER: let the analysis loader derive FIREFLY's metrics.  It
         # caches them into <folder>/firefly_extras (cache=True), after which the
