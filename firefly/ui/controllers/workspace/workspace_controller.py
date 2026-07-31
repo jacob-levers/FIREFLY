@@ -1611,6 +1611,58 @@ class AnalysisWorkspaceController(QObject):
             self._render_panel_async()
 
     # ════════════════ QML PROPERTIES ════════════════════════════════════
+    @Property("QVariantMap", notify=conditionsChanged)
+    def legacyDataWarning(self):
+        """Which loaded runs were produced by an older FIREFLY.
+
+        Geometry columns are backfilled from the cached trajectories on load, so
+        those graphs render — but D, α, MSD and the motion classes were computed
+        by the OLD estimators and are NOT recomputed (that would rewrite recorded
+        results).  Before the gap-aware fix those numbers can be materially wrong
+        on runs linked with memory > 0, so the user needs to be told.
+
+        ``key`` changes only when the offending set changes, so the UI can show
+        this once per set instead of on every recompute.
+        """
+        legacy = []
+        for c in self._conditions:
+            for f in c.folders:
+                run = f.run
+                if run is None:
+                    continue
+                if int(getattr(run, "metrics_schema_version", 1)) < 2:
+                    legacy.append(os.path.basename(str(f.path).rstrip("/\\")))
+        if not legacy:
+            return {"show": False, "key": "", "count": 0,
+                    "title": "", "text": "", "names": []}
+        legacy = sorted(set(legacy))
+        n = len(legacy)
+        shown = ", ".join(legacy[:4]) + (f" and {n - 4} more" if n > 4 else "")
+        return {
+            "show": True,
+            "key": "|".join(legacy),
+            "count": n,
+            "names": legacy,
+            "title": "Processed by an older FIREFLY",
+            "text": (
+                f"{n} of the loaded run{'s' if n != 1 else ''} "
+                f"({shown}) {'were' if n != 1 else 'was'} analysed with an "
+                f"older version of FIREFLY, so some results may not render "
+                f"correctly or may not be directly comparable.\n\n"
+                f"Track geometry (net displacement, path length, "
+                f"directionality, step distance, duration) has been filled in "
+                f"automatically from the saved trajectories, so those graphs "
+                f"are correct.\n\n"
+                f"Diffusion D, the anomalous exponent α, MSD and the motion "
+                f"classes are shown exactly as they were originally saved — "
+                f"they are not recalculated, because that would overwrite your "
+                f"recorded results. If those runs used memory-linking "
+                f"(memory > 0), a gap-handling fix means their D and α can "
+                f"differ substantially from a fresh analysis. Re-analysing "
+                f"those movies is recommended before combining them with newer "
+                f"runs or publishing."),
+        }
+
     @Property("QVariantList", notify=conditionsChanged)
     def conditions(self):
         out = []

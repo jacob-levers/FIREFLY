@@ -235,6 +235,36 @@ def _parse_pt_native_msd(path, max_lagtime=20):
 PALMTRACER_MIN_TRACK_LEN = 8
 
 
+def _to_jsonable(obj):
+    """Recursively convert numpy/pandas values to JSON-native types.
+
+    Needed for the cached JDD blob: ``json.dump(..., default=str)`` turns a numpy
+    array into its *repr*, which numpy TRUNCATES ("[0.02 0.05 ... 0.01]").  That
+    silently destroyed the jump distribution — the file looked fine but its
+    ``jumps`` field was an abbreviated string, so nothing could read it back.
+    """
+    if isinstance(obj, dict):
+        return {str(k): _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [_to_jsonable(v) for v in obj.tolist()]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        val = float(obj)
+        return val if np.isfinite(val) else None
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, float):
+        return obj if np.isfinite(obj) else None
+    if isinstance(obj, (str, int, bool)) or obj is None:
+        return obj
+    if hasattr(obj, "tolist"):                      # pandas Series / Index
+        return _to_jsonable(obj.tolist())
+    return str(obj)
+
+
 def load_summary_from_palmtracer(folder, use_native=False, cache=True,
                                  min_track_len=PALMTRACER_MIN_TRACK_LEN):
     """
@@ -375,9 +405,10 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True,
     except Exception:
         jdd = None
     try:
-        dwell_df, _ = compute_dwell_times(tracks, diff_df, frame_interval_s)
+        dwell_df, dwell_tau = compute_dwell_times(tracks, diff_df, frame_interval_s)
     except Exception:
         dwell_df = None
+        dwell_tau = None
     try:
         ta_deg = compute_turning_angles(tracks)
     except Exception:
@@ -425,10 +456,54 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True,
                 "min_track_len":    int(min_track_len or 0),
                 "source":           "palmtracer (re-derived)",
             }, _fp, indent=2)
+
+        # ── summary_metrics.json ──────────────────────────────────────────
+        # The Analysis tab's per-metric scalars read RunData.summary, which is
+        # populated from THIS file.  Without it a palmTRACER folder showed blank
+        # Diffusion D / alpha / mobile fraction / motion classes / track length /
+        # dwell time even though the values were sitting in the tables next to it.
+        try:
+            from firefly.analysis.fa_diffusion import (
+                DIFFUSION_METRICS_SCHEMA_VERSION, MOBILE_D_THRESHOLD_DEFAULT)
+            _d = pd.to_numeric(diff_df.get("D"), errors="coerce")
+            _a = pd.to_numeric(diff_df.get("alpha"), errors="coerce")
+            _lens = tracks.groupby("particle").size()
+            _mobile = (float((_d >= MOBILE_D_THRESHOLD_DEFAULT).sum()
+                             / _d.notna().sum())
+                       if _d is not None and _d.notna().any() else None)
+            _summary = {
+                "stem":            stem,
+                "px_um":           float(pixel_size_um),
+                "fi_s":            float(frame_interval_s),
+                "frames":          int(n_frames),
+                "n_tracks":        int(diff_df.shape[0]),
+                "n_locs":          int(len(locs)),
+                "median_d":        (float(_d.median()) if _d.notna().any() else None),
+                "median_alpha":    (float(_a.median()) if _a.notna().any() else None),
+                "mobile_fraction": _mobile,
+                "motion_counts":   {str(k): int(v) for k, v in
+                                    diff_df["motion"].value_counts().items()}
+                                   if "motion" in diff_df.columns else {},
+                "dwell_tau_s":     (float(dwell_tau)
+                                    if dwell_tau is not None
+                                    and np.isfinite(dwell_tau) else None),
+                "qc": {"median_track_length": (float(_lens.median())
+                                               if len(_lens) else None),
+                       "flags": []},
+                # Derived by the CURRENT pipeline, so it is not legacy data.
+                "metrics_schema_version": int(DIFFUSION_METRICS_SCHEMA_VERSION),
+                "gap_policy":      "all_pairs",
+                "source":          "palmtracer (re-derived)",
+            }
+            with open(os.path.join(extras_dir,
+                                   f"{stem}_summary_metrics.json"), "w") as _fp:
+                _json.dump(_summary, _fp, indent=2)
+        except Exception as _sm_exc:
+            print(f"  NOTE: could not write summary metrics for {stem} "
+                  f"({_sm_exc}); the Analysis tab's D / alpha cards will be blank.")
         if jdd:
             with open(os.path.join(extras_dir, f"{stem}_jdd.json"), "w") as _fp:
-                _json.dump(_to_jsonable(jdd) if "_to_jsonable" in globals() else jdd,
-                           _fp, indent=2, default=str)
+                _json.dump(_to_jsonable(jdd), _fp, indent=2)
         if dwell_df is not None and len(dwell_df):
             atomic_to_csv(dwell_df, 
                 os.path.join(extras_dir, f"{stem}_dwell_times.csv"), index=False)

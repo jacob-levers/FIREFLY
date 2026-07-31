@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.76.45-rc.14 — 30 Jul 2026
+
+### Fixed
+
+- **Runs analysed by an older FIREFLY now fill in the newer graphs.** Net
+  displacement, path length, directionality, step distance and track duration
+  were blank for every run made before those measurements existed. They are
+  derived from each run's saved trajectories on load, so no re-analysis and no
+  original movie is needed. Diffusion D, the anomalous exponent, MSD and the
+  motion classes are deliberately left exactly as they were saved — recomputing
+  them would overwrite your recorded results.
+- **A warning now appears when you load older data.** The Analysis tab explains
+  which runs were made with an older FIREFLY, which of their numbers are
+  trustworthy, and that D and the anomalous exponent can differ substantially
+  from a fresh analysis if the run used memory-linking. It appears once per set
+  of folders rather than on every change.
+- **palmTRACER folders no longer show blank Diffusion D, anomalous exponent,
+  mobile fraction, motion classes, track length or dwell time.** Those cards
+  read a summary file that the palmTRACER import never wrote, even though the
+  values were already sitting in the tables beside it.
+- **Jump-distance data was being corrupted when saved.** The jump distribution
+  was written to disk as an abbreviated text summary rather than numbers, so it
+  could not be read back and the Jump distance graph stayed empty for palmTRACER
+  imports. It is now stored as real values.
+
 ## v2.76.45-rc.13 — 30 Jul 2026
 
 ### Changed

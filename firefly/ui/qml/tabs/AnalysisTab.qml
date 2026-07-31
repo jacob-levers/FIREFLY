@@ -1617,4 +1617,41 @@ Item {
 
     // ════ destructive-action confirmation ════
     ConfirmModal { id: confirmDelete }
+
+    // ════ older-FIREFLY data warning ════
+    // Shown once per distinct set of legacy runs (keyed on their names) rather
+    // than on every recompute, so it informs without nagging.
+    property string ackedLegacyKey: ""
+    readonly property var legacyInfo: Analysis.legacyDataWarning
+
+    onLegacyInfoChanged: {
+        if (legacyInfo && legacyInfo.show && legacyInfo.key !== root.ackedLegacyKey)
+            legacyModal.open()
+    }
+
+    Modal {
+        id: legacyModal
+        title: root.legacyInfo ? (root.legacyInfo.title || "") : ""
+        onClosed: root.ackedLegacyKey = root.legacyInfo ? (root.legacyInfo.key || "") : ""
+
+        Text {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            text: root.legacyInfo ? (root.legacyInfo.text || "") : ""
+            color: pal.TXT_MUTED
+            font.pixelSize: sc.textSm
+            lineHeight: 1.35
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: sc.sp2
+            spacing: sc.sp3
+            Item { Layout.fillWidth: true }
+            Button {
+                variant: "primary"
+                text: "Got it"
+                onClicked: legacyModal.close()
+            }
+        }
+    }
 }

@@ -800,6 +800,87 @@ def _palmtracer_cache_is_stale(folder: str, extras_dir: str, stem: str) -> bool:
         return False
 
 
+def _run_calibration(extras_dir: str, stem: str):
+    """(pixel_size_um, frame_interval_s) for a run folder, or (None, None)."""
+    for name, keys in ((f"{stem}_summary_metrics.json", ("px_um", "fi_s")),
+                       (f"{stem}_params.json",
+                        ("pixel_size_um", "frame_interval_s"))):
+        path = os.path.join(extras_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        px, fi = data.get(keys[0]), data.get(keys[1])
+        if px and fi:
+            return float(px), float(fi)
+    return None, None
+
+
+def _backfill_track_geometry(extras_dir: str, stem: str) -> bool:
+    """Add the newer per-track geometry columns to an older run's saved table.
+
+    These quantities (path length, net displacement, directionality, single-frame
+    step, duration) depend ONLY on the cached trajectories, which every run
+    folder keeps — so a run analysed before they existed can gain them without
+    the raw movie and without re-fitting anything.  Purely additive: D, alpha,
+    motion and every other recorded value are left exactly as they were saved,
+    because recomputing those WOULD change published output.
+
+    Returns True when the table was rewritten.  The formulas mirror
+    ``fa_diffusion._msd_and_fit_one`` and are pinned to it by a test.
+    """
+    diff_path = os.path.join(extras_dir, f"{stem}_diffusion_summary.csv")
+    traj_path = os.path.join(extras_dir, f"{stem}_trajectories.csv")
+    if not (os.path.isfile(diff_path) and os.path.isfile(traj_path)):
+        return False
+    px, fi = _run_calibration(extras_dir, stem)
+    if not px or not fi:
+        return False
+    try:
+        diff = pd.read_csv(diff_path)
+        tr = pd.read_csv(traj_path)
+    except Exception:
+        return False
+    if "particle" not in diff.columns or {"particle", "frame", "x", "y"} - set(tr.columns):
+        return False
+
+    rows = []
+    tr = tr.sort_values(["particle", "frame"], kind="stable")
+    for pid, g in tr.groupby("particle", sort=False):
+        xy = g[["x", "y"]].to_numpy(dtype=float) * float(px)
+        frames = g["frame"].to_numpy(dtype=float)
+        n = len(xy)
+        if n < 2:
+            # One localisation is not a trajectory — undefined, not zero.
+            rows.append((pid, np.nan, np.nan, np.nan, np.nan,
+                         0.0 if n else np.nan))
+            continue
+        steps = np.sqrt(np.sum(np.diff(xy, axis=0) ** 2, axis=1))
+        path = float(steps.sum())
+        net = float(np.sqrt(np.sum((xy[-1] - xy[0]) ** 2)))
+        unit = np.diff(frames) == 1
+        rows.append((
+            pid, path, net,
+            float(net / path) if path > 0 else 0.0,
+            float(steps[unit].mean()) if unit.any() else np.nan,
+            float(frames[-1] - frames[0]) * float(fi)))
+    geo = pd.DataFrame(rows, columns=[
+        "particle", "path_length_um", "net_displacement_um",
+        "directionality_ratio", "mean_step_um", "track_duration_s"])
+    add = [c for c in geo.columns if c != "particle" and c not in diff.columns]
+    if not add:
+        return False
+    merged = diff.merge(geo[["particle"] + add], on="particle", how="left")
+    try:
+        merged.to_csv(diff_path, index=False)
+    except Exception:
+        return False
+    return True
+
+
 def load_run(folder: str) -> Optional[RunData]:
     """Load one analysis-output run folder, or ``None`` if it isn't one."""
     resolved = _resolve_extras(folder)
@@ -827,6 +908,13 @@ def load_run(folder: str) -> Optional[RunData]:
         except Exception:
             return None
         resolved = _resolve_extras(folder)
+    # A FIREFLY run predating the newer geometry columns can still gain them:
+    # they come from the cached trajectories, not the raw movie.  Additive only.
+    if resolved is not None and not _is_palmtracer_dir(folder):
+        try:
+            _backfill_track_geometry(*resolved)
+        except Exception:
+            pass                            # show what was saved rather than fail
     if resolved is None:
         return None
     extras_dir, stem = resolved
