@@ -1,271 +1,88 @@
 # Changelog
 
-## v2.76.45-rc.14 — 30 Jul 2026
+## v2.76.45 — 31 Jul 2026
+
+Consolidates the 2.76.45-rc.1 … rc.14 pre-release series.
+
+### Important — some earlier results should be re-analysed
+
+- **Trajectories with gaps were measured incorrectly.** When a track had a gap
+  (which happens whenever memory-linking is on), FIREFLY could only pair up
+  positions that were both the right distance apart *and* stored the right
+  number of rows apart, so most valid pairs were missed. On a real dataset
+  linked with `memory = 3` — where 99% of tracks contain a gap — this moved the
+  median diffusion coefficient by **+46%**, shifted the anomalous exponent by
+  −17%, and **reclassified 58% of tracks**. The tell-tale sign in an older
+  report is a large "Unknown" slice in the motion-class chart: that was tracks
+  FIREFLY could not fit at all, and it drops to near zero once fixed. Runs made
+  with `memory = 0` are essentially unaffected (medians moved < 0.05%).
+  **Re-analyse anything processed with memory-linking before publishing it.** A
+  "Contiguous observations (legacy)" mode is available if you need to reproduce
+  the old numbers exactly.
+- **Frame numbers could be wrong during fast localisation.** Chunks of the movie
+  were labelled using a fixed stride, so a recording whose length did not divide
+  evenly reported overlapping or overshooting frame numbers — which corrupts
+  time, and therefore diffusion.
+- **Loading older data now warns you.** The Analysis tab explains which runs were
+  made with an older FIREFLY, which of their numbers were repaired automatically
+  and which are shown exactly as they were saved.
+
+### Added
+
+- **Compare external localisation files directly.** Drop a palmTRACER,
+  ThunderSTORM, Picasso or TrackMate export onto a condition and FIREFLY
+  analyses it into a replicate using your current settings.
+- **Eight new comparison graphs** — Fluorescence intensity, Radius of gyration,
+  Net displacement, Path length, Directionality ratio, Track duration, Step
+  distance and Step speed — each available as a metric and a panel, with its own
+  style option in Preferences → Figures.
+- **See the companion "green" image in the ROI viewer**, so you can check what
+  the threshold is including.
+- **Draw manual ROIs past the edge of the image.** The shape is clipped to the
+  image when you close it, so cells against an edge are easy to enclose.
+
+### Changed — measurement definitions
+
+- **Net displacement** is now the straight-line distance from a track's first to
+  its last position. It previously reported the average distance from the
+  track's centre, which is a different quantity.
+- **Step distance and step speed** are now measured from the actual frame-to-
+  frame movement instead of being estimated from the diffusion coefficient.
+- **Fluorescence intensity** is now each track's mean spot intensity.
+- **A single localisation is no longer treated as a stationary track.** Its
+  geometry is reported as unavailable rather than zero. palmTRACER exports are
+  roughly half single localisations, and counting them as zeros pulled the
+  reported medians down about five-fold.
+- **palmTRACER imports use the same minimum track length as FIREFLY** (8
+  localisations), so the two pipelines are comparable.
 
 ### Fixed
 
-- **Runs analysed by an older FIREFLY now fill in the newer graphs.** Net
-  displacement, path length, directionality, step distance and track duration
-  were blank for every run made before those measurements existed. They are
-  derived from each run's saved trajectories on load, so no re-analysis and no
-  original movie is needed. Diffusion D, the anomalous exponent, MSD and the
-  motion classes are deliberately left exactly as they were saved — recomputing
-  them would overwrite your recorded results.
-- **A warning now appears when you load older data.** The Analysis tab explains
-  which runs were made with an older FIREFLY, which of their numbers are
-  trustworthy, and that D and the anomalous exponent can differ substantially
-  from a fresh analysis if the run used memory-linking. It appears once per set
-  of folders rather than on every change.
-- **palmTRACER folders no longer show blank Diffusion D, anomalous exponent,
-  mobile fraction, motion classes, track length or dwell time.** Those cards
-  read a summary file that the palmTRACER import never wrote, even though the
-  values were already sitting in the tables beside it.
-- **Jump-distance data was being corrupted when saved.** The jump distribution
-  was written to disk as an abbreviated text summary rather than numbers, so it
-  could not be read back and the Jump distance graph stayed empty for palmTRACER
-  imports. It is now stored as real values.
+- **palmTRACER data works in the Analysis tab.** Folders no longer show as
+  invalid, dropping an experiment folder finds the runs inside it, and the same
+  cells can no longer be added twice from two different pipelines in one drop.
+  Blank Diffusion D / anomalous exponent / mobile fraction / motion classes /
+  track length / dwell time are populated, and the jump-distance data is no
+  longer corrupted when saved.
+- **Runs made before the newer graphs existed now fill them in**, derived from
+  each run's saved trajectories — no re-analysis and no original movie needed.
+  Diffusion D, the anomalous exponent, MSD and the motion classes are left
+  exactly as they were saved.
+- **The updater no longer stalls at 100%.** The check that runs after
+  downloading could hang indefinitely; it now times out, and the verifying and
+  finishing steps report their own progress.
+- **Installing FIREFLY as a normal Python package works.** Wheels were missing
+  most of the application and all of the interface files.
+- **Release notes now show what actually changed** instead of "See the CHANGELOG
+  for details".
+- The multiple-ROI "individual replicates?" prompt has been removed; the inline
+  toggle in the ROI panel is the single way to choose.
 
-## v2.76.45-rc.13 — 30 Jul 2026
+### Note for macOS
 
-### Changed
-
-- **palmTRACER imports now use the same minimum track length as FIREFLY's own
-  analysis (8 localisations).** palmTRACER's raw export is unfiltered — on real
-  data about 88% of its entries are shorter than that, and roughly half are single
-  localisations, which are not trajectories at all. Reading it unfiltered meant an
-  imported palmTRACER folder and a native FIREFLY run were filtered differently and
-  were never really comparable, and the very short entries pulled every per-track
-  median toward zero. palmTRACER's own filtered outputs use the same kind of limit
-  (`TrackLength [8,1000]`), so this brings the three into line.
-
-  On a real file this kept 8,269 of 71,022 entries (median 12 localisations per
-  track instead of 2) and changed the reported medians substantially — radius of
-  gyration 0.020 to 0.101 um, track duration 0.02 to 0.22 s, path length 0.20 to
-  0.88 um, and directionality 0.62 to 0.19 (very short tracks look almost perfectly
-  directional, so removing them lowers it). Every metric is now measurable for
-  every kept track. Folders cached under the old behaviour refresh automatically.
-
-## v2.76.45-rc.12 — 30 Jul 2026
-
-### Fixed
-
-- **palmTRACER data now populates the new graphs.** Folders opened by an earlier
-  FIREFLY kept a cached results table that predated the newer measurements, and
-  FIREFLY reused it — so Net displacement, Path length, Directionality, Step
-  distance and Step speed were silently blank for palmTRACER data (Radius of
-  gyration, D, alpha and MSD-AUC were unaffected). A palmTRACER cache older than
-  the current measurement set is now refreshed automatically on load. FIREFLY's
-  own run folders are never recomputed — their raw movie may be gone, so what was
-  saved is what you see.
-- **Step speed, MSD@1s and duration no longer read blank for palmTRACER runs.**
-  Those folders record the frame interval in their parameters file rather than the
-  summary file, so every time-dependent metric had no Δt to work with.
-- **A single localisation is no longer treated as a stationary track.** One
-  localisation gives no displacement, so its path length, net displacement,
-  directionality and step distance are now reported as unavailable instead of
-  zero. palmTRACER exports are ~46% single-localisation entries, and counting
-  those as measured zeros pulled the reported medians down about five-fold — on
-  real data, directionality 0.62 to 0.11 and path length 0.20 to 0.04 um. A track
-  with two or more localisations that genuinely did not move still reports its
-  true zeros.
-
-## v2.76.45-rc.11 — 30 Jul 2026
-
-### Fixed
-
-- **palmTRACER folders can be used in the Analysis tab again.** Dropping raw
-  palmTRACER output onto a condition showed it as an invalid (red) chip. Two
-  causes: the Analysis tab only recognised FIREFLY's own output folders, so a
-  palmTRACER folder was rejected even though FIREFLY can read it natively — it
-  worked only if that folder happened to have been opened before; and the search
-  for run folders inside a dropped folder went one level deep, while a real
-  layout puts them two levels down (`<experiment>/02_Analysis/<cell>.PT`), so
-  dropping the experiment folder found nothing. Raw palmTRACER folders are now
-  accepted directly (converted on first load and cached), and dropping an
-  experiment folder finds the runs inside it.
-- **The same cells can no longer be added twice from one drop.** An experiment
-  folder often contains two analyses of the same movies — palmTRACER's in
-  `02_Analysis` and FIREFLY's own in `01_Raw/batch_results`. The folder search
-  now takes only the shallowest level that contains runs, so one drop adds one
-  coherent set instead of silently counting every cell twice from two different
-  pipelines. Drop the deeper folder directly to use the other set.
-
-## v2.76.45-rc.10 — 30 Jul 2026
-
-### Fixed
-
-- **Gapped trajectories now use true frame lags by default.** MSD and MSS use
-  every observation pair separated by the requested frame lag
-  (`gap_policy=all_pairs`); a persisted contiguous-only compatibility mode is
-  available in the sidebar, presets and replay state. Tracks are canonicalised
-  by particle/frame, duplicate timestamps fail with a branched-TrackMate hint,
-  and Trackpy chunk offsets no longer repeat or skip frames.
-- **Track geometry and time metrics now have explicit, gap-safe definitions.**
-  Single-frame step distance is separate from observed-link displacement and
-  per-link elapsed-time speed; duration uses the first/last frame span. VACF
-  pairs single-frame velocities by their true start-frame lag and exports pair
-  counts. Finite geometric zeros are retained.
-- **Exactly static trajectories are reported below resolution.** They keep
-  geometric zeros but no longer receive a fabricated `D=0` or α class.
-  `fit_status=below_resolution` is exported and these tracks are counted
-  separately from log-D and mobile/immobile denominators.
-- **Numerical outputs are versioned and mixed comparisons are guarded.** Run
-  manifests are schema 4 and metrics are schema 2. Legacy runs remain loadable
-  and labelled; incompatible MSD/D/MSS/VACF and step/speed contracts display a
-  warning and suppress pooled inference while stable metrics still compare.
-- **External-table calibration and caching are reproducible.** The visible
-  sidebar calibration is effective; embedded palmTRACER values are recorded as
-  advisory and disagreements are logged. External Analysis-tab cache keys now
-  include a content digest, calibration, gap policy and every number-affecting
-  parameter.
-- **Batch inputs can no longer be silently merged or discarded.** Image and
-  table jobs stay homogeneous, CZI preference is acquisition-scoped, explicit
-  companions use natural numeric order, same-stem outputs are collision-safe,
-  direct `.tsv` inputs work, and ND2 is no longer advertised. Corrupt tables
-  remain visibly selected, fail individually, and do not stop the batch.
-- **Source installs now repair stale dependencies after `git pull`.** The
-  Windows and macOS launchers fingerprint the project dependency metadata and
-  run `pip check`, rather than treating the presence of PySide6 as proof that a
-  virtual environment is current. This preserves a compatible user-installed
-  CUDA Torch while filling newly required packages.
-- **Normal pip wheels now contain the whole FIREFLY package and UI resources.**
-  Nested controllers, QML, presets, and preview assets are included and the
-  installed app can launch through `python -m firefly`; frozen builds retain
-  their spawn-safe root launcher.
-- **Release validation now covers the package, Qt/QML tests, and both frozen
-  startup paths.** Tagged builds wait for validation, macOS runs the same
-  ready-marker smoke handshake as Windows, and bundle plist version metadata is
-  derived from the shared release helper. `CFBundleShortVersionString` uses the
-  numeric release base, `CFBundleVersion` uses the numeric CI run number, and
-  dedicated metadata retains the full prerelease string.
-- **The macOS artifact is explicitly Apple-Silicon (`FIREFLY-macOS-arm64.dmg`).**
-  The updater selects the architecture-specific installer and gives Intel Mac
-  users an explicit source-install message.
-
-## v2.76.45-rc.9 — 27 Jul 2026
-
-### Changed
-
-- **Step distance and Step speed are now measured, not estimated.** They used to
-  be derived from the diffusion coefficient (√(2·D·Δt)), which just re-expressed
-  D in other units and assumed Brownian motion. They now use the **actual**
-  straight-line distance between a molecule's positions in consecutive frames
-  (per-track mean), and that divided by the frame interval for speed — matching
-  the standard definitions and the rest of the geometry graphs (path length, net
-  displacement, directionality). Both are shown as a metric and a panel. Note the
-  measured step includes localisation error, so it's slightly inflated for very
-  slow/immobile molecules; the diffusion coefficient D remains the
-  localisation-error-corrected view.
-
-## v2.76.45-rc.8 — 27 Jul 2026
-
-### Added
-
-- **Five more comparison graphs in the Analysis tab** — Net displacement, Path
-  length, Directionality ratio, Track duration, and Number of localisations —
-  each available as a selectable metric and as a panel, with a per-graph style in
-  Preferences → Figures.
-
-### Changed
-
-- **"Net displacement" now means what it should** — the straight-line distance
-  from a track's first to its last position. Previously this graph computed the
-  *mean radial displacement* (average distance from the track's centre), which is
-  a different quantity; it was mislabelled. (The Visualiser already reported the
-  correct first→last value, so the two now agree.)
-- **Fluorescence intensity is now per-track** — each track's mean spot intensity
-  (sum of its localisation intensities ÷ its number of localisations), then
-  compared across replicates. This matches the standard definition; the previous
-  version pooled all localisations instead. Still only comparable across dishes
-  analysed with identical detection settings.
-
-## v2.76.45-rc.7 — 27 Jul 2026
-
-### Added
-
-- **Radius-of-gyration comparison graph in the Analysis tab**, sitting after the
-  Track length graph. It compares each replicate's median radius of gyration
-  (R_g — how spread-out a molecule's trajectory is) across your conditions, with
-  the usual stats card. Available both as a selectable metric and as a panel in
-  the "All panels" view, and you can choose how it's drawn (box + points /
-  violin / bar) in Preferences → Figures, like the other comparison graphs.
-
-## v2.76.45-rc.6 — 23 Jul 2026
-
-### Added
-
-- **Fluorescence comparison graph in the Analysis tab**, sitting right next to
-  the MSD AUC graph. It compares spot intensity — the same fluorescence readout
-  palmTRACER emits (integrated spot intensity) — across your conditions, as one
-  point per replicate with the usual stats card. It's available both as a
-  selectable metric and as a panel in the "All panels" view, and you can choose
-  how it's drawn (box + points / violin / bar) in Preferences → Figures, like the
-  other comparison graphs. Note the value is only comparable across dishes
-  analysed with identical detection settings.
-
-## v2.76.45-rc.5 — 23 Jul 2026
-
-### Fixed
-
-- **Updater could reach 100% and then sit there for a long time.** After the
-  download finished, FIREFLY verifies the file (a checksum, plus a disk-image
-  header check on macOS) before installing. On macOS that header check
-  (`hdiutil`) had no timeout, so if it hung, verification never finished and the
-  progress bar stayed stuck at 100%. It now times out and fails safely (the
-  update retries or asks you to install manually) instead of hanging. The
-  verify and finalise steps also show their own status — "Verifying download…"
-  then "Finishing update…" — so it's clear the update is still working, not
-  frozen.
-
-## v2.76.45-rc.4 — 23 Jul 2026
-
-### Added
-
-- **Draw manual-polygon ROIs off the edge of the image.** When drawing a manual
-  ROI you can now place points in the margin *around* the image, not just on it —
-  so it's easy to fully enclose cells or samples that sit right against an edge.
-  When you close the shape, the part drawn past an edge is automatically run
-  along that edge (the polygon is clipped to the image), so the region is exactly
-  the image area you enclosed. Regions drawn entirely within the image are
-  unchanged.
-
-## v2.76.45-rc.3 — 23 Jul 2026
-
-### Added
-
-- **Compare external localisation files directly in the Analysis tab.** Drop a
-  palmTRACER, ThunderSTORM, Picasso, or TrackMate export (`.csv` / `.txt` /
-  `.tsv`) straight onto a condition — alongside your FIREFLY run folders — and
-  FIREFLY analyses it on the fly into a replicate. The file's format is
-  auto-detected, and the analysis uses your **current sidebar settings**, so its
-  D and α are computed the same way as the FIREFLY replicates it sits next to
-  (an apples-to-apples comparison). The chip shows "analysing…" while it runs,
-  then pools into the graphs like any other replicate. Each file is analysed
-  once and cached, so re-adding it is instant. There's a new **file** browse
-  link on each condition's drop zone as well as drag-and-drop.
-
-## v2.76.45-rc.2 — 21 Jul 2026
-
-### Changed
-
-- **Multiple-ROI splitting is now set only by the inline toggle.** The extra
-  "individual replicates?" popup that appeared when saving more than one ROI has
-  been removed — it was redundant with (and suppressed by) the inline "Analyse
-  each ROI separately" switch in the ROI panel, which stays as the single, clear
-  way to choose. No change to how splitting itself works.
-
-## v2.76.45-rc.1 — 21 Jul 2026
-
-### Added
-
-- **See the green image in the ROI viewer.** If a companion image (`…_green.tif`)
-  sits beside a recording, the ROI viewer now detects it and adds a **Green**
-  option to the VIEW switch, next to Max proj and Raw frames. Switch to it to see
-  the cell itself with the ROI overlay on top — so you can check what the
-  threshold is actually including before you run. The companion is drawn on the
-  recording's pixel grid, so the overlay and any ROIs you've drawn stay lined up
-  even when the two images have different resolutions. The option only appears
-  for files that have a companion image.
+The macOS download is now Apple-Silicon-specific
+(`FIREFLY-macOS-arm64.dmg`). Updating from an older version needs a one-time
+manual download from the Releases page.
 
 ## v2.76.44 — 21 Jul 2026
 
