@@ -36,14 +36,16 @@ Item {
     readonly property var nav: [
         { id: "appearance", icon: "palette",        label: "Appearance", sub: "Theme & accent" },
         { id: "figures",    icon: "chart-spline",   label: "Figures",    sub: "Plots & export" },
+        { id: "analysis",   icon: "scan-search",    label: "Analysis",   sub: "ROI & file matching" },
         { id: "glossary",   icon: "quote",          label: "Glossary",   sub: "Stats & analysis terms" },
         { id: "gpu",        icon: "zap",            label: "GPU",        sub: "CUDA acceleration" },
         { id: "updates",    icon: "download-cloud", label: "Updates",    sub: "Version & channel" }
     ]
-    readonly property var sectionTitle: ({ appearance: "Appearance", figures: "Figures", glossary: "Glossary", gpu: "GPU acceleration", updates: "Updates" })
+    readonly property var sectionTitle: ({ appearance: "Appearance", figures: "Figures", analysis: "Analysis", glossary: "Glossary", gpu: "GPU acceleration", updates: "Updates" })
     readonly property var sectionSub: ({
         appearance: "Choose how FIREFLY looks — its theme and accent colour.",
         figures: "Control the graphs FIREFLY renders and how they are exported.",
+        analysis: "How FIREFLY finds companion files and builds regions of interest.",
         glossary: "Plain-language definitions of the statistics and analysis terms.",
         gpu: "Install or update the CUDA backend so analysis runs on your NVIDIA GPU.",
         updates: "Manage releases from GitHub and the update channel." })
@@ -381,6 +383,7 @@ Item {
                             Layout.fillWidth: true
                             sourceComponent: root.section === "appearance" ? appearanceView
                                            : root.section === "figures" ? figuresView
+                                           : root.section === "analysis" ? analysisView
                                            : root.section === "glossary" ? glossaryView
                                            : root.section === "gpu" ? gpuView
                                            : updatesView
@@ -878,6 +881,50 @@ Item {
                     Layout.fillWidth: true; wrapMode: Text.WordWrap
                     text: "Settings drive every exported panel of the 17-panel publication figure and the in-app plots alike."
                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                }
+            }
+        }
+    }
+
+    // ════════════════════════ ANALYSIS ══════════════════════════════════════
+    Component {
+        id: analysisView
+        ColumnLayout {
+            spacing: sc.sp8
+            Group {
+                title: "Companion ROI image"
+                desc: "FIREFLY can read a second image saved beside a recording — a "
+                    + "widefield or marker channel — and use it to build the region of "
+                    + "interest, or just to look at. It is matched by the text that "
+                    + "follows the recording's own name."
+                PrefRow {
+                    label: "Filename suffix"
+                    desc: "For a recording named 'Cell1', a suffix of '_green' matches "
+                        + "'Cell1_green'. A microscope export might instead use "
+                        + "'-Green Image'. .tif, .tiff and .czi are all accepted, and "
+                        + "capitalisation is ignored. Leave blank to switch companion "
+                        + "matching off."
+                    FieldInput {
+                        id: sisterSuffixField
+                        implicitWidth: 200
+                        placeholderText: "_green"
+                        // (root.rev, …) re-reads after a Reset, matching the other rows.
+                        text: (root.rev, Settings.getStr("analysis/roi_sister_suffix", "_green"))
+                        onEditingFinished:
+                            Settings.setValue("analysis/roi_sister_suffix", text.trim())
+                    }
+                }
+                PrefRow {
+                    label: ""
+                    desc: ""
+                    Button {
+                        variant: "secondary"
+                        text: "Reset to _green"
+                        onClicked: {
+                            Settings.setValue("analysis/roi_sister_suffix", "_green")
+                            sisterSuffixField.text = "_green"
+                        }
+                    }
                 }
             }
         }

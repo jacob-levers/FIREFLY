@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.76.47 — 3 Aug 2026
+
+### Added
+
+- **The companion-image suffix is now editable**, in a new Analysis section of
+  Preferences. It starts as `_green`, so nothing changes unless you edit it —
+  but if your microscope names its companion differently (for example
+  `-Green Image`), you can type that in instead of being stuck with one
+  convention. `.tif`, `.tiff` and `.czi` are all matched, capitalisation is
+  ignored, and clearing the field turns companion matching off entirely.
+
+### Fixed
+
+- **A custom companion suffix now applies to the analysis, not just the
+  preview.** The ROI viewer read the setting but the analysis run had `_green`
+  hardcoded, so a custom suffix would find the companion image in the preview
+  and then not use it in the actual run — the region analysed could differ from
+  the one shown, with nothing to indicate it.
+
 ## v2.76.46 — 31 Jul 2026
 
 ### Added

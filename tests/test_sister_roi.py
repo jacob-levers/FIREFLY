@@ -199,3 +199,37 @@ def test_tif_companion_still_found(tmp_path):
 def test_absent_companion_still_returns_none(tmp_path):
     rec = _touch(tmp_path / "Fly-3-16k Frames-LSide.czi")
     assert find_sister_roi_path(rec, "-Green Image") is None
+
+
+# ── the suffix is a user setting, and the SAME one everywhere ────────────────
+def test_sister_suffix_setting_reaches_the_analysis_run():
+    """The ROI viewer reads analysis/roi_sister_suffix; the run must use the
+    same value.  It was hardcoded to '_green' in build_params, so a custom
+    suffix found the companion in the PREVIEW but not in the actual run — the
+    analysed region silently differed from the one shown."""
+    from firefly.ui.controllers.params.params_builder import build_params, _DEFAULTS
+
+    class _S:
+        def __init__(self, suffix=None): self._s = suffix
+        def get_str(self, k, d=""):
+            return self._s if (k == "analysis/roi_sister_suffix"
+                               and self._s is not None) else d
+        def get_bool(self, k, d=False): return d
+        def get_float(self, k, d=0.0): return d
+
+    class _Imp:
+        filePath = "/d/Fly-1-16k Frames-LSide.czi"; outDir = None; isCsv = False
+        overridePx = False; pixelSize = 0.106
+        overrideFi = False; frameInterval = 0.02
+
+    assert _DEFAULTS["roi_sister_suffix"] == "_green"
+    assert build_params(_S(), _Imp())["roi_sister_suffix"] == "_green"
+    assert build_params(_S("-Green Image"), _Imp())["roi_sister_suffix"] == "-Green Image"
+    # Explicitly cleared = companion matching off; it must NOT snap back.
+    assert build_params(_S(""), _Imp())["roi_sister_suffix"] == ""
+
+
+def test_empty_suffix_disables_companion_lookup(tmp_path):
+    rec = _touch(tmp_path / "Fly-1-16k Frames-LSide.czi")
+    _touch(tmp_path / "Fly-1-16k Frames-LSide-Green Image.czi")
+    assert find_sister_roi_path(rec, "") is None

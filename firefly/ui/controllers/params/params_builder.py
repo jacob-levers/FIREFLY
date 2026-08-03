@@ -102,6 +102,10 @@ _DEFAULTS = {
     "roi_threshold":         0.08,
     "roi_mask_mode":         "Max",
     "roi_bg_sigma":          25.0,
+    # Suffix identifying a companion ROI image beside a recording
+    # (<stem><suffix>.tif/.tiff/.czi) — e.g. "_green", or "-Green Image" for a
+    # Zeiss export.  User-editable in Preferences.
+    "roi_sister_suffix":     "_green",
     "drift_correct":         True,
     "drift_segment":         500,
     "cluster_eps_nm":        50.0,
@@ -250,7 +254,16 @@ def build_params(settings, importc, fpath: str | None = None,
         "roi_threshold":  roi_threshold,
         "roi_mask_mode":  roi_mask_mode,
         "roi_bg_sigma":   roi_bg_sigma,
-        "roi_sister_suffix":     "_green",
+        # Must come from the SAME setting the ROI viewer reads: hardcoding it
+        # meant a custom suffix found the companion image in the preview but not
+        # in the actual run, so the analysed region silently differed from the
+        # one shown.
+        # An UNSET key yields the default; an explicitly EMPTY one is the user
+        # deliberately turning companion matching off, which the worker and
+        # find_sister_roi_path both already treat as "don't look".  So no
+        # `or default` here — that would make clearing the field impossible.
+        "roi_sister_suffix":     g.get_str("analysis/roi_sister_suffix",
+                                           _DEFAULTS["roi_sister_suffix"]),
         "roi_imagej_autodetect": (roi_mode == "imagej"),
         "roi_polygon":    ((roi_store.get(fpath) if (roi_store and fpath) else None) or None),
         "roi_split_replicates": roi_split_replicates,
