@@ -2007,6 +2007,73 @@ class AnalysisWorkspaceController(QObject):
     def _cond(self, cid):
         return next((c for c in self._conditions if c.id == cid), None)
 
+    @Property("QVariantMap", notify=conditionsChanged)
+    def autoSortPreview(self):
+        """What :meth:`autoSortByName` would do, so the button can describe it
+        and disable itself when the naming convention doesn't apply."""
+        buckets, unmatched = self._auto_sort_buckets()
+        return {
+            "canSort": bool(len(buckets) >= 2),
+            "groups": [{"name": k, "count": len(v)} for k, v in buckets.items()],
+            "unmatched": unmatched,
+            "summary": (", ".join(f"{k} ({len(v)})" for k, v in buckets.items())
+                        if buckets else ""),
+        }
+
+    def _auto_sort_buckets(self):
+        """Group every loaded folder by the condition parsed from its path.
+
+        Order is Control first (it is the reference everything is compared to),
+        then alphabetical, so the figure legend reads sensibly without manual
+        reordering.
+        """
+        buckets: dict = {}
+        unmatched = 0
+        for c in self._conditions:
+            for f in c.folders:
+                info = wd.parse_experiment_path(f.path)
+                if not info.get("matched"):
+                    unmatched += 1
+                    continue
+                buckets.setdefault(info["condition"], []).append(f)
+        ordered = {}
+        for key in sorted(buckets, key=lambda k: (k != wd.CONTROL_LABEL, k.lower())):
+            ordered[key] = buckets[key]
+        return ordered, unmatched
+
+    @Slot()
+    def autoSortByName(self):
+        """Regroup the loaded folders into one condition per parsed drug.
+
+        Reuses the existing ``_Folder`` objects, so already-loaded runs are NOT
+        re-read — with ~50 recordings a reload would be a long stall for what is
+        purely a reorganisation.  Folders whose path doesn't match the naming
+        convention are left in place rather than silently dropped.
+        """
+        buckets, unmatched = self._auto_sort_buckets()
+        if len(buckets) < 2:
+            return
+        keep = list(buckets.items())[:wd.MAX_CONDITIONS]
+        leftovers = [f for _k, v in list(buckets.items())[wd.MAX_CONDITIONS:]
+                     for f in v]
+        # Anything unparsed stays with the user rather than vanishing.
+        unmatched_folders = []
+        for c in self._conditions:
+            for f in c.folders:
+                if not wd.parse_experiment_path(f.path).get("matched"):
+                    unmatched_folders.append(f)
+
+        self._conditions = []
+        for i, (name, folders) in enumerate(keep):
+            cond = _Condition(self._new_cid(), name,
+                              wd.GROUP_COLORS[i % len(wd.GROUP_COLORS)])
+            cond.folders = list(folders)
+            self._conditions.append(cond)
+        spill = leftovers + unmatched_folders
+        if spill:
+            self._conditions[-1].folders.extend(spill)
+        self._changed(conditions=True)
+
     @Slot(int, str)
     def setConditionName(self, cid, name):
         c = self._cond(cid)

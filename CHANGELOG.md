@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.76.46 — 31 Jul 2026
+
+### Added
+
+- **Sort folders into conditions by name.** If your acquisition folders are named
+  with the condition after the date — for example
+  `... 31July` for control and `... 31July Propofol` for a drug — the Analysis
+  tab can group everything you have loaded into one condition per drug in a
+  single click, with the control first. The button only appears when the names
+  actually describe more than one condition, and it regroups what is already
+  loaded rather than re-reading it, so it stays instant with dozens of
+  recordings. Folders that do not follow the convention are left where they are
+  rather than being quietly dropped.
+
+### Fixed
+
+- **Companion "green" images exported as `.czi` are now found.** The lookup only
+  ever accepted `.tif`/`.tiff`, so a Zeiss workflow that saves the companion
+  straight from the microscope — for example
+  `Fly-1-16k Frames-LSide-Green Image.czi` — was never detected: the green-image
+  view and Sister-image ROI mode simply did nothing, with no indication why.
+  `.czi` companions now load through FIREFLY's own reader, and the name is
+  matched regardless of capitalisation.
+
 ## v2.76.45 — 31 Jul 2026
 
 Consolidates the 2.76.45-rc.1 … rc.14 pre-release series.

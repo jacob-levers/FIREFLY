@@ -5,6 +5,7 @@ import importlib.util
 from importlib.resources import files
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import sys
 
@@ -139,5 +140,10 @@ def test_shared_release_helper_drives_package_ui_and_analysis_versions():
     assert analysis_version == app_version() == release.__version__
     assert 'version = { attr = "firefly.release.__version__" }' in pyproject
     assert "from firefly.release import (" in spec
-    assert release.release_base() == "2.76.45"
+    # Assert the BEHAVIOUR (strip any prerelease suffix), not a pinned literal:
+    # hardcoding the current version made every release edit this test while
+    # protecting nothing, since the value is whatever release.py says.
+    assert release.release_base() == release.__version__.split("-", 1)[0]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", release.release_base())
+    assert release.release_base("9.9.9-rc.3") == "9.9.9"
     assert release.numeric_build_version("1234") == "1234"

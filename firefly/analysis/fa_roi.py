@@ -373,9 +373,14 @@ def build_roi_mask_advanced(projection,
 def find_sister_roi_path(fpath, suffix="_green"):
     """Locate a microscope-exported *sister* ROI image next to ``fpath``.
 
-    Looks for ``<dir>/<root><suffix>.tif`` (or ``.tiff``) where ``<root>`` is the
-    recording's stem with a trailing palmTRACER ``-fileNNN`` stripped, so the
-    suffix sits against the bare root name (``<root>_green.tif``).
+    Looks for ``<dir>/<root><suffix><ext>`` where ``<root>`` is the recording's
+    stem with a trailing palmTRACER ``-fileNNN`` stripped, so the suffix sits
+    against the bare root name (``<root>_green.tif``).
+
+    ``.czi`` is accepted alongside ``.tif``/``.tiff``: a Zeiss workflow exports
+    the companion straight from the microscope, e.g.
+    ``Fly-1-16k Frames-LSide-Green Image.czi``.  Matching is case-insensitive on
+    both the suffix and the extension, because those names are typed by hand.
 
     Returns the absolute path or ``None``. Single source of truth for both the
     analysis worker and the ROI-viewer preview so they always agree on the file.
@@ -388,10 +393,21 @@ def find_sister_roi_path(fpath, suffix="_green"):
     try:
         base = os.path.splitext(os.path.basename(fpath))[0]
         root = re.sub(r"-file\d+$", "", base, flags=re.IGNORECASE)
-        for ext in (".tif", ".tiff"):
-            cand = os.path.join(os.path.dirname(fpath), f"{root}{suffix}{ext}")
+        folder = os.path.dirname(fpath) or "."
+        exts = (".tif", ".tiff", ".czi")
+        # Fast path: exact case.
+        for ext in exts:
+            cand = os.path.join(folder, f"{root}{suffix}{ext}")
             if os.path.isfile(cand):
                 return cand
+        # Hand-typed companion names vary in case ("-Green Image" vs
+        # "-green image"), so fall back to one case-insensitive scan.
+        wanted = {f"{root}{suffix}{e}".lower() for e in exts}
+        for name in os.listdir(folder):
+            if name.lower() in wanted:
+                cand = os.path.join(folder, name)
+                if os.path.isfile(cand):
+                    return cand
     except Exception:
         return None
     return None
@@ -413,9 +429,20 @@ def load_sister_image(sister_path, target_shape=None):
     import numpy as _np
     name = os.path.basename(sister_path)
     try:
-        import tifffile as _tf
-        with _tf.TiffFile(sister_path) as _t:
-            arr = _t.asarray()
+        if os.path.splitext(sister_path)[1].lower() == ".czi":
+            # Zeiss companion: reuse the reader the ROI editor already uses for
+            # .czi rather than tifffile, which cannot open one.  It returns a
+            # normalised projection, which is exactly what a companion image is
+            # thresholded/displayed as.
+            from firefly.analysis.fa_loaders import load_projection_fast
+            arr = load_projection_fast(sister_path, channel=0, max_frames=1)
+            if arr is None:
+                return None, f"could not load {name}: empty CZI"
+            arr = _np.asarray(arr)
+        else:
+            import tifffile as _tf
+            with _tf.TiffFile(sister_path) as _t:
+                arr = _t.asarray()
     except Exception as exc:
         return None, f"could not load {name}: {exc}"
     # Multi-frame → max projection; squeeze leading singleton dims first.

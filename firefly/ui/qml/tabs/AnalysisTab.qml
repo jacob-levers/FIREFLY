@@ -1038,6 +1038,36 @@ Item {
                 HoverHandler { id: addCondHover; cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: Analysis.addCondition() }
             }
+
+            // Sort by name — only offered when the folder names actually encode
+            // more than one condition, so it never appears as a dead control.
+            Rectangle {
+                id: autoSortBtn
+                readonly property var preview: Analysis.autoSortPreview
+                visible: preview && preview.canSort === true
+                Layout.fillWidth: true; Layout.preferredHeight: 40
+                radius: 10
+                color: sortHover.hovered ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.06)
+                                         : "transparent"
+                DashedRect { anchors.fill: parent; radius: 10; stroke: pal.BORDER_HI }
+                ColumnLayout {
+                    anchors.centerIn: parent; spacing: 0
+                    RowLayout {
+                        Layout.alignment: Qt.AlignHCenter; spacing: 7
+                        Icon { name: "layout-grid"; size: 13; color: pal.ACC }
+                        Text { text: "Sort into conditions by name"; color: pal.ACC
+                               font.pixelSize: 12; font.bold: true }
+                    }
+                    Text {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: autoSortBtn.preview ? (autoSortBtn.preview.summary || "") : ""
+                        color: root.faint; font.pixelSize: 10; elide: Text.ElideRight
+                        Layout.maximumWidth: 260
+                    }
+                }
+                HoverHandler { id: sortHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: Analysis.autoSortByName() }
+            }
         }
     }
 

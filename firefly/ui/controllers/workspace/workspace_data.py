@@ -30,6 +30,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from typing import Callable, Optional
 
 import numpy as np
@@ -798,6 +799,61 @@ def _palmtracer_cache_is_stale(folder: str, extras_dir: str, stem: str) -> bool:
         return int(cached or 0) != int(PALMTRACER_MIN_TRACK_LEN)
     except Exception:
         return False
+
+
+# ── experiment naming convention → condition / animal / side ────────────────
+# Acquisition folders are named like
+#     "N=2 MB543B-Sx1A-mEos3.2_CrimsonVenus 31July Propofol"
+# and the recordings inside like
+#     "Fly-1-16k Frames-LSide.czi"
+# The DRUG is whatever trails the date in an ancestor folder; a bare date means
+# control.  It matters that we search ANCESTORS: a run folder is named from the
+# recording's stem ("Fly-1-16k Frames-LSide"), which carries the animal and side
+# but never the condition.
+_DATE_RE = re.compile(
+    r"\b(\d{1,2})\s*"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b"
+    r"(?P<trailing>.*)$", re.IGNORECASE)
+_GENOTYPE_RE = re.compile(r"\bMB\d+[A-Z]\b", re.IGNORECASE)
+_ANIMAL_RE = re.compile(r"\bfly[\s_-]*(\d+)\b", re.IGNORECASE)
+_SIDE_RE = re.compile(r"\b([LR])[\s_-]*side\b", re.IGNORECASE)
+
+CONTROL_LABEL = "Control"
+
+
+def parse_experiment_path(path: str) -> dict:
+    """Pull condition / genotype / animal / side out of an acquisition path.
+
+    Returns a dict with ``condition`` (never empty — a bare date means
+    :data:`CONTROL_LABEL`), plus ``genotype``, ``animal``, ``side``, ``date``
+    and ``matched`` (False when no date token was found anywhere, i.e. the
+    convention did not apply and the caller should not guess).
+    """
+    out = {"condition": "", "genotype": "", "animal": "", "side": "",
+           "date": "", "matched": False}
+    if not path:
+        return out
+    parts = [p for p in str(path).replace("\\", "/").split("/") if p]
+    # Ancestors carry genotype + date + drug; the leaf carries animal + side.
+    for part in parts:
+        m = _DATE_RE.search(part)
+        if m and not out["matched"]:
+            out["date"] = f"{m.group(1)}{m.group(2).title()}"
+            trailing = (m.group("trailing") or "").strip(" _-")
+            out["condition"] = trailing or CONTROL_LABEL
+            out["matched"] = True
+        g = _GENOTYPE_RE.search(part)
+        if g and not out["genotype"]:
+            out["genotype"] = g.group(0).upper()
+    leaf = os.path.splitext(parts[-1])[0] if parts else ""
+    for src in (leaf, " ".join(parts)):
+        a = _ANIMAL_RE.search(src)
+        if a and not out["animal"]:
+            out["animal"] = f"Fly-{int(a.group(1))}"
+        s = _SIDE_RE.search(src)
+        if s and not out["side"]:
+            out["side"] = f"{s.group(1).upper()}Side"
+    return out
 
 
 def _run_calibration(extras_dir: str, stem: str):

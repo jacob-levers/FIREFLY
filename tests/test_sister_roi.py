@@ -5,6 +5,7 @@ the preview is exactly the region the run keeps. Cover path detection, the
 value-based mask-vs-grayscale decision, the grayscale cell segmentation
 (threshold → fill holes → keep largest) and resolution handling.
 """
+import os
 import numpy as np
 import pytest
 
@@ -163,3 +164,38 @@ def test_loader_leaves_a_matching_image_untouched(tmp_path):
     path = _write_tif(tmp_path / "same_green.tif", arr_in)
     arr, note = load_sister_image(path, (8, 8))
     assert note == "" and np.array_equal(arr, arr_in)
+
+
+# ── Zeiss companions: '<stem>-Green Image.czi' beside a .czi recording ────────
+# A microscope workflow exports the companion straight from the scope, so it is
+# a .czi with a hand-typed suffix — not the '<stem>_green.tif' the loader
+# originally assumed.  Neither was found before, so the ROI green-image view and
+# Sister-TIFF mode silently did nothing on that data.
+def _touch(p):
+    open(p, "w").close()
+    return str(p)
+
+
+def test_czi_companion_is_found(tmp_path):
+    rec = _touch(tmp_path / "Fly-1-16k Frames-LSide.czi")
+    green = _touch(tmp_path / "Fly-1-16k Frames-LSide-Green Image.czi")
+    assert find_sister_roi_path(rec, "-Green Image") == green
+
+
+def test_companion_suffix_match_is_case_insensitive(tmp_path):
+    rec = _touch(tmp_path / "Fly-2-16k Frames-RSide.czi")
+    _touch(tmp_path / "Fly-2-16k Frames-RSide-Green Image.czi")
+    got = find_sister_roi_path(rec, "-green image")
+    assert got is not None and os.path.isfile(got)
+
+
+def test_tif_companion_still_found(tmp_path):
+    """The original .tif contract must keep working."""
+    rec = _touch(tmp_path / "cell.tif")
+    green = _touch(tmp_path / "cell_green.tif")
+    assert find_sister_roi_path(rec, "_green") == green
+
+
+def test_absent_companion_still_returns_none(tmp_path):
+    rec = _touch(tmp_path / "Fly-3-16k Frames-LSide.czi")
+    assert find_sister_roi_path(rec, "-Green Image") is None
