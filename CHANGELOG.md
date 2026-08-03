@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.76.47 — 3 Aug 2026
+## v2.76.47-rc.1 — 3 Aug 2026
 
 ### Added
 
