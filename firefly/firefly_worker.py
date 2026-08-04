@@ -1500,6 +1500,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             percentile=64,
             backend=p["backend"],
             sensitivity=p.get("minmass_sensitivity", "balanced"),
+            mode=p.get("minmass_mode", "linkability"),
+            target_density=p.get("minmass_target_density"),
             bg_radius=int(p.get("bg_radius", 10)),
             bg_method=p.get("bg_method", "uniform_filter"),
             workers=int(p["workers"]),
@@ -2873,6 +2875,13 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "minmass_method":   (mm_diag.get("method") if mm_diag else "manual"),
                     "minmass_sensitivity": (mm_diag.get("sensitivity") if mm_diag else None),
                     "minmass_n_candidates": (mm_diag.get("n_candidates") if mm_diag else None),
+                    # Density-matched diagnostics: the achieved spots/frame and,
+                    # when the target could not be reached, WHY — so a sparser
+                    # recording is visible in the run record instead of quietly
+                    # entering a comparison at a different detection density.
+                    "minmass_density_target": (mm_diag.get("density_target") if mm_diag else None),
+                    "minmass_density_achieved": (mm_diag.get("density_achieved") if mm_diag else None),
+                    "minmass_qc":       (mm_diag.get("qc") if mm_diag else None),
                     # Linkability-sweep diagnostics (None on the static fallback).
                     "minmass_n_good":   (mm_diag.get("n_good") if mm_diag else None),
                     "minmass_spurious_rate": (mm_diag.get("spurious_rate") if mm_diag else None),

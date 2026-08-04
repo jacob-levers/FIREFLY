@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.76.47-rc.3 — 4 Aug 2026
+
+### Added
+
+- **Density-matched automatic detection threshold.** The existing automatic
+  threshold tunes each recording on its own, which means two recordings can end
+  up detecting at different densities — and because the anomalous exponent shifts
+  with the threshold, a difference between conditions can come from detection
+  rather than from biology. The new mode instead gives every recording the same
+  detections per frame, so the threshold cannot vary between your control and
+  drug groups. On three control recordings it brought detection density to
+  roughly 22 per frame in all three (previously 23, 50 and 149), improved
+  localisation precision on two of them, and narrowed the spread in anomalous
+  exponent between animals by about a third. A recording too sparse to reach the
+  target is flagged in its run record rather than quietly included at a lower
+  density. Choose it under Detection, with an adjustable target; the Drosophila
+  Neurons preset now uses it at 25 spots per frame.
+
 ## v2.76.47-rc.2 — 4 Aug 2026
 
 ### Changed

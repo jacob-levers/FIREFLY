@@ -78,6 +78,8 @@ _DEFAULTS = {
     "auto_minmass":          True,
     "minmass":               1.0,
     "minmass_sensitivity":   "Balanced",
+    "minmass_mode":          "Linkability",
+    "minmass_target_density": 25.0,
     "minmass_false_rate":    0.0,
     "search_range":          5,
     "auto_search_range":     False,
@@ -224,6 +226,14 @@ def build_params(settings, importc, fpath: str | None = None,
         "minmass":        g.get_float("analysis/minmass", _DEFAULTS["minmass"]),
         "minmass_sensitivity": g.get_str(
             "analysis/minmass_sensitivity", _DEFAULTS["minmass_sensitivity"]).lower(),
+        "minmass_mode": ("density"
+                         if g.get_str("analysis/minmass_mode",
+                                      _DEFAULTS["minmass_mode"]).lower()
+                            .startswith("density")
+                         else "linkability"),
+        "minmass_target_density": g.get_float(
+            "analysis/minmass_target_density",
+            _DEFAULTS["minmass_target_density"]),
         "minmass_max_false_track_rate": (
             (false_rate / 100.0) if false_rate > 0 else None),
         "search_range":   _i(g, "analysis/search_range", _DEFAULTS["search_range"]),

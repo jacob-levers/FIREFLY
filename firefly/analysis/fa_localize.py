@@ -1530,7 +1530,8 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                      bg_radius=50, bg_method="uniform_filter",
                      workers=N_CPUS, log_cb=None,
                      search_range=5, memory=3, link_min_len=4,
-                     max_false_track_rate=None):
+                     max_false_track_rate=None,
+                     mode="linkability", target_density=None):
     """Estimate a robust per-file detection `minmass`, better than manual
     eyeballing.
 
@@ -1649,6 +1650,49 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
             diag["minmass"] = mm
             _log(f"  Auto-threshold: only {masses.size} candidates → noise "
                  f"floor minmass = {mm:.4g}")
+            return mm, diag
+
+        # ── Density-matched mode ─────────────────────────────────────────────
+        # The linkability sweep optimises each file INDEPENDENTLY, so two
+        # recordings can settle at different points on the threshold curve — and
+        # the anomalous exponent moves along that curve.  A difference between
+        # conditions can then be methodological rather than biological.  Matching
+        # a common detections-per-frame across every recording removes the
+        # threshold as a confound.  It is a pure quantile of the harvested
+        # masses: no linking, so it is also much cheaper than the sweep.
+        if str(mode).lower().startswith("density") and target_density:
+            want = float(target_density) * float(diag["frame_sample"])
+            achieved = float(masses.size) / float(diag["frame_sample"])
+            if want >= masses.size:
+                # Even keeping EVERY candidate is below target — a sparse or dim
+                # recording.  Take the noise floor and flag it: silently running
+                # a recording that cannot reach the common density would put an
+                # unmatched file into the comparison.
+                mm = float(np.clip(np.percentile(masses, 1.0), MM_MIN, MM_MAX))
+                diag["method"] = "density_matched"
+                diag["density_target"] = float(target_density)
+                diag["density_achieved"] = achieved
+                diag["qc"] = ("below_target_density: only "
+                              f"{achieved:.1f} candidates/frame available vs a "
+                              f"{float(target_density):.1f}/frame target")
+                _log(f"  Auto-threshold: density target "
+                     f"{float(target_density):.1f}/frame NOT reachable — only "
+                     f"{achieved:.1f}/frame candidates exist; using the noise "
+                     f"floor ({mm:.4g}).  This recording is sparser than the "
+                     f"rest of the set.")
+            else:
+                pct = 100.0 * (1.0 - want / float(masses.size))
+                mm = float(np.clip(np.percentile(masses, pct), MM_MIN, MM_MAX))
+                diag["method"] = "density_matched"
+                diag["density_target"] = float(target_density)
+                diag["density_achieved"] = float((masses >= mm).sum()) / float(
+                    diag["frame_sample"])
+                _log(f"  Auto-threshold: density-matched to "
+                     f"{float(target_density):.1f} spots/frame → "
+                     f"minmass = {mm:.4g} "
+                     f"(kept {diag['density_achieved']:.1f}/frame of "
+                     f"{achieved:.1f}/frame candidates)")
+            diag["minmass"] = mm
             return mm, diag
 
         # Reservoir-cap the masses used for the audit / static stats (NOT the
