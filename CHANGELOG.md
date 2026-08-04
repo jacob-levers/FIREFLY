@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.76.47-rc.2 — 4 Aug 2026
+
+### Changed
+
+- **The Drosophila Neurons preset is now tuned to real ELYRA sptPALM data**
+  (256x256, 16k frames, 100 nm pixels, 20 ms exposure, Syntaxin-1A-mEos3.2).
+  Measured on a control recording, the old preset produced **2 usable tracks per
+  600 frames**; the tuned one produces **315** from the same data. The detection
+  threshold was the main culprit: the fixed `minmass = 2.0` kept about 2 spots
+  per frame where the data supports roughly 23, discarding most real molecules.
+  Detection now uses the automatic threshold, which measured 0.16 on this data
+  and adapts to each recording. Spot diameter 9 to 7 and background radius 15 to
+  10 both recovered more tracks; the search range is 3 (appropriate for
+  Syntaxin); memory stays at 5, which the data supports (it raises the share of
+  localisations used from 37% to 60%, while the risk of a wrong link at this
+  density is about 1 in 90); and the minimum track length is 8 rather than 10,
+  which yields around a third more tracks with no material change in diffusion
+  coefficient or anomalous exponent. The frame-interval fallback is corrected
+  from 0.1 s to 0.02 s to match the acquisition.
+
 ## v2.76.47-rc.1 — 3 Aug 2026
 
 ### Added
