@@ -241,15 +241,22 @@ class SidebarController(QObject):
         f = S.BY_KEY.get(key)
         if f is None or not f.get("enable"):
             return True
-        en = f["enable"]
-        other = self.get(en["key"])
-        if "eq" in en:
-            return other == en["eq"]
-        if "in" in en:
-            return other in en["in"]
-        if "truthy" in en:
-            return bool(other) == bool(en["truthy"])
-        return True
+
+        def _matches(en):
+            if "all" in en:
+                return all(_matches(item) for item in en["all"])
+            if "any" in en:
+                return any(_matches(item) for item in en["any"])
+            other = self.get(en["key"])
+            if "eq" in en:
+                return other == en["eq"]
+            if "in" in en:
+                return other in en["in"]
+            if "truthy" in en:
+                return bool(other) == bool(en["truthy"])
+            return True
+
+        return _matches(f["enable"])
 
     # ── reset ────────────────────────────────────────────────────────────
     @Slot(str)

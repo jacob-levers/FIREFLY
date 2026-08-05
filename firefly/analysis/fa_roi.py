@@ -16,6 +16,55 @@ from skimage import filters, exposure, morphology
 from firefly.analysis.fa_preprocess import auto_threshold, preprocess_stack
 
 
+def build_polygon_roi_mask(vertices, frame_shape):
+    """Rasterise one or more ``(y, x)`` polygons into a validated bool mask.
+
+    This Qt-free helper is shared by the worker's early quality-threshold pass
+    and its later analysis ROI pass.  Keeping one implementation is important:
+    quality-first minmass must be calibrated on exactly the same pixels that
+    enter the downstream trajectory analysis.
+
+    Returns ``(mask, n_polygons)``.  Invalid, empty, or out-of-frame polygons
+    raise ``ValueError`` instead of being clipped or silently replaced by a
+    whole-frame/intensity-threshold ROI.
+    """
+    from skimage.draw import polygon2mask
+
+    if not vertices:
+        raise ValueError("no polygon vertices were provided")
+    h, w = int(frame_shape[0]), int(frame_shape[1])
+    if h <= 0 or w <= 0:
+        raise ValueError(f"invalid movie frame shape {(h, w)}")
+    try:
+        polys = (vertices if isinstance(vertices[0][0], (list, tuple, np.ndarray))
+                 else [vertices])
+    except (IndexError, TypeError):
+        raise ValueError("polygon vertices must be (y, x) coordinate pairs")
+
+    arrays = []
+    for poly in polys:
+        arr = np.asarray(poly, dtype=float)
+        if arr.ndim != 2 or arr.shape[1] != 2 or len(arr) < 3:
+            raise ValueError("each ROI polygon needs at least three (y, x) vertices")
+        if not np.isfinite(arr).all():
+            raise ValueError("ROI polygon contains non-finite coordinates")
+        arrays.append(arr)
+    all_vertices = np.concatenate(arrays, axis=0)
+    max_y, max_x = float(all_vertices[:, 0].max()), float(all_vertices[:, 1].max())
+    min_y, min_x = float(all_vertices[:, 0].min()), float(all_vertices[:, 1].min())
+    if max_y > h + 1.0 or max_x > w + 1.0 or min_y < -1.0 or min_x < -1.0:
+        raise ValueError(
+            f"ROI polygon extent (y={min_y:.0f}…{max_y:.0f}, "
+            f"x={min_x:.0f}…{max_x:.0f}) exceeds movie frame {h}×{w}")
+
+    mask = np.zeros((h, w), dtype=bool)
+    for arr in arrays:
+        mask |= polygon2mask((h, w), arr).astype(bool)
+    if not mask.any():
+        raise ValueError("ROI polygon rasterised to an empty mask")
+    return mask, len(arrays)
+
+
 def build_roi_mask_mean(stack, threshold=0.15, smooth_sigma=5):
     """
     Mean-projection ROI: one mask derived from the average intensity across

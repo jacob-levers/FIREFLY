@@ -68,3 +68,25 @@ def test_find_sibling_ignores_appledouble(tmp_path):
 def test_find_sibling_none_when_absent(tmp_path):
     (tmp_path / "Movie.czi").write_bytes(b"not really a czi")
     assert fa_roi.find_sibling_imagej_roi(str(tmp_path), "Movie") is None
+
+
+def test_shared_polygon_mask_supports_one_or_multiple_polygons():
+    one = [[2, 2], [2, 8], [8, 8], [8, 2]]
+    mask_one, n_one = fa_roi.build_polygon_roi_mask(one, (20, 20))
+    mask_two, n_two = fa_roi.build_polygon_roi_mask(
+        [one, [[12, 12], [12, 17], [17, 17], [17, 12]]], (20, 20))
+    assert mask_one.dtype == bool and mask_one.shape == (20, 20)
+    assert n_one == 1 and n_two == 2
+    assert mask_two.sum() > mask_one.sum()
+    assert np.all(mask_two[mask_one])
+
+
+@pytest.mark.parametrize("vertices, match", [
+    ([], "no polygon"),
+    ([[1, 1], [2, 2]], "at least three"),
+    ([[1, 1], [1, np.nan], [2, 2]], "non-finite"),
+    ([[1, 1], [1, 30], [2, 2]], "exceeds movie frame"),
+])
+def test_shared_polygon_mask_rejects_invalid_roi(vertices, match):
+    with pytest.raises(ValueError, match=match):
+        fa_roi.build_polygon_roi_mask(vertices, (20, 20))

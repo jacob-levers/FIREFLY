@@ -162,3 +162,29 @@ def test_manifest_replay_restores_gap_policy_from_wire_contract():
         "widget_state": {},
     }, "legacy-compatible")
     assert sb.get("analysis/gap_policy") == "Contiguous observations (legacy)"
+
+
+def test_quality_first_exposes_floor_and_only_relevant_controls():
+    """Quality-first uses the minmass field as a locked lower floor.
+
+    Density matching and linkability sensitivity are different scientific
+    policies, so their controls must not look active in this mode.
+    """
+    from firefly.ui.controllers.params.sidebar_controller import SidebarController
+
+    sb = SidebarController(FakeSettings())
+    sb.setValue("analysis/auto_minmass", True)
+    sb.setValue("analysis/minmass_mode", "Quality-first (track ambiguity)")
+    assert sb.isEnabled("analysis/minmass") is True
+    assert sb.isEnabled("analysis/minmass_max_false_track_rate") is True
+    assert sb.isEnabled("analysis/minmass_target_density") is False
+    assert sb.isEnabled("analysis/minmass_sensitivity") is False
+
+    sb.setValue("analysis/minmass_mode", "Density-matched")
+    assert sb.isEnabled("analysis/minmass") is False
+    assert sb.isEnabled("analysis/minmass_target_density") is True
+    assert sb.isEnabled("analysis/minmass_max_false_track_rate") is False
+
+    sb.setValue("analysis/auto_minmass", False)
+    assert sb.isEnabled("analysis/minmass") is True
+    assert sb.isEnabled("analysis/minmass_mode") is False

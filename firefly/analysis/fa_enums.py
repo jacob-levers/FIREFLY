@@ -80,6 +80,41 @@ class MaskMode(Enum):
         return cls.MEAN
 
 
+class MinmassMode(Enum):
+    """Policy used to resolve an automatic detection-mass threshold.
+
+    The wire values are deliberately separate from the longer GUI labels.  Exact
+    aliases keep legacy settings/manifests loadable; unknown values are reported
+    and fall back to the historical default rather than being accepted by a
+    broad prefix match.
+    """
+    LINKABILITY = "linkability"
+    DENSITY = "density"
+    QUALITY_FIRST = "quality_first"
+
+    @classmethod
+    def parse(cls, value, *, log=None) -> "MinmassMode":
+        s = str(value if value is not None else "linkability").strip().lower()
+        aliases = {
+            # Canonical wires and the two pre-existing GUI labels.
+            "linkability": cls.LINKABILITY,
+            "density": cls.DENSITY,
+            "density-matched": cls.DENSITY,
+            "density matched": cls.DENSITY,
+            "density_matched": cls.DENSITY,
+            # New GUI label plus concise spellings suitable for manifests/CLI use.
+            "quality_first": cls.QUALITY_FIRST,
+            "quality-first": cls.QUALITY_FIRST,
+            "quality first": cls.QUALITY_FIRST,
+            "quality-first (track ambiguity)": cls.QUALITY_FIRST,
+        }
+        if s in aliases:
+            return aliases[s]
+        _warn(log, f"  WARNING: unknown auto-minmass mode {value!r} — using "
+                   f"Linkability (legacy default).")
+        return cls.LINKABILITY
+
+
 class FigureTheme(Enum):
     """Figure colour theme.  Values are the exact strings stored in the run
     manifest / settings."""

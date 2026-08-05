@@ -35,7 +35,7 @@ import traceback
 # Qt-free, stdlib-only (imports `enum`); safe to load before the CUDA sidecar
 # block since it pulls in no torch.  MsgKind is the one source of truth for the
 # worker→GUI message-queue kinds emitted throughout this module.
-from firefly.analysis.fa_enums import MsgKind, GapPolicy
+from firefly.analysis.fa_enums import MsgKind, GapPolicy, MinmassMode
 from firefly.analysis.fa_io import atomic_to_csv, atomic_write   # stdlib-only
 from firefly.analysis.fa_constants import (
     DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S, MOBILE_D_THRESHOLD_DEFAULT)
@@ -1288,6 +1288,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # value to both MSD and MSS.  Unknown replay-era values fall back loudly to
     # the forward all-pairs policy through the enum parser.
     p["gap_policy"] = GapPolicy.parse(p.get("gap_policy"), log=_log).value
+    p["minmass_mode"] = MinmassMode.parse(
+        p.get("minmass_mode"), log=_log).value
     p["metrics_schema_version"] = DIFFUSION_METRICS_SCHEMA_VERSION
     p["metric_contract"] = CURRENT_METRIC_CONTRACT
 
@@ -1570,6 +1572,39 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # threshold; otherwise use the manual value.  CSV inputs have no image to
     # threshold.
     mm_diag = None
+    quality_roi_mask = None
+    if (not external_csv
+            and p.get("auto_minmass", False)
+            and p.get("minmass_mode") == MinmassMode.QUALITY_FIRST.value):
+        if p.get("roi_split_replicates"):
+            raise ValueError(
+                "Quality-first thresholding does not yet support 'analyse each "
+                "ROI separately'. Use the polygon union as one ROI, or run each "
+                "ROI as a separate input so its null is evaluated independently.")
+        _early_roi_mode = ROIMode.parse(p.get("roi_mode", "none"), log=_log)
+        if p.get("roi_polygon"):
+            _early_roi_mode = ROIMode.POLYGON
+        if _early_roi_mode is ROIMode.POLYGON:
+            if not p.get("roi_polygon"):
+                raise ValueError(
+                    "The Drosophila Quality-first preset requires a polygon ROI "
+                    "before analysis. Draw the neuron/cell ROI in the viewer, "
+                    "then start the run again.")
+            from firefly.analysis.fa_roi import build_polygon_roi_mask
+            quality_roi_mask, _quality_n_polys = build_polygon_roi_mask(
+                p["roi_polygon"], (int(stack.shape[-2]), int(stack.shape[-1])))
+            p["quality_roi_scope"] = "polygon_union"
+            _log(f"  Quality-first ROI prepared before thresholding: "
+                 f"{_quality_n_polys} polygon(s), "
+                 f"{100.0 * quality_roi_mask.mean():.1f}% of frame.")
+        elif _early_roi_mode is ROIMode.NONE:
+            p["quality_roi_scope"] = "full_frame"
+        else:
+            raise ValueError(
+                "Quality-first thresholding currently requires either a Manual "
+                "polygon ROI or no ROI. Auto/Manual-threshold, Sister-TIFF, and "
+                "ImageJ ROIs are constructed later and would make thresholding "
+                "use a different population. Convert the ROI to a polygon first.")
     if external_csv:
         minmass_arg = None
     elif p.get("auto_minmass", False):
@@ -1594,9 +1629,25 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             search_range=int(p.get("search_range", 5)),
             memory=int(p.get("memory", 3)),
             link_min_len=max(4, int(p.get("min_track_len", 4) or 4)),
-            max_false_track_rate=_mftr)
+            max_false_track_rate=_mftr,
+            quality_floor=float(p.get("minmass", 0.05)),
+            roi_mask=quality_roi_mask,
+            pixel_size_um=float(px),
+            quality_null_replicates=int(
+                p.get("minmass_quality_null_replicates", 3) or 3),
+            quality_null_seed=int(
+                p.get("minmass_quality_null_seed", 20260805) or 20260805))
     else:
         minmass_arg = float(p["minmass"])
+
+    # Persist the policy that ACTUALLY produced the localisation population.
+    # The sidebar retains its last automatic-mode choice while auto thresholding
+    # is disabled; labelling such a manual run "quality_first" would falsely
+    # imply that its null criterion was evaluated.  External tables likewise
+    # arrive pre-detected and have no FIREFLY minmass policy.
+    p["detection_policy"] = (
+        "external_table" if external_csv
+        else (str(p.get("minmass_mode")) if mm_diag is not None else "manual"))
 
     # Real-time mass histogram: each chunk's mass values get pushed into
     # the GUI via the msg queue so the user can spot a bad minmass early.
@@ -1942,6 +1993,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 roi_mode = "none"
 
         _roi_skipped = False   # set True if a polygon ROI is dropped (shape mismatch)
+        _applied_roi_mask = None  # exact static mask used for full-run detection QC
         if roi_mode != "none" and len(locs) > 0:
             _log(f"\n── ROI mask ───────────────────────")
             try:
@@ -1989,50 +2041,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                              "loaded (external CSV?).  Skipping ROI.")
                     else:
                         try:
-                            from skimage.draw import polygon2mask
-                            polys = vertices if isinstance(vertices[0][0],
-                                                           (list, tuple)) \
-                                              else [vertices]
                             h, w = mean_proj.shape
-                            # NB: keep this `bool`, not `uint8` — see
-                            # apply_roi_mask for why uint8 breaks pandas
-                            # row indexing.
-                            # The polygon is in the coordinates of its ORIGINAL
-                            # movie.  If it was drawn on a differently-sized movie (a
-                            # full-frame ROI applied to a cropped/binned export, or
-                            # swapped Y/X), polygon2mask silently CLIPS out-of-frame
-                            # vertices and keeps the WRONG region with no error.
-                            # Detect that and skip the ROI — mirrors the sister-TIFF
-                            # shape check above.  (#13)
-                            _all_v = _np.concatenate(
-                                [_np.asarray(poly, dtype=float) for poly in polys],
-                                axis=0)
-                            _max_y = float(_all_v[:, 0].max())
-                            _max_x = float(_all_v[:, 1].max())
-                            if (_max_y > h + 1.0 or _max_x > w + 1.0
-                                    or float(_all_v.min()) < -1.0):
-                                _log(f"  WARN: ROI polygon extent (y≤{_max_y:.0f}, "
-                                     f"x≤{_max_x:.0f}) exceeds the movie frame "
-                                     f"{h}×{w} — it was drawn on a differently-sized "
-                                     f"movie.  Skipping ROI to avoid masking the "
-                                     f"wrong region.")
-                                roi_mask = None
-                                _roi_skipped = True
-                            else:
-                                roi_mask = _np.zeros((h, w), dtype=bool)
-                                for poly in polys:
-                                    m = polygon2mask((h, w), _np.asarray(poly))
-                                    roi_mask |= m.astype(bool)
-                                n_polys = len(polys)
-                                roi_source_label = (
-                                    f"ImageJ ROI ({n_polys} region(s))"
-                                    if roi_from_imagej
-                                    else f"Manual polygon ({n_polys} shape(s))")
-                                _log(f"  User polygon ROI: {n_polys} shape(s), "
-                                     f"{100.0 * roi_mask.mean():.1f}% of frame")
+                            from firefly.analysis.fa_roi import build_polygon_roi_mask
+                            roi_mask, n_polys = build_polygon_roi_mask(
+                                vertices, (h, w))
+                            roi_source_label = (
+                                f"ImageJ ROI ({n_polys} region(s))"
+                                if roi_from_imagej
+                                else f"Manual polygon ({n_polys} shape(s))")
+                            _log(f"  User polygon ROI: {n_polys} shape(s), "
+                                 f"{100.0 * roi_mask.mean():.1f}% of frame")
                         except Exception as poly_exc:
                             _log(f"  WARN: polygon ROI failed — {poly_exc}.")
                             roi_mask = None
+                            if "exceeds movie frame" in str(poly_exc):
+                                _roi_skipped = True
 
                 if roi_mask is None and mean_proj is not None:
                     # If a SPECIFIC ROI (polygon / sister / ImageJ) was requested but
@@ -2103,6 +2126,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 else:
                     n_before = len(locs)
                     locs = apply_roi_mask(locs, roi_mask)
+                    _applied_roi_mask = roi_mask.astype(bool, copy=False)
                     _log(f"  Locs after ROI : {len(locs):,}  "
                          f"(dropped {n_before - len(locs):,})")
                     if len(locs) == 0:
@@ -2245,6 +2269,71 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                              f"({_pexc})")
             except Exception as exc:
                 _log(f"  WARN: drift correction failed — {exc}")
+
+        # Quality-first full-run contract.  The threshold sweep only samples
+        # four windows; recompute density, temporal stability, and concrete
+        # next-frame assignment ambiguity on every post-ROI localisation.  No
+        # value here is fed back into minmass, so biology is not normalized to a
+        # requested count after the fact.
+        _detection_qc = None
+        if (p.get("minmass_mode") == MinmassMode.QUALITY_FIRST.value
+                and mm_diag is not None):
+            try:
+                from firefly.analysis.fa_minmass_quality import (
+                    QUALITY_POLICY_VERSION, full_detection_diagnostics)
+                if quality_roi_mask is not None and _applied_roi_mask is None:
+                    raise ValueError(
+                        "the polygon used to calibrate minmass was not applied "
+                        "to the final localisation table")
+                _detection_qc = full_detection_diagnostics(
+                    locs, n_frames=int(n_frames),
+                    frame_shape=(int(stack_h), int(stack_w)),
+                    pixel_size_um=float(px), roi_mask=_applied_roi_mask,
+                    search_range_px=float(p.get("search_range", 5)))
+                mm_diag["full_run_diagnostics"] = _detection_qc
+                p["detection_contract"] = QUALITY_POLICY_VERSION
+                p["detection_policy"] = MinmassMode.QUALITY_FIRST.value
+                p["detection_backend_resolved"] = mm_diag.get("harvest_backend")
+                p["detection_quality_floor"] = mm_diag.get(
+                    "quality_floor_effective")
+                p["detection_null_definition"] = mm_diag.get(
+                    "quality_null_definition")
+                p["detection_null_ceiling"] = mm_diag.get(
+                    "quality_max_null_track_fraction")
+                p["detection_roi_scope"] = mm_diag.get("quality_roi_scope")
+                p["detection_full_run_qc"] = _detection_qc
+                _full_codes = list(_detection_qc.get("qc_codes") or [])
+                if "high_local_assignment_ambiguity" in _full_codes:
+                    mm_diag["quality_status"] = "invalid"
+                    mm_diag["quality_reason"] = "full_run_assignment_ambiguity"
+                    mm_diag["method"] = (
+                        "quality_first_invalid:full_run_assignment_ambiguity")
+                    _ambiguity_limit = float(_detection_qc.get(
+                        "next_frame_ambiguity_warn_fraction", 0.10))
+                    mm_diag["qc"] = (
+                        "quality_invalid: full-run next-frame assignment "
+                        "ambiguity exceeded the declared "
+                        f"{100.0 * _ambiguity_limit:.1f}% QC ceiling")
+                p["quality_status"] = mm_diag.get("quality_status", "unresolved")
+                p["quality_reason"] = mm_diag.get("quality_reason")
+                _amb = _detection_qc.get(
+                    "next_frame_ambiguous_successor_fraction")
+                _log(f"  Detection QC (full run, post-ROI): "
+                     f"{_detection_qc['full_run_mean_per_frame']:.2f}/frame, "
+                     f"{_detection_qc['full_run_density_per_um2_frame']:.4f} "
+                     f"locs/(µm²·frame), next-frame ambiguity "
+                     f"{(100.0 * _amb if _amb is not None else float('nan')):.1f}%")
+                if _full_codes:
+                    _log("  Detection QC flags: " + ", ".join(_full_codes))
+            except Exception as _dq_exc:
+                mm_diag["quality_status"] = "invalid"
+                mm_diag["quality_reason"] = "full_run_qc_failed"
+                mm_diag["method"] = "quality_first_invalid:full_run_qc_failed"
+                mm_diag["qc"] = f"quality_invalid: full-run QC failed ({_dq_exc})"
+                p["quality_status"] = "invalid"
+                p["quality_reason"] = "full_run_qc_failed"
+                _log(f"  WARNING: quality-first full-run QC failed — {_dq_exc}. "
+                     "This run must not be pooled as validated quality-first data.")
 
         _check_stop()
 
@@ -2949,6 +3038,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     # 2.67.0).  Stored under the same request-side keys the analysis
                     # entry point reads — see _postproc_linking_params.
                     "diameter":         int(p.get("diameter", _POSTPROC_LINK_DEFAULTS["diameter"])),
+                    "bg_method":        str(p.get("bg_method", "uniform_filter")),
+                    "bg_radius":        int(p.get("bg_radius", 10)),
                     "search_range":     int(p.get("search_range", _POSTPROC_LINK_DEFAULTS["search_range"])),
                     "auto_search_range": bool(p.get("auto_search_range", False)),
                     "memory":           int(p.get("memory", _POSTPROC_LINK_DEFAULTS["memory"])),
@@ -2994,6 +3085,54 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "minmass_method":   (mm_diag.get("method") if mm_diag else "manual"),
                     "minmass_sensitivity": (mm_diag.get("sensitivity") if mm_diag else None),
                     "minmass_n_candidates": (mm_diag.get("n_candidates") if mm_diag else None),
+                    # Quality-first detection contract.  These fields describe
+                    # the policy/provenance, not just the resolved scalar cutoff,
+                    # so comparison code can distinguish scientifically
+                    # incompatible detection populations.
+                    "detection_contract": (mm_diag.get("detection_contract")
+                                           if mm_diag else None),
+                    "detection_policy": str(p.get(
+                        "detection_policy", "manual")),
+                    "detection_backend_resolved": (mm_diag.get("harvest_backend")
+                                                   if mm_diag else None),
+                    "quality_status": (mm_diag.get("quality_status")
+                                       if mm_diag else None),
+                    "quality_reason": (mm_diag.get("quality_reason")
+                                       if mm_diag else None),
+                    "quality_floor_assay": (mm_diag.get("quality_floor_assay")
+                                            if mm_diag else None),
+                    "quality_floor_effective": (mm_diag.get(
+                        "quality_floor_effective") if mm_diag else None),
+                    "quality_null_definition": (mm_diag.get(
+                        "quality_null_definition") if mm_diag else None),
+                    "quality_null_seed": (mm_diag.get("quality_null_seed")
+                                          if mm_diag else None),
+                    "quality_null_replicates": (mm_diag.get(
+                        "quality_null_replicates") if mm_diag else None),
+                    "quality_null_ceiling": (mm_diag.get(
+                        "quality_max_null_track_fraction") if mm_diag else None),
+                    "quality_roi_scope": (mm_diag.get("quality_roi_scope")
+                                          if mm_diag else None),
+                    "quality_roi_area_pixels": (mm_diag.get(
+                        "quality_roi_area_pixels") if mm_diag else None),
+                    "minmass_n_candidates_raw_full_frame": (mm_diag.get(
+                        "n_candidates_raw_full_frame") if mm_diag else None),
+                    "minmass_n_candidates_raw_roi": (mm_diag.get(
+                        "n_candidates_raw_roi") if mm_diag else None),
+                    "minmass_harvest_windows": (mm_diag.get("windows")
+                                                if mm_diag else None),
+                    "minmass_harvest_density_cap": (mm_diag.get(
+                        "harvest_density_cap") if mm_diag else None),
+                    "detection_sample_diagnostics": ({
+                        k: mm_diag.get(k) for k in (
+                            "sample_n_selected", "sample_frames",
+                            "sample_mean_per_frame",
+                            "sample_density_per_um2_frame",
+                            "sample_window_mean_per_frame", "sample_window_cv",
+                            "roi_area_pixels", "roi_area_um2")
+                        if mm_diag and k in mm_diag
+                    } if mm_diag else {}),
+                    "detection_full_run_qc": (_detection_qc or {}),
                     # Density-matched diagnostics: the achieved spots/frame and,
                     # when the target could not be reached, WHY — so a sparser
                     # recording is visible in the run record instead of quietly
@@ -3106,6 +3245,32 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             "observed_time_definition": OBSERVED_TIME_DEFINITION,
             "effective_calibration": p.get("effective_calibration") or {},
             "embedded_calibration": p.get("embedded_calibration") or {},
+            "detection_contract": (mm_diag.get("detection_contract")
+                                   if mm_diag else None),
+            "detection_policy": str(p.get("detection_policy", "manual")),
+            "detection_backend_resolved": (mm_diag.get("harvest_backend")
+                                           if mm_diag else None),
+            "quality_status": (mm_diag.get("quality_status")
+                               if mm_diag else None),
+            "quality_reason": (mm_diag.get("quality_reason")
+                               if mm_diag else None),
+            "quality_floor_assay": (mm_diag.get("quality_floor_assay")
+                                    if mm_diag else None),
+            "quality_floor_effective": (mm_diag.get(
+                "quality_floor_effective") if mm_diag else None),
+            "quality_null_definition": (mm_diag.get(
+                "quality_null_definition") if mm_diag else None),
+            "quality_null_ceiling": (mm_diag.get(
+                "quality_max_null_track_fraction") if mm_diag else None),
+            "detection_sample_diagnostics": ({
+                k: mm_diag.get(k) for k in (
+                    "sample_n_selected", "sample_frames",
+                    "sample_mean_per_frame", "sample_density_per_um2_frame",
+                    "sample_window_mean_per_frame", "sample_window_cv",
+                    "roi_area_pixels", "roi_area_um2")
+                if mm_diag and k in mm_diag
+            } if mm_diag else {}),
+            "detection_full_run_qc": (_detection_qc or {}),
             "n_tracks":     int(diff_df.shape[0]) if diff_df is not None else 0,
             "n_locs":       int(len(locs))         if locs    is not None else 0,
             "median_d":     None,
@@ -3309,6 +3474,34 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
 
             # Threshold-based flags — surface as warnings in the GUI
             flags: list[dict] = []
+            if (p.get("minmass_mode") == MinmassMode.QUALITY_FIRST.value
+                    and mm_diag is not None):
+                _qs = str(mm_diag.get("quality_status") or "unresolved")
+                _qr = str(mm_diag.get("quality_reason") or "criterion unresolved")
+                if _qs != "valid":
+                    flags.append({"level": "warn",
+                        "msg": "Quality-first detection is NOT VALID for pooled "
+                               f"inference ({_qr}). Inspect the minmass audit/QC "
+                               "or reacquire/reconfigure before comparing this run."})
+                _dcodes = set((_detection_qc or {}).get("qc_codes") or [])
+                if "temporal_density_shift" in _dcodes:
+                    _ratio = (_detection_qc or {}).get(
+                        "temporal_last_first_ratio")
+                    flags.append({"level": "warn",
+                        "msg": "Post-ROI detection density changed by more than "
+                               "2× between the first and last acquisition quarters"
+                               + (f" (last/first={float(_ratio):.2f})."
+                                  if _ratio is not None else ".")})
+                if "high_local_assignment_ambiguity" in _dcodes:
+                    _af = (_detection_qc or {}).get(
+                        "next_frame_ambiguous_successor_fraction")
+                    _alim = float((_detection_qc or {}).get(
+                        "next_frame_ambiguity_warn_fraction", 0.10))
+                    flags.append({"level": "warn",
+                        "msg": f"{100.0 * float(_af):.1f}% of post-ROI detections "
+                               "had multiple feasible next-frame successors; "
+                               "the run exceeds the predeclared Quality-first "
+                               f"ambiguity QC ({100.0 * _alim:.1f}%)."})
             if link_ratio is not None and link_ratio < 0.10:
                 flags.append({"level": "warn",
                     "msg": f"Only {link_ratio*100:.1f}% of localisations were "

@@ -1,11 +1,9 @@
-"""Density-matched auto-threshold.
+"""Legacy density-matched auto-threshold and auto-minmass policy plumbing.
 
-The linkability sweep tunes each recording INDEPENDENTLY, so two files can settle
-at different points on the mass-threshold curve — and the anomalous exponent
-moves along that curve.  A difference between conditions can then be caused by
-detection rather than biology.  Density-matching gives every recording the same
-detections per frame, removing the threshold as a confound, and flags a file that
-cannot reach the target instead of silently including it at a lower density.
+Density matching remains loadable for existing presets/runs, but it is count
+normalisation rather than a guarantee of unbiased detection: a genuine abundance
+difference can also be normalised away.  New Drosophila presets use the separate
+quality-first policy, whose core estimator is tested in its own module.
 """
 import numpy as np
 import pytest
@@ -50,8 +48,8 @@ def test_density_mode_lands_near_the_requested_density():
 
 @pytest.mark.slow
 def test_two_recordings_of_different_brightness_get_matched_densities():
-    """The whole point: files that would otherwise be thresholded differently
-    end up at a COMMON detections-per-frame."""
+    """Legacy count normalisation does what it says, including the important
+    caveat that it can suppress a genuine difference in emitter abundance."""
     a = _spots(np.random.default_rng(1), 60, per_frame=25)
     b = _spots(np.random.default_rng(2), 60, per_frame=90)   # much denser
     _mma, da = _estimate(a, mode="density", target_density=10.0)
@@ -86,16 +84,22 @@ def test_linkability_remains_the_default_and_ignores_target_density():
 def test_settings_plumbing_reaches_worker_params():
     """The sidebar keys must survive into the params the worker consumes."""
     from firefly.ui.controllers.params.params_builder import build_params, _DEFAULTS
+    from firefly.analysis.fa_enums import MinmassMode
 
     class _S:
-        def __init__(self, mode=None, dens=None): self.mode, self.dens = mode, dens
+        def __init__(self, mode=None, dens=None, false_rate=None):
+            self.mode, self.dens, self.false_rate = mode, dens, false_rate
         def get_str(self, k, d=""):
             return (self.mode if (k == "analysis/minmass_mode"
                                   and self.mode is not None) else d)
         def get_bool(self, k, d=False): return d
         def get_float(self, k, d=0.0):
-            return (self.dens if (k == "analysis/minmass_target_density"
-                                  and self.dens is not None) else d)
+            if k == "analysis/minmass_target_density" and self.dens is not None:
+                return self.dens
+            if (k == "analysis/minmass_max_false_track_rate"
+                    and self.false_rate is not None):
+                return self.false_rate
+            return d
 
     class _Imp:
         filePath = "/d/rec.czi"; outDir = None; isCsv = False
@@ -106,17 +110,38 @@ def test_settings_plumbing_reaches_worker_params():
     assert p["minmass_mode"] == "linkability"
     p = build_params(_S("Density-matched", 25.0), _Imp())
     assert p["minmass_mode"] == "density" and p["minmass_target_density"] == 25.0
+    # The new policy has an explicit wire and survives into replay provenance.
+    p = build_params(_S("Quality-first (track ambiguity)", 25.0, 10.0), _Imp())
+    assert p["minmass_mode"] == "quality_first"
+    assert p["minmass_max_false_track_rate"] == 0.10
+    assert p["widget_state"]["analysis/minmass_mode"] == \
+        "Quality-first (track ambiguity)"
+    assert p["widget_state"]["analysis/minmass_target_density"] == 25.0
+    # Canonical legacy wire values remain loadable (saved programmatic presets).
+    assert build_params(_S("density", 25.0), _Imp())["minmass_mode"] == "density"
+    assert build_params(_S("quality_first", 25.0), _Imp())["minmass_mode"] == \
+        "quality_first"
+    assert MinmassMode.parse("Density-matched") is MinmassMode.DENSITY
+    assert MinmassMode.parse("Quality-first (track ambiguity)") is \
+        MinmassMode.QUALITY_FIRST
+    # A future/garbled policy cannot silently fall through to a different method.
+    with pytest.warns(RuntimeWarning, match="unknown auto-minmass mode"):
+        p = build_params(_S("future-policy", 25.0), _Imp())
+    assert p["minmass_mode"] == "linkability"
 
 
-def test_the_fly_preset_requests_density_matching():
-    """The Drosophila preset is the reason this exists — it must ask for it,
-    and every key it sets must be one the sidebar actually applies."""
+def test_the_fly_preset_requests_quality_first_policy():
+    """The Drosophila preset locks its empirical floor, provisional ambiguity
+    ceiling and backend, and every key must be understood by the sidebar."""
     import json
     from pathlib import Path
     from firefly.ui.controllers.params import sidebar_schema as S
     p = json.loads((Path(__file__).resolve().parents[1]
                     / "firefly/ui/presets/Drosophila Neurons.json").read_text())
     p.pop("__firefly_builtin__", None)
-    assert p["analysis/minmass_mode"] == "Density-matched"
+    assert p["analysis/minmass_mode"] == "Quality-first (track ambiguity)"
     assert p["analysis/auto_minmass"] is True
+    assert p["analysis/minmass"] == 0.16
+    assert p["analysis/minmass_max_false_track_rate"] == 10.0
+    assert p["analysis/backend"] == "Crocker–Grier — PyTorch (GPU)"
     assert [k for k in p if k not in S.BY_KEY] == []

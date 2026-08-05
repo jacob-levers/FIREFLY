@@ -207,6 +207,39 @@ processes, each shown as a live tile with its own preview and progress.
   precision upgrade. The backend dropdown shows one GPU option per engine that
   auto-selects this machine's GPU — NVIDIA CUDA on Windows/Linux, Apple MPS on
   macOS — and **Auto** prefers the GPU but drops back cleanly to CPU.
+- **Quality-first Drosophila detection policy** — the shipped **Drosophila
+  Neurons** preset pins the Crocker–Grier PyTorch backend and treats
+  `minmass = 0.16` as an empirical lower floor for that FIREFLY assay. The
+  number is on FIREFLY's normalised, backend-relative integrated-mass scale;
+  it is **not** a photon count, camera ADU threshold, or transferable physical
+  constant. Recalibrate it before changing the detector, preprocessing,
+  fluorophore, microscope, or acquisition regime.
+
+  Quality-first never lowers that floor to fill a detection quota. Within the
+  analysis ROI it preserves each sampled frame's candidate count and mass, but
+  redraws positions independently from a smoothed ROI-specific spatial density.
+  This destroys real trajectories and fixed-pixel identity while retaining
+  coarse specimen geometry. The selected threshold may rise to the lowest
+  stable point whose spatial-null participation in long tracks is below the
+  configured ceiling (10% in the preset). That quantity estimates **random-link
+  contamination under the configured linker, search range, memory, and minimum
+  track length**. It is not a candidate false-positive rate, false-discovery
+  rate, detection recall, or proof that retained spots are molecules.
+
+  Density and temporal behaviour are reported after selection rather than
+  forced to match another file. A Quality-first run whose criterion is
+  unresolved, or whose full-run assignment-ambiguity QC is invalid, is shown as
+  such and excluded from pooled comparison. **Density-matched** and
+  **Linkability** remain available for replay and sensitivity analyses, but
+  neither is the Drosophila preset's confirmatory policy.
+
+  The present calibration is internal to the supplied ELYRA Drosophila data,
+  not external validation. Those data do not include blank/negative-control
+  acquisitions or truth-labelled emitter injections, and currently include
+  only one treated biological replicate. Candidate-level precision, recall and
+  FDR—and any treatment effect—therefore remain to be established with blanks,
+  realistic injection-recovery tests, and additional independent biological
+  replicates.
 - **Selectable linker** — a **Linker** dropdown (Linking panel) chooses the
   trajectory linker (labelled *Algorithm — Software*):
   - **Crocker–Grier — Trackpy** (default) — recursive subnet nearest-neighbour;
@@ -374,7 +407,9 @@ Every run produces a **17-panel analysis figure**. A selection:
   tab replays a run exactly.
 - **Parameter presets** — save / load named bundles of sidebar settings
   in `~/.firefly/presets/`. Two ship by default (PC12 Cells, Drosophila
-  Neurons) to give new users a sensible starting point.
+  Neurons) to give new users a sensible starting point. The Drosophila preset
+  is assay-specific: it pins PyTorch and the Quality-first floor described
+  above; it is not a universal single-molecule detection calibration.
 - **Per-series batch tree** — multi-file series (`name.tif`, `name(1).tif`,
   `name(2).tif`, …) are grouped under one parent node; expand to
   individually deselect sister files within a series. Loader concatenates
@@ -709,6 +744,9 @@ Algorithm references:
 - Saxton (1997), Yu et al. (2014) — jump-distance distribution
 - Ferrari et al. (2001) — moment-scaling spectrum
 - Thompson, Larson & Webb (2002) — localisation precision
+- Jaqaman et al. (2008) — density-, motion- and miss-dependent linking ambiguity
+- Smith et al. (2015) — probability-based detection and candidate-level error control
+- Hansen et al. (2018) — motion-blur, density and defocalisation biases in SPT
 - Otsu (1979), Li & Lee (1993), Zack-Rogers-Latt (1977) — auto-thresholds
 - Ester et al. (1996) — DBSCAN
 

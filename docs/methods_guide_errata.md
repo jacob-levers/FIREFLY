@@ -30,6 +30,58 @@ PyTorch surfaces a few extra low-quality candidates that `minmass` / track-lengt
 GPU (CUDA → MPS) else the parallel PyTorch-CPU path, and **never auto-selects
 trackpy**; trackpy is a deliberate manual choice in the dropdown.
 
+## §4 / §5 — Drosophila Quality-first `minmass`
+
+**strike:** any statement that matching detections per frame removes the
+detection threshold as a control-versus-treatment confound, or that the
+Drosophila value `0.16` is a photon/ADU-calibrated detection threshold.
+
+**fix:** the Drosophila Neurons preset pins the Crocker–Grier **PyTorch** backend
+and uses `minmass = 0.16` as an **empirical FIREFLY-relative assay floor**. Mass
+is the integrated brightness produced by FIREFLY's normalised preprocessing and
+backend calibration. It is not photons, ADU, an estimated molecule count, or a
+universal physical threshold. The floor must be re-established if the backend,
+preprocessing, fluorophore, microscope, illumination, exposure, or acquisition
+regime changes.
+
+Quality-first operates on candidates inside the same static polygon ROI (or the
+same full frame) that enters analysis. It never lowers the assay/model floor to
+reach a target number of detections. For its ambiguity check, FIREFLY preserves
+the sampled per-frame candidate counts and masses, then independently redraws
+positions from a search-range-smoothed, ROI-restricted spatial density with a
+small uniform component. This retains ROI geometry and coarse spatial
+heterogeneity while destroying real temporal paths and exact recurrent-pixel
+identity. Simple frame-order permutation is not used because immobile emitters
+and hot pixels would remain spatially recurrent and make the null depend on the
+sample's genuine persistence.
+
+At each exact mass threshold, the observed and spatial-null candidates are
+linked with the configured search range, memory, and minimum track length. The
+policy may raise `minmass` to the lowest stable threshold whose upper null
+long-track-participation fraction is below the configured ceiling (10% in the
+Drosophila preset), while retaining sufficient observed linked yield. This is
+an estimate of **random-link participation among candidates under that tracking
+configuration**. It is explicitly **not** a candidate false-positive rate,
+false-discovery rate, detection precision, or recall estimate.
+
+After localisation and ROI application, FIREFLY reports full-run areal density,
+zero-detection frames, temporal quarters, and the fraction of detections with
+multiple feasible next-frame successors. These are QC outputs and do not feed
+back into a count quota. A criterion that cannot be resolved is labelled
+`unresolved`; excessive full-run assignment ambiguity or a failed QC is labelled
+`invalid`. Such runs remain auditable but are excluded from pooled comparison.
+The previous Density-matched and Linkability modes remain available for legacy
+replay and sensitivity analyses.
+
+**Validation limitation:** this is an internal assay policy, not an externally
+validated detector. The supplied ELYRA material contains no blank/negative-
+control acquisition and no truth-labelled synthetic-emitter injection series,
+so candidate precision, recall and FDR have not been established. It also
+currently contains only one treated biological replicate, which cannot validate
+a treatment effect. Confirmatory use requires blank controls, realistic
+injection-recovery over the observed background/SNR/motion range, and additional
+independent control and treated biological replicates.
+
 ## §6 — Trajectory linking
 
 **strike:** "Detections are linked into trajectories with trackpy's recursive

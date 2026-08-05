@@ -2,6 +2,39 @@
 
 ## v2.76.49-rc.2 — 5 Aug 2026
 
+### Changed
+
+- **The Drosophila Neurons preset now uses Quality-first detection instead of
+  filling a per-file density quota.** It pins the Crocker–Grier PyTorch backend
+  and treats `minmass = 0.16` as an empirical lower floor for this FIREFLY assay.
+  The value is on FIREFLY's normalised, backend-relative integrated-mass scale;
+  it is not photons, ADU, or a universal physical threshold. The policy can
+  raise the floor, but never lower it to manufacture a requested number of
+  detections.
+
+- **Track ambiguity is now measured against an ROI-aware spatial null.** The
+  null preserves candidate masses and per-frame counts, but redraws positions
+  independently from a smoothed density inside the analysis ROI. Its long-track
+  participation estimates random links under the chosen linker settings. It is
+  deliberately not described as a candidate false-positive rate or FDR. The
+  preset uses a provisional 10% null-track ceiling; Density-matched and
+  Linkability remain available as legacy/replay and sensitivity policies.
+
+- **Detection QC is explicit from calibration windows through the full run.**
+  FIREFLY records the policy, backend, floor, ROI area, null definition, sampled
+  areal density, full-run density/temporal diagnostics, and concrete next-frame
+  assignment ambiguity. Unresolved or invalid Quality-first runs remain
+  inspectable but are excluded from pooled comparison instead of being treated
+  as validated replicates.
+
+- **Validation scope is stated conservatively.** The `0.16` floor is an internal
+  calibration from the supplied ELYRA Drosophila assay, not independent external
+  validation. The supplied data include no blank/negative-control movie or
+  truth-labelled emitter-injection series and currently only one treated
+  biological replicate. Candidate precision, recall, FDR and a treatment effect
+  therefore require dedicated blanks, realistic injection recovery and more
+  independent biological replicates.
+
 ### Fixed
 
 - **A theme you chose can no longer be replaced by the default.** If the saved
@@ -146,19 +179,15 @@
   convention. `.tif`, `.tiff` and `.czi` are all matched, capitalisation is
   ignored, and clearing the field turns companion matching off entirely.
 
-- **Density-matched automatic detection threshold.** The existing automatic
-  threshold tunes each recording on its own, which means two recordings can end
-  up detecting at different densities — and because the anomalous exponent shifts
-  with the threshold, a difference between conditions can come from detection
-  rather than from biology. The new mode instead gives every recording the same
-  detections per frame, so the threshold cannot vary between your control and
-  drug groups. On three control recordings it brought detection density to
-  roughly 22 per frame in all three (previously 23, 50 and 149), improved
-  localisation precision on two of them, and narrowed the spread in anomalous
-  exponent between animals by about a third. A recording too sparse to reach the
-  target is flagged in its run record rather than quietly included at a lower
-  density. Choose it under Detection, with an adjustable target; the Drosophila
-  Neurons preset now uses it at 25 spots per frame.
+- **Density-matched automatic detection threshold (legacy/sensitivity policy as
+  of v2.76.49-rc.2).** This release introduced an adjustable mode that forces the
+  sampled mean detections per frame. On three control recordings it brought that
+  output count to roughly 22 per frame (previously 23, 50 and 149), and flagged a
+  recording that could not reach the requested count. Equal output counts do not,
+  however, establish equal recall, candidate false-positive rate, localisation
+  precision, or biological abundance; selecting a different brightness quantile
+  in every file can itself change the detected population. The Drosophila preset
+  therefore moved to the non-quota Quality-first policy in v2.76.49-rc.2.
 
 ### Changed
 
@@ -168,10 +197,13 @@
   600 frames**; the tuned one produces **315** from the same data. The detection
   threshold was the main culprit: the fixed `minmass = 2.0` kept about 2 spots
   per frame where the data supports roughly 23, discarding most real molecules.
-  Detection now uses the automatic threshold, which measured 0.16 on this data
-  and adapts to each recording. Spot diameter 9 to 7 and background radius 15 to
-  10 both recovered more tracks; the search range is 3 (appropriate for
-  Syntaxin); memory stays at 5, which the data supports (it raises the share of
+  Detection in this release used an automatic threshold that measured 0.16 on
+  one control recording. That was an internal empirical observation, not a
+  photon/ADU calibration or external validation; v2.76.49-rc.2 retains 0.16 only
+  as the locked lower floor of the PyTorch Quality-first policy. Spot diameter
+  9 to 7 and background radius 15 to 10 both recovered more tracks; the search
+  range is 3 (appropriate for Syntaxin); memory stays at 5, which the data
+  supports (it raises the share of
   localisations used from 37% to 60%, while the risk of a wrong link at this
   density is about 1 in 90); and the minimum track length is 8 rather than 10,
   which yields around a third more tracks with no material change in diffusion

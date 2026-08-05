@@ -40,6 +40,20 @@ from firefly.analysis import fa_twoway
 _FI_DEFAULT_WARNED: set = set()   # stems already warned about a missing Δt
 
 
+# Every comparison endpoint is downstream of the localisation population.  A
+# mismatch in the detection contract therefore invalidates more than the D/MSD
+# family: track counts, geometry, intensity, dwell/JDD, and angular endpoints
+# all change when a different set of spots enters linking.  Keep this list next
+# to the compatibility machinery so a newly added panel cannot silently escape
+# the detection guard.
+_DETECTION_DERIVED_PANELS = {
+    "msd", "auc", "fluor", "logd_dist", "mob_immob", "motion_classes",
+    "track_length", "rg", "netdisp", "path", "step", "speed", "linkstep",
+    "linkspeed", "dir", "dur", "track_count", "nlocs", "jdd", "dwell_cdf",
+    "turning_angles", "radial_dist", "van_hove", "vacf",
+}
+
+
 # ── ReportData: the style/theme-independent compute output (cacheable) ─────────
 @dataclass
 class ReportData:
@@ -1146,6 +1160,204 @@ def _comparison_metric_contracts(all_summaries):
     return warnings, labels, legacy_only
 
 
+def _summary_metadata_value(summary, *keys):
+    """Return persisted metadata without manufacturing a modern default.
+
+    FIREFLY's native loader places ``*_params.json`` under ``summary["params"]``;
+    a few imported/native summaries expose contract fields at the top level.
+    Both are accepted, but a missing value remains missing.  In particular, an
+    old run with no detection provenance must not be made to look compatible
+    with a validated Quality-first run by filling today's settings.
+    """
+    params = summary.get("params") or {}
+    for source in (params, summary):
+        for key in keys:
+            if key not in source:
+                continue
+            value = source.get(key)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            return value
+    return None
+
+
+def _normalise_detection_policy(value, contract_id=None):
+    raw = str(value or "").strip().lower()
+    token = (raw.replace("–", "-").replace("—", "-")
+            .replace("_", " ").replace("-", " "))
+    token = " ".join(token.split())
+    contract = str(contract_id or "").strip().lower()
+    if token.startswith("quality first"):
+        return "quality_first"
+    if token.startswith("density matched"):
+        return "density_matched"
+    if token.startswith("linkability"):
+        return "linkability"
+    if token.startswith("manual"):
+        return "manual"
+    if not token and contract.startswith("quality_first"):
+        return "quality_first"
+    return token.replace(" ", "_") if token else "legacy_or_unknown"
+
+
+def _normalise_contract_value(value, kind):
+    """Canonicalise persisted settings solely for equality comparisons."""
+    if value is None:
+        return None
+    if kind == "str":
+        return " ".join(str(value).strip().lower().split())
+    if kind == "int":
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return str(value).strip().lower()
+    if kind == "float":
+        try:
+            number = float(value)
+            return number if np.isfinite(number) else str(value).strip().lower()
+        except (TypeError, ValueError, OverflowError):
+            return str(value).strip().lower()
+    return value
+
+
+def _summary_detection_contract(summary):
+    """Return one run's persisted detection contract.
+
+    ``quality_floor_assay`` is the fixed empirical assay floor.  The effective
+    floor and final ``minmass_used`` are intentionally absent: Quality-first is
+    designed to raise the threshold independently when a file's noise requires
+    it, so comparing those resolved outputs would reject the method working as
+    specified.
+
+    The settings below are all number-affecting inputs to localisation or to the
+    observed/null link sweep.  ROI *scope* is part of the contract, whereas ROI
+    pixel area is not (legitimate biological ROIs need not have equal areas).
+    """
+    contract_id = _summary_metadata_value(summary, "detection_contract")
+    policy = _normalise_detection_policy(
+        _summary_metadata_value(summary, "detection_policy", "minmass_mode"),
+        contract_id)
+    method = _summary_metadata_value(summary, "minmass_method")
+    method_is_quality = str(method or "").strip().lower().startswith(
+        "quality_first")
+    contract_is_quality = str(contract_id or "").strip().lower().startswith(
+        "quality_first")
+    if policy == "legacy_or_unknown":
+        # Some early prerelease sidecars carried only the method string.
+        if method_is_quality:
+            policy = "quality_first"
+    is_quality = (policy == "quality_first" or contract_is_quality
+                  or method_is_quality)
+
+    specs = (
+        ("version", ("detection_contract",), "str"),
+        ("backend", ("detection_backend_resolved",), "str"),
+        ("assay_floor", ("quality_floor_assay",), "float"),
+        ("null_definition", ("quality_null_definition",
+                             "detection_null_definition"), "str"),
+        ("null_ceiling", ("quality_null_ceiling",
+                          "detection_null_ceiling"), "float"),
+        ("null_replicates", ("quality_null_replicates",), "int"),
+        ("diameter", ("diameter",), "int"),
+        ("bg_method", ("bg_method",), "str"),
+        ("bg_radius", ("bg_radius",), "int"),
+        ("search_range", ("search_range",), "float"),
+        ("memory", ("memory",), "int"),
+        ("min_track_len", ("min_track_len",), "int"),
+        ("roi_scope", ("quality_roi_scope", "detection_roi_scope"), "str"),
+    )
+    values = {"policy": policy}
+    for name, aliases, kind in specs:
+        values[name] = _normalise_contract_value(
+            _summary_metadata_value(summary, *aliases), kind)
+
+    required = tuple(name for name, _aliases, _kind in specs)
+    missing = tuple(name for name in required if values[name] is None)
+    key = tuple((name, values[name]) for name in ("policy",) + required)
+    if policy == "legacy_or_unknown":
+        label = "legacy/unknown detection provenance"
+    else:
+        label = (
+            f"{policy} / {values['version'] or 'unversioned'}; "
+            f"backend={values['backend'] or '?'}; "
+            f"assay floor={values['assay_floor'] if values['assay_floor'] is not None else '?'}; "
+            f"null={values['null_definition'] or '?'} @ "
+            f"{values['null_ceiling'] if values['null_ceiling'] is not None else '?'} "
+            f"({values['null_replicates'] if values['null_replicates'] is not None else '?'} reps); "
+            f"ROI={values['roi_scope'] or '?'}; "
+            f"diameter/bg/search/memory/minlen="
+            f"{values['diameter'] or '?'}/{values['bg_method'] or '?'}:"
+            f"{values['bg_radius'] if values['bg_radius'] is not None else '?'} / "
+            f"{values['search_range'] if values['search_range'] is not None else '?'} / "
+            f"{values['memory'] if values['memory'] is not None else '?'} / "
+            f"{values['min_track_len'] if values['min_track_len'] is not None else '?'}"
+        )
+        if missing:
+            label += f"; missing={','.join(missing)}"
+    return {
+        "policy": policy,
+        "is_quality": is_quality,
+        "status": str(_summary_metadata_value(summary, "quality_status") or "")
+                  .strip().lower(),
+        "reason": str(_summary_metadata_value(summary, "quality_reason") or "")
+                  .strip(),
+        "key": key,
+        "missing": missing,
+        "label": label,
+    }
+
+
+def _quality_first_rejection_reason(summary):
+    """Explain why a Quality-first run cannot enter a comparison, if any."""
+    contract = _summary_detection_contract(summary)
+    if not contract["is_quality"]:
+        return None
+    if contract["status"] == "valid":
+        return None
+    status = contract["status"] or "missing"
+    detail = f"; reason={contract['reason']}" if contract["reason"] else ""
+    return (
+        "Quality-first run excluded because its persisted quality_status is "
+        f"'{status}'{detail}. Only quality_status='valid' runs may enter a "
+        "pooled comparison."
+    )
+
+
+def _comparison_detection_contracts(all_summaries):
+    """Return a warning when Quality-first provenance cannot be pooled safely.
+
+    Legacy-only cohorts remain loadable and retain their historical behaviour.
+    Once any validated Quality-first run is selected, however, every selected
+    run must declare the same complete contract; legacy/unknown provenance is a
+    distinct contract, not a wildcard.
+    """
+    contracts = [
+        _summary_detection_contract(summary)
+        for summaries in all_summaries for summary in summaries
+    ]
+    if not any(c["is_quality"] for c in contracts):
+        return {}, sorted({c["label"] for c in contracts})
+
+    keys = {c["key"] for c in contracts}
+    incomplete = [c for c in contracts if c["is_quality"] and c["missing"]]
+    labels = sorted({c["label"] for c in contracts})
+    if len(keys) == 1 and not incomplete:
+        return {}, labels
+
+    warning = (
+        "All detection-derived panels and pooled inference were suppressed: "
+        "the selected runs use incompatible or incomplete detection contracts. "
+        "Quality-first comparisons require the same policy/version, resolved "
+        "backend, assay floor, null definition/ceiling/replicates, diameter, "
+        "background method/radius, link-sweep search range/memory/minimum track "
+        "length, and ROI scope. Per-file effective thresholds may differ and "
+        "are not part of this check. Legacy/unknown runs remain loadable but "
+        "cannot be pooled with validated Quality-first data. Contracts: "
+        + " | ".join(labels)
+    )
+    return {"detection": warning}, labels
+
+
 def _col_mean_from(d, col):
     if d is None or col not in getattr(d, "columns", []):
         return float("nan")
@@ -1245,8 +1457,13 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             if progress_cb:
                 progress_cb(done, total, f"Loading: {os.path.basename(f)}")
             try:
-                all_summaries[gi].append(
-                    load_summary_from_folder(f, use_native=use_native))
+                summary = load_summary_from_folder(f, use_native=use_native)
+                rejection = _quality_first_rejection_reason(summary)
+                if rejection:
+                    skipped[gi].append((f, rejection))
+                    print(f"  Skipping {f}: {rejection}")
+                else:
+                    all_summaries[gi].append(summary)
             except Exception as e:
                 # Classify so the user gets an actionable reason, not a stack
                 # trace.  The #1 cause is an unmounted external drive.
@@ -1279,8 +1496,13 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
     if progress_cb:
         progress_cb(total, total, "Computing scalars and rendering...")
 
-    compatibility_warnings, metric_contract_labels, legacy_only = (
+    metric_warnings, metric_contract_labels, legacy_only = (
         _comparison_metric_contracts(all_summaries))
+    detection_warnings, _detection_contract_labels = (
+        _comparison_detection_contracts(all_summaries))
+    # Detection compatibility dominates every downstream endpoint; put it first
+    # in logs/reports while retaining metric-family warnings for provenance.
+    compatibility_warnings = {**detection_warnings, **metric_warnings}
     for warning in compatibility_warnings.values():
         print(f"  Compare WARNING: {warning}")
     if legacy_only:
@@ -1426,22 +1648,25 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
         # The two-way ANOVA is a SECONDARY headline stat — it must never be able
         # to blank the primary figure.  If it fails (singular/underpowered design,
         # pingouin quirk, …) skip it and let every panel render regardless.
-        try:
-            inference_df = paired_df.copy()
-            if "diffusion" in compatibility_warnings:
-                for column in ("auc_msd", "mob_immob_ratio", "median_D",
-                               "median_alpha", "vacf_persistence"):
-                    if column in inference_df:
-                        inference_df[column] = np.nan
-            if "step" in compatibility_warnings:
-                for column in ("step_distance", "step_speed",
-                               "link_displacement", "link_speed"):
-                    if column in inference_df:
-                        inference_df[column] = np.nan
-            twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(
-                inference_df, stats_config=cfg)
-        except Exception as e:
-            twoway_df, twoway_msg = None, f"skipped ({type(e).__name__}: {e})"
+        if "detection" in compatibility_warnings:
+            twoway_msg = "suppressed: " + compatibility_warnings["detection"]
+        else:
+            try:
+                inference_df = paired_df.copy()
+                if "diffusion" in compatibility_warnings:
+                    for column in ("auc_msd", "mob_immob_ratio", "median_D",
+                                   "median_alpha", "vacf_persistence"):
+                        if column in inference_df:
+                            inference_df[column] = np.nan
+                if "step" in compatibility_warnings:
+                    for column in ("step_distance", "step_speed",
+                                   "link_displacement", "link_speed"):
+                        if column in inference_df:
+                            inference_df[column] = np.nan
+                twoway_df, twoway_msg = fa_twoway.compute_twoway_anova(
+                    inference_df, stats_config=cfg)
+            except Exception as e:
+                twoway_df, twoway_msg = None, f"skipped ({type(e).__name__}: {e})"
         print(f"  Two-way ANOVA: {twoway_msg}")
 
     return ReportData(
@@ -1542,6 +1767,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             "values remain labelled and loadable."
         )
     contract_panel_families = {
+        # All currently supported comparison panels are localisation-derived.
+        # Include the requested set as a conservative forward-compatible guard:
+        # a new panel must opt into a demonstrably detection-independent contract
+        # before it can survive a population mismatch.
+        "detection": _DETECTION_DERIVED_PANELS | requested_panels,
         "diffusion": {"msd", "auc", "logd_dist", "mob_immob",
                       "motion_classes", "vacf"},
         "step": {"step", "speed", "linkstep", "linkspeed"},
@@ -1549,6 +1779,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     }
     suppressed_panels = {}
     for family, family_panels in contract_panel_families.items():
+        # A detection mismatch already suppresses every scientific panel.  Keep
+        # the narrower metric warnings in exported metadata, but do not replace
+        # one requested figure with several redundant warning cards.
+        if "detection" in compatibility_warnings and family != "detection":
+            continue
         if family in compatibility_warnings:
             affected = requested_panels & family_panels
             if affected:
@@ -1557,7 +1792,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         panel for affected in suppressed_panels.values() for panel in affected
     }
     warning_panels = [f"__contract_{family}"
-                      for family in ("diffusion", "step", "link")
+                      for family in ("detection", "diffusion", "step", "link")
                       if family in suppressed_panels]
 
     # ── Render the figure ────────────────────────────────────────────────────
@@ -1622,7 +1857,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # requested panels from that family.  Stable panels continue to render and
     # retain their inference; incompatible values remain in the summary CSV
     # with an explicit contract label but are never silently pooled.
-    for family in ("diffusion", "step", "link"):
+    for family in ("detection", "diffusion", "step", "link"):
         key = f"__contract_{family}"
         if key not in warning_panels:
             continue
@@ -2452,6 +2687,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             m = m & (summary_df["timepoint"] == timepoints_per_card[i])
         sub = summary_df[m]
         n_cells = int(len(sub))
+        if "detection" in compatibility_warnings:
+            n_trk = None
+            med_D = med_a = np.nan
+            below = None
+            return n_cells, n_trk, med_D, med_a, below
         n_trk = int(sub["n_tracks"].sum()) if "n_tracks" in sub else 0
         if "diffusion" in compatibility_warnings:
             med_D = med_a = np.nan
@@ -2468,15 +2708,16 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
 
     def _band_entry(label, n_cells, n_trk, d, a, n_below, compact):
         lab = label if len(label) <= 18 else label[:17] + "…"
-        below_s = f" · {n_below:,} below res." if n_below else ""
+        below_s = f" · {n_below:,} below res." if n_below is not None and n_below else ""
+        n_trk_s = f"{n_trk:,}" if n_trk is not None else "—"
         if compact:
             d_s = f"{d:.3f}" if np.isfinite(d) else "—"
             a_s = f"{a:.2f}" if np.isfinite(a) else "—"
-            return (f"●  {lab} — {n_trk:,} trk · D {d_s} · α {a_s}"
+            return (f"●  {lab} — {n_trk_s} trk · D {d_s} · α {a_s}"
                     f"{below_s}  (n={n_cells})")
         d_s = f"{d:.4f} µm²/s" if np.isfinite(d) else "—"
         a_s = f"{a:.3f}" if np.isfinite(a) else "—"
-        return (f"●  {lab} — {n_trk:,} tracks · med D {d_s} · "
+        return (f"●  {lab} — {n_trk_s} tracks · med D {d_s} · "
                 f"med α {a_s}{below_s}   (n={n_cells})")
 
     band_top = 1.0 - 0.52 / fig_h            # first band row, below the suptitle
@@ -2521,7 +2762,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # below but never actually tested — the most important diffusion metrics had
     # no comparison stats at all.  (#35)  The two-way report covers the
     # two-factor case separately.
-    if not two_factor:
+    if not two_factor and "detection" not in compatibility_warnings:
         hidden_metrics = ["nongauss_alpha2"]
         if "diffusion" not in compatibility_warnings:
             hidden_metrics.extend(
@@ -2782,7 +3023,10 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         #   * {stem}_circular_statistics.pdf  — themed multi-page PDF
         #     (page 1 = summary grid + comparison table; pages 2..N+1 =
         #     per-group detail mirroring the per-file report).
-        if not cfg["include_circular_outputs"]:
+        if "detection" in compatibility_warnings:
+            print("  Comparison circular-stats: suppressed by incompatible "
+                  "detection contracts")
+        elif not cfg["include_circular_outputs"]:
             print("  Comparison circular-stats: disabled in stats config")
         else:
             try:

@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import warnings
 from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
+from firefly.analysis.fa_enums import MinmassMode
 
 try:
     _N_CPUS = multiprocessing.cpu_count()
@@ -62,6 +64,28 @@ GAP_POLICY_LABEL_TO_VALUE = {
     "All timestamp pairs": "all_pairs",
     "Contiguous observations (legacy)": "contiguous",
 }
+MINMASS_MODE_LABEL_TO_VALUE = {
+    "Linkability": MinmassMode.LINKABILITY.value,
+    "Density-matched": MinmassMode.DENSITY.value,
+    "Quality-first (track ambiguity)": MinmassMode.QUALITY_FIRST.value,
+}
+
+
+def _minmass_mode_wire(value) -> str:
+    """Map an exact GUI label or accepted legacy wire to its canonical wire.
+
+    Previous code used ``startswith('density')`` and treated every other value as
+    Linkability.  That made a preset from a newer FIREFLY silently select the
+    wrong scientific policy in an older/partially-updated install.  Keep known
+    legacy wires loadable, but make an unknown token visible.
+    """
+    if value in MINMASS_MODE_LABEL_TO_VALUE:
+        return MINMASS_MODE_LABEL_TO_VALUE[value]
+
+    def _warn(message):
+        warnings.warn(message.strip(), RuntimeWarning, stacklevel=3)
+
+    return MinmassMode.parse(value, log=_warn).value
 
 # Pristine widget-construction defaults — captured from a freshly-built Widgets
 # sidebar against an EMPTY QSettings store.  Used as the fallback for any key the
@@ -227,11 +251,8 @@ def build_params(settings, importc, fpath: str | None = None,
         "minmass":        g.get_float("analysis/minmass", _DEFAULTS["minmass"]),
         "minmass_sensitivity": g.get_str(
             "analysis/minmass_sensitivity", _DEFAULTS["minmass_sensitivity"]).lower(),
-        "minmass_mode": ("density"
-                         if g.get_str("analysis/minmass_mode",
-                                      _DEFAULTS["minmass_mode"]).lower()
-                            .startswith("density")
-                         else "linkability"),
+        "minmass_mode": _minmass_mode_wire(g.get_str(
+            "analysis/minmass_mode", _DEFAULTS["minmass_mode"])),
         "minmass_target_density": g.get_float(
             "analysis/minmass_target_density",
             _DEFAULTS["minmass_target_density"]),
@@ -329,7 +350,8 @@ def _widget_state_snapshot(g, importc) -> dict:
     """Best-effort widget-state dict (QSettings-key → value), mirroring
     ``_widget_state_dict`` for the keys this builder sources."""
     keys_str = [
-        "analysis/bg_method", "analysis/minmass_sensitivity", "analysis/roi_mode",
+        "analysis/bg_method", "analysis/minmass_mode",
+        "analysis/minmass_sensitivity", "analysis/roi_mode",
         "analysis/roi_auto_method", "analysis/roi_mask_mode", "analysis/backend",
         "analysis/linker", "analysis/gap_policy",
         "figures/theme", "figures/proj_cmap",
@@ -337,6 +359,7 @@ def _widget_state_snapshot(g, importc) -> dict:
     keys_num = [
         "analysis/bg_radius", "analysis/camera_gain", "analysis/camera_qe",
         "analysis/camera_bg_photons", "analysis/diameter", "analysis/minmass",
+        "analysis/minmass_target_density",
         "analysis/minmass_max_false_track_rate", "analysis/search_range",
         "analysis/memory", "analysis/min_track_len", "analysis/max_track_len",
         "analysis/max_lagtime", "analysis/n_fit", "analysis/alpha_immobile",

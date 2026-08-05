@@ -27,11 +27,19 @@ import pandas as pd
 import trackpy as tp
 from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm,
                                            safe_process_workers, _cpu_core_budget)
+from firefly.analysis.fa_enums import MinmassMode
 from firefly.analysis.fa_linking import _link_via_trackpy
 from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
                        _resolve_temp_stack_dir, _user_ram_reserve_gb)
 from firefly.analysis.fa_preprocess import (preprocess_stack, _preprocess_fast,
                            _preprocess_rolling)
+from firefly.analysis.fa_minmass_quality import (
+    QUALITY_POLICY_VERSION, QUALITY_NULL_DEFINITION, QUALITY_NULL_SEED,
+    QUALITY_NULL_REPLICATES, QUALITY_NULL_UNIFORM_MIX,
+    filter_candidates_to_roi, make_spatial_null,
+    merge_observed_and_null_sweeps, select_quality_threshold,
+    sampled_detection_diagnostics,
+)
 
 # Silence trackpy's per-frame INFO chatter at module import so it's quiet in
 # BOTH the main process and any spawned sweep-worker processes (which import
@@ -1531,7 +1539,11 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                      workers=N_CPUS, log_cb=None,
                      search_range=5, memory=3, link_min_len=4,
                      max_false_track_rate=None,
-                     mode="linkability", target_density=None):
+                     mode="linkability", target_density=None,
+                     quality_floor=None, roi_mask=None,
+                     pixel_size_um=None,
+                     quality_null_replicates=QUALITY_NULL_REPLICATES,
+                     quality_null_seed=QUALITY_NULL_SEED):
     """Estimate a robust per-file detection `minmass`, better than manual
     eyeballing.
 
@@ -1549,6 +1561,13 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
     sparse data the N_good curve is flat and the sweep is inconclusive, so we
     fall back to the GMM-valley / mass-quantile / knee method and flag it in
     `diag["method"]` as `static_fallback:<reason>`.
+
+    QUALITY-FIRST engine (``mode="quality_first"``): use ``quality_floor`` as
+    an assay-locked lower bound, estimate random long-track participation from
+    deterministic ROI-aware spatial redraws, and choose the lowest stable
+    threshold that satisfies ``max_false_track_rate``.  It never lowers the
+    floor or forces a target count.  The null controls track ambiguity, not a
+    candidate false-discovery rate; unresolved runs are explicitly flagged.
 
     Returns (minmass: float, diagnostics: dict).
     """
@@ -1571,9 +1590,19 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
     if diameter % 2 == 0:
         diameter += 1
     n = len(stack)
+    _mode = MinmassMode.parse(mode, log=_log)
+    quality_mode = _mode is MinmassMode.QUALITY_FIRST
     diag = {"method": None, "n_candidates": 0, "sensitivity": sensitivity,
             "backend": backend, "gmm_crossover": None, "knee": None,
             "frame_sample": 0}
+    if quality_mode:
+        diag.update({
+            "detection_contract": QUALITY_POLICY_VERSION,
+            "quality_null_definition": QUALITY_NULL_DEFINITION,
+            "quality_null_seed": int(quality_null_seed),
+            "quality_null_replicates": int(max(1, quality_null_replicates)),
+            "quality_status": "unresolved",
+        })
 
     # Hard clamp range for the returned value.
     MM_MIN, MM_MAX = 0.05, 1e6
@@ -1599,6 +1628,36 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         _log(f"  Auto-threshold: harvested {len(H):,} candidates in "
              f"{time.perf_counter() - _t_harvest:.1f}s")
 
+        diag["n_candidates_raw_full_frame"] = int(len(H))
+        if quality_mode:
+            # Drosophila quality selection is defined on the exact population
+            # that enters trajectory analysis.  Outside-ROI bright objects must
+            # not be able to move the threshold inside the neuron/cell.
+            H = filter_candidates_to_roi(H, roi_mask)
+            frame_h, frame_w = int(stack.shape[-2]), int(stack.shape[-1])
+            if roi_mask is None:
+                roi_area_px = frame_h * frame_w
+                roi_fraction = 1.0
+                roi_scope = "full_frame"
+            else:
+                _rm = np.asarray(roi_mask, dtype=bool)
+                if _rm.shape != (frame_h, frame_w) or not _rm.any():
+                    raise ValueError(
+                        "quality-first ROI must be a non-empty mask matching "
+                        f"the movie frame {(frame_h, frame_w)}")
+                roi_area_px = int(_rm.sum())
+                roi_fraction = float(_rm.mean())
+                roi_scope = "static_roi"
+            diag.update({
+                "quality_roi_scope": roi_scope,
+                "quality_roi_area_pixels": int(roi_area_px),
+                "quality_roi_fraction": roi_fraction,
+                "n_candidates_raw_roi": int(len(H)),
+            })
+            _log(f"  Quality-first scope: {roi_scope}, {roi_area_px:,} pixels "
+                 f"({100.0 * roi_fraction:.1f}% of frame), "
+                 f"{len(H):,} harvested candidates inside it.")
+
         # ── Harvest density cap (torch family only) ──────────────────────────
         # The auto-threshold's signal/noise separation — the linkability sweep
         # AND the static GMM/knee — both break down once the per-frame candidate
@@ -1621,7 +1680,8 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
         # data (>~40 real emitters/frame) is the known limitation — there the
         # auto-estimate may sit slightly high and the user should set minmass
         # manually (auto-thresholding is unreliable at that density anyway).
-        if (_harvest_name != "trackpy" and len(H) and "window_id" in H.columns
+        if (not quality_mode and _harvest_name != "trackpy" and len(H)
+                and "window_id" in H.columns
                 and diag["frame_sample"] > 0):
             cap = _HARVEST_MAX_PER_FRAME
             per_frame = len(H) / float(diag["frame_sample"])
@@ -1631,6 +1691,7 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                      .groupby(["window_id", "frame"], sort=False).head(cap)
                      .reset_index(drop=True))
                 diag["harvest_density_cap"] = int(cap)
+                diag["n_candidates_before_harvest_cap"] = int(n_before)
                 _log(f"  Auto-threshold: {_harvest_name} harvested "
                      f"{per_frame:.0f} candidates/frame (over-detection at "
                      f"minmass=0) — kept the brightest {cap}/frame "
@@ -1641,6 +1702,191 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                   if len(H) else np.array([], dtype=float))
         masses = masses[np.isfinite(masses) & (masses > 0)]
         diag["n_candidates"] = int(masses.size)
+
+        # Quality-first is intentionally separate from the legacy density and
+        # F1/linkability policies.  It starts at an assay-locked lower floor,
+        # never performs brightest-N harvest trimming, and raises the threshold
+        # only when an ROI-aware spatial null predicts excessive random long
+        # tracks at the configured linker settings.
+        if quality_mode:
+            assay_floor = float(quality_floor if quality_floor is not None
+                                else MM_MIN)
+            if not np.isfinite(assay_floor) or assay_floor <= 0:
+                raise ValueError("quality-first minmass floor must be positive")
+            assay_floor = float(np.clip(assay_floor, MM_MIN, MM_MAX))
+            null_reps = int(max(1, quality_null_replicates))
+            null_ceiling = (float(max_false_track_rate)
+                            if max_false_track_rate is not None else 0.10)
+            if not (0.0 < null_ceiling < 1.0):
+                raise ValueError(
+                    "quality-first max null-track fraction must be between 0 and 1")
+
+            diag["quality_floor_assay"] = assay_floor
+            diag["quality_max_null_track_fraction"] = null_ceiling
+            # Persist a bounded histogram for every outcome, including low-N
+            # and unresolved runs, so the threshold remains auditable.
+            if masses.size:
+                _lm = np.log10(masses)
+                diag["_log_masses"] = (
+                    np.random.default_rng(1).choice(_lm, 20000, replace=False)
+                    if _lm.size > 20000 else _lm.copy())
+
+            if masses.size < 200:
+                mm = assay_floor
+                diag.update({
+                    "method": "quality_first_unresolved:low_candidate_count",
+                    "quality_status": "unresolved",
+                    "quality_reason": "low_candidate_count",
+                    "quality_floor_effective": mm,
+                    "minmass": mm,
+                    "qc": ("quality_unresolved: fewer than 200 positive "
+                           "candidates were available inside the analysis ROI"),
+                })
+                _log(f"  Quality-first unresolved: only {masses.size} positive "
+                     f"ROI candidates; retaining locked floor {mm:.4g}.")
+                return mm, diag
+
+            # Noise separation is an additional floor, never permission to go
+            # below the assay-locked value.  Crowding is computed in the actual
+            # ROI rather than against the whole camera frame.
+            mstat = masses
+            if mstat.size > 200_000:
+                mstat = np.random.default_rng(0).choice(
+                    mstat, 200_000, replace=False)
+            _valley, _sep, _wmin = _noise_floor_valley(mstat)
+            _cand_per_frame = masses.size / float(max(diag["frame_sample"], 1))
+            _psf_area = np.pi * (diameter / 2.0) ** 2
+            _crowding = _cand_per_frame * _psf_area / float(max(roi_area_px, 1))
+            _apply_floor = _valley is not None and (
+                _sep >= 0.85 or _crowding < np.pi / 16.0)
+            if _apply_floor:
+                model_floor = float(_valley)
+                floor_kind = "gmm_valley"
+            else:
+                model_floor = float(np.percentile(mstat, 2))
+                floor_kind = "p2_unimodal"
+            effective_floor = float(np.clip(
+                max(assay_floor, model_floor), MM_MIN, MM_MAX))
+            diag.update({
+                "noise_floor": model_floor,
+                "noise_floor_kind": floor_kind,
+                "quality_floor_effective": effective_floor,
+                "mass_bimodality": {
+                    "sep_dex": _sep, "w_min": _wmin,
+                    "cand_per_frame": float(_cand_per_frame),
+                    "crowding": float(_crowding),
+                },
+            })
+
+            H_floor = H[
+                np.isfinite(pd.to_numeric(H["mass"], errors="coerce"))
+                & (pd.to_numeric(H["mass"], errors="coerce")
+                   >= effective_floor)
+            ].copy().reset_index(drop=True)
+            diag["quality_n_above_floor"] = int(len(H_floor))
+            diag["quality_above_floor_per_frame"] = float(
+                len(H_floor) / max(diag["frame_sample"], 1))
+            if len(H_floor) < 200:
+                mm = effective_floor
+                diag.update({
+                    "method": "quality_first_unresolved:low_yield_above_floor",
+                    "quality_status": "unresolved",
+                    "quality_reason": "low_yield_above_floor",
+                    "minmass": mm,
+                    "qc": ("quality_unresolved: fewer than 200 candidates "
+                           "survived the locked/model quality floor"),
+                })
+                _log(f"  Quality-first unresolved: only {len(H_floor)} "
+                     f"candidates survive floor {mm:.4g}.")
+                return mm, diag
+
+            # Quantile-spaced thresholds give an auditable nested curve.  Grid
+            # points that would ask Trackpy to link >120 candidates/frame are
+            # skipped, not silently top-N trimmed; higher points remain exact.
+            above = H_floor["mass"].to_numpy(dtype=float)
+            q_grid = np.asarray(
+                [0, 10, 20, 30, 40, 50, 60, 70, 80, 85,
+                 90, 92, 94, 96, 97, 98, 99, 99.5], dtype=float)
+            grid = np.unique(np.concatenate((
+                np.asarray([effective_floor]), np.percentile(above, q_grid))))
+            max_eval_per_frame = 120.0
+            feasible, skipped_dense = [], []
+            for t in grid:
+                rate = float((above >= t).sum() / max(diag["frame_sample"], 1))
+                (feasible if rate <= max_eval_per_frame else skipped_dense).append(
+                    float(t))
+            grid = np.asarray(feasible, dtype=float)
+            diag["quality_grid_skipped_dense"] = skipped_dense
+            diag["quality_max_evaluated_candidates_per_frame"] = max_eval_per_frame
+
+            if grid.size < 2:
+                mm = effective_floor
+                diag.update({
+                    "method": "quality_first_unresolved:calibration_overflow",
+                    "quality_status": "unresolved",
+                    "quality_reason": "calibration_overflow",
+                    "minmass": mm,
+                    "qc": ("quality_unresolved: no exact threshold grid could "
+                           "be linked below the calibration density limit"),
+                })
+                _log("  Quality-first unresolved: calibration candidates remain "
+                     "too dense for an exact null/link sweep.")
+                return mm, diag
+
+            _log(f"  Quality-first: observed sweep at {len(grid)} exact "
+                 f"thresholds; {len(skipped_dense)} over-dense point(s) skipped.")
+            observed = _sweep_thresholds(
+                H_floor, grid, int(search_range), int(memory), int(link_min_len))
+            null_sweeps = []
+            for rep in range(null_reps):
+                null_H = make_spatial_null(
+                    H_floor,
+                    frame_shape=(int(stack.shape[-2]), int(stack.shape[-1])),
+                    roi_mask=roi_mask,
+                    search_range=float(search_range),
+                    seed=int(quality_null_seed) + rep,
+                    uniform_mix=QUALITY_NULL_UNIFORM_MIX)
+                null_sweeps.append(_sweep_thresholds(
+                    null_H, grid, int(search_range), int(memory),
+                    int(link_min_len)))
+            sweep = merge_observed_and_null_sweeps(observed, null_sweeps)
+            selection = select_quality_threshold(
+                sweep, quality_floor=effective_floor,
+                max_null_fraction=null_ceiling)
+            mm = float(np.clip(
+                max(effective_floor, selection.threshold), MM_MIN, MM_MAX))
+            diag.update({
+                "method": ("quality_first" if selection.status == "valid"
+                           else f"quality_first_unresolved:{selection.reason}"),
+                "quality_status": selection.status,
+                "quality_reason": selection.reason,
+                "quality_info": selection.info,
+                "quality_null_replicates": null_reps,
+                "quality_null_smoothing_px": float(max(search_range, 1)),
+                "quality_null_uniform_mix": QUALITY_NULL_UNIFORM_MIX,
+                "sweep": sweep,
+                "minmass": mm,
+            })
+            _px_valid = pixel_size_um is not None and float(pixel_size_um) > 0
+            _px = float(pixel_size_um) if _px_valid else 1.0
+            diag.update(sampled_detection_diagnostics(
+                H, threshold=mm, windows=windows,
+                roi_area_pixels=roi_area_px, pixel_size_um=_px))
+            if not _px_valid:
+                diag["quality_status"] = "unresolved"
+                diag["quality_reason"] = "missing_pixel_size"
+                diag["method"] = "quality_first_unresolved:missing_pixel_size"
+            if diag["quality_status"] != "valid":
+                diag["qc"] = f"quality_unresolved: {diag['quality_reason']}"
+                _log(f"  Quality-first UNRESOLVED ({diag['quality_reason']}); "
+                     f"diagnostic minmass={mm:.4g}.  This run must not be "
+                     "pooled as a validated quality-first result.")
+            else:
+                _null = selection.info.get("null_good_fraction_upper")
+                _log(f"  Quality-first valid: minmass={mm:.4g}; upper null "
+                     f"long-track fraction={float(_null):.3f} "
+                     f"(ceiling {null_ceiling:.3f}).")
+            return mm, diag
 
         if masses.size < 200:
             med = float(np.median(masses)) if masses.size else MM_MIN
@@ -1653,14 +1899,12 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
             return mm, diag
 
         # ── Density-matched mode ─────────────────────────────────────────────
-        # The linkability sweep optimises each file INDEPENDENTLY, so two
-        # recordings can settle at different points on the threshold curve — and
-        # the anomalous exponent moves along that curve.  A difference between
-        # conditions can then be methodological rather than biological.  Matching
-        # a common detections-per-frame across every recording removes the
-        # threshold as a confound.  It is a pure quantile of the harvested
-        # masses: no linking, so it is also much cheaper than the sweep.
-        if str(mode).lower().startswith("density") and target_density:
+        # Legacy selection-rate standardisation.  This forces the sampled mean
+        # accepted count but does NOT equalise recall, false positives,
+        # localisation precision, or biological abundance; it can preferentially
+        # retain bright/slow emitters.  Kept for replay and explicitly labelled as
+        # a sensitivity policy.  New Drosophila analyses use quality_first.
+        if _mode is MinmassMode.DENSITY and target_density:
             want = float(target_density) * float(diag["frame_sample"])
             achieved = float(masses.size) / float(diag["frame_sample"])
             if want >= masses.size:
@@ -1821,6 +2065,34 @@ def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
     except _Cancelled:
         raise
     except Exception as e:
+        if quality_mode:
+            # A Quality-first failure must never escape through the historical
+            # image-peak heuristic: that heuristic is not part of the declared
+            # quality contract and can return a value below the assay floor.
+            # Keep the run inspectable at the locked floor, but mark it invalid
+            # so comparison code cannot pool it as a calibrated result.
+            try:
+                floor = float(quality_floor)
+                if not np.isfinite(floor) or floor <= 0:
+                    floor = MM_MIN
+            except (TypeError, ValueError):
+                floor = MM_MIN
+            mm = float(np.clip(max(floor, MM_MIN), MM_MIN, MM_MAX))
+            reason = f"estimator_error:{type(e).__name__}"
+            diag.update({
+                "method": f"quality_first_invalid:{reason}",
+                "quality_status": "invalid",
+                "quality_reason": reason,
+                "quality_floor_assay": mm,
+                "quality_floor_effective": mm,
+                "minmass": mm,
+                "qc": ("quality_invalid: threshold calibration failed "
+                       f"({type(e).__name__}: {e})"),
+            })
+            _log(f"  Quality-first calibration FAILED ({type(e).__name__}: "
+                 f"{e}); retaining locked floor {mm:.4g}. This run must not "
+                 "be pooled as a validated quality-first result.")
+            return mm, diag
         # Last-ditch fallback: the legacy peak×d²/8 heuristic on a sample frame.
         try:
             f = stack[min(5, n - 1)]
@@ -1895,6 +2167,10 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
         if nf and nf > 0:
             ax.axvline(np.log10(nf), color=pal["MUT"], ls="--", lw=1.0,
                        alpha=0.7, label="noise floor")
+        qfloor = diagnostics.get("quality_floor_assay")
+        if qfloor and qfloor > 0:
+            ax.axvline(np.log10(qfloor), color="#58A6FF", ls="-.", lw=1.3,
+                       alpha=0.9, label="locked assay floor")
         knee = diagnostics.get("knee")
         if knee is not None:
             ax.axvline(knee, color=pal["TXT"], ls=":", lw=1.2, alpha=0.7,
@@ -1919,8 +2195,12 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
             Ng = np.array([r["N_good"] for r in sweep], dtype=float)
             sr = np.array([r["spurious_rate"] for r in sweep], dtype=float)
             gf = np.array([r["good_fraction"] for r in sweep], dtype=float)
+            null_gf = np.array(
+                [r.get("null_good_fraction_upper", np.nan) for r in sweep],
+                dtype=float)
             o = np.argsort(lt)
-            lt, Ng, sr, gf = lt[o], Ng[o], sr[o], gf[o]
+            lt, Ng, sr, gf, null_gf = (
+                lt[o], Ng[o], sr[o], gf[o], null_gf[o])
 
             l1, = ax2.plot(lt, Ng, color=pal["SIG"], lw=2.0, marker="o",
                            ms=3, label="real tracks (N_good)")
@@ -1936,7 +2216,17 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
                            marker="s", ms=2.5, label="spurious-fragment rate")
             l3, = axr.plot(lt, gf, color="#FFD33D", lw=1.4, ls=":",
                            marker="^", ms=2.5, label="good fraction")
-            axr.set_ylabel("fragment rate / good fraction", color=pal["TXT"])
+            handles = [l1, l2, l3]
+            if np.isfinite(null_gf).any():
+                l4, = axr.plot(
+                    lt, null_gf, color="#58A6FF", lw=1.8, ls="-.",
+                    marker="d", ms=2.5, label="spatial-null long-track fraction")
+                handles.append(l4)
+                ceiling = diagnostics.get("quality_max_null_track_fraction")
+                if ceiling is not None:
+                    axr.axhline(float(ceiling), color="#58A6FF", lw=1.0,
+                                ls="--", alpha=0.75, label="null ceiling")
+            axr.set_ylabel("observed / null linked fractions", color=pal["TXT"])
             axr.tick_params(colors=pal["TXT"])
             axr.set_ylim(0, 1.02)
             for sp in axr.spines.values():
@@ -1950,14 +2240,17 @@ def render_minmass_audit(diagnostics, path, theme="Dark", stem=""):
             if isinstance(ki, int) and 0 <= ki < len(t):
                 ax2.axvline(np.log10(max(t[ki], 1e-12)), color=pal["TXT"],
                             ls=":", lw=1.0, alpha=0.6, label="knee")
-            ax2.legend(handles=[l1, l2, l3], frameon=False, fontsize=7.5,
+            ax2.legend(handles=handles, frameon=False, fontsize=7.5,
                        labelcolor=pal["TXT"], loc="upper center",
-                       bbox_to_anchor=(0.5, -0.16), ncol=3)
+                       bbox_to_anchor=(0.5, -0.16), ncol=2)
 
         title = "Auto-threshold audit"
         if stem:
             title += f" — {stem}"
-        sub = (f"{diagnostics.get('method','?')} · {diagnostics.get('sensitivity','?')} · "
+        _status = diagnostics.get("quality_status")
+        sub = (f"{diagnostics.get('method','?')}"
+               + (f" · status={_status}" if _status else "")
+               + f" · {diagnostics.get('sensitivity','?')} · "
                f"{diagnostics.get('n_candidates','?')} candidates · "
                f"{diagnostics.get('backend','?')} backend")
         fig.suptitle(title, color=pal["TXT"], fontsize=12, fontweight="bold", y=0.99)
