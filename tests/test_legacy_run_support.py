@@ -91,6 +91,61 @@ def test_backfill_matches_the_canonical_pipeline(tmp_path):
         assert np.allclose(a[both], b[both], rtol=1e-9, atol=1e-12), col
 
 
+def test_gapped_step_backfill_obeys_each_persisted_metric_contract(tmp_path):
+    """For frames [0, 2, 3], legacy adjacent-observation step is mean(2, 1)
+    while schema-2 single-frame step uses only the 2→3 link.  Backfill must
+    reconstruct each promised definition and keep their pooling guard active."""
+    def _make(stem, schema):
+        folder = tmp_path / stem
+        extras = folder / "firefly_extras"
+        extras.mkdir(parents=True)
+        summary = {
+            "n_tracks": 1,
+            "n_locs": 3,
+            "px_um": 1.0,
+            "fi_s": 1.0,
+            "metrics_schema_version": schema,
+            "gap_policy": "contiguous" if schema < 2 else "all_pairs",
+        }
+        if schema >= 2:
+            summary.update({
+                "metric_contract": "firefly_metrics_schema_2",
+                "step_definition": "single_frame",
+            })
+        (extras / f"{stem}_summary_metrics.json").write_text(
+            json.dumps(summary))
+        (extras / f"{stem}_params.json").write_text(json.dumps({
+            "pixel_size_um": 1.0,
+            "frame_interval_s": 1.0,
+            "metrics_schema_version": schema,
+            "gap_policy": summary["gap_policy"],
+            "metric_contract": summary.get("metric_contract", ""),
+            "step_definition": summary.get(
+                "step_definition", "adjacent_observation"),
+        }))
+        pd.DataFrame({
+            "particle": [1], "D": [0.1], "alpha": [1.0],
+            "motion": ["Brownian"],
+        }).to_csv(extras / f"{stem}_diffusion_summary.csv", index=False)
+        pd.DataFrame({
+            "particle": [1, 1, 1],
+            "frame": [0, 2, 3],
+            "x": [0.0, 2.0, 3.0],
+            "y": [0.0, 0.0, 0.0],
+        }).to_csv(extras / f"{stem}_trajectories.csv", index=False)
+        return wd.load_run(str(folder))
+
+    legacy = _make("legacy_gap", 1)
+    modern = _make("modern_gap", 2)
+
+    assert legacy.step_definition == "adjacent_observation"
+    assert wd.METRIC_BY_ID["step"].scalar(legacy) == pytest.approx(1.5)
+    assert modern.step_definition == "single_frame"
+    assert wd.METRIC_BY_ID["step"].scalar(modern) == pytest.approx(1.0)
+    assert wd.metric_contract_issue([legacy, modern], "step")
+    assert wd.metric_contract_issue([legacy, modern], "speed")
+
+
 def test_backfill_never_touches_recorded_science(tmp_path):
     """D / alpha / motion must survive the backfill byte-for-byte."""
     folder, dpath = _legacy_run(str(tmp_path), stem="keep", seed=7)

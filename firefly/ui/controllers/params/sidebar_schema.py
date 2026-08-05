@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import multiprocessing
 
+from firefly.analysis.fa_constants import (DEFAULT_FRAME_INTERVAL_S,
+                                            MOBILE_D_THRESHOLD_DEFAULT)
+
 try:
     _N_CPUS = multiprocessing.cpu_count()
 except Exception:
@@ -86,7 +89,7 @@ _TOOLTIPS = {
     "analysis/alpha_immobile": "Anomalous exponent α below this → classed Immobile.",
     "analysis/alpha_confined": "α below this (and above immobile) → Confined.",
     "analysis/alpha_directed": "α above this → Directed / super-diffusive.",
-    "analysis/mobile_d": "D threshold (µm²/s) separating mobile from immobile, for the mobile fraction and the Mobile/Immobile ratio. Default 0.01 = log₁₀D −2, the published split for single-molecule receptor tracking in neurons (Constals et al. 2015, Neuron 85:787-803, Fig. 1C).",
+    "analysis/mobile_d": f"D threshold (µm²/s) separating mobile from immobile, for the mobile fraction and the Mobile/Immobile ratio. Following Constals et al. (2015), D_thr = resolution² / (4 × n_frames × Δt): 0.080 µm resolution, 4 frames, and FIREFLY's default Δt = {DEFAULT_FRAME_INTERVAL_S:.3f} s give {MOBILE_D_THRESHOLD_DEFAULT:.3f} µm²/s. This is assay-specific, not a universal physical constant. The Drosophila Neurons preset uses its method's published 0.021 µm²/s boundary. Choose and report the value appropriate to your assay.",
     "analysis/jdd_components": "Number of diffusing populations fitted in the jump-distance distribution.",
     "analysis/dcoeff_clip_logmin": "Log-D clip range, entered in log₁₀D (like palmTRACER's D-Coefficient), min to max. Values below the min are pinned to the floor and above the max to the ceiling, so immobile tracks pile at one point instead of smearing the curve. Default −5…1 (D 1e-5…10 µm²/s). Clamps the LogD graph, the palmTRACER export's LogD column, and a clamped logD column in firefly_extras — raw D and the statistics are unchanged.",
     "analysis/filter_d_enable": "Drop trajectories whose D falls outside the Log-D range below. This removes tracks from the whole analysis — unlike the Log-D clip above, which only clamps the LogD display/export.",
@@ -205,8 +208,9 @@ FIELDS = [
        min=0.0, max=2.0, step=0.01, decimals=2),
     _f("diffusion", "analysis/alpha_directed", "double", "α directed", 1.1,
        min=0.0, max=2.0, step=0.01, decimals=2),
-    _f("diffusion", "analysis/mobile_d", "double", "Mobile D threshold", 0.01,
-       min=0.0, max=10.0, step=0.01, decimals=3),
+    _f("diffusion", "analysis/mobile_d", "double", "Mobile D threshold",
+       MOBILE_D_THRESHOLD_DEFAULT,
+       min=0.0, max=10.0, step=0.001, decimals=3),
     _f("diffusion", "analysis/jdd_components", "int", "JDD components", 2, min=1, max=4, step=1),
     # Log-D clip range (like palmTRACER's "D Coefficient"): clamps log₁₀D for the
     # LogD graph + exports.  Entered in log₁₀D; does NOT drop tracks or touch raw

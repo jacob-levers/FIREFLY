@@ -287,6 +287,81 @@ def _canonicalize_tracks(tracks):
     return ordered
 
 
+def _compute_diffusion_population(
+        tracks, compute_msd_and_fit, pixel_size, frame_interval, *,
+        max_lagtime, n_fit, workers, alpha_thresholds, gap_policy,
+        filter_d_enabled=False, filter_d_min=0.0, filter_d_max=1.0):
+    """Compute the final, internally consistent diffusion population.
+
+    A D-range selection necessarily needs an initial fit to discover each
+    track's D.  When enabled, use that first pass only to choose particles,
+    then recompute MSD, ensemble MSD, and diffusion fits from the filtered
+    trajectories.  Returning a mixture of pre-filter MSD curves and filtered
+    secondary analyses would compare different biological populations.
+
+    The first-pass fit-status counts are retained as audit metadata.  In
+    particular, exact-zero tracks have no numerical D and are therefore
+    excluded by a D filter; their below-resolution count must not disappear.
+    """
+    fit_kwargs = {
+        "max_lagtime": int(max_lagtime),
+        "n_fit": int(n_fit),
+        "workers": int(workers),
+        "alpha_thresholds": tuple(alpha_thresholds),
+        "gap_policy": gap_policy,
+    }
+    imsd_df, emsd_df, diff_df = compute_msd_and_fit(
+        tracks, pixel_size, frame_interval, **fit_kwargs)
+
+    status = (diff_df["fit_status"].fillna("unknown").astype(str)
+              if "fit_status" in diff_df.columns else None)
+    status_counts = ({str(k): int(v) for k, v in
+                      status.value_counts().to_dict().items()}
+                     if status is not None else {})
+    n_below = int((status == "below_resolution").sum()) \
+        if status is not None else 0
+    info = {
+        "enabled": bool(filter_d_enabled),
+        "n_tracks_before": int(len(diff_df)),
+        "n_tracks_after": int(len(diff_df)),
+        "n_tracks_excluded": 0,
+        "fit_status_counts_before": status_counts,
+        "excluded_fit_status_counts": {},
+        "n_below_resolution_before": n_below,
+        "n_below_resolution_excluded": 0,
+    }
+    if not filter_d_enabled or len(diff_df) == 0:
+        return tracks, imsd_df, emsd_df, diff_df, info
+
+    import numpy as _np
+    d_values = diff_df["D"].to_numpy(dtype=float)
+    keep_mask = (_np.isfinite(d_values)
+                 & (d_values >= float(filter_d_min))
+                 & (d_values <= float(filter_d_max)))
+    keep_pids = set(diff_df.loc[keep_mask, "particle"].tolist())
+    excluded = diff_df.loc[~keep_mask]
+    excluded_status = (excluded["fit_status"].fillna("unknown").astype(str)
+                       if "fit_status" in excluded.columns else None)
+    excluded_counts = ({str(k): int(v) for k, v in
+                        excluded_status.value_counts().to_dict().items()}
+                       if excluded_status is not None else {})
+
+    filtered_tracks = (tracks[tracks["particle"].isin(keep_pids)]
+                       .reset_index(drop=True))
+    # This second pass is the only MSD/diffusion result returned downstream.
+    # It also gives an empty-but-well-formed contract when no D values survive.
+    imsd_df, emsd_df, diff_df = compute_msd_and_fit(
+        filtered_tracks, pixel_size, frame_interval, **fit_kwargs)
+    info.update({
+        "n_tracks_after": int(len(diff_df)),
+        "n_tracks_excluded": int(info["n_tracks_before"] - len(diff_df)),
+        "excluded_fit_status_counts": excluded_counts,
+        "n_below_resolution_excluded": int(
+            excluded_counts.get("below_resolution", 0)),
+    })
+    return filtered_tracks, imsd_df, emsd_df, diff_df, info
+
+
 def _ellipsize(text, limit=56):
     """Middle-ellipsise a display string so an over-long ROI source (e.g. a very
     long sister-TIFF filename) can't overflow a figure title and push the metrics
@@ -568,6 +643,16 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
         params.get("fit_status_counts") or {})
     manifest["n_below_resolution"] = _jsonify(
         params.get("n_below_resolution"))
+    manifest["n_below_resolution_retained"] = _jsonify(
+        params.get("n_below_resolution_retained"))
+    manifest["n_below_resolution_excluded_by_d_filter"] = _jsonify(
+        params.get("n_below_resolution_excluded_by_d_filter", 0))
+    manifest["n_tracks_before_d_filter"] = _jsonify(
+        params.get("n_tracks_before_d_filter"))
+    manifest["n_tracks_excluded_by_d_filter"] = _jsonify(
+        params.get("n_tracks_excluded_by_d_filter", 0))
+    manifest["d_filter_excluded_fit_status_counts"] = _jsonify(
+        params.get("d_filter_excluded_fit_status_counts") or {})
 
     path = os.path.join(out_dir, f"{stem}_run_manifest.json")
     _atomic_write_json(manifest, path, indent=2)   # tmp + os.replace (#28)
@@ -2304,25 +2389,43 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # ── MSD + diffusion ───────────────────────────────────────────────────
         _log(f"\n── MSD & diffusion ───────────────")
         _prog(65, "Computing MSD + fits…")
-        imsd_df, emsd_df, diff_df = compute_msd_and_fit(
-            tracks, px, fi,
+        tracks, imsd_df, emsd_df, diff_df, _d_filter_info = \
+            _compute_diffusion_population(
+            tracks, compute_msd_and_fit, px, fi,
             max_lagtime=int(p["max_lagtime"]),
             n_fit=int(p["n_fit"]),
             workers=int(p["workers"]),
             alpha_thresholds=tuple(p.get("alpha_thresholds", (0.5, 0.9, 1.1))),
-            gap_policy=p["gap_policy"])
+            gap_policy=p["gap_policy"],
+            filter_d_enabled=bool(p.get("filter_d_enabled", False)),
+            filter_d_min=float(p.get("filter_d_min", 0.0)),
+            filter_d_max=float(p.get("filter_d_max", 1.0)))
 
-        # Optional: filter tracks by diffusion coefficient
-        if p.get("filter_d_enabled", False) and len(diff_df):
-            d_min = float(p.get("filter_d_min", 0.0))
-            d_max = float(p.get("filter_d_max", 1.0))
-            n_before = len(diff_df)
-            mask = diff_df["D"].between(d_min, d_max)
-            keep_pids = set(diff_df.loc[mask, "particle"])
-            diff_df = diff_df[mask].reset_index(drop=True)
-            tracks  = tracks[tracks["particle"].isin(keep_pids)]
-            _log(f"  Filter by D [{d_min}, {d_max}]: "
-                 f"{n_before} → {len(diff_df)} tracks")
+        # Persist the first-pass selection audit separately from the final
+        # filtered population.  Below-resolution tracks have D unavailable and
+        # are excluded from the numerical D range, but remain explicitly
+        # reported instead of vanishing from the run record.
+        p["n_tracks_before_d_filter"] = _d_filter_info["n_tracks_before"]
+        p["n_tracks_excluded_by_d_filter"] = _d_filter_info[
+            "n_tracks_excluded"]
+        p["fit_status_counts_before_d_filter"] = _d_filter_info[
+            "fit_status_counts_before"]
+        p["d_filter_excluded_fit_status_counts"] = _d_filter_info[
+            "excluded_fit_status_counts"]
+        p["n_below_resolution_before_d_filter"] = _d_filter_info[
+            "n_below_resolution_before"]
+        p["n_below_resolution_excluded_by_d_filter"] = _d_filter_info[
+            "n_below_resolution_excluded"]
+        if _d_filter_info["enabled"]:
+            _log(f"  Filter by D [{float(p.get('filter_d_min', 0.0))}, "
+                 f"{float(p.get('filter_d_max', 1.0))}]: "
+                 f"{_d_filter_info['n_tracks_before']} → "
+                 f"{_d_filter_info['n_tracks_after']} tracks; recomputed final "
+                 f"individual + ensemble MSD on the kept population")
+            if _d_filter_info["n_below_resolution_excluded"]:
+                _log(f"  Below resolution (D unavailable): "
+                     f"{_d_filter_info['n_below_resolution_excluded']:,} "
+                     f"excluded by the D filter and recorded separately")
 
         # Ready-to-plot clamped LogD column (palmTRACER-style D-coefficient clip):
         # clip(log10(D), log10(clip_min), log10(clip_max)), NaN where D≤0.  Written to
@@ -2818,16 +2921,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # frame interval, etc.  Matches the schema written by the
         # PALM-Tracer summary loader.
         _fit_status_counts = {}
-        _n_below_resolution = 0
+        _n_below_resolution_retained = 0
         if diff_df is not None and "fit_status" in diff_df.columns:
             _fit_status = diff_df["fit_status"].fillna("unknown").astype(str)
             _fit_status_counts = {
                 str(k): int(v)
                 for k, v in _fit_status.value_counts().to_dict().items()
             }
-            _n_below_resolution = int(
+            _n_below_resolution_retained = int(
                 (_fit_status == "below_resolution").sum())
+        _n_below_resolution_excluded = int(
+            p.get("n_below_resolution_excluded_by_d_filter", 0) or 0)
+        _n_below_resolution = (
+            _n_below_resolution_retained + _n_below_resolution_excluded)
         p["fit_status_counts"] = _fit_status_counts
+        p["n_below_resolution_retained"] = _n_below_resolution_retained
         p["n_below_resolution"] = _n_below_resolution
         try:
             _atomic_write_json({               # tmp + os.replace (#28)
@@ -2860,6 +2968,17 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "embedded_calibration": p.get("embedded_calibration") or {},
                     "fit_status_counts": _fit_status_counts,
                     "n_below_resolution": _n_below_resolution,
+                    "n_below_resolution_retained": _n_below_resolution_retained,
+                    "n_below_resolution_excluded_by_d_filter": (
+                        _n_below_resolution_excluded),
+                    "n_tracks_before_d_filter": int(p.get(
+                        "n_tracks_before_d_filter", len(diff_df))),
+                    "n_tracks_excluded_by_d_filter": int(p.get(
+                        "n_tracks_excluded_by_d_filter", 0)),
+                    "fit_status_counts_before_d_filter": p.get(
+                        "fit_status_counts_before_d_filter") or {},
+                    "d_filter_excluded_fit_status_counts": p.get(
+                        "d_filter_excluded_fit_status_counts") or {},
                     "linker":           str(p.get("linker", _POSTPROC_LINK_DEFAULTS["linker"])),
                     "link_params":      (p.get("link_params") or _POSTPROC_LINK_DEFAULTS["link_params"]),
                     "n_localisations":  int(len(locs)),
@@ -2996,7 +3115,19 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             "vacf_persistence": None,
             "motion_counts": {},
             "fit_status_counts": {},
-            "n_below_resolution": 0,
+            # Total identified before any optional D filter, plus the explicit
+            # retained/excluded split.  The headline count therefore cannot be
+            # erased merely because D is unavailable for an exact-zero track.
+            "n_below_resolution": int(p.get("n_below_resolution", 0) or 0),
+            "n_below_resolution_retained": int(p.get(
+                "n_below_resolution_retained", 0) or 0),
+            "n_below_resolution_excluded_by_d_filter": int(p.get(
+                "n_below_resolution_excluded_by_d_filter", 0) or 0),
+            "n_tracks_before_d_filter": int(p.get(
+                "n_tracks_before_d_filter",
+                diff_df.shape[0] if diff_df is not None else 0)),
+            "n_tracks_excluded_by_d_filter": int(p.get(
+                "n_tracks_excluded_by_d_filter", 0) or 0),
             "mean_observed_time_s": None,
             "mean_track_duration_s": None,
             # Deprecated schema-cycle alias: historically this meant observed
@@ -3025,8 +3156,12 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     summary["fit_status_counts"] = {
                         str(k): int(v) for k, v in _fs.value_counts().to_dict().items()
                     }
-                    summary["n_below_resolution"] = int(
+                    summary["n_below_resolution_retained"] = int(
                         (_fs == "below_resolution").sum())
+                    summary["n_below_resolution"] = (
+                        summary["n_below_resolution_retained"]
+                        + summary[
+                            "n_below_resolution_excluded_by_d_filter"])
                 if "D" in diff_df.columns:
                     d_thresh = float(p.get("mobile_d_threshold", MOBILE_D_THRESHOLD_DEFAULT))
                     # Match the canonical definition used by the mobile-fraction

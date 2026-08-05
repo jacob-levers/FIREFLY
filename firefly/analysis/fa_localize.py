@@ -739,7 +739,7 @@ def _resolve_backend(name: str | None):
                 # under a CUDA-13 wheel); committing on that basis crashes
                 # mid-localisation with cudaErrorNoKernelImageForDevice.  The
                 # probe launches the real kernels and fails cleanly, so auto
-                # then falls through to trackpy on such machines.
+                # then falls through to the Torch-CPU path on such machines.
                 if (_torch.cuda.is_available()
                         and TorchBackend._device_sanity_check("cuda")):
                     inst = TorchBackend()

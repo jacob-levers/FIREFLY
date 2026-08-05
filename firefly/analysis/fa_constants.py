@@ -26,17 +26,25 @@ from tqdm import tqdm
 DEFAULT_PIXEL_SIZE_UM = 0.106
 DEFAULT_FRAME_INTERVAL_S = 0.02
 
-# D (µm²/s) separating immobile from mobile.  This is the published threshold
-# for single-molecule receptor tracking in neurons — Constals et al. (2015)
-# Neuron 85:787-803, Figure 1C, which splits the log10(D) distribution at
-# log10(D) = -2 and reports the mobile/immobile ratio either side of it.
+# D (µm²/s) separating immobile from mobile.  Constals et al. (2015),
+# Neuron 85:787-803, use the resolution-floor criterion
 #
-# It also matches the measurement floor: over a short track (~0.16 s) a particle
-# at this D covers sqrt(4·D·t) ~ 80 nm, roughly 3x a typical localisation
-# precision, so it is the point at which motion becomes resolvable above noise.
+#     D_threshold = resolution² / (4 × n_frames × frame_interval).
+#
+# Their 80 nm resolution, four-frame criterion, and 50 ms interval give the
+# paper's 0.008 µm²/s boundary.  Applying the same criterion at FIREFLY's
+# default 20 ms interval gives 0.020 µm²/s.  This is an acquisition-dependent
+# default, not a universal physical constant; users must justify their assay's
+# resolution and observation-time assumptions.  The published adult-Drosophila
+# sptPALM method reports 0.021 µm²/s and its built-in preset retains that value.
 # Lives here, not in fa_diffusion, so the worker can reach it without importing
 # numpy/scipy/trackpy at module scope.  fa_diffusion re-exports it.
-MOBILE_D_THRESHOLD_DEFAULT = 0.01
+_MOBILE_D_REFERENCE_RESOLUTION_UM = 0.080
+_MOBILE_D_REFERENCE_N_FRAMES = 4
+MOBILE_D_THRESHOLD_DEFAULT = (
+    _MOBILE_D_REFERENCE_RESOLUTION_UM ** 2
+    / (4 * _MOBILE_D_REFERENCE_N_FRAMES * DEFAULT_FRAME_INTERVAL_S)
+)
 
 # Worker-count default for the parallel localisation / MSD passes.
 N_CPUS = multiprocessing.cpu_count()

@@ -1,5 +1,7 @@
 include README.md
 include LICENSE.md
+include CHANGELOG.md
+include setup.py
 recursive-include firefly/ui/qml *.qml *.png *.svg
 recursive-include firefly/ui/assets/preview_panels *.png
 recursive-include firefly/ui/presets *.json

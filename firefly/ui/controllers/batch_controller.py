@@ -568,8 +568,9 @@ class BatchController(QObject):
     @Slot("QVariantList", result=int)
     def addPaths(self, urls):
         """Drag-and-drop: accept a mix of folders + files (file:// URLs or plain
-        paths), scan/group each, and append."""
-        files, dirs = [], []
+        paths), scan/group each, and append.  Unsupported files stay out of the
+        queue and are reported explicitly rather than disappearing silently."""
+        files, dirs, unsupported = [], [], []
         for u in urls or []:
             p = self._local_path(u)
             if not p:
@@ -577,7 +578,10 @@ class BatchController(QObject):
             if os.path.isdir(p):
                 dirs.append(p)
             elif os.path.isfile(p):
-                files.append(p)
+                if batch_scan.input_kind(p) is None:
+                    unsupported.append(p)
+                else:
+                    files.append(p)
         added = 0
         for d in dirs:
             if not self._folder:
@@ -594,6 +598,16 @@ class BatchController(QObject):
                 self.folderChanged.emit()
             added += self._append(batch_scan.scan_paths(
                 files, sister_suffix=self._sister_suffix()))
+        if unsupported:
+            names = ", ".join(os.path.basename(p) for p in unsupported[:3])
+            if len(unsupported) > 3:
+                names += f", and {len(unsupported) - 3} more"
+            self._set_error(
+                f"Unsupported batch input ignored: {names}. FIREFLY accepts "
+                ".czi, .tif, .tiff, .csv, .txt and .tsv files.")
+        elif added:
+            # A subsequent valid drop clears a previous drop-validation alert.
+            self._set_error("")
         return added
 
     @staticmethod

@@ -2,9 +2,10 @@
 
 D below the threshold is called immobile, above it mobile — and the ratio of
 the two is the headline population statistic.  The value is therefore a
-scientific claim, not a tuning knob: it is the published split for
-single-molecule receptor tracking in neurons (Constals et al. 2015, Neuron
-85:787-803, Fig. 1C, which cuts the log10(D) distribution at log10 D = -2).
+scientific choice that must be justified for the assay.  The general default is
+0.020 µm²/s: the resolution-floor formula used by Constals et al. (2015),
+evaluated at FIREFLY's 20 ms default interval.  The adult-Drosophila preset
+retains that method's reported 0.021 µm²/s boundary.
 
 Two failure modes are guarded here.  First, the number had been duplicated as a
 bare ``0.05`` literal across the worker, the sidebar schema, the params builder,
@@ -21,7 +22,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
+from firefly.analysis.fa_constants import (DEFAULT_FRAME_INTERVAL_S,
+                                            MOBILE_D_THRESHOLD_DEFAULT)
 from firefly.analysis.fa_diffusion import (MOBILE_D_THRESHOLD_DEFAULT as _VIA_DIFFUSION,
                                            _mob_immob_ratio)
 
@@ -29,10 +31,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 # ── one canonical value, reachable by both import paths ──────────────────────
-def test_the_threshold_is_the_published_value():
-    assert MOBILE_D_THRESHOLD_DEFAULT == 0.01
-    assert abs(np.log10(MOBILE_D_THRESHOLD_DEFAULT) + 2.0) < 1e-12, (
-        "the paper's split is log10 D = -2")
+def test_general_default_uses_constals_formula_at_firefly_timing():
+    expected = 0.080 ** 2 / (4 * 4 * DEFAULT_FRAME_INTERVAL_S)
+    assert MOBILE_D_THRESHOLD_DEFAULT == pytest.approx(expected)
+    assert MOBILE_D_THRESHOLD_DEFAULT == 0.02
 
 
 def test_fa_diffusion_reexports_the_same_object():
@@ -66,13 +68,23 @@ def test_the_qml_preferences_field_defaults_to_the_constant():
     assert float(m.group(1)) == MOBILE_D_THRESHOLD_DEFAULT
 
 
-def test_the_fly_preset_uses_the_published_threshold():
+def test_the_fly_preset_uses_the_published_drosophila_threshold():
     from firefly.ui.controllers.params import sidebar_schema as S
     p = json.loads(ROOT.joinpath("firefly/ui/presets/Drosophila Neurons.json")
                    .read_text(encoding="utf-8"))
     p.pop("__firefly_builtin__", None)
-    assert p["analysis/mobile_d"] == MOBILE_D_THRESHOLD_DEFAULT
+    assert p["analysis/mobile_d"] == 0.021
+    assert p["analysis/mobile_d"] != MOBILE_D_THRESHOLD_DEFAULT
     assert [k for k in p if k not in S.BY_KEY] == []
+
+
+def test_threshold_help_distinguishes_default_from_assay_specific_value():
+    from firefly.ui.controllers.params import sidebar_schema as S
+    help_text = S.BY_KEY["analysis/mobile_d"]["tooltip"]
+    assert "D_thr = resolution² / (4 × n_frames × Δt)" in help_text
+    assert "0.020" in help_text and "Constals" in help_text
+    assert "0.021" in help_text and "Drosophila" in help_text
+    assert "not a universal physical constant" in help_text
 
 
 # ── the ratio itself ─────────────────────────────────────────────────────────
@@ -83,7 +95,11 @@ def _diff(dvals):
 
 def test_ratio_counts_at_the_threshold_as_mobile():
     """>= threshold is mobile, matching the figure's `Mobile ->` side."""
-    r = _mob_immob_ratio(_diff([0.01, 0.01, 0.001]), d_threshold=0.01)
+    threshold = MOBILE_D_THRESHOLD_DEFAULT
+    r = _mob_immob_ratio(
+        _diff([threshold, threshold, threshold / 10]),
+        d_threshold=threshold,
+    )
     assert r == pytest.approx(2.0)
 
 

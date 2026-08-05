@@ -93,42 +93,63 @@ class RunData:
         self.stem = stem
         self.extras_dir = extras_dir
         self.summary = summary or {}
+        # A run can be scientifically complete even when the optional summary
+        # sidecar failed to save (the worker deliberately treats that export as
+        # non-fatal).  Keep the params sidecar as a second metadata authority so
+        # a schema-2 run never silently becomes "legacy schema 1" merely because
+        # ``summary_metrics.json`` is missing or corrupt.
+        self.params: dict = {}
+        try:
+            params_path = os.path.join(extras_dir, f"{stem}_params.json")
+            if os.path.isfile(params_path):
+                with open(params_path) as fh:
+                    loaded = json.load(fh)
+                if isinstance(loaded, dict):
+                    self.params = loaded
+        except Exception:
+            self.params = {}
+
+        def _metadata(key, default=None):
+            value = self.summary.get(key)
+            if value is None or value == "":
+                value = self.params.get(key)
+            return default if value is None or value == "" else value
+
         self.n_tracks = int(self.summary.get("n_tracks") or 0)
         self.n_locs = int(self.summary.get("n_locs") or 0)
         fi = self.summary.get("fi_s")
+        if not fi:
+            fi = self.params.get("frame_interval_s")
         self.fi_s = float(fi) if fi else None
         self._cache: dict = {}
-        if self.fi_s is None:
-            # palmTRACER-derived folders record calibration in <stem>_params.json
-            # and write no summary_metrics.json, so without this fallback every
-            # Δt-dependent metric (step speed, MSD@1s, duration) reads blank.
-            try:
-                pj = os.path.join(extras_dir, f"{stem}_params.json")
-                if os.path.isfile(pj):
-                    with open(pj) as fh:
-                        _p = json.load(fh)
-                    _fi = _p.get("frame_interval_s")
-                    self.fi_s = float(_fi) if _fi else None
-            except Exception:
-                pass
         try:
             self.metrics_schema_version = int(
-                self.summary.get("metrics_schema_version") or 1)
+                _metadata("metrics_schema_version", 1))
         except (TypeError, ValueError):
             self.metrics_schema_version = 1
         # Runs predating the explicit contract used the contiguous-observation
         # estimator.  Treat a missing token as that legacy policy rather than
         # silently pretending old numbers used the new all-pairs default.
         self.gap_policy = str(
-            self.summary.get("gap_policy")
+            _metadata("gap_policy")
             or ("contiguous" if self.metrics_schema_version < 2
                 else "all_pairs"))
         self.metric_contract = str(
-            self.summary.get("metric_contract")
+            _metadata("metric_contract")
             or f"firefly_metrics_schema_{self.metrics_schema_version}")
         self.step_definition = _normalise_step_definition(
-            self.summary.get("step_definition"),
+            _metadata("step_definition"),
             self.metrics_schema_version)
+        # Retain the remaining persisted contract/provenance fields for callers
+        # that need to explain a partial run.  Summary values win; params fill
+        # only absent fields, matching the four compatibility keys above.
+        self.link_definition = str(_metadata("link_definition", ""))
+        self.duration_definition = str(_metadata("duration_definition", ""))
+        self.observed_time_definition = str(
+            _metadata("observed_time_definition", ""))
+        self.metric_contract_note = str(_metadata("metric_contract_note", ""))
+        self.effective_calibration = _metadata("effective_calibration", {})
+        self.embedded_calibration = _metadata("embedded_calibration", {})
 
     # -- identity ----------------------------------------------------------
     @property
@@ -897,15 +918,39 @@ def _run_calibration(extras_dir: str, stem: str):
     return None, None
 
 
+def _run_metrics_schema(extras_dir: str, stem: str) -> int:
+    """Persisted metrics schema for a run, defaulting to legacy schema 1.
+
+    Summary metadata is authoritative when present; the params sidecar is the
+    recovery source for otherwise-valid partial runs whose summary export failed.
+    This mirrors :class:`RunData`'s compatibility lookup.
+    """
+    for name in (f"{stem}_summary_metrics.json", f"{stem}_params.json"):
+        path = os.path.join(extras_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+            raw = data.get("metrics_schema_version")
+            if raw is not None and raw != "":
+                return int(raw)
+        except Exception:
+            continue
+    return 1
+
+
 def _backfill_track_geometry(extras_dir: str, stem: str) -> bool:
     """Add the newer per-track geometry columns to an older run's saved table.
 
-    These quantities (path length, net displacement, directionality, single-frame
-    step, duration) depend ONLY on the cached trajectories, which every run
-    folder keeps — so a run analysed before they existed can gain them without
-    the raw movie and without re-fitting anything.  Purely additive: D, alpha,
-    motion and every other recorded value are left exactly as they were saved,
-    because recomputing those WOULD change published output.
+    These quantities (path length, net displacement, directionality, step,
+    duration) depend ONLY on the cached trajectories, which every run folder
+    keeps — so a run analysed before they existed can gain them without the raw
+    movie and without re-fitting anything.  Step semantics follow the persisted
+    contract: schema 1 uses every adjacent observed link; schema 2 uses only
+    exactly-one-frame links.  Purely additive: D, alpha, motion and every other
+    recorded value are left exactly as they were saved, because recomputing those
+    WOULD change published output.
 
     Returns True when the table was rewritten.  The formulas mirror
     ``fa_diffusion._msd_and_fit_one`` and are pinned to it by a test.
@@ -917,6 +962,7 @@ def _backfill_track_geometry(extras_dir: str, stem: str) -> bool:
     px, fi = _run_calibration(extras_dir, stem)
     if not px or not fi:
         return False
+    metrics_schema = _run_metrics_schema(extras_dir, stem)
     try:
         diff = pd.read_csv(diff_path)
         tr = pd.read_csv(traj_path)
@@ -940,10 +986,17 @@ def _backfill_track_geometry(extras_dir: str, stem: str) -> bool:
         path = float(steps.sum())
         net = float(np.sqrt(np.sum((xy[-1] - xy[0]) ** 2)))
         unit = np.diff(frames) == 1
+        # ``mean_step_um`` changed meaning in schema 2.  Backfilling the current
+        # one-frame value into a schema-1 run while labelling it
+        # ``adjacent_observation`` makes two nominally compatible legacy runs
+        # numerically incompatible on gapped tracks.  Reconstruct the definition
+        # the run's contract actually promises.
+        mean_step = (float(steps.mean()) if metrics_schema < 2
+                     else float(steps[unit].mean()) if unit.any() else np.nan)
         rows.append((
             pid, path, net,
             float(net / path) if path > 0 else 0.0,
-            float(steps[unit].mean()) if unit.any() else np.nan,
+            mean_step,
             float(frames[-1] - frames[0]) * float(fi)))
     geo = pd.DataFrame(rows, columns=[
         "particle", "path_length_um", "net_displacement_um",

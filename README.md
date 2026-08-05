@@ -29,7 +29,9 @@ Picasso, ThunderSTORM) — see [Analyse external localisations](#analyse-externa
 Built with Python + PySide6 (Qt 6 / QML); the interactive viewers (Visualise
 tab + ROI editor) are bespoke QGraphicsView / QImage widgets — no napari.
 Localisation runs on the GPU via PyTorch — NVIDIA CUDA on Windows/Linux, Apple
-MPS on macOS, picked automatically — and falls back to trackpy on CPU.
+MPS on macOS, picked automatically — and falls back to the parallel PyTorch-CPU
+path when no healthy GPU is available. Trackpy remains a manual option and the
+last-resort fallback when PyTorch is not installed.
 
 By Jacob Levers · Apple-Silicon macOS and Windows
 
@@ -653,8 +655,8 @@ available RAM minus the user-reserve.
 → Check the resource monitor on the Analysis tab. If GPU% sits at 0,
 the backend fell back to CPU — look at the log for the resolver's
 verdict. On macOS the **PyTorch (GPU)** backend uses Apple MPS and requires
-PyTorch ≥ 2.0 and a recent macOS; on older systems the resolver auto-falls
-back to trackpy.
+PyTorch ≥ 2.0 and a recent macOS; without a healthy GPU the resolver uses
+PyTorch-CPU. Trackpy is selected automatically only when PyTorch is unavailable.
 
 **Comparison panels show "no data" placeholders**
 → Older analysis folders (pre-v1.0.55) don't have every per-run JSON /

@@ -1,5 +1,64 @@
 # Changelog
 
+## v2.76.48-rc.1 — 5 Aug 2026
+
+### Fixed
+
+- **Corrected the scientific basis and timing of the mobile/immobile cutoff.**
+  v2.76.47 shipped the general default and Drosophila Neurons preset at
+  **0.010 µm²/s**, and incorrectly cited that number as the exact published
+  Constals threshold. Constals et al. define the resolution-floor relation as
+  `D_thr = resolution² / (4 × n_frames × Δt)`: their 80 nm, four-frame, 50 ms
+  acquisition gives **0.008 µm²/s**, while the same derivation at FIREFLY's
+  default 20 ms interval gives a general fallback of **0.020 µm²/s**
+  (**0.010 → 0.020**). The Drosophila Neurons preset is restored to its
+  assay-matched published value, **0.010 → 0.021 µm²/s**. The preference help
+  now shows the formula and states explicitly that this is assay-specific, not
+  a universal constant. Existing mobile fractions and Mobile/Immobile ratios
+  are recomputed from saved per-track D values.
+
+- **Filter by D now uses one track population throughout the analysis.** A
+  first diffusion fit selects the in-range particles, then FIREFLY recomputes
+  the final individual MSD, ensemble MSD and diffusion table on only those
+  trajectories before figures, secondary analyses and PALM-Tracer exports are
+  produced. Below-resolution tracks whose D is unavailable are counted before
+  selection and persisted as a separate excluded count instead of disappearing.
+
+- **A run no longer becomes silently "legacy" when its optional summary JSON is
+  absent or corrupt.** The Analysis workspace now recovers metrics schema, gap
+  policy, metric contract, step definition and calibration provenance from the
+  persisted params sidecar, so incompatible definitions remain blocked from
+  pooled inference.
+
+- **Legacy geometry backfill now honours the run's saved step contract.** A
+  schema-1 gapped trajectory uses adjacent observed localisations; schema 2 uses
+  exactly one-frame links. Corrected and legacy step values can no longer share
+  a misleading compatibility label.
+
+- **Trackpy previews now cover every chunk.** Non-memmap and sequential paths
+  previously applied global frame bounds to an already-local chunk, so a
+  1,001-frame run returned correct localisation frames `0…1000` but previewed
+  only `0…333`. Local buffers are now translated explicitly and preview all
+  `0…1000` frames.
+
+- **Frozen-app smoke tests no longer accept a blank QML window.** The ready
+  marker now requires Ready status, a real root object, no QML errors and a
+  rendered non-empty framebuffer. Missing `Main.qml` therefore withholds the
+  marker and fails the release job.
+
+- **Unsupported batch drops now explain why nothing was queued.** ND2 and other
+  unsupported files remain unsupported, but are reported clearly; valid TSV or
+  image files in the same drop are still retained.
+
+- **Installed wheels now include `CHANGELOG.md`.** The landing page's Recent
+  updates timeline works outside a source checkout, and both wheel CI lanes
+  assert the resource and parsed updates after a clean installation.
+
+- **Corrected the documented Auto detection fallback.** Auto uses the parallel
+  PyTorch-CPU path when PyTorch is installed but no healthy GPU is available;
+  Trackpy is an explicit choice and the automatic last resort only when PyTorch
+  is unavailable.
+
 ## v2.76.47 — 5 Aug 2026
 
 ### Added
@@ -43,22 +102,13 @@
   coefficient or anomalous exponent. The frame-interval fallback is corrected
   from 0.1 s to 0.02 s to match the acquisition.
 
-- **The mobile/immobile threshold is now the published value, 0.01 µm²/s.** It
-  was 0.05 by default (and 0.021 in the Drosophila Neurons preset), both picked
-  by eye. 0.01 is the split used for single-molecule receptor tracking in
-  neurons by Constals et al. 2015, *Neuron* 85:787–803 (Figure 1C, which divides
-  the log₁₀ D distribution at log₁₀ D = −2), so the number in your methods is now
-  citable rather than arbitrary. It also matches the measurement floor: over a
-  short track a particle at this D moves about 80 nm, roughly three times a
-  typical localisation precision, which is where motion becomes distinguishable
-  from noise. On a control recording it is the most stable choice of the three —
-  raising the minimum track length from 8 to 25 frames moves the mobile fraction
-  by 1 point at 0.01, against 6 points at 0.021 and 8 at 0.05.
-
-  **This changes your existing numbers.** On a control recording the
-  Mobile/Immobile ratio goes from 1.38 to 2.11 and the mobile fraction from 58%
-  to 68%. Nothing needs reprocessing — both are recomputed from data you already
-  have. The threshold remains editable under Preferences → Analysis.
+- **The editable mobile/immobile threshold changed in this release.** The
+  general default and the Drosophila Neurons preset were both set to
+  0.01 µm²/s. This was an operational setting, not an exact published Constals
+  threshold: diffusion cutoffs depend on acquisition timing and resolution and
+  must be justified for the assay. Changing the preference updates the
+  Mobile/Immobile ratio and mobile fraction from saved per-track D values, so
+  trajectory reprocessing is not required.
 
 ### Fixed
 

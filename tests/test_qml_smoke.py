@@ -87,7 +87,29 @@ def test_shell_loads_without_qml_errors(qml_window):
     win.show()
     _app.processEvents()
     assert not win.grab().isNull()
+    from firefly.ui.app_qml import _qml_has_rendered_root
+    assert _qml_has_rendered_root(qw)
     win.hide()
+
+
+def test_ready_predicate_rejects_a_missing_qml_root():
+    """A repaint-capable widget without Main.qml must never pass release smoke."""
+    from firefly.ui.app_qml import _qml_has_rendered_root
+
+    class MissingRoot:
+        @staticmethod
+        def status():
+            return QQuickWidget.Status.Ready
+
+        @staticmethod
+        def rootObject():
+            return None
+
+        @staticmethod
+        def errors():
+            return []
+
+    assert not _qml_has_rendered_root(MissingRoot())
 
 
 def test_theme_controller_tokens_and_live_switch():

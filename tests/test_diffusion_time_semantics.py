@@ -327,6 +327,103 @@ def test_trackpy_chunk_offsets_follow_the_actual_array_split(monkeypatch):
     assert np.array_equal(result["frame"].to_numpy(), np.arange(1001))
 
 
+def test_trackpy_sequential_chunk_previews_cover_every_global_frame(monkeypatch):
+    """Local chunk buffers must be indexed locally while callbacks stay global."""
+    from firefly.analysis import fa_localize_backends as backends
+
+    def fake_localise_chunk(chunk, diameter, minmass, percentile, frame_offset):
+        frames = np.arange(len(chunk), dtype=int) + frame_offset
+        return pd.DataFrame({
+            "frame": frames,
+            "x": np.zeros(len(frames)),
+            "y": np.zeros(len(frames)),
+            "mass": np.ones(len(frames)),
+        })
+
+    preview_frames = []
+    preview_values = []
+
+    def preview_cb(frame, image, x, y, total):
+        preview_frames.append(frame)
+        preview_values.append(float(image[0, 0]))
+        assert total == 1001
+
+    monkeypatch.setattr(backends, "_localise_chunk", fake_localise_chunk)
+    monkeypatch.delenv("FIREFLY_FORCE_MP", raising=False)
+    stack = np.arange(1001, dtype=np.float32).reshape(1001, 1, 1)
+    result = backends.TrackpyBackend().localise(
+        stack, diameter=7, minmass=0.1, percentile=64, workers=1,
+        chunk_size=500, preview_cb=preview_cb)
+
+    assert np.array_equal(result["frame"].to_numpy(), np.arange(1001))
+    assert preview_frames == list(range(1001))
+    assert preview_values == pytest.approx(np.arange(1001, dtype=float))
+
+
+def test_trackpy_preview_maps_full_and_local_frame_buffers_identically():
+    from firefly.analysis.fa_localize_backends import _emit_trackpy_chunk_preview
+
+    stack = np.arange(10, dtype=np.float32).reshape(10, 1, 1)
+    from_full, from_local = [], []
+    _emit_trackpy_chunk_preview(
+        lambda f, image, x, y, n: from_full.append((f, float(image[0, 0]))),
+        stack, (4, 7), pd.DataFrame(), 10)
+    _emit_trackpy_chunk_preview(
+        lambda f, image, x, y, n: from_local.append((f, float(image[0, 0]))),
+        stack[4:7], (4, 7), pd.DataFrame(), 10, buffer_frame_start=4)
+
+    assert from_full == from_local == [(4, 4.0), (5, 5.0), (6, 6.0)]
+
+
+def test_d_filter_selects_first_then_recomputes_the_final_msd_population():
+    """The discovery fit must precede a second fit on only the kept tracks."""
+    from firefly.firefly_worker import _compute_diffusion_population
+
+    tr = pd.concat([
+        _tracks(range(6), np.zeros(6), particle=0),
+        _tracks(range(6), np.arange(6), particle=1),
+        _tracks(range(6), np.arange(6) * 10.0, particle=2),
+    ], ignore_index=True)
+    d_by_particle = {0: np.nan, 1: 0.05, 2: 2.0}
+    status_by_particle = {0: "below_resolution", 1: "ok", 2: "ok"}
+    calls = []
+
+    def fake_compute(population, pixel_size, frame_interval, **kwargs):
+        pids = population["particle"].drop_duplicates().tolist()
+        calls.append(pids)
+        # Distinct values make it impossible to mistake the discovery result
+        # for the recomputed final result in the assertions below.
+        imsd = pd.DataFrame(
+            {pid: [100.0 + pid, 200.0 + pid] for pid in pids},
+            index=[1, 2])
+        emsd = imsd.mean(axis=1)
+        diff = pd.DataFrame({
+            "particle": pids,
+            "D": [d_by_particle[pid] for pid in pids],
+            "fit_status": [status_by_particle[pid] for pid in pids],
+        })
+        return imsd, emsd, diff
+
+    final_tracks, imsd, emsd, diff, audit = _compute_diffusion_population(
+        tr, fake_compute, 1.0, 1.0,
+        max_lagtime=2, n_fit=2, workers=1,
+        alpha_thresholds=(0.5, 0.9, 1.1), gap_policy="all_pairs",
+        filter_d_enabled=True, filter_d_min=0.01, filter_d_max=0.1)
+
+    assert calls == [[0, 1, 2], [1]]
+    assert final_tracks["particle"].unique().tolist() == [1]
+    assert imsd.columns.tolist() == [1]
+    pd.testing.assert_series_equal(emsd, imsd.mean(axis=1))
+    assert diff["particle"].tolist() == [1]
+    assert audit["n_tracks_before"] == 3
+    assert audit["n_tracks_after"] == 1
+    assert audit["n_tracks_excluded"] == 2
+    assert audit["n_below_resolution_before"] == 1
+    assert audit["n_below_resolution_excluded"] == 1
+    assert audit["excluded_fit_status_counts"] == {
+        "below_resolution": 1, "ok": 1}
+
+
 def test_worker_prelinked_canonicalization_uses_the_same_branch_error():
     from firefly.firefly_worker import _canonicalize_tracks
 

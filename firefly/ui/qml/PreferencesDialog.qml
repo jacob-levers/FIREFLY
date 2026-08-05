@@ -723,7 +723,7 @@ Item {
                         label: "Mobile-D threshold"; desc: "Diffusion cutoff (µm²/s) splitting mobile vs immobile."
                         FieldInput {
                             implicitWidth: 170; horizontalAlignment: TextInput.AlignRight
-                            text: (root.rev, Settings.getStr("analysis/mobile_d", "0.01"))
+                            text: (root.rev, Settings.getStr("analysis/mobile_d", "0.02"))
                             onEditingFinished: Settings.setValue("analysis/mobile_d", text)
                         }
                     }

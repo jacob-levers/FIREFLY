@@ -176,6 +176,44 @@ def test_batch_append_does_not_drop_later_same_stem_table(tmp_path):
     _wait_probe(c)
 
 
+def test_batch_drop_reports_and_rejects_unsupported_files(tmp_path):
+    from firefly.ui.controllers.batch_controller import BatchController
+
+    nd2 = tmp_path / "movie.nd2"
+    binary = tmp_path / "recording.bin"
+    nd2.write_bytes(b"unsupported")
+    binary.write_bytes(b"unsupported")
+    c = BatchController(FakeSettings(), FakeImport())
+
+    assert c.addPaths([str(nd2), str(binary)]) == 0
+    assert c.seriesCount == 0
+    assert not c.canRun
+    error = c.generateError.lower()
+    assert "unsupported batch input" in error
+    assert "movie.nd2" in error and "recording.bin" in error
+    assert ".czi" in error and ".tsv" in error
+
+
+def test_batch_mixed_drop_keeps_supported_file_and_reports_unsupported(tmp_path):
+    from firefly.ui.controllers.batch_controller import BatchController
+
+    good = tmp_path / "locs.tsv"
+    bad = tmp_path / "movie.nd2"
+    good.write_text("frame\tx\ty\n0\t1\t2\n")
+    bad.write_bytes(b"unsupported")
+    c = BatchController(FakeSettings(), FakeImport())
+
+    assert c.addPaths([str(good), str(bad)]) == 1
+    assert c.seriesCount == 1 and c.canRun
+    assert c.series[0]["primaryPath"] == str(good)
+    assert "movie.nd2" in c.generateError.lower()
+    params = c._build_params_list()
+    assert len(params) == 1 and params[0]["file"] == str(good)
+    assert all("nd2" not in str(value).lower()
+               for value in params[0].values())
+    _wait_probe(c)
+
+
 def _wait_probe(c, timeout=5.0):
     """Background probe-all runs off-thread — pump until it settles."""
     import time

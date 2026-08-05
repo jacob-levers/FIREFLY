@@ -132,6 +132,7 @@ jobs:
           import firefly.ui.controllers
           root = files("firefly")
           required = (
+              "CHANGELOG.md",
               "ui/qml/Main.qml",
               "ui/assets/preview_panels/A.png",
               "ui/presets/PC12 Cells.json",
@@ -139,6 +140,8 @@ jobs:
           )
           missing = [p for p in required if not root.joinpath(p).is_file()]
           assert not missing, missing
+          from firefly.ui.changelog import recent_updates
+          assert recent_updates(3), "installed wheel has no recent updates"
           assert not os.path.abspath(firefly.__file__).startswith(os.environ["GITHUB_WORKSPACE"])
           print("wheel package/resources OK")
           '

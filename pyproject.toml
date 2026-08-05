@@ -62,6 +62,7 @@ include = ["firefly*"]
 # Keep the wheel manifest explicit: PyInstaller's own data collection only
 # covers frozen builds and cannot make a normal ``pip install`` runnable.
 firefly = [
+    "CHANGELOG.md",
     "ui/qml/*.qml",
     "ui/qml/**/*.qml",
     "ui/qml/assets/figures/*.png",

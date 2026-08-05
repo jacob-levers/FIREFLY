@@ -38,6 +38,16 @@ def test_package_entrypoint_and_runtime_assets_are_packaged():
         assert root.joinpath(relpath).is_file(), relpath
 
 
+def test_wheel_build_maps_the_root_changelog_into_the_package():
+    """The canonical root changelog must remain available after pip install."""
+    pyproject = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    manifest = (_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    setup_hook = (_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert '"CHANGELOG.md"' in pyproject
+    assert "include CHANGELOG.md" in manifest
+    assert '"firefly" / "CHANGELOG.md"' in setup_hook
+
+
 def test_dependency_fingerprint_is_stable_and_uses_the_venv_python():
     script = _ROOT / "scripts" / "dependency_fingerprint.py"
     first = subprocess.check_output([sys.executable, str(script)], text=True).strip()
@@ -125,6 +135,8 @@ def test_release_gate_uses_clean_wheel_startup_and_exact_tag_contract():
     assert "python -m venv --system-site-packages" not in workflow
     assert '"$venv/bin/python" -m pip check' in workflow
     assert "Start the clean-installed wheel outside the checkout" in workflow
+    assert '"CHANGELOG.md"' in workflow
+    assert "installed wheel has no recent updates" in workflow
     assert '"$RUNNER_TEMP/firefly-release-wheel/bin/python" -m firefly' in workflow
     windows_job = workflow.split("build-windows:", 1)[1]
     assert 'https://download.pytorch.org/whl/cpu "torch>=2.6,<3"' in windows_job

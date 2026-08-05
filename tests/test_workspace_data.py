@@ -227,6 +227,60 @@ def test_metric_contract_detects_mixed_but_allows_stable_metrics(tmp_path):
     assert wd.metric_contract_label([legacy], "step") == "legacy definition"
 
 
+@pytest.mark.parametrize("summary_state", ["missing", "corrupt"])
+def test_metric_contract_recovers_from_params_when_summary_unavailable(
+        tmp_path, summary_state):
+    """A non-fatal summary export failure must not relabel schema-2 science as
+    legacy and thereby make incompatible pooling appear safe."""
+    modern_path = make_run_folder(
+        str(tmp_path), f"modern_{summary_state}", seed=30, n_tracks=12)
+    stem = os.path.basename(modern_path)
+    extras = tmp_path / stem / "firefly_extras"
+    summary_path = extras / f"{stem}_summary_metrics.json"
+    params = {
+        "metrics_schema_version": 2,
+        "gap_policy": "all_pairs",
+        "metric_contract": "firefly_metrics_schema_2",
+        "step_definition": "single_frame",
+        "link_definition": "adjacent_observed_localisations",
+        "duration_definition": "elapsed_frame_span",
+        "observed_time_definition": "localisation_count_times_dt",
+        "metric_contract_note": "recovered from params",
+        "effective_calibration": {
+            "pixel_size_um": 0.16, "frame_interval_s": 0.02,
+        },
+        "embedded_calibration": {"advisory_only": True},
+        "pixel_size_um": 0.16,
+        "frame_interval_s": 0.02,
+    }
+    (extras / f"{stem}_params.json").write_text(json.dumps(params))
+    if summary_state == "missing":
+        summary_path.unlink()
+    else:
+        summary_path.write_text("{not valid json")
+
+    modern = wd.load_run(modern_path)
+    legacy = wd.load_run(make_run_folder(
+        str(tmp_path), f"legacy_{summary_state}", seed=31, n_tracks=12))
+
+    assert modern.metrics_schema_version == 2
+    assert modern.gap_policy == "all_pairs"
+    assert modern.metric_contract == "firefly_metrics_schema_2"
+    assert modern.step_definition == "single_frame"
+    assert modern.link_definition == "adjacent_observed_localisations"
+    assert modern.duration_definition == "elapsed_frame_span"
+    assert modern.observed_time_definition == "localisation_count_times_dt"
+    assert modern.metric_contract_note == "recovered from params"
+    assert modern.effective_calibration["pixel_size_um"] == pytest.approx(0.16)
+    assert modern.embedded_calibration["advisory_only"] is True
+    assert modern.fi_s == pytest.approx(0.02)
+    assert modern.n_tracks == 12       # still falls back to the per-track table
+    assert legacy.metrics_schema_version == 1
+    assert wd.metric_contract_issue([legacy, modern], "D")
+    assert wd.metric_contract_issue([legacy, modern], "step")
+    assert wd.metric_contract_issue([legacy, modern], "rg") == ""
+
+
 def test_metric_contract_detects_same_schema_different_step_definitions(tmp_path):
     runs = []
     definitions = (

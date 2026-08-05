@@ -209,13 +209,15 @@ class LocaliserBackend:
 
 
 def _emit_trackpy_chunk_preview(preview_cb, chunk_or_stack,
-                                  frame_range, chunk_locs_df, n_frames):
+                                  frame_range, chunk_locs_df, n_frames,
+                                  buffer_frame_start=0):
     """Emit one preview_cb call per frame in a completed Trackpy chunk.
 
     `chunk_or_stack` is either the chunk's own (T, Y, X) array
     (non-memmap MP / sequential path) OR the parent's full memmap-
-    backed stack (memmap-MP path).  Either way we slice
-    `[frame_range[0]:frame_range[1]]` to get the chunk's frames.
+    backed stack (memmap-MP path).  ``buffer_frame_start`` states which
+    global frame is stored at buffer index zero, so the same global
+    ``frame_range`` works for both representations.
 
     `chunk_locs_df` is a DataFrame with columns x, y, frame; we group
     spots by their global frame index and forward each (frame, spots)
@@ -229,11 +231,15 @@ def _emit_trackpy_chunk_preview(preview_cb, chunk_or_stack,
         return
     try:
         start, end = int(frame_range[0]), int(frame_range[1])
-        # chunk_or_stack[start:end] is the (T, Y, X) view we hand to
-        # preview_cb one frame at a time.  np.asarray makes the memmap
-        # path concrete (the GUI's preview thread expects a real array,
-        # not a memmap view it has to keep alive after we return).
-        sub = np.asarray(chunk_or_stack[start:end], dtype=np.float32)
+        buffer_start = int(buffer_frame_start)
+        local_start, local_end = start - buffer_start, end - buffer_start
+        if local_start < 0 or local_end > len(chunk_or_stack):
+            return
+        # Translate the requested global range onto the supplied buffer.
+        # np.asarray makes the memmap path concrete (the GUI's preview thread
+        # expects a real array, not a view it has to keep alive afterwards).
+        sub = np.asarray(
+            chunk_or_stack[local_start:local_end], dtype=np.float32)
     except Exception:
         return
     if sub.size == 0:
@@ -457,7 +463,8 @@ class TrackpyBackend(LocaliserBackend):
                         _emit_trackpy_chunk_preview(
                             preview_cb, _chunk_arr,
                             (_chunk_offset, _chunk_offset + len(_chunk_arr)),
-                            result, n_frames)
+                            result, n_frames,
+                            buffer_frame_start=_chunk_offset)
             use_mp_ok = True
         except Exception as exc:
             # Always release the heartbeat thread, even on error.
@@ -486,7 +493,7 @@ class TrackpyBackend(LocaliserBackend):
                     _emit_trackpy_chunk_preview(
                         preview_cb, chunk,
                         (offset, offset + len(chunk)),
-                        result, n_frames)
+                        result, n_frames, buffer_frame_start=offset)
 
         valid = [df for df in chunk_results if df is not None and len(df) > 0]
         result = pd.concat(valid, ignore_index=True) if valid else pd.DataFrame()

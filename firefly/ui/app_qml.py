@@ -55,7 +55,7 @@ except Exception:
     pass
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import QUrl, Qt, QEvent, QObject, Signal, Slot
+from PySide6.QtCore import QUrl, Qt, QEvent, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -330,6 +330,62 @@ def build_main_window(app: QtWidgets.QApplication):
     return win, qw
 
 
+def _qml_has_rendered_root(qw: QQuickWidget) -> bool:
+    """Return ``True`` only after the real QML root rendered a framebuffer.
+
+    A successful ``repaint()`` call is not a readiness signal: Qt silently
+    accepts it even when ``setSource`` failed and ``rootObject()`` is ``None``.
+    Frozen-build smoke tests use this predicate, so keep every condition tied to
+    state that a usable application window actually requires.
+    """
+    try:
+        if qw.status() != QQuickWidget.Status.Ready:
+            return False
+        if qw.rootObject() is None or qw.errors():
+            return False
+        qw.repaint()
+        frame = qw.grabFramebuffer()
+        return bool(frame is not None and not frame.isNull()
+                    and frame.width() > 0 and frame.height() > 0)
+    except Exception:
+        return False
+
+
+def _arm_ready_marker(qw: QQuickWidget, marker_path: str,
+                      attempts: int = 50) -> None:
+    """Write the smoke-test marker after QML is genuinely ready.
+
+    Loading and the first scene-graph frame can complete just after ``show()``,
+    especially in one-file frozen applications.  Retry on the GUI event loop
+    for five seconds; a QML error stops immediately and deliberately leaves the
+    marker absent so the packaging job fails instead of blessing a blank app.
+    """
+    marker_path = str(marker_path or "")
+    if not marker_path:
+        return
+
+    def _check(remaining: int) -> None:
+        if _qml_has_rendered_root(qw):
+            try:
+                with open(marker_path, "w", encoding="utf-8") as handle:
+                    handle.write("ready\n")
+            except Exception as exc:
+                print(f"[FIREFLY-SMOKE] ready marker write failed: {exc}",
+                      file=sys.stderr)
+            return
+        try:
+            failed = qw.status() == QQuickWidget.Status.Error
+        except Exception:
+            failed = True
+        if failed or remaining <= 0:
+            print("[FIREFLY-SMOKE] QML did not render a valid root; "
+                  "ready marker withheld", file=sys.stderr)
+            return
+        QTimer.singleShot(100, lambda: _check(remaining - 1))
+
+    QTimer.singleShot(0, lambda: _check(max(0, int(attempts))))
+
+
 def main() -> int:
     # Windows consoles and redirected stdio default to cp1252, which raises
     # UnicodeEncodeError the moment analysis code prints a non-Latin-1 glyph
@@ -348,19 +404,12 @@ def main() -> int:
     win, qw = build_main_window(app)
     win.show()
 
-    # CI/frozen smoke-test marker (mirrors the Widgets app): write the file the
-    # packaging smoke waits on once the QML root has rendered, so a "blank frozen
-    # window" (missing Qt Quick plugins) is caught — the marker only lands when
-    # the scene graph actually painted.
+    # CI/frozen smoke-test marker: arm an event-loop check that requires a Ready
+    # QML status, a real root object, no load errors, and a non-null framebuffer.
+    # A missing Qt Quick plugin / Main.qml therefore leaves the marker absent.
     marker_path = os.environ.get("SPTPALM_READY_MARKER")
     if marker_path:
-        try:    qw.repaint()
-        except Exception: pass
-        try:
-            with open(marker_path, "w") as f:
-                f.write("ready\n")
-        except Exception:
-            pass
+        _arm_ready_marker(qw, marker_path)
 
     return app.exec()
 
