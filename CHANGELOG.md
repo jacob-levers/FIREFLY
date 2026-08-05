@@ -1,8 +1,47 @@
 # Changelog
 
-## v2.76.47-rc.4 — 5 Aug 2026
+## v2.76.47 — 5 Aug 2026
+
+### Added
+
+- **The companion-image suffix is now editable**, in a new Analysis section of
+  Preferences. It starts as `_green`, so nothing changes unless you edit it —
+  but if your microscope names its companion differently (for example
+  `-Green Image`), you can type that in instead of being stuck with one
+  convention. `.tif`, `.tiff` and `.czi` are all matched, capitalisation is
+  ignored, and clearing the field turns companion matching off entirely.
+
+- **Density-matched automatic detection threshold.** The existing automatic
+  threshold tunes each recording on its own, which means two recordings can end
+  up detecting at different densities — and because the anomalous exponent shifts
+  with the threshold, a difference between conditions can come from detection
+  rather than from biology. The new mode instead gives every recording the same
+  detections per frame, so the threshold cannot vary between your control and
+  drug groups. On three control recordings it brought detection density to
+  roughly 22 per frame in all three (previously 23, 50 and 149), improved
+  localisation precision on two of them, and narrowed the spread in anomalous
+  exponent between animals by about a third. A recording too sparse to reach the
+  target is flagged in its run record rather than quietly included at a lower
+  density. Choose it under Detection, with an adjustable target; the Drosophila
+  Neurons preset now uses it at 25 spots per frame.
 
 ### Changed
+
+- **The Drosophila Neurons preset is now tuned to real ELYRA sptPALM data**
+  (256x256, 16k frames, 100 nm pixels, 20 ms exposure, Syntaxin-1A-mEos3.2).
+  Measured on a control recording, the old preset produced **2 usable tracks per
+  600 frames**; the tuned one produces **315** from the same data. The detection
+  threshold was the main culprit: the fixed `minmass = 2.0` kept about 2 spots
+  per frame where the data supports roughly 23, discarding most real molecules.
+  Detection now uses the automatic threshold, which measured 0.16 on this data
+  and adapts to each recording. Spot diameter 9 to 7 and background radius 15 to
+  10 both recovered more tracks; the search range is 3 (appropriate for
+  Syntaxin); memory stays at 5, which the data supports (it raises the share of
+  localisations used from 37% to 60%, while the risk of a wrong link at this
+  density is about 1 in 90); and the minimum track length is 8 rather than 10,
+  which yields around a third more tracks with no material change in diffusion
+  coefficient or anomalous exponent. The frame-interval fallback is corrected
+  from 0.1 s to 0.02 s to match the acquisition.
 
 - **The mobile/immobile threshold is now the published value, 0.01 µm²/s.** It
   was 0.05 by default (and 0.021 in the Drosophila Neurons preset), both picked
@@ -22,6 +61,12 @@
   have. The threshold remains editable under Preferences → Analysis.
 
 ### Fixed
+
+- **A custom companion suffix now applies to the analysis, not just the
+  preview.** The ROI viewer read the setting but the analysis run had `_green`
+  hardcoded, so a custom suffix would find the companion image in the preview
+  and then not use it in the actual run — the region analysed could differ from
+  the one shown, with nothing to indicate it.
 
 - **Mobile fraction ignored the current threshold.** It was frozen into each
   run's record when the run was processed, while the Mobile/Immobile panel drawn
@@ -54,63 +99,6 @@
   every companion image listed as its own analysis. It now uses your configured
   suffix, for folder scans, drag-and-drop and Add files alike. A companion with
   no matching recording is still listed, rather than silently disappearing.
-
-## v2.76.47-rc.3 — 4 Aug 2026
-
-### Added
-
-- **Density-matched automatic detection threshold.** The existing automatic
-  threshold tunes each recording on its own, which means two recordings can end
-  up detecting at different densities — and because the anomalous exponent shifts
-  with the threshold, a difference between conditions can come from detection
-  rather than from biology. The new mode instead gives every recording the same
-  detections per frame, so the threshold cannot vary between your control and
-  drug groups. On three control recordings it brought detection density to
-  roughly 22 per frame in all three (previously 23, 50 and 149), improved
-  localisation precision on two of them, and narrowed the spread in anomalous
-  exponent between animals by about a third. A recording too sparse to reach the
-  target is flagged in its run record rather than quietly included at a lower
-  density. Choose it under Detection, with an adjustable target; the Drosophila
-  Neurons preset now uses it at 25 spots per frame.
-
-## v2.76.47-rc.2 — 4 Aug 2026
-
-### Changed
-
-- **The Drosophila Neurons preset is now tuned to real ELYRA sptPALM data**
-  (256x256, 16k frames, 100 nm pixels, 20 ms exposure, Syntaxin-1A-mEos3.2).
-  Measured on a control recording, the old preset produced **2 usable tracks per
-  600 frames**; the tuned one produces **315** from the same data. The detection
-  threshold was the main culprit: the fixed `minmass = 2.0` kept about 2 spots
-  per frame where the data supports roughly 23, discarding most real molecules.
-  Detection now uses the automatic threshold, which measured 0.16 on this data
-  and adapts to each recording. Spot diameter 9 to 7 and background radius 15 to
-  10 both recovered more tracks; the search range is 3 (appropriate for
-  Syntaxin); memory stays at 5, which the data supports (it raises the share of
-  localisations used from 37% to 60%, while the risk of a wrong link at this
-  density is about 1 in 90); and the minimum track length is 8 rather than 10,
-  which yields around a third more tracks with no material change in diffusion
-  coefficient or anomalous exponent. The frame-interval fallback is corrected
-  from 0.1 s to 0.02 s to match the acquisition.
-
-## v2.76.47-rc.1 — 3 Aug 2026
-
-### Added
-
-- **The companion-image suffix is now editable**, in a new Analysis section of
-  Preferences. It starts as `_green`, so nothing changes unless you edit it —
-  but if your microscope names its companion differently (for example
-  `-Green Image`), you can type that in instead of being stuck with one
-  convention. `.tif`, `.tiff` and `.czi` are all matched, capitalisation is
-  ignored, and clearing the field turns companion matching off entirely.
-
-### Fixed
-
-- **A custom companion suffix now applies to the analysis, not just the
-  preview.** The ROI viewer read the setting but the analysis run had `_green`
-  hardcoded, so a custom suffix would find the companion image in the preview
-  and then not use it in the actual run — the region analysed could differ from
-  the one shown, with nothing to indicate it.
 
 ## v2.76.46 — 31 Jul 2026
 
