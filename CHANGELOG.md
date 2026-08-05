@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.76.48-rc.1 — 5 Aug 2026
+## v2.76.48 — 5 Aug 2026
 
 ### Fixed
 
