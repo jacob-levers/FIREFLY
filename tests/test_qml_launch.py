@@ -21,13 +21,36 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _boot(ui_env, marker, timeout=40):
+    isolated_home = marker.parent / "home"
+    settings_root = marker.parent / "qsettings"
+    isolated_home.mkdir(exist_ok=True)
+    settings_root.mkdir(exist_ok=True)
     env = dict(os.environ)
     env["SPTPALM_READY_MARKER"] = str(marker)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["QT_QUICK_BACKEND"] = "software"
+    env["HOME"] = str(isolated_home)
+    env["APPDATA"] = str(isolated_home / "AppData" / "Roaming")
+    env["LOCALAPPDATA"] = str(isolated_home / "AppData" / "Local")
+    env["XDG_CONFIG_HOME"] = str(isolated_home / ".config")
     if ui_env is not None:
         env["FIREFLY_UI"] = ui_env
-    proc = subprocess.Popen([sys.executable, os.path.join(_ROOT, "run_firefly.py")],
+    # Configure QSettings before importing the real entry point.  HOME/XDG
+    # redirects the durable file; forcing IniFormat + an explicit path also
+    # isolates macOS CFPreferences and Windows Registry-backed QSettings.
+    bootstrap = (
+        "import runpy,sys;"
+        "from PySide6.QtCore import QSettings;"
+        "f=QSettings.Format.IniFormat;"
+        "QSettings.setDefaultFormat(f);"
+        "QSettings.setPath(f,QSettings.Scope.UserScope,sys.argv[2]);"
+        "QSettings.setPath(f,QSettings.Scope.SystemScope,sys.argv[2]);"
+        "script=sys.argv[1];sys.argv=[script];"
+        "runpy.run_path(script,run_name='__main__')"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", bootstrap,
+                             os.path.join(_ROOT, "run_firefly.py"),
+                             str(settings_root)],
                             cwd=_ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:

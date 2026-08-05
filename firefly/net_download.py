@@ -126,13 +126,89 @@ def _finalize_download(part_path: str, dest_path: str, *, tries: int = 8) -> Non
         terminal=True)
 
 
-# Backoff schedule (seconds) between retries.  Indexed by (attempt-1) and
-# clamped to the last entry.  Deliberately stretches to ~30 s so a transient
-# server-side 5xx burst — e.g. GitHub's release-download edge returning HTTP
-# 504 for a minute or two right after a large asset is published — is ridden
-# out instead of erroring.  A 504 comes back in ~0.2 s, so the wall-clock cost
-# of an extra retry is almost entirely the backoff itself.
-_RETRY_BACKOFFS = (2, 5, 10, 20, 30, 30)
+def _recover_complete_part(dest_path: str,
+                           expected_size: Optional[int],
+                           *,
+                           progress_cb: Optional[Callable[[int, int], None]],
+                           cancel_cb: Optional[Callable[[], bool]],
+                           validate_cb: Optional[Callable[[str], bool]],
+                           status_cb: Optional[Callable[[str], None]]) -> bool:
+    """Validate and finalize an already-complete resume buffer locally.
+
+    A process can be interrupted after writing the last byte but before the
+    validation/rename phase.  Sending ``Range: bytes=<size>-`` on the next run
+    is an unsatisfiable EOF range, so a compliant server responds with 416 and
+    the old implementation discarded and downloaded the complete file again.
+
+    ``expected_size`` must be authoritative for the same asset (the updater,
+    for example, gets it from GitHub's release metadata and separately keys its
+    resume sidecar by URL/size/digest).  Merely matching that size is never used
+    to bypass ``validate_cb``: the local bytes pass the exact same caller-owned
+    authentication/format check as freshly downloaded bytes.
+
+    Returns True only when the part was finalized.  A right-sized part that
+    fails validation is removed and returns False so the caller downloads a
+    clean copy.  Short parts are untouched for ordinary Range resume.
+    """
+    if expected_size is None or expected_size <= 0:
+        return False
+    part_path = dest_path + ".part"
+    try:
+        part_size = os.path.getsize(part_path)
+    except OSError:
+        return False
+    if part_size != expected_size:
+        return False
+
+    if cancel_cb is not None:
+        try:
+            if cancel_cb():
+                raise DownloadError("Download cancelled by user.")
+        except DownloadError:
+            raise
+        except Exception:
+            pass
+
+    _log(f"  complete resume buffer found ({part_size/1e6:.1f} MB); "
+         "verifying locally")
+    # Match the end-of-transfer callback order: report all bytes first, then
+    # switch the UI into its named, indeterminate verification phase.
+    if progress_cb is not None:
+        try:
+            progress_cb(part_size, expected_size)
+        except Exception:
+            pass
+    if status_cb is not None:
+        try:
+            status_cb("Verifying download…")
+        except Exception:
+            pass
+
+    ok = True
+    if validate_cb is not None:
+        try:
+            ok = bool(validate_cb(part_path))
+        except Exception:
+            ok = False
+    if not ok:
+        _log("  complete resume buffer failed validation; downloading fresh")
+        try:
+            os.remove(part_path)
+        except OSError as exc:
+            # Never issue an EOF Range request or overwrite bytes that failed
+            # authentication when the OS will not let us discard them.
+            raise DownloadError(
+                f"Couldn't discard a completed download that failed "
+                f"validation: {exc}", terminal=True) from exc
+        return False
+
+    if status_cb is not None:
+        try:
+            status_cb("Finishing update…")
+        except Exception:
+            pass
+    _finalize_download(part_path, dest_path)
+    return True
 
 
 # Backoff schedule (seconds) between retries.  Indexed by (attempt-1) and
@@ -155,7 +231,8 @@ def download_file(url: str,
                   max_attempts: int = 3,
                   timeout: float = 20.0,
                   read_stall_s: float = 10.0,
-                  parallel_segments: int = 4) -> None:
+                  parallel_segments: int = 4,
+                  expected_size: Optional[int] = None) -> None:
     """Download ``url`` → ``dest_path`` with progress, cancel, resume,
     validation and retry/backoff.
 
@@ -171,11 +248,47 @@ def download_file(url: str,
         watching UI stays informative while waiting out a transient 5xx.
       headers: extra request headers (merged over a default User-Agent).
       max_attempts: total tries before giving up (backoff 2/5/10 s).
+      expected_size: authoritative byte size for this exact asset.  When a
+        resumable ``.part`` already has this size, validate and atomically
+        finalize it locally instead of requesting an unsatisfiable EOF range.
 
     Raises ``DownloadError`` on failure; returns None on success (the
     complete file is at ``dest_path``).
     """
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+
+    if expected_size is not None:
+        try:
+            expected_size = int(expected_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("expected_size must be an integer byte count") from exc
+        if expected_size <= 0:
+            expected_size = None
+
+    # Enforce the authoritative size on every path, including the parallel
+    # downloader whose total normally comes from Content-Range.  This wrapper
+    # also lets complete-part recovery reuse the ordinary validation contract.
+    caller_validate_cb = validate_cb
+    if expected_size is not None:
+        def _validate_expected_size(path: str) -> bool:
+            try:
+                if os.path.getsize(path) != expected_size:
+                    return False
+            except OSError:
+                return False
+            return (caller_validate_cb is None
+                    or bool(caller_validate_cb(path)))
+        effective_validate_cb = _validate_expected_size
+    else:
+        effective_validate_cb = caller_validate_cb
+
+    # Check before the parallel probe as well as before single-stream GETs: a
+    # complete authenticated resume buffer requires no network request at all.
+    if _recover_complete_part(
+            dest_path, expected_size,
+            progress_cb=progress_cb, cancel_cb=cancel_cb,
+            validate_cb=effective_validate_cb, status_cb=status_cb):
+        return
 
     # ── Fast path: parallel byte-range segments ──────────────────────────────
     # A CDN like GitHub's release edge throttles per-connection, so several
@@ -190,7 +303,8 @@ def download_file(url: str,
             if _download_parallel(
                     url, dest_path, segments=int(parallel_segments),
                     progress_cb=progress_cb, cancel_cb=cancel_cb,
-                    validate_cb=validate_cb, headers=headers, timeout=timeout,
+                    validate_cb=effective_validate_cb, headers=headers,
+                    timeout=timeout,
                     status_cb=status_cb):
                 return
         except DownloadError as exc:
@@ -210,10 +324,10 @@ def download_file(url: str,
         try:
             _download_once(url, dest_path,
                            progress_cb=progress_cb, cancel_cb=cancel_cb,
-                           validate_cb=validate_cb, headers=headers,
+                           validate_cb=effective_validate_cb, headers=headers,
                            attempt=attempt, max_attempts=max_attempts,
                            timeout=timeout, read_stall_s=read_stall_s,
-                           status_cb=status_cb)
+                           status_cb=status_cb, expected_size=expected_size)
             return
         except DownloadError as exc:
             # User-cancel + permanent server errors (4xx) + terminal failures
@@ -277,7 +391,8 @@ def _download_once(url: str,
                    max_attempts: int,
                    timeout: float,
                    read_stall_s: float,
-                   status_cb: Optional[Callable[[str], None]] = None) -> None:
+                   status_cb: Optional[Callable[[str], None]] = None,
+                   expected_size: Optional[int] = None) -> None:
     """One attempt: write to ``<dest>.part`` (resuming any prior one),
     verify, then atomic-rename to ``dest``.  Raises on any failure —
     ``download_file`` decides whether to retry."""
@@ -286,6 +401,19 @@ def _download_once(url: str,
     try:
         if os.path.exists(part_path):
             resume_from = int(os.path.getsize(part_path))
+    except Exception:
+        resume_from = 0
+
+    # A retry can begin with all bytes present if the preceding connection or
+    # process failed after its final write but before validation/finalization.
+    if _recover_complete_part(
+            dest_path, expected_size,
+            progress_cb=progress_cb, cancel_cb=cancel_cb,
+            validate_cb=validate_cb, status_cb=status_cb):
+        return
+    try:
+        resume_from = (int(os.path.getsize(part_path))
+                       if os.path.exists(part_path) else 0)
     except Exception:
         resume_from = 0
 

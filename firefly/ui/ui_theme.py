@@ -6,6 +6,8 @@ the analysis figures.
 from __future__ import annotations
 
 import os
+import tempfile
+from dataclasses import dataclass
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -70,6 +72,20 @@ _THEMES = {
 }
 
 
+def _xdg_config_home(home: str) -> str:
+    """Return an XDG-compliant config root.
+
+    The base-directory specification says a relative ``XDG_CONFIG_HOME`` must
+    be ignored.  Accepting one would make the durable theme path depend on the
+    process working directory, which can change between a source launch and a
+    packaged-app launch.
+    """
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    if configured and os.path.isabs(configured):
+        return configured
+    return os.path.join(home, ".config")
+
+
 def theme_pref_path() -> str:
     """Plain-file store for the chosen app theme, in a stable per-user dir that
     survives app updates.
@@ -89,71 +105,143 @@ def theme_pref_path() -> str:
     elif os.name == "nt":
         base = os.path.join(os.environ.get("APPDATA") or home, "FIREFLY")
     else:
-        base = os.path.join(os.environ.get("XDG_CONFIG_HOME")
-                            or os.path.join(home, ".config"), "firefly")
+        base = os.path.join(_xdg_config_home(home), "firefly")
     return os.path.join(base, "ui_prefs.json")
 
 
+_THEME_FILE_UNREADABLE = object()
+
+
 def _read_theme_file():
+    """Return the stored theme, ``None`` when absent, or an error sentinel.
+
+    Missing and unreadable are deliberately different states.  A missing
+    preference can safely be initialised; a corrupt, permission-denied, or
+    transiently unreadable preference must not be replaced with a fallback.
+    """
     try:
         import json
         with open(theme_pref_path(), encoding="utf-8") as fh:
-            return (json.load(fh) or {}).get("app_theme")
-    except Exception:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return _THEME_FILE_UNREADABLE
+        return data.get("app_theme")
+    except FileNotFoundError:
         return None
+    except Exception:
+        return _THEME_FILE_UNREADABLE
 
 
-def write_theme_file(name: str) -> None:
-    """Durably persist the chosen theme to the plain-file store (atomic)."""
+def write_theme_file(name: str) -> bool:
+    """Durably persist a chosen theme atomically and report success."""
+    tmp = None
     try:
         import json
         p = theme_pref_path()
-        os.makedirs(os.path.dirname(p), exist_ok=True)
+        directory = os.path.dirname(p)
+        os.makedirs(directory, exist_ok=True)
         data = {}
         try:
             with open(p, encoding="utf-8") as fh:
                 data = json.load(fh) or {}
         except Exception:
             data = {}
+        if not isinstance(data, dict):
+            data = {}
         data["app_theme"] = str(name)
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=directory,
+                prefix=".ui_prefs.", suffix=".tmp", delete=False) as fh:
+            tmp = fh.name
             json.dump(data, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, p)
+        return True
     except Exception:
-        pass
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return False
+
+
+@dataclass(frozen=True)
+class _StartupTheme:
+    name: str
+    materialize: bool
+
+
+def _read_qsettings_theme(organization: str, application: str):
+    """Return ``(value, read_ok)`` including Qt's non-exception error channel."""
+    try:
+        settings = QtCore.QSettings(organization, application)
+        value = settings.value("ui/app_theme", None)
+        if hasattr(settings, "status"):
+            status = settings.status()
+            no_error = getattr(
+                getattr(QtCore.QSettings, "Status", object), "NoError", None)
+            if no_error is None:
+                # Lightweight test doubles may expose integer Qt status codes
+                # without the nested enum.  Zero is QSettings.NoError.
+                if status not in (None, 0):
+                    return None, False
+            elif status != no_error:
+                return None, False
+        return value, True
+    except Exception:
+        return None, False
+
+
+def _resolve_startup_theme() -> _StartupTheme:
+    """Resolve a theme and whether startup may safely persist that result."""
+    file_value = _read_theme_file()
+    if isinstance(file_value, str) and file_value in _THEMES:
+        # The durable store is authoritative and already materialised.  Avoid a
+        # gratuitous rewrite (and preserve any future keys/formatting verbatim).
+        return _StartupTheme(str(file_value), False)
+
+    file_is_missing = file_value is None
+    if file_value is not None:
+        # This covers I/O/parse failures and unknown future theme values.  A
+        # runtime fallback is fine, but startup must not overwrite the file.
+        may_materialize = False
+    else:
+        may_materialize = True
+
+    primary, primary_ok = _read_qsettings_theme("jacoblevers", "FIREFLY")
+    if not primary_ok:
+        # A settings read failure is not proof that no preference exists.
+        return _StartupTheme("Dark", False)
+    if primary not in (None, ""):
+        primary = str(primary)
+        if primary in _THEMES:
+            return _StartupTheme(primary, may_materialize)
+        return _StartupTheme("Dark", False)
+
+    foreign, foreign_ok = _read_qsettings_theme("FIREFLY", "sptPALM")
+    if not foreign_ok:
+        return _StartupTheme("Dark", False)
+    if foreign not in (None, ""):
+        foreign = str(foreign)
+        if foreign in _THEMES:
+            return _StartupTheme(foreign, may_materialize)
+        return _StartupTheme("Dark", False)
+
+    return _StartupTheme("Dark", file_is_missing)
 
 
 def _pick_startup_theme() -> str:
     """Read the user's chosen app theme, defaulting to "Dark".
 
     Preference order: the durable plain-file store (write_theme_file) → the
-    legacy QSettings store (migrated on first controller start) → Dark.  We only
-    READ here (never write) so importing this module has no filesystem side
-    effects; ThemeController materialises the resolved value on startup.
-
-    An AMOLED value found *only* in QSettings is the historical update-reset
-    sentinel, not reliable evidence of a user choice, so it normalises to Dark.
-    A deliberate AMOLED choice made by a version with the durable store is in
-    ``ui_prefs.json`` and remains fully respected.  Light is safe to migrate
-    because it was never the erroneous update fallback.
+    primary QSettings store → the older foreign-domain QSettings store →
+    Dark.  Every recognised value, including AMOLED, is preserved: the actual
+    reset was a test writing the live preference, not an intrinsic ambiguity in
+    AMOLED.  Importing this module remains read-only.
     """
-    try:
-        name = _read_theme_file()
-        if name in _THEMES:
-            return name
-        # migrate from the QSettings store (previous mechanism)
-        qs = QtCore.QSettings("jacoblevers", "FIREFLY").value("ui/app_theme", None)
-        if qs is None:                          # ...or the older foreign domain
-            old = str(QtCore.QSettings("FIREFLY", "sptPALM")
-                      .value("ui/app_theme", "") or "")
-            qs = old
-        # AMOLED was the stale value exposed by the old macOS settings-domain
-        # collision after an update.  Only the durable file can distinguish a
-        # deliberate AMOLED selection, so QSettings-only AMOLED must not win.
-        return "Light" if str(qs or "") == "Light" else "Dark"
-    except Exception:
-        return "Dark"
+    return _resolve_startup_theme().name
 
 
 _ACTIVE_THEME_NAME = _pick_startup_theme()

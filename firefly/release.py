@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 
-__version__ = "2.76.49-rc.1"
+__version__ = "2.76.49-rc.2"
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 _NUMERIC_RE = re.compile(r"^\d+(?:\.\d+)*$")

@@ -1,6 +1,7 @@
 """Updater staging, validation, and detached-helper regressions."""
 import hashlib
 import json
+import multiprocessing
 import threading
 import time
 from pathlib import Path
@@ -8,6 +9,16 @@ from pathlib import Path
 import pytest
 
 from firefly import updater
+
+
+def _hold_file_lock(path, ready, release):
+    """Spawn-safe helper proving the updater lock is kernel-visible."""
+    lock = updater._InterProcessFileLock(path)
+    if not lock.acquire():
+        return
+    ready.set()
+    release.wait(5)
+    lock.release()
 
 
 def test_windows_helper_keeps_no_backup():
@@ -23,17 +34,48 @@ def test_windows_helper_keeps_no_backup():
     assert 'move /Y "%STAGED%" "%TARGET%"' in s
     # Integrity check + relaunch handshake are still present.
     assert "certutil -hashfile" in s
+    assert 'if /i not "%DSTHASH%"=="%EXPECTED_SHA%"' in s
     assert 'start "" "%TARGET%"' in s
     assert "firefly_relaunch_ok.marker" in s
 
 
-def test_windows_helper_reads_paths_positionally():
-    # Paths come from %~1..%~4 (never interpolated), so a '%' in a path is safe.
+def test_windows_helper_reads_paths_from_dedicated_environment():
+    # Dynamic values are never batch arguments, where cmd metacharacters would
+    # be reparsed before the script starts.
     s = updater.windows_helper_script(1, "N", "T", "L")
-    assert 'set "PID=%~1"' in s
-    assert 'set "NEWEXE=%~2"' in s
-    assert 'set "TARGET=%~3"' in s
-    assert 'set "LOG=%~4"' in s
+    assert 'set "PID=%FIREFLY_UPDATE_PID%"' in s
+    assert 'set "NEWEXE=%FIREFLY_UPDATE_SOURCE%"' in s
+    assert 'set "TARGET=%FIREFLY_UPDATE_TARGET%"' in s
+    assert 'set "LOG=%FIREFLY_UPDATE_LOG%"' in s
+    assert 'set "EXPECTED_SIZE=%FIREFLY_UPDATE_EXPECTED_SIZE%"' in s
+    assert 'set "EXPECTED_SHA=%FIREFLY_UPDATE_EXPECTED_SHA%"' in s
+    assert "source verified against GitHub metadata" in s
+
+
+def test_windows_helper_preserves_bang_in_paths():
+    """Delayed expansion strips ``!`` characters from expanded path values.
+    Keep it disabled and avoid all ``!VAR!`` expansion in the helper.
+    """
+    s = updater.windows_helper_script(
+        1, r"C:\Users\Lab!One\new.exe", r"C:\Apps\Fire!fly\FIREFLY.exe",
+        r"C:\Users\Lab!One\update.log")
+    assert "setlocal DisableDelayedExpansion" in s
+    assert "enabledelayedexpansion" not in s.lower()
+    assert "!NEWEXE!" not in s
+    assert "!TARGET!" not in s
+    assert "!LOG!" not in s
+
+
+def test_windows_helper_deletes_source_only_after_ready_success():
+    """Content-addressed EXEs must not accumulate after successful updates,
+    while failures and ready-marker timeouts retain the installer for repair.
+    """
+    s = updater.windows_helper_script(1, "N", "T", "L")
+    ready = s.index("\n:ready\n")
+    cleanup = s.index('del "%NEWEXE%"')
+    end = s.index("\n:end\n", ready)
+    assert ready < cleanup < end
+    assert 'del "%NEWEXE%"' not in s[:ready]
 
 
 def test_macos_helper_unchanged_still_backs_up():
@@ -41,6 +83,9 @@ def test_macos_helper_unchanged_still_backs_up():
     s = updater.macos_helper_script(1, "/tmp/x.dmg", "/Applications/FIREFLY.app",
                                     "/tmp/log")
     assert "BACKUP" in s
+    assert 'EXPECTED_SIZE="$5"' in s
+    assert 'EXPECTED_SHA="$6"' in s
+    assert "/usr/bin/shasum -a 256" in s
 
 
 def test_arm64_macos_accepts_only_architecture_explicit_asset(monkeypatch):
@@ -152,6 +197,85 @@ def test_concurrent_requests_share_one_staged_asset(tmp_path, monkeypatch):
     assert calls["max_active"] == 1
 
 
+def test_same_published_filename_cannot_replace_another_release(tmp_path,
+                                                                monkeypatch):
+    """Two releases can publish the same asset filename.  Their verified files
+    must remain distinct so release B cannot replace bytes already handed to
+    release A's detached installer.
+    """
+    payloads = {
+        "https://x/v1/asset": b"release one bytes",
+        "https://x/v2/asset": b"release two bytes",
+    }
+    assets = []
+    for url, payload in payloads.items():
+        assets.append({
+            "name": "FIREFLY-same-name.bin",
+            "url": url,
+            "size": len(payload),
+            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        })
+    monkeypatch.setattr(updater, "updates_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(updater, "_validate_download", lambda path: True)
+
+    def fake_download(url, out, **kwargs):
+        Path(out).write_bytes(payloads[url])
+
+    monkeypatch.setattr(updater.net_download, "download_file", fake_download)
+    first = updater.download_asset(assets[0])
+    second = updater.download_asset(assets[1])
+
+    assert first != second
+    assert Path(first).read_bytes() == payloads[assets[0]["url"]]
+    assert Path(second).read_bytes() == payloads[assets[1]["url"]]
+    assert Path(first).parent.name == assets[0]["digest"].split(":", 1)[1]
+    assert Path(second).parent.name == assets[1]["digest"].split(":", 1)[1]
+
+
+def test_asset_lock_is_visible_to_another_process(tmp_path):
+    """A second FIREFLY process must not enter the same resume state while the
+    first owns it; a thread-only lock would let this assertion fail.
+    """
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    lock_path = str(tmp_path / "asset.lock")
+    holder = context.Process(target=_hold_file_lock,
+                             args=(lock_path, ready, release))
+    holder.start()
+    try:
+        assert ready.wait(5), "child process did not acquire updater lock"
+        contender = updater._InterProcessFileLock(lock_path)
+        assert contender.acquire() is False
+        contender.release()
+    finally:
+        release.set()
+        holder.join(5)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(2)
+    assert holder.exitcode == 0
+
+
+def test_asset_lock_permission_failure_does_not_spin(tmp_path, monkeypatch):
+    """A permanent lock-file error is actionable, not mistaken for another
+    process holding the lock forever.
+    """
+    import builtins
+    real_open = builtins.open
+    lock_path = str(tmp_path / "denied.lock")
+
+    def deny_lock(path, *args, **kwargs):
+        if str(path) == lock_path:
+            raise PermissionError("read-only update folder")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", deny_lock)
+    lock = updater._InterProcessFileLock(lock_path)
+    with pytest.raises(updater.UpdaterError, match="Couldn't open"):
+        lock.acquire()
+
+
 def test_partial_without_matching_asset_identity_is_not_resumed(tmp_path, monkeypatch):
     """Release assets reuse a constant filename.  A ``.part`` left by version N
     must not become the prefix of version N+1; that only discovers the mismatch
@@ -161,9 +285,9 @@ def test_partial_without_matching_asset_identity_is_not_resumed(tmp_path, monkey
     digest = "sha256:" + hashlib.sha256(payload).hexdigest()
     asset = {"name": "FIREFLY-test.bin", "url": "https://x/v-next/asset",
              "size": len(payload), "digest": digest}
-    dest = tmp_path / asset["name"]
-    Path(str(dest) + ".part").write_bytes(b"old release prefix")
     monkeypatch.setattr(updater, "updates_dir", lambda: str(tmp_path))
+    dest = Path(updater._asset_staging_path(asset))
+    Path(str(dest) + ".part").write_bytes(b"old release prefix")
     monkeypatch.setattr(updater, "_validate_download", lambda path: True)
     saw_stale_partial = []
 
@@ -174,6 +298,71 @@ def test_partial_without_matching_asset_identity_is_not_resumed(tmp_path, monkey
     monkeypatch.setattr(updater.net_download, "download_file", fake_download)
     assert updater.download_asset(asset) == str(dest)
     assert saw_stale_partial == [False]
+
+
+def test_verify_staged_asset_rejects_post_download_mutation(tmp_path, monkeypatch):
+    payload = b"verified immutable installer"
+    staged = tmp_path / "installer.bin"
+    staged.write_bytes(payload)
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(updater, "_validate_download", lambda path: True)
+
+    updater.verify_staged_asset(
+        str(staged), expected_size=len(payload), expected_digest=digest)
+    staged.write_bytes(b"mutated immutable installer")
+    with pytest.raises(updater.UpdaterError, match="SHA-256 changed"):
+        updater.verify_staged_asset(
+            str(staged), expected_size=staged.stat().st_size,
+            expected_digest=digest)
+
+
+def test_apply_passes_expected_metadata_to_detached_helper(tmp_path, monkeypatch):
+    """The helper must independently verify the exact GitHub size/SHA after the
+    running app exits, closing the final pre-swap mutation window.
+    """
+    payload = b"verified windows installer"
+    special = tmp_path / "Lab! 50% & data"
+    special.mkdir()
+    staged = special / "FIREFLY-Windows.exe"
+    staged.write_bytes(payload)
+    target = special / "installed & stable!" / "FIREFLY.exe"
+    target.parent.mkdir()
+    target.write_bytes(b"old")
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    sha = digest.split(":", 1)[1]
+    popen_calls = []
+
+    monkeypatch.setattr(updater, "is_frozen", lambda: True)
+    monkeypatch.setattr(updater, "is_macos", lambda: False)
+    monkeypatch.setattr(updater, "is_windows", lambda: True)
+    monkeypatch.setattr(updater, "updates_dir", lambda: str(special))
+    monkeypatch.setattr(updater, "_validate_download", lambda path: True)
+    monkeypatch.setattr(updater.sys, "executable", str(target))
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setattr(updater, "_write_helper",
+                        lambda name, content, executable: str(special / name))
+    monkeypatch.setattr(updater.subprocess, "Popen",
+                        lambda args, **kwargs: popen_calls.append((args, kwargs)))
+
+    updater.apply_update(
+        str(staged), expected_size=len(payload), expected_digest=digest)
+
+    assert len(popen_calls) == 1
+    command, kwargs = popen_calls[0]
+    env = kwargs["env"]
+    helper = str(special / f"firefly_update_{updater.os.getpid()}_{sha[:12]}.bat")
+    assert command.endswith('/d /v:off /s /c ""%FIREFLY_UPDATE_HELPER%""')
+    assert kwargs["executable"].lower().endswith("cmd.exe")
+    assert str(staged) not in command
+    assert str(target) not in command
+    assert str(special) not in command
+    assert sha not in command
+    assert env["FIREFLY_UPDATE_HELPER"] == helper
+    assert env["FIREFLY_UPDATE_SOURCE"] == str(staged)
+    assert env["FIREFLY_UPDATE_TARGET"] == str(target)
+    assert env["FIREFLY_UPDATE_LOG"] == str(special / "relaunch.log")
+    assert env["FIREFLY_UPDATE_EXPECTED_SIZE"] == str(len(payload))
+    assert env["FIREFLY_UPDATE_EXPECTED_SHA"] == sha
 
 
 def test_partial_with_matching_asset_identity_remains_resumable(tmp_path):

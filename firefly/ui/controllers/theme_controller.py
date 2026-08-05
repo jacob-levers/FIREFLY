@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
 
-from firefly.ui.ui_theme import _THEMES, _pick_startup_theme
+from firefly.ui.ui_theme import _THEMES, _resolve_startup_theme
 
 
 def _font_mult(label):
@@ -73,12 +73,13 @@ class ThemeController(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._name = _pick_startup_theme()
-        # Materialise even the default Dark choice.  Previously the durable
-        # store was written only when the user changed theme, so somebody who
-        # kept Dark had no canonical preference and a stale QSettings AMOLED
-        # value could reappear on the first launch after an app update.
-        self._persist_theme(self._name)
+        startup = _resolve_startup_theme()
+        self._name = startup.name
+        # Materialise a confirmed default or a lossless QSettings migration,
+        # but never write a fallback obtained after an unreadable durable file
+        # or settings store.  A deliberate click can still retry/replace it.
+        self._startup_persistence_succeeded = (
+            self._persist_theme(self._name) if startup.materialize else True)
         # reduce-motion lives in the primary store (jacoblevers/FIREFLY).
         try:
             self._reduced_motion = QSettings("jacoblevers", "FIREFLY").value(
@@ -125,15 +126,20 @@ class ThemeController(QObject):
 
     @staticmethod
     def _persist_theme(name):
-        """Write both the update-stable store and the compatibility store."""
+        """Write both stores and report whether the complete operation worked."""
         from firefly.ui.ui_theme import write_theme_file
-        write_theme_file(name)
+        file_ok = write_theme_file(name)
         try:
             s = QSettings("jacoblevers", "FIREFLY")
             s.setValue("ui/app_theme", name)
             s.sync()
+            status = s.status() if hasattr(s, "status") else None
+            no_error = getattr(getattr(QSettings, "Status", object),
+                               "NoError", None)
+            settings_ok = status is None or status == no_error
         except Exception:
-            pass
+            settings_ok = False
+        return bool(file_ok and settings_ok)
 
     def _sync_marker_accent(self):
         """Push the chosen accent colour to the live-detection marker so the
@@ -243,14 +249,15 @@ class ThemeController(QObject):
                 pass
             self.reducedMotionChanged.emit()
 
-    @Slot(str)
+    @Slot(str, result=bool)
     def setTheme(self, name: str):
-        if name in _THEMES:
-            changed = name != self._name
-            self._name = name
-            # Persist even when the selected tile is already active: this lets
-            # a click retry a transiently failed disk write without generating
-            # a spurious palette-change notification.
-            self._persist_theme(name)
-            if changed:
-                self.changed.emit()
+        if name not in _THEMES:
+            return False
+        changed = name != self._name
+        self._name = name
+        # Persist even when the selected tile is already active: this lets a
+        # click retry a transiently failed write without a spurious repaint.
+        persisted = self._persist_theme(name)
+        if changed:
+            self.changed.emit()
+        return persisted

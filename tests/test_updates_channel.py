@@ -4,6 +4,7 @@ respecting updates/channel, updates/notify_pre and updates/auto_download.
 These are the controls in Preferences ▸ Updates that previously did nothing —
 this guards that they actually drive the GitHub query + install flow now.
 """
+import hashlib
 import os
 import time
 
@@ -232,6 +233,9 @@ def test_update_downloaded_reuse_condition(mk_controller, tmp_path):
 
     c._prefetched_tag = "v2.99.0"
     c._prefetched_path = str(staged)
+    c._prefetched_size = staged.stat().st_size
+    c._prefetched_digest = "sha256:" + "a" * 64
+    c._prefetched_include_pre = False
     assert c.updateDownloaded is True                  # matches + exists → reuse
 
     c._prefetched_tag = "v2.98.0"                       # staged a different release
@@ -240,6 +244,27 @@ def test_update_downloaded_reuse_condition(mk_controller, tmp_path):
     c._prefetched_tag = "v2.99.0"
     staged.unlink()                                    # staged file vanished
     assert c.updateDownloaded is False
+
+
+def test_prefetch_reuse_requires_same_channel_policy(mk_controller, tmp_path):
+    """An rc prefetched on the Pre-release channel must not remain installable
+    after switching to Stable before another update check.
+    """
+    staged = tmp_path / "FIREFLY-installer"
+    staged.write_bytes(b"x" * 32)
+    settings = _FakeSettings(**{"updates/channel": "Pre-release"})
+    c = mk_controller(settings)
+    c._latest_tag = "v2.99.0-rc.1"
+    c._prefetched_tag = "v2.99.0-rc.1"
+    c._prefetched_path = str(staged)
+    c._prefetched_size = staged.stat().st_size
+    c._prefetched_digest = "sha256:" + "a" * 64
+    c._prefetched_include_pre = True
+    assert c.updateDownloaded is True
+
+    settings.d["updates/channel"] = "Stable"
+    assert c.updateDownloaded is False
+    assert c._prefetched_candidate() is None
 
 
 def test_post_download_work_leaves_100_percent_phase(monkeypatch, mk_controller,
@@ -255,6 +280,7 @@ def test_post_download_work_leaves_100_percent_phase(monkeypatch, mk_controller,
     c._latest_tag = "v2.99.0"
     staged = tmp_path / "FIREFLY-installer"
     staged.write_bytes(b"installer")
+    staged_digest = "sha256:" + hashlib.sha256(b"installer").hexdigest()
     phases = []
     downloads = {"n": 0}
 
@@ -272,6 +298,9 @@ def test_post_download_work_leaves_100_percent_phase(monkeypatch, mk_controller,
         phases.append(("verifying", c.installProgress))
         status_cb("Finishing update…")
         phases.append(("finishing", c.installProgress))
+        progress_cb(10, 10)
+        status_cb("Server busy — retrying in 2s…")
+        phases.append(("retrying", c.installProgress))
         return str(staged)
 
     monkeypatch.setattr(uc.threading, "Thread", _InlineThread)
@@ -280,10 +309,16 @@ def test_post_download_work_leaves_100_percent_phase(monkeypatch, mk_controller,
     monkeypatch.setattr(updater, "pick_release",
                         lambda *a, **k: {"tag_name": "v2.99.0"})
     monkeypatch.setattr(updater, "parse_release",
-                        lambda rel: {"asset": {"name": "x", "url": "x"}})
+                        lambda rel: {"asset": {
+                            "name": "x", "url": "x",
+                            "size": staged.stat().st_size,
+                            "digest": staged_digest,
+                        }})
     monkeypatch.setattr(updater, "download_asset", fake_download)
 
-    def fake_apply(path):
+    def fake_apply(path, *, expected_size, expected_digest):
+        assert expected_size == staged.stat().st_size
+        assert expected_digest == staged_digest
         phases.append(("installing", c.installProgress))
 
     monkeypatch.setattr(updater, "apply_update", fake_apply)
@@ -294,8 +329,58 @@ def test_post_download_work_leaves_100_percent_phase(monkeypatch, mk_controller,
         ("downloaded", 1.0),
         ("verifying", -1.0),
         ("finishing", -1.0),
+        ("retrying", -1.0),
         ("installing", -1.0),
     ]
+
+
+def test_mutated_prefetch_is_revalidated_before_helper(monkeypatch, mk_controller,
+                                                       tmp_path):
+    """Existence is insufficient: a prefetched installer may be truncated or
+    changed before the user clicks.  The handoff must carry the original GitHub
+    size/SHA and refuse to spawn the installer helper.
+    """
+    from firefly import updater
+    from firefly.ui.controllers import updates_controller as uc
+
+    payload = b"verified prefetched installer"
+    staged = tmp_path / "FIREFLY-installer"
+    staged.write_bytes(payload)
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    c = mk_controller(_FakeSettings())
+    c._latest_tag = "v2.99.0"
+    c._prefetched_tag = "v2.99.0"
+    c._prefetched_path = str(staged)
+    c._prefetched_size = len(payload)
+    c._prefetched_digest = digest
+    c._prefetched_include_pre = False
+    staged.write_bytes(b"tampered prefetched installer")
+    helper_calls = []
+
+    class _InlineThread:
+        def __init__(self, target, daemon=True):
+            self.target = target
+        def start(self):
+            self.target()
+
+    def validating_apply(path, *, expected_size, expected_digest):
+        updater.verify_staged_asset(
+            path, expected_size=expected_size,
+            expected_digest=expected_digest)
+        helper_calls.append(path)
+
+    monkeypatch.setattr(uc.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(updater, "is_frozen", lambda: True)
+    monkeypatch.setattr(updater, "_validate_download", lambda path: True)
+    monkeypatch.setattr(updater, "apply_update", validating_apply)
+
+    c.downloadAndInstall()
+
+    assert helper_calls == []
+    assert c._inst_state == "error"
+    assert "changed before installation" in c._inst_err_msg
+    c._drain_install()
+    assert c.updateDownloaded is False
 
 
 def test_clean_release_notes_strips_redundant_version_heading():

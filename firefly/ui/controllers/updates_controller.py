@@ -78,6 +78,9 @@ class UpdatesController(QObject):
         self._prefetching = False
         self._prefetched_path = ""                 # verified installer staged in the background
         self._prefetched_tag = ""                  # the release tag it belongs to
+        self._prefetched_size = 0                   # GitHub verification metadata
+        self._prefetched_digest = ""
+        self._prefetched_include_pre = None         # exact channel policy used to select it
         self._pf_result = None                     # written off-thread, drained on GUI thread
         self._pf_poll = QTimer(self)
         self._pf_poll.setInterval(200)
@@ -91,6 +94,7 @@ class UpdatesController(QObject):
         self._inst_state = ""                      # ""|downloading|installing|done|error (off-thread)
         self._inst_err_msg = ""                    # written off-thread
         self._inst_cancel = False
+        self._inst_discard_prefetch = False         # integrity failure → redownload next click
         self._inst_poll = QTimer(self)
         self._inst_poll.setInterval(100)
         self._inst_poll.timeout.connect(self._drain_install)
@@ -182,10 +186,28 @@ class UpdatesController(QObject):
     # ── background pre-fetch: a verified installer is staged & ready ───────
     @Property(bool, notify=downloadedChanged)
     def updateDownloaded(self):
-        return bool(self._prefetched_path
-                    and self._prefetched_tag
-                    and self._prefetched_tag == self._latest_tag
-                    and os.path.exists(self._prefetched_path))
+        return self._prefetched_candidate() is not None
+
+    def _prefetched_candidate(self):
+        """Snapshot a reusable prefetch only when its release metadata exists.
+
+        Existence alone is not trust: :func:`updater.apply_update` re-hashes the
+        path using this metadata immediately before handing it to the detached
+        helper.
+        """
+        if not (self._prefetched_path
+                and self._prefetched_tag
+                and self._prefetched_tag == self._latest_tag
+                and self._prefetched_include_pre == self._include_pre()
+                and os.path.isfile(self._prefetched_path)
+                and self._prefetched_size > 0
+                and self._prefetched_digest):
+            return None
+        return {
+            "path": self._prefetched_path,
+            "size": self._prefetched_size,
+            "digest": self._prefetched_digest,
+        }
 
     # ── actions ──────────────────────────────────────────────────────────
     @Slot()
@@ -307,7 +329,7 @@ class UpdatesController(QObject):
         from firefly import updater
         if self._prefetching or not updater.is_frozen():
             return
-        if self._prefetched_path and self._prefetched_tag == self._latest_tag:
+        if self._prefetched_candidate() is not None:
             return                                  # already staged for this release
         self._prefetching = True
         self._pf_result = None
@@ -326,7 +348,14 @@ class UpdatesController(QObject):
                     result = {"ok": False}
                 else:
                     path = updater.download_asset(asset)   # verified; silent (no progress cb)
-                    result = {"ok": True, "path": path, "tag": rel.get("tag") or self._latest_tag}
+                    result = {
+                        "ok": True,
+                        "path": path,
+                        "tag": rel.get("tag") or self._latest_tag,
+                        "size": int(asset.get("size") or 0),
+                        "digest": str(asset.get("digest") or ""),
+                        "include_pre": include_pre,
+                    }
             except Exception:
                 result = {"ok": False}
             try:    self._pf_result = result
@@ -343,6 +372,9 @@ class UpdatesController(QObject):
         if res.get("ok"):
             self._prefetched_path = res.get("path") or ""
             self._prefetched_tag = res.get("tag") or ""
+            self._prefetched_size = int(res.get("size") or 0)
+            self._prefetched_digest = res.get("digest") or ""
+            self._prefetched_include_pre = bool(res.get("include_pre"))
             self.downloadedChanged.emit()
 
     # ── in-app download + install ─────────────────────────────────────────
@@ -380,6 +412,7 @@ class UpdatesController(QObject):
         self._inst_error = ""
         self._inst_err_msg = ""
         self._inst_cancel = False
+        self._inst_discard_prefetch = False
         self._inst_progress = -1.0            # indeterminate until the first byte
         self._inst_status = "Preparing…"
         self._inst_state = "downloading"
@@ -389,11 +422,7 @@ class UpdatesController(QObject):
 
         # Use the background-prefetched installer if it matches the release we're
         # about to install; otherwise download the channel's release on demand.
-        prefetched = (self._prefetched_path
-                      if (self._prefetched_path
-                          and self._prefetched_tag == self._latest_tag
-                          and os.path.exists(self._prefetched_path))
-                      else "")
+        prefetched = self._prefetched_candidate()
         include_pre = self._include_pre()
 
         def _work():
@@ -419,7 +448,8 @@ class UpdatesController(QObject):
                     phase = text.lower()
                     if any(token in phase for token in (
                             "verifying", "finishing", "waiting for",
-                            "using verified")):
+                            "using verified", "retrying", "backoff",
+                            "backing off")):
                         self._inst_progress = -1.0
 
                 def _cancel():
@@ -428,7 +458,9 @@ class UpdatesController(QObject):
                 if prefetched:
                     self._inst_status = "Installing…"
                     self._inst_progress = -1.0
-                    path = prefetched
+                    path = prefetched["path"]
+                    expected_size = prefetched["size"]
+                    expected_digest = prefetched["digest"]
                 else:
                     # The releases LIST (not /latest) so we install what the
                     # channel offered, prereleases included.
@@ -440,14 +472,21 @@ class UpdatesController(QObject):
                     if not asset:
                         raise RuntimeError(updater.installer_unavailable_message())
                     self._inst_status = "Downloading…"
+                    expected_size = int(asset.get("size") or 0)
+                    expected_digest = str(asset.get("digest") or "")
                     path = updater.download_asset(
                         asset, progress_cb=_prog, status_cb=_status, cancel_cb=_cancel)
                 self._inst_status = "Installing…"
                 self._inst_progress = -1.0
                 self._inst_state = "installing"
-                updater.apply_update(path)        # stages helper + spawns it, returns
+                updater.apply_update(
+                    path, expected_size=expected_size,
+                    expected_digest=expected_digest)  # validates, stages helper, returns
                 self._inst_state = "done"          # GUI thread quits the app next tick
             except Exception as exc:
+                if (prefetched
+                        and isinstance(exc, updater.UpdaterIntegrityError)):
+                    self._inst_discard_prefetch = True
                 self._inst_err_msg = str(exc)
                 self._inst_state = "error"
 
@@ -468,6 +507,14 @@ class UpdatesController(QObject):
             self.quitForUpdate.emit()          # app_qml quits → helper swaps + relaunches
         elif st == "error":
             self._inst_poll.stop()
+            if self._inst_discard_prefetch:
+                self._prefetched_path = ""
+                self._prefetched_tag = ""
+                self._prefetched_size = 0
+                self._prefetched_digest = ""
+                self._prefetched_include_pre = None
+                self._inst_discard_prefetch = False
+                self.downloadedChanged.emit()
             self._installing = False
             self._inst_progress = 0.0
             self._inst_status = ""

@@ -14,7 +14,8 @@ import pytest                                          # noqa: E402
 pytest.importorskip("PySide6")
 pytest.importorskip("PySide6.QtQuickWidgets")
 from PySide6 import QtWidgets                           # noqa: E402
-from PySide6.QtCore import QCoreApplication, QEvent, QTimer, QUrl  # noqa: E402
+from PySide6.QtCore import (QCoreApplication, QEvent, QSettings, QTimer,
+                            QUrl)  # noqa: E402
 from PySide6.QtQuickWidgets import QQuickWidget         # noqa: E402
 
 _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -40,7 +41,25 @@ def _flush_deferred_deletes():
 
 
 @pytest.fixture
-def qml_window(monkeypatch):
+def qml_window(monkeypatch, tmp_path):
+    # A full shell constructs ThemeController and several settings-backed
+    # controllers.  Redirect both the durable JSON store and every QSettings
+    # domain before building it so a smoke test cannot mutate the user's live
+    # preferences on any platform.
+    isolated_home = tmp_path / "home"
+    settings_root = tmp_path / "qsettings"
+    isolated_home.mkdir()
+    settings_root.mkdir()
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.setenv("APPDATA", str(isolated_home / "AppData" / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(isolated_home / "AppData" / "Local"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(isolated_home / ".config"))
+    previous_format = QSettings.defaultFormat()
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope,
+                      str(settings_root))
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.SystemScope,
+                      str(settings_root / "system"))
     # The shell's idle resource meter launches platform probes on daemon
     # threads. It has dedicated controller coverage; a QML composition smoke
     # should not leave native-process probes racing teardown.
@@ -75,6 +94,7 @@ def qml_window(monkeypatch):
     from firefly import crash_reporter
     crash_reporter.set_app_state_provider(None)
     crash_reporter.set_log_provider(None)
+    QSettings.setDefaultFormat(previous_format)
 
 
 def test_shell_loads_without_qml_errors(qml_window):

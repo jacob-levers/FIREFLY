@@ -50,6 +50,10 @@ class UpdaterError(RuntimeError):
         self.reveal_path = reveal_path
 
 
+class UpdaterIntegrityError(UpdaterError):
+    """A staged installer no longer matches its trusted release metadata."""
+
+
 # ── Platform / environment ────────────────────────────────────────────────────
 def is_frozen() -> bool:
     """True when running as a PyInstaller-frozen build (.app / .exe)."""
@@ -404,6 +408,103 @@ def _asset_lock(dest: str) -> threading.Lock:
         return lock
 
 
+class _InterProcessFileLock:
+    """Small OS-backed advisory lock shared by all FIREFLY processes.
+
+    A Python ``threading.Lock`` only protects the background-prefetch and click
+    threads in one app instance.  Lab machines can have two FIREFLY instances
+    open, so the resumable ``.part`` and identity sidecar also need a kernel
+    lock.  ``flock`` is used on macOS/POSIX and ``msvcrt.locking`` on Windows;
+    both locks are released automatically if a process crashes.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._fh = None
+
+    def acquire(self) -> bool:
+        if self._fh is None:
+            try:
+                self._fh = open(self.path, "a+b")
+            except OSError as exc:
+                raise UpdaterError(
+                    f"Couldn't open the update staging lock: {exc}",
+                    reveal_path=updates_dir()) from exc
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self._fh.seek(0, os.SEEK_END)
+                if self._fh.tell() == 0:
+                    self._fh.write(b"\0")
+                    self._fh.flush()
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._fh.fileno(),
+                            fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+        except OSError as exc:
+            # Windows reports a held byte-range lock as EACCES; POSIX normally
+            # raises BlockingIOError/EAGAIN.  Anything else is a permanent
+            # staging failure, not contention — spinning forever would leave
+            # the UI stuck on "Waiting".
+            import errno
+            if exc.errno in {errno.EACCES, errno.EAGAIN,
+                             getattr(errno, "EWOULDBLOCK", errno.EAGAIN)}:
+                return False
+            fh, self._fh = self._fh, None
+            try:
+                if fh is not None:
+                    fh.close()
+            except Exception:
+                pass
+            raise UpdaterError(
+                f"Couldn't lock the update staging area: {exc}",
+                reveal_path=updates_dir()) from exc
+
+    def release(self) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            fh.close()
+        except Exception:
+            pass
+
+
+def _asset_staging_path(asset: dict) -> str:
+    """Immutable content-addressed destination for one published installer.
+
+    GitHub intentionally reuses ``FIREFLY-Windows.exe`` / the DMG filename on
+    every release.  The SHA-256 directory makes two releases different paths,
+    so downloading a newer release cannot replace a previously verified file
+    while a detached helper is still consuming it.
+    """
+    digest = str(asset.get("digest") or "").strip().lower()
+    if not _is_verifiable_digest(digest):
+        raise UpdaterError("The release asset has no usable SHA-256 checksum.")
+    name = os.path.basename(str(asset.get("name") or ""))
+    if not name or name in {".", ".."}:
+        raise UpdaterError("The release asset has an invalid filename.")
+    sha256 = digest.split(":", 1)[1]
+    parent = os.path.join(updates_dir(), "assets", sha256)
+    os.makedirs(parent, exist_ok=True)
+    return os.path.join(parent, name)
+
+
 def _asset_identity_path(dest: str) -> str:
     return dest + ".source.json"
 
@@ -506,7 +607,6 @@ def download_asset(asset: dict,
     out rather than fail the user."""
     if not asset or not asset.get("url"):
         raise UpdaterError(installer_unavailable_message())
-    dest = os.path.join(updates_dir(), asset["name"])
     digest = str(asset.get("digest") or "")
     # Fail CLOSED when GitHub didn't publish a verifiable SHA-256: the only other
     # checks are "size > 1 MB and starts with MZ", which any substituted or
@@ -525,8 +625,15 @@ def download_asset(asset: dict,
             "instead. (If auto-update suddenly stopped working for everyone, the "
             "GitHub asset-digest format may have changed.)",
             reveal_path=updates_dir())
+    dest = _asset_staging_path(asset)
     _last = {"hash_failed": False}
     expected_size = int(asset.get("size") or 0)
+    if expected_size <= 0:
+        raise UpdaterError(
+            "FIREFLY can't verify this download because GitHub did not report "
+            "its expected byte size. Nothing was installed; download the "
+            "installer manually from the Releases page instead.",
+            reveal_path=updates_dir())
 
     def _validate(path: str) -> bool:
         # Format sanity AND content integrity: verify SHA-256 against GitHub's
@@ -567,7 +674,25 @@ def download_asset(asset: dict,
             except Exception:
                 pass
 
+    process_lock = _InterProcessFileLock(dest + ".lock")
     try:
+        while not process_lock.acquire():
+            if not announced_wait and status_cb is not None:
+                try:
+                    status_cb("Waiting for another FIREFLY download…")
+                except Exception:
+                    pass
+                announced_wait = True
+            if cancel_cb is not None:
+                try:
+                    if cancel_cb():
+                        raise UpdaterError("Download cancelled by user.")
+                except UpdaterError:
+                    raise
+                except Exception:
+                    pass
+            time.sleep(0.1)
+
         # Covers both an overlapping background prefetch and a second click
         # after helper staging failed: never fetch an installer we already
         # authenticated for this release.
@@ -599,6 +724,7 @@ def download_asset(asset: dict,
                 cancel_cb=cancel_cb,
                 status_cb=status_cb,
                 validate_cb=_validate,
+                expected_size=expected_size,
                 max_attempts=6,
                 # Release installers use one coherent, resumable stream.  A
                 # late segmented/proxy failure otherwise discards discontiguous
@@ -616,7 +742,52 @@ def download_asset(asset: dict,
             raise UpdaterError(str(exc), reveal_path=updates_dir()) from exc
         return dest
     finally:
+        process_lock.release()
         lock.release()
+
+
+def verify_staged_asset(path: str, *, expected_size: int,
+                        expected_digest: str) -> None:
+    """Fail closed unless a staged installer still matches release metadata.
+
+    This is intentionally separate from download validation: a prefetched file
+    can be changed or truncated between the background download and a later
+    click.  ``apply_update`` calls this immediately before spawning the helper,
+    and the helper receives the same values for one final post-exit check.
+    """
+    if not path or not os.path.isfile(path):
+        raise UpdaterIntegrityError("The downloaded installer is missing.",
+                                    reveal_path=updates_dir())
+    try:
+        size = int(expected_size)
+    except (TypeError, ValueError):
+        size = 0
+    if size <= 0 or not _is_verifiable_digest(expected_digest):
+        raise UpdaterIntegrityError(
+            "The downloaded installer has incomplete verification metadata; "
+            "nothing was installed. Try downloading the update again.",
+            reveal_path=updates_dir())
+    try:
+        actual_size = os.path.getsize(path)
+    except OSError as exc:
+        raise UpdaterIntegrityError(
+            f"Couldn't read the downloaded installer: {exc}",
+            reveal_path=updates_dir()) from exc
+    if actual_size != size:
+        raise UpdaterIntegrityError(
+            "The downloaded installer changed before installation "
+            f"(expected {size} bytes, found {actual_size}). Nothing was installed; "
+            "download the update again.", reveal_path=updates_dir())
+    if not _validate_download(path):
+        raise UpdaterIntegrityError(
+            "The downloaded installer is not a valid FIREFLY installer. "
+            "Nothing was installed; download the update again.",
+            reveal_path=updates_dir())
+    if not _digest_matches(path, expected_digest):
+        raise UpdaterIntegrityError(
+            "The downloaded installer's SHA-256 changed before installation. "
+            "Nothing was installed; download the update again.",
+            reveal_path=updates_dir())
 
 
 # ── Locating the current install ──────────────────────────────────────────────
@@ -637,7 +808,8 @@ def current_app_bundle_path(exe: Optional[str] = None) -> Optional[str]:
 
 # ── Helper-script builders (pure → testable) ──────────────────────────────────
 def macos_helper_script(pid: int, dmg: str, target_app: str,
-                        log_path: str) -> str:
+                        log_path: str, expected_size: int = 0,
+                        expected_digest: str = "") -> str:
     """Bash helper that waits for ``pid`` to exit, swaps the new
     ``FIREFLY.app`` from ``dmg`` into ``target_app``, clears quarantine,
     relaunches, and self-deletes."""
@@ -651,6 +823,8 @@ PID="$1"
 DMG="$2"
 TARGET="$3"
 LOG="$4"
+EXPECTED_SIZE="$5"
+EXPECTED_SHA="$6"
 exec >>"$LOG" 2>&1
 echo "[firefly-update] waiting for pid $PID to exit"
 waited=0
@@ -664,6 +838,19 @@ while kill -0 "$PID" 2>/dev/null; do
     break
   fi
 done
+ACTUAL_SIZE="$(/usr/bin/stat -f%z "$DMG" 2>/dev/null || true)"
+if [ -z "$EXPECTED_SIZE" ] || [ "$ACTUAL_SIZE" != "$EXPECTED_SIZE" ]; then
+  echo "[firefly-update] source size mismatch expected=$EXPECTED_SIZE actual=$ACTUAL_SIZE; target untouched"
+  open -R "$DMG"
+  exit 6
+fi
+ACTUAL_SHA="$(/usr/bin/shasum -a 256 "$DMG" 2>/dev/null | /usr/bin/awk '{{print $1}}')"
+if [ -z "$EXPECTED_SHA" ] || [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+  echo "[firefly-update] source SHA-256 mismatch; target untouched"
+  open -R "$DMG"
+  exit 7
+fi
+echo "[firefly-update] source verified against GitHub metadata (size + SHA-256)"
 echo "[firefly-update] mounting $DMG"
 MNT="$(mktemp -d /tmp/firefly_upd.XXXXXX)"
 if ! hdiutil attach -nobrowse -noverify -noautoopen "$DMG" -mountpoint "$MNT"; then
@@ -708,7 +895,8 @@ rm -f "$0"
 
 
 def windows_helper_script(pid: int, new_exe: str, target_exe: str,
-                          log_path: str) -> str:
+                          log_path: str, expected_size: int = 0,
+                          expected_digest: str = "") -> str:
     """Batch helper that waits for ``pid`` to exit, then **safely** swaps
     ``target_exe`` for ``new_exe`` and relaunches.
 
@@ -740,17 +928,27 @@ def windows_helper_script(pid: int, new_exe: str, target_exe: str,
         as long as the process stays alive (it never kills a still-extracting
         bootloader).
     """
-    # Read pid/exe/target/log from the POSITIONAL ARGS the Popen call already
-    # passes (%~1..%~4 — the tilde strips surrounding quotes), NOT by
-    # interpolating the paths into the script.  cmd performs %VAR% expansion on
-    # a `set "TARGET=<literal-path>"` line, so a path containing '%' (legal in
-    # Windows folder names, e.g. C:\50%off\) would be mangled mid-path.  (#32)
+    # Read every dynamic value from a dedicated child environment.  Passing
+    # them as batch arguments is unsafe: cmd.exe reparses .bat command lines and
+    # treats legal path characters such as &, !, and % specially.  The Popen
+    # command is therefore constant and delayed expansion stays disabled.
     return f"""@echo off
-setlocal enabledelayedexpansion
-set "PID=%~1"
-set "NEWEXE=%~2"
-set "TARGET=%~3"
-set "LOG=%~4"
+rem Keep delayed expansion OFF for the entire helper.  A legal '!' in any
+rem captured path would otherwise be removed when cmd expands that variable.
+setlocal DisableDelayedExpansion
+set "PID=%FIREFLY_UPDATE_PID%"
+set "NEWEXE=%FIREFLY_UPDATE_SOURCE%"
+set "TARGET=%FIREFLY_UPDATE_TARGET%"
+set "LOG=%FIREFLY_UPDATE_LOG%"
+set "EXPECTED_SIZE=%FIREFLY_UPDATE_EXPECTED_SIZE%"
+set "EXPECTED_SHA=%FIREFLY_UPDATE_EXPECTED_SHA%"
+set "FIREFLY_UPDATE_HELPER="
+set "FIREFLY_UPDATE_PID="
+set "FIREFLY_UPDATE_SOURCE="
+set "FIREFLY_UPDATE_TARGET="
+set "FIREFLY_UPDATE_LOG="
+set "FIREFLY_UPDATE_EXPECTED_SIZE="
+set "FIREFLY_UPDATE_EXPECTED_SHA="
 set "STAGED=%TARGET%.new"
 echo [firefly-update] waiting for pid %PID% to exit >>"%LOG%" 2>&1
 set /a WAITED=0
@@ -758,7 +956,7 @@ set /a WAITED=0
 tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
 if errorlevel 1 goto gone
 set /a WAITED+=1
-if !WAITED! GEQ 8 (
+if %WAITED% GEQ 8 (
   echo [firefly-update] pid %PID% still alive after ~16s; force-killing >>"%LOG%" 2>&1
   taskkill /F /T /PID %PID% >>"%LOG%" 2>&1
   ping -n 3 127.0.0.1 >NUL
@@ -767,6 +965,24 @@ if !WAITED! GEQ 8 (
 ping -n 2 127.0.0.1 >NUL
 goto waitloop
 :gone
+rem Re-check the immutable source against GitHub's expected metadata AFTER the
+rem old process exits and immediately before touching the installed executable.
+set "SOURCE_SIZE="
+for %%A in ("%NEWEXE%") do set "SOURCE_SIZE=%%~zA"
+if not defined EXPECTED_SIZE goto sourceverifyfail
+if not "%SOURCE_SIZE%"=="%EXPECTED_SIZE%" goto sourceverifyfail
+set "SOURCE_SHA="
+for /f "skip=1 delims=" %%H in ('certutil -hashfile "%NEWEXE%" SHA256 2^>NUL') do if not defined SOURCE_SHA set "SOURCE_SHA=%%H"
+set "SOURCE_SHA=%SOURCE_SHA: =%"
+if not defined SOURCE_SHA goto sourceverifyfail
+if /i not "%SOURCE_SHA%"=="%EXPECTED_SHA%" goto sourceverifyfail
+echo [firefly-update] source verified against GitHub metadata (size + SHA-256) >>"%LOG%" 2>&1
+goto sourceverified
+:sourceverifyfail
+echo [firefly-update] source verification failed; target untouched >>"%LOG%" 2>&1
+start "" explorer.exe /select,"%NEWEXE%"
+goto end
+:sourceverified
 rem ── Stage the new exe next to the target, verify it, then swap by a fast
 rem    same-folder rename.  No backup of the old exe is kept: the target is only
 rem    touched by a rename of an ALREADY-verified file, so a failed or AV-mangled
@@ -775,59 +991,65 @@ del "%STAGED%" >NUL 2>&1
 set /a TRIES=0
 :stage
 copy /Y "%NEWEXE%" "%STAGED%" >>"%LOG%" 2>&1
-if errorlevel 1 (
-  set /a TRIES+=1
-  if !TRIES! LSS 20 (
-    ping -n 2 127.0.0.1 >NUL
-    goto stage
-  )
-  echo [firefly-update] staging copy failed after !TRIES! tries; target untouched >>"%LOG%" 2>&1
-  del "%STAGED%" >NUL 2>&1
-  start "" explorer.exe /select,"%NEWEXE%"
-  goto end
-)
+if not errorlevel 1 goto stagecopied
+set /a TRIES+=1
+if %TRIES% LSS 20 goto stageretry
+echo [firefly-update] staging copy failed after %TRIES% tries; target untouched >>"%LOG%" 2>&1
+del "%STAGED%" >NUL 2>&1
+start "" explorer.exe /select,"%NEWEXE%"
+goto end
+:stageretry
+ping -n 2 127.0.0.1 >NUL
+goto stage
+:stagecopied
 set "SRCSIZE="
 set "DSTSIZE="
 for %%A in ("%NEWEXE%") do set "SRCSIZE=%%~zA"
 for %%A in ("%STAGED%") do set "DSTSIZE=%%~zA"
-if not "!SRCSIZE!"=="!DSTSIZE!" (
-  echo [firefly-update] staged size mismatch src=!SRCSIZE! dst=!DSTSIZE!; target untouched >>"%LOG%" 2>&1
-  del "%STAGED%" >NUL 2>&1
-  start "" explorer.exe /select,"%NEWEXE%"
-  goto end
-)
+if "%SRCSIZE%"=="%DSTSIZE%" goto stagesizeverified
+echo [firefly-update] staged size mismatch src=%SRCSIZE% dst=%DSTSIZE%; target untouched >>"%LOG%" 2>&1
+del "%STAGED%" >NUL 2>&1
+start "" explorer.exe /select,"%NEWEXE%"
+goto end
+:stagesizeverified
 rem ── Content check: the staged exe's SHA-256 must match the (already
 rem    GitHub-verified) source.  Catches a copy that AV/the filesystem mangled
 rem    while keeping the size — the cause of "decompression -3" at launch.
-rem    Best-effort: if certutil is unavailable, fall back to the size check.
+rem    Fail closed if certutil is unavailable, and require the staged hash to
+rem    match GitHub's expected SHA directly as well as the source copy.
 set "SRCHASH="
 set "DSTHASH="
 for /f "skip=1 delims=" %%H in ('certutil -hashfile "%NEWEXE%" SHA256 2^>NUL') do if not defined SRCHASH set "SRCHASH=%%H"
 for /f "skip=1 delims=" %%H in ('certutil -hashfile "%STAGED%" SHA256 2^>NUL') do if not defined DSTHASH set "DSTHASH=%%H"
-set "SRCHASH=!SRCHASH: =!"
-set "DSTHASH=!DSTHASH: =!"
-if defined SRCHASH if defined DSTHASH if /i not "!SRCHASH!"=="!DSTHASH!" (
-  echo [firefly-update] staged content hash mismatch - copy corrupted; target untouched >>"%LOG%" 2>&1
-  del "%STAGED%" >NUL 2>&1
-  start "" explorer.exe /select,"%NEWEXE%"
-  goto end
-)
+set "SRCHASH=%SRCHASH: =%"
+set "DSTHASH=%DSTHASH: =%"
+if not defined SRCHASH goto stageverifyfail
+if not defined DSTHASH goto stageverifyfail
+if /i not "%SRCHASH%"=="%DSTHASH%" goto stageverifyfail
+if /i not "%DSTHASH%"=="%EXPECTED_SHA%" goto stageverifyfail
+goto stageverified
+:stageverifyfail
+echo [firefly-update] staged content hash mismatch - copy corrupted; target untouched >>"%LOG%" 2>&1
+del "%STAGED%" >NUL 2>&1
+start "" explorer.exe /select,"%NEWEXE%"
+goto end
+:stageverified
 echo [firefly-update] staged copy verified (size + SHA-256) >>"%LOG%" 2>&1
 rem ── Swap by rename (fast, same folder); retry past a transient lock ────────
 set /a TRIES=0
 :swap
 move /Y "%STAGED%" "%TARGET%" >>"%LOG%" 2>&1
-if errorlevel 1 (
-  set /a TRIES+=1
-  if !TRIES! LSS 20 (
-    ping -n 2 127.0.0.1 >NUL
-    goto swap
-  )
-  echo [firefly-update] swap rename failed after !TRIES! tries; target untouched >>"%LOG%" 2>&1
-  del "%STAGED%" >NUL 2>&1
-  start "" explorer.exe /select,"%NEWEXE%"
-  goto end
-)
+if not errorlevel 1 goto swapped
+set /a TRIES+=1
+if %TRIES% LSS 20 goto swapretry
+echo [firefly-update] swap rename failed after %TRIES% tries; target untouched >>"%LOG%" 2>&1
+del "%STAGED%" >NUL 2>&1
+start "" explorer.exe /select,"%NEWEXE%"
+goto end
+:swapretry
+ping -n 2 127.0.0.1 >NUL
+goto swap
+:swapped
 echo [firefly-update] swap complete (size + SHA-256 verified) >>"%LOG%" 2>&1
 rem ── Clear inherited PyInstaller one-file bootloader markers ───────────────
 rem THE root cause of the recurring "Failed to load Python DLL python3xx.dll —
@@ -878,12 +1100,15 @@ set /a WAITM+=1
 rem ~300 x 3s ~= 15 min.  NEVER kill the process -- just stop waiting.  The new
 rem build was SHA-256-verified before the swap, so a slow first extraction is
 rem normal and there is no backup to clean up.
-if !WAITM! LSS 300 goto waitmarker
+if %WAITM% LSS 300 goto waitmarker
 echo [firefly-update] no ready signal in ~15 min (build was verified before swap) >>"%LOG%" 2>&1
 del "%MARKER%" >NUL 2>&1
 goto end
 :ready
 del "%MARKER%" >NUL 2>&1
+rem Only a confirmed ready-marker success may remove the release-specific
+rem source.  Every failure/timeout reaches :end first and retains it for repair.
+del "%NEWEXE%" >NUL 2>&1
 echo [firefly-update] update complete + verified >>"%LOG%" 2>&1
 :end
 del "%~f0"
@@ -903,7 +1128,8 @@ def _write_helper(name: str, content: str, executable: bool) -> str:
 
 
 # ── Apply the update ──────────────────────────────────────────────────────────
-def apply_update(downloaded_path: str) -> None:
+def apply_update(downloaded_path: str, *, expected_size: int,
+                 expected_digest: str) -> None:
     """Stage the OS-specific helper and spawn it detached, then return.
     The CALLER must immediately quit the app so the helper can swap files.
 
@@ -915,9 +1141,9 @@ def apply_update(downloaded_path: str) -> None:
         raise UpdaterError(
             "In-app update only applies to the packaged FIREFLY app.  "
             "Running from source — use 'git pull' instead.")
-    if not downloaded_path or not os.path.exists(downloaded_path):
-        raise UpdaterError("The downloaded installer is missing.",
-                           reveal_path=updates_dir())
+    verify_staged_asset(downloaded_path, expected_size=expected_size,
+                        expected_digest=expected_digest)
+    expected_sha = expected_digest.strip().lower().split(":", 1)[1]
 
     log_path = os.path.join(updates_dir(), "relaunch.log")
     pid = os.getpid()
@@ -950,13 +1176,14 @@ def apply_update(downloaded_path: str) -> None:
                 f"old one to finish.",
                 reveal_path=updates_dir())
         helper = _write_helper(
-            "firefly_update.sh",
-            macos_helper_script(pid, downloaded_path, target_app, log_path),
+            f"firefly_update_{pid}_{expected_sha[:12]}.sh",
+            macos_helper_script(pid, downloaded_path, target_app, log_path,
+                                expected_size, expected_digest),
             executable=True)
         try:
             subprocess.Popen(
                 ["/bin/bash", helper, str(pid), downloaded_path,
-                 target_app, log_path],
+                 target_app, log_path, str(expected_size), expected_sha],
                 start_new_session=True, close_fds=True, env=clean_env,
                 stdin=devnull, stdout=devnull, stderr=devnull)
         except Exception as exc:
@@ -973,8 +1200,9 @@ def apply_update(downloaded_path: str) -> None:
                 f"been downloaded — run it to finish updating.",
                 reveal_path=updates_dir())
         helper = _write_helper(
-            "firefly_update.bat",
-            windows_helper_script(pid, downloaded_path, target_exe, log_path),
+            f"firefly_update_{pid}_{expected_sha[:12]}.bat",
+            windows_helper_script(pid, downloaded_path, target_exe, log_path,
+                                  expected_size, expected_digest),
             executable=False)
         # NB: CREATE_NO_WINDOW must NOT be combined with DETACHED_PROCESS —
         # Windows ignores CREATE_NO_WINDOW in that combination (per the
@@ -983,12 +1211,29 @@ def apply_update(downloaded_path: str) -> None:
         # doesn't kill orphans), so no DETACHED_PROCESS is needed.
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         CREATE_NO_WINDOW = 0x08000000
+        helper_env = dict(clean_env)
+        helper_env.update({
+            "FIREFLY_UPDATE_HELPER": helper,
+            "FIREFLY_UPDATE_PID": str(pid),
+            "FIREFLY_UPDATE_SOURCE": downloaded_path,
+            "FIREFLY_UPDATE_TARGET": target_exe,
+            "FIREFLY_UPDATE_LOG": log_path,
+            "FIREFLY_UPDATE_EXPECTED_SIZE": str(expected_size),
+            "FIREFLY_UPDATE_EXPECTED_SHA": expected_sha,
+        })
+        # All dynamic strings live in the environment.  In particular, never
+        # append paths to this command: Python documents that Windows batch
+        # files may be reparsed by the system shell even with shell=False.
+        comspec = (helper_env.get("COMSPEC") or helper_env.get("ComSpec")
+                   or "cmd.exe")
+        command = (f'"{comspec}" /d /v:off /s /c '
+                   '""%FIREFLY_UPDATE_HELPER%""')
         try:
             subprocess.Popen(
-                ["cmd", "/c", helper, str(pid), downloaded_path,
-                 target_exe, log_path],
+                command,
+                executable=comspec,
                 creationflags=(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP),
-                close_fds=True, env=clean_env,
+                close_fds=True, env=helper_env,
                 stdin=devnull, stdout=devnull, stderr=devnull)
         except Exception as exc:
             raise UpdaterError(f"Couldn't start the updater: {exc}",

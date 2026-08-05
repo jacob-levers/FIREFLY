@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.76.49-rc.2 — 5 Aug 2026
+
+### Fixed
+
+- **A theme you chose can no longer be replaced by the default.** If the saved
+  preference could not be read for any reason — a locked file, a permissions
+  problem, a partly-written file — FIREFLY fell back to Dark and then wrote that
+  fallback over your real choice. Being unable to read the preference is now
+  treated differently from not having one: the fallback is used for that session
+  only and nothing is overwritten. Choosing a theme by hand still repairs the
+  file.
+
+- **An older AMOLED preference is respected again.** The previous pre-release
+  reset any AMOLED setting found outside the durable store, on the assumption it
+  was left over from an old bug. The real cause of the changing theme turned out
+  to be elsewhere (the test suite, fixed in rc.1), so that reset was discarding
+  genuine choices and has been removed.
+
+- **The theme file is written more safely** — fully flushed to disk before it
+  replaces the old one, so an ill-timed crash or power loss cannot leave it
+  half-written. Choosing a theme now reports failure instead of failing quietly.
+
+- **An interrupted update no longer re-downloads a file that already finished.**
+  If FIREFLY was closed or crashed after the last byte arrived but before the
+  file was checked, the next attempt fetched the whole installer again. It now
+  recognises a complete download, verifies it in place, and continues without
+  any network request.
+
+- **Tests can no longer touch your real settings.** Beyond the theme fix in
+  rc.1, the whole test suite now runs against a throwaway settings location, so
+  no test on any platform can modify your saved preferences.
+
 ## v2.76.49-rc.1 — 5 Aug 2026
 
 ### Fixed
@@ -7,7 +39,8 @@
 - **The updater no longer sits at 100% for minutes.** Once the bytes had
   arrived, FIREFLY verified the macOS disk image by running `hdiutil imageinfo`,
   which is slow and can hang outright. That check is replaced by reading the
-  512-byte trailer every disk image ends with — instant, and it cannot hang.
+  512-byte `koly` trailer every FIREFLY UDIF disk image ends with — instant,
+  and it cannot hang.
   Nothing is weakened: every byte is still authenticated against GitHub's
   published SHA-256 before anything is installed, and the installer still asks
   macOS to mount the image during installation.

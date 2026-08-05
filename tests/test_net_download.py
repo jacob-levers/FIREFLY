@@ -101,6 +101,105 @@ def test_download_404_aborts_without_retry(tmp_path, monkeypatch):
     assert calls["n"] == 1                       # 4xx is permanent → no retries
 
 
+# ── complete single-stream resume recovery ─────────────────────────────────────
+def test_complete_part_is_validated_and_finalized_without_network(tmp_path,
+                                                                  monkeypatch):
+    """A crash after the final byte must not issue ``Range: bytes=total-``.
+
+    Servers correctly answer that EOF request with 416.  The downloader already
+    has every byte and an authoritative size, so it should run the same caller
+    validation used after a normal transfer and atomically finalize locally.
+    """
+    payload = b"complete authenticated installer"
+    dest = tmp_path / "installer.bin"
+    part = tmp_path / "installer.bin.part"
+    part.write_bytes(payload)
+    network_calls = []
+    statuses = []
+    progress = []
+
+    def unexpected_network(req, timeout=20):
+        network_calls.append(req)
+        raise AssertionError("a complete resume buffer must be recovered locally")
+
+    monkeypatch.setattr(nd.urllib.request, "urlopen", unexpected_network)
+    nd.download_file(
+        "http://x/installer", str(dest),
+        expected_size=len(payload), max_attempts=1,
+        validate_cb=lambda path: open(path, "rb").read() == payload,
+        progress_cb=lambda downloaded, total: progress.append((downloaded, total)),
+        status_cb=statuses.append,
+    )
+
+    assert network_calls == []
+    assert dest.read_bytes() == payload
+    assert not part.exists()
+    assert progress[-1] == (len(payload), len(payload))
+    assert any("verifying" in status.lower() for status in statuses)
+    assert any("finish" in status.lower() for status in statuses)
+
+
+def test_invalid_complete_part_is_discarded_before_fresh_request(tmp_path,
+                                                                 monkeypatch):
+    """Right-sized bytes are not trusted without caller validation.
+
+    If authentication/format validation rejects the local file, remove it and
+    make an ordinary full request rather than an impossible range request at EOF.
+    """
+    monkeypatch.setenv("FIREFLY_NO_PARALLEL_DOWNLOAD", "1")
+    good = b"authenticated installer"
+    bad = b"x" * len(good)
+    dest = tmp_path / "installer.bin"
+    (tmp_path / "installer.bin.part").write_bytes(bad)
+    ranges = []
+    validated = []
+
+    def fake_urlopen(req, timeout=20):
+        ranges.append(req.get_header("Range"))
+        return _FakeResp(good)
+
+    def validate(path):
+        contents = open(path, "rb").read()
+        validated.append(contents)
+        return contents == good
+
+    monkeypatch.setattr(nd.urllib.request, "urlopen", fake_urlopen)
+    nd.download_file(
+        "http://x/installer", str(dest), expected_size=len(good),
+        parallel_segments=1, max_attempts=1, validate_cb=validate,
+    )
+
+    assert validated == [bad, good]
+    assert ranges == [None]
+    assert dest.read_bytes() == good
+
+
+def test_short_part_still_resumes_from_its_current_size(tmp_path, monkeypatch):
+    """Adding complete-part recovery must not regress ordinary partial resume."""
+    monkeypatch.setenv("FIREFLY_NO_PARALLEL_DOWNLOAD", "1")
+    payload = b"ordinary resumable payload"
+    prefix = payload[:9]
+    dest = tmp_path / "out.bin"
+    (tmp_path / "out.bin.part").write_bytes(prefix)
+    ranges = []
+
+    def fake_urlopen(req, timeout=20):
+        ranges.append(req.get_header("Range"))
+        response = _FakeResp(payload[len(prefix):], status=206)
+        response.headers = {"Content-Length": str(len(payload) - len(prefix))}
+        return response
+
+    monkeypatch.setattr(nd.urllib.request, "urlopen", fake_urlopen)
+    nd.download_file(
+        "http://x/file", str(dest), expected_size=len(payload),
+        parallel_segments=1, max_attempts=1,
+        validate_cb=lambda path: open(path, "rb").read() == payload,
+    )
+
+    assert ranges == [f"bytes={len(prefix)}-"]
+    assert dest.read_bytes() == payload
+
+
 # ── finalize (.part → final) robustness (the WinError 5 the lab hit) ──────────
 def test_finalize_retries_transient_lock_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(nd.time, "sleep", lambda *_: None)
