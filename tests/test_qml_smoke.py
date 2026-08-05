@@ -112,8 +112,41 @@ def test_ready_predicate_rejects_a_missing_qml_root():
     assert not _qml_has_rendered_root(MissingRoot())
 
 
-def test_theme_controller_tokens_and_live_switch():
+def test_theme_controller_tokens_and_live_switch(monkeypatch, tmp_path):
+    """Exercise the live theme switch WITHOUT touching the user's real stores.
+
+    This test used to run against the live preference file and the live
+    QSettings domain.  Constructing the controller persists the resolved theme
+    and ``setTheme`` writes both stores, so every suite run rewrote the
+    developer's own theme — and because ``other`` is just the next entry after
+    the current one, a user on Dark was silently switched to AMOLED each time.
+    That, not a settings-domain bug, is why the theme kept "reverting".
+    """
+    from firefly.ui.controllers import theme_controller
     from firefly.ui.controllers.theme_controller import ThemeController
+    from firefly.ui import ui_theme
+
+    class _FakeSettings:
+        store: dict = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        def value(self, key, default=None):
+            return _FakeSettings.store.get(key, default)
+
+        def setValue(self, key, val):
+            _FakeSettings.store[key] = val
+
+        def sync(self):
+            pass
+
+    _FakeSettings.store = {}
+    monkeypatch.setattr(ui_theme, "theme_pref_path",
+                        lambda: str(tmp_path / "ui_prefs.json"))
+    monkeypatch.setattr(theme_controller, "QSettings", _FakeSettings)
+    monkeypatch.setattr(ui_theme.QtCore, "QSettings", _FakeSettings)
+
     t = ThemeController()
     pal = t.palette
     assert {"BG", "PANEL", "ACC", "TXT", "DANGER"} <= set(pal)

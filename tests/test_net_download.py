@@ -333,3 +333,32 @@ def test_parallel_path_also_announces_verification(tmp_path, monkeypatch):
                      parallel_segments=4, max_attempts=2)
     assert any("verifying" in s.lower() for s in statuses), statuses
     assert any("finish" in s.lower() for s in statuses), statuses
+
+
+def test_updater_opts_out_of_parallel_restart_path(tmp_path, monkeypatch):
+    """The release updater must use the resumable single-stream path.
+
+    A segmented transfer can finish almost every range before one late segment
+    fails or a proxy changes its Range behaviour.  The generic downloader then
+    has to abandon discontiguous segment files and begin a plain transfer,
+    producing the reported 100% -> restart cycle.  CUDA downloads may still opt
+    into parallelism; release installers prioritize one coherent progress run.
+    """
+    from firefly import updater
+
+    payload = b"installer"
+    digest = "sha256:" + __import__("hashlib").sha256(payload).hexdigest()
+    asset = {"name": "FIREFLY-test.bin", "url": "https://x/asset",
+             "size": len(payload), "digest": digest}
+    monkeypatch.setattr(updater, "updates_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(updater, "_validate_download", lambda path: True)
+    seen = {}
+
+    def fake_download(url, dest, **kwargs):
+        seen.update(kwargs)
+        with open(dest, "wb") as fh:
+            fh.write(payload)
+
+    monkeypatch.setattr(updater.net_download, "download_file", fake_download)
+    updater.download_asset(asset)
+    assert seen["parallel_segments"] == 1

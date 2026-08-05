@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.76.49-rc.1 — 5 Aug 2026
+
+### Fixed
+
+- **The updater no longer sits at 100% for minutes.** Once the bytes had
+  arrived, FIREFLY verified the macOS disk image by running `hdiutil imageinfo`,
+  which is slow and can hang outright. That check is replaced by reading the
+  512-byte trailer every disk image ends with — instant, and it cannot hang.
+  Nothing is weakened: every byte is still authenticated against GitHub's
+  published SHA-256 before anything is installed, and the installer still asks
+  macOS to mount the image during installation.
+
+- **A failed update no longer downloads the whole installer twice.** GitHub uses
+  the same filename for every release, so a partly-downloaded installer left
+  over from an earlier version was resumed as though it were the new one. It
+  then failed its integrity check *after* the bar reached 100%, and the retry
+  started again from zero. Partial downloads now record which release they
+  belong to and are discarded when they don't match.
+
+- **Automatic and manual downloads no longer corrupt each other.** A background
+  download and a click on "Download & install" could write the same temporary
+  files at the same time. They are now serialised, and a second request reuses
+  the already-verified file instead of fetching it again.
+
+- **The progress bar no longer looks frozen at 100%** while FIREFLY verifies the
+  download or stages the installer. Those phases now show as in-progress rather
+  than sitting at a full bar.
+
+- **Preferences are saved when an update restarts the app.** Settings changed
+  shortly before installing an update could be lost, because the app was asked
+  to quit before they had been flushed to disk.
+
+- **The app theme no longer changes on its own.** The test suite built a real
+  theme controller against the live preference store and switched it to the next
+  theme in the list — so running the tests silently changed the saved theme from
+  Dark to AMOLED. Tests now use a throwaway store, with a check that fails if
+  anything writes the real one again. If you have seen your theme change without
+  you touching it, this was why.
+
+- **The chosen theme is now written on first launch**, not only when you change
+  it. Previously someone who simply kept Dark had no saved preference at all, so
+  an out-of-date value could reassert itself after an update.
+
 ## v2.76.48 — 5 Aug 2026
 
 ### Fixed

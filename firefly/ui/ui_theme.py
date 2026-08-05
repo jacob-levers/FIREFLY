@@ -128,11 +128,15 @@ def _pick_startup_theme() -> str:
     """Read the user's chosen app theme, defaulting to "Dark".
 
     Preference order: the durable plain-file store (write_theme_file) → the
-    legacy QSettings store (migrated on first run) → Dark.  We only READ here
-    (never write) so importing this module has no filesystem side effects; the
-    file is written by an explicit theme change (see ThemeController.setTheme).
-    A deliberate AMOLED / Light choice is preserved — this fixes DURABILITY, it
-    does not force Dark.
+    legacy QSettings store (migrated on first controller start) → Dark.  We only
+    READ here (never write) so importing this module has no filesystem side
+    effects; ThemeController materialises the resolved value on startup.
+
+    An AMOLED value found *only* in QSettings is the historical update-reset
+    sentinel, not reliable evidence of a user choice, so it normalises to Dark.
+    A deliberate AMOLED choice made by a version with the durable store is in
+    ``ui_prefs.json`` and remains fully respected.  Light is safe to migrate
+    because it was never the erroneous update fallback.
     """
     try:
         name = _read_theme_file()
@@ -143,9 +147,11 @@ def _pick_startup_theme() -> str:
         if qs is None:                          # ...or the older foreign domain
             old = str(QtCore.QSettings("FIREFLY", "sptPALM")
                       .value("ui/app_theme", "") or "")
-            qs = "Light" if old == "Light" else "Dark"
-        name = str(qs or "Dark")
-        return name if name in _THEMES else "Dark"
+            qs = old
+        # AMOLED was the stale value exposed by the old macOS settings-domain
+        # collision after an update.  Only the durable file can distinguish a
+        # deliberate AMOLED selection, so QSettings-only AMOLED must not win.
+        return "Light" if str(qs or "") == "Light" else "Dark"
     except Exception:
         return "Dark"
 

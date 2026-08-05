@@ -401,16 +401,33 @@ class UpdatesController(QObject):
                 from firefly import updater
 
                 def _prog(done, total):
-                    self._inst_progress = (done / total) if total else -1.0
+                    if total:
+                        try:
+                            self._inst_progress = max(
+                                0.0, min(1.0, float(done) / float(total)))
+                        except Exception:
+                            self._inst_progress = -1.0
+                    else:
+                        self._inst_progress = -1.0
 
                 def _status(msg):
-                    self._inst_status = str(msg)
+                    text = str(msg)
+                    self._inst_status = text
+                    # These phases happen after/between byte transfers.  Leaving
+                    # the previous 1.0 value visible made SHA-256 verification,
+                    # cache waiting, and final staging look frozen at 100%.
+                    phase = text.lower()
+                    if any(token in phase for token in (
+                            "verifying", "finishing", "waiting for",
+                            "using verified")):
+                        self._inst_progress = -1.0
 
                 def _cancel():
                     return self._inst_cancel
 
                 if prefetched:
                     self._inst_status = "Installing…"
+                    self._inst_progress = -1.0
                     path = prefetched
                 else:
                     # The releases LIST (not /latest) so we install what the
@@ -426,6 +443,7 @@ class UpdatesController(QObject):
                     path = updater.download_asset(
                         asset, progress_cb=_prog, status_cb=_status, cancel_cb=_cancel)
                 self._inst_status = "Installing…"
+                self._inst_progress = -1.0
                 self._inst_state = "installing"
                 updater.apply_update(path)        # stages helper + spawns it, returns
                 self._inst_state = "done"          # GUI thread quits the app next tick

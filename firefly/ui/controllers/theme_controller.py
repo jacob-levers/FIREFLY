@@ -74,6 +74,11 @@ class ThemeController(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._name = _pick_startup_theme()
+        # Materialise even the default Dark choice.  Previously the durable
+        # store was written only when the user changed theme, so somebody who
+        # kept Dark had no canonical preference and a stale QSettings AMOLED
+        # value could reappear on the first launch after an app update.
+        self._persist_theme(self._name)
         # reduce-motion lives in the primary store (jacoblevers/FIREFLY).
         try:
             self._reduced_motion = QSettings("jacoblevers", "FIREFLY").value(
@@ -117,6 +122,18 @@ class ThemeController(QObject):
             if a["name"] == self._accent:
                 return a
         return self._ACCENTS[0]
+
+    @staticmethod
+    def _persist_theme(name):
+        """Write both the update-stable store and the compatibility store."""
+        from firefly.ui.ui_theme import write_theme_file
+        write_theme_file(name)
+        try:
+            s = QSettings("jacoblevers", "FIREFLY")
+            s.setValue("ui/app_theme", name)
+            s.sync()
+        except Exception:
+            pass
 
     def _sync_marker_accent(self):
         """Push the chosen accent colour to the live-detection marker so the
@@ -228,18 +245,12 @@ class ThemeController(QObject):
 
     @Slot(str)
     def setTheme(self, name: str):
-        if name in _THEMES and name != self._name:
+        if name in _THEMES:
+            changed = name != self._name
             self._name = name
-            # Durable store: a plain file in the app-data dir that survives an
-            # in-app update (unlike macOS QSettings, whose domain didn't match
-            # the app bundle id — see ui_theme._pick_startup_theme / the AMOLED-
-            # reverts-every-update bug).  Also keep writing QSettings so other
-            # readers of ui/app_theme stay in sync.
-            from firefly.ui.ui_theme import write_theme_file
-            write_theme_file(name)
-            try:
-                s = QSettings("jacoblevers", "FIREFLY")
-                s.setValue("ui/app_theme", name); s.sync()
-            except Exception:
-                pass
-            self.changed.emit()
+            # Persist even when the selected tile is already active: this lets
+            # a click retry a transiently failed disk write without generating
+            # a spurious palette-change notification.
+            self._persist_theme(name)
+            if changed:
+                self.changed.emit()

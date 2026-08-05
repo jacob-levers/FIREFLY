@@ -7,7 +7,7 @@ Widgets app so the two share settings. Keys mirror the Widgets app exactly
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QSettings, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, QSettings, Signal, Slot
 
 
 class SettingsController(QObject):
@@ -16,6 +16,13 @@ class SettingsController(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._s = QSettings("jacoblevers", "FIREFLY")
+        # The updater asks QApplication to quit immediately after staging the
+        # replacement.  Flush buffered preferences at that explicit lifecycle
+        # boundary, before a detached update helper could ever time out and
+        # terminate a slow shutdown.
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.sync)
 
     # ── QML-facing generic accessors ─────────────────────────────────────
     @Slot(str, "QVariant", result="QVariant")

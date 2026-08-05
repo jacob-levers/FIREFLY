@@ -242,6 +242,62 @@ def test_update_downloaded_reuse_condition(mk_controller, tmp_path):
     assert c.updateDownloaded is False
 
 
+def test_post_download_work_leaves_100_percent_phase(monkeypatch, mk_controller,
+                                                     tmp_path):
+    """Hash/format verification and helper staging happen after all network bytes
+    arrive.  The UI must leave determinate 100% for an indeterminate named phase,
+    otherwise a healthy update looks frozen at 100% until the app exits.
+    """
+    from firefly import updater
+    from firefly.ui.controllers import updates_controller as uc
+
+    c = mk_controller(_FakeSettings())
+    c._latest_tag = "v2.99.0"
+    staged = tmp_path / "FIREFLY-installer"
+    staged.write_bytes(b"installer")
+    phases = []
+    downloads = {"n": 0}
+
+    class _InlineThread:
+        def __init__(self, target, daemon=True):
+            self.target = target
+        def start(self):
+            self.target()
+
+    def fake_download(asset, *, progress_cb, status_cb, cancel_cb):
+        downloads["n"] += 1
+        progress_cb(10, 10)
+        phases.append(("downloaded", c.installProgress))
+        status_cb("Verifying download…")
+        phases.append(("verifying", c.installProgress))
+        status_cb("Finishing update…")
+        phases.append(("finishing", c.installProgress))
+        return str(staged)
+
+    monkeypatch.setattr(uc.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(updater, "is_frozen", lambda: True)
+    monkeypatch.setattr(updater, "fetch_releases", lambda *a, **k: [{}])
+    monkeypatch.setattr(updater, "pick_release",
+                        lambda *a, **k: {"tag_name": "v2.99.0"})
+    monkeypatch.setattr(updater, "parse_release",
+                        lambda rel: {"asset": {"name": "x", "url": "x"}})
+    monkeypatch.setattr(updater, "download_asset", fake_download)
+
+    def fake_apply(path):
+        phases.append(("installing", c.installProgress))
+
+    monkeypatch.setattr(updater, "apply_update", fake_apply)
+
+    c.downloadAndInstall()
+    assert downloads["n"] == 1
+    assert phases == [
+        ("downloaded", 1.0),
+        ("verifying", -1.0),
+        ("finishing", -1.0),
+        ("installing", -1.0),
+    ]
+
+
 def test_clean_release_notes_strips_redundant_version_heading():
     # The update card shows the tag on its own line, then renders the body as
     # Markdown — so the leading "## v… — date" heading is dropped, but the rest

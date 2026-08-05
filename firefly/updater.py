@@ -30,6 +30,8 @@ import os
 import platform
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Callable, Optional
@@ -313,25 +315,25 @@ def _looks_like_windows_exe(path: str) -> bool:
 
 
 def _looks_like_dmg(path: str) -> bool:
-    """True if hdiutil can read the image header (rejects an HTML error
-    page or a truncated download).
+    """Cheap, deterministic sanity check for FIREFLY's UDIF disk image.
 
-    ``hdiutil imageinfo`` reads only the header, so it normally returns in well
-    under a second — but it CAN hang (a malformed/encrypted image, a stuck prior
-    hdiutil, disk pressure).  With no timeout that hang froze verification after
-    the download hit 100% ("stays at 100% for ages").  A generous timeout treats
-    a hang as a failed check → the download retries / the user is told to install
-    manually, instead of blocking forever."""
+    A UDIF image ends with a 512-byte ``koly`` trailer.  Checking that local
+    structure rejects an HTML error page or an obviously truncated response
+    without spawning ``hdiutil imageinfo`` after progress has reached 100%.
+    That subprocess was both slow and fallible; a transient local failure was
+    reported as corrupt network bytes and caused a complete second download.
+
+    This is intentionally only a format gate.  :func:`download_asset` separately
+    authenticates every byte against GitHub's published SHA-256 before this
+    result is accepted, and the detached helper still asks ``hdiutil`` to mount
+    the image during installation.
+    """
     try:
         if os.path.getsize(path) < 1_000_000:
             return False
-        rc = subprocess.run(["hdiutil", "imageinfo", path],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            timeout=60).returncode
-        return rc == 0
-    except subprocess.TimeoutExpired:
-        return False
+        with open(path, "rb") as fh:
+            fh.seek(-512, os.SEEK_END)
+            return fh.read(4) == b"koly"
     except Exception:
         return False
 
@@ -384,6 +386,111 @@ def _digest_matches(path: str, digest: str) -> bool:
     return got is not None and got == want
 
 
+# Auto-download and a click on "Download & install" can arrive on separate
+# threads.  Both historically wrote the same ``<asset>.part`` and ``.segN``
+# files, corrupting one another's resume/progress state.  Serialize per final
+# destination and let later callers reuse the first authenticated result.
+_asset_locks_guard = threading.Lock()
+_asset_locks: dict[str, threading.Lock] = {}
+
+
+def _asset_lock(dest: str) -> threading.Lock:
+    key = os.path.normcase(os.path.abspath(dest))
+    with _asset_locks_guard:
+        lock = _asset_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _asset_locks[key] = lock
+        return lock
+
+
+def _asset_identity_path(dest: str) -> str:
+    return dest + ".source.json"
+
+
+def _asset_identity(asset: dict) -> dict:
+    """Stable identity for resumable bytes belonging to one release asset."""
+    return {
+        "url": str(asset.get("url") or ""),
+        "size": int(asset.get("size") or 0),
+        "digest": str(asset.get("digest") or "").strip().lower(),
+    }
+
+
+def _prepare_resume_state(dest: str, identity: dict) -> None:
+    """Keep resume files only when their sidecar identifies this exact asset.
+
+    GitHub uses the same installer filename for every FIREFLY release.  Without
+    an identity sidecar, a partial from an older version was sent as the prefix
+    of the new version and failed SHA-256 only after the bar reached 100%; the
+    subsequent retry then visibly downloaded the installer from zero.
+    """
+    sidecar = _asset_identity_path(dest)
+    previous = None
+    try:
+        with open(sidecar, "r", encoding="utf-8") as fh:
+            value = json.load(fh)
+        if isinstance(value, dict):
+            previous = value
+    except Exception:
+        previous = None
+
+    if previous != identity:
+        # The contiguous ``.part`` is the only state the updater will resume
+        # (release downloads deliberately disable segmentation below).  Its
+        # removal is mandatory: never write the new identity if AV/a file lock
+        # leaves old-release prefix bytes behind.
+        part = dest + ".part"
+        delay = 0.1
+        last_exc = None
+        for attempt in range(6):
+            if not os.path.exists(part):
+                break
+            try:
+                os.remove(part)
+                break
+            except OSError as exc:
+                last_exc = exc
+                if attempt < 5:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 1.0)
+        if os.path.exists(part):
+            raise UpdaterError(
+                "Couldn't discard resume data from an older FIREFLY release "
+                f"({last_exc}). Close antivirus/file-indexing tools or install "
+                "the update manually from the Releases page.",
+                reveal_path=updates_dir())
+
+        # Old final/segmented files are never resumed by this code path.  Clean
+        # them best-effort; a persistent lock will be diagnosed by the normal
+        # final replace rather than allowing stale bytes into the new stream.
+        stale = [dest]
+        stale.extend(f"{dest}.part.seg{i}" for i in range(64))
+        for path in stale:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+    # Write atomically so a process killed here cannot bless unidentified bytes
+    # as belonging to the next run.
+    tmp = sidecar + f".{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(identity, fh, sort_keys=True)
+        os.replace(tmp, sidecar)
+    except Exception as exc:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        raise UpdaterError(
+            f"Couldn't prepare the update staging area: {exc}",
+            reveal_path=updates_dir()) from exc
+
+
 def download_asset(asset: dict,
                    *,
                    progress_cb: Optional[Callable[[int, int], None]] = None,
@@ -419,6 +526,7 @@ def download_asset(asset: dict,
             "GitHub asset-digest format may have changed.)",
             reveal_path=updates_dir())
     _last = {"hash_failed": False}
+    expected_size = int(asset.get("size") or 0)
 
     def _validate(path: str) -> bool:
         # Format sanity AND content integrity: verify SHA-256 against GitHub's
@@ -427,6 +535,12 @@ def download_asset(asset: dict,
         # the UI tells the user to install manually instead of shipping a broken
         # exe (the cause of the "decompression -3" / "Python DLL not found"
         # crashes on networks/AV that mangle the transfer).
+        if expected_size:
+            try:
+                if os.path.getsize(path) != expected_size:
+                    return False
+            except Exception:
+                return False
         if not _validate_download(path):
             return False
         if not _digest_matches(path, digest):
@@ -435,25 +549,74 @@ def download_asset(asset: dict,
         _last["hash_failed"] = False
         return True
 
+    lock = _asset_lock(dest)
+    announced_wait = False
+    while not lock.acquire(timeout=0.1):
+        if not announced_wait and status_cb is not None:
+            try:
+                status_cb("Waiting for the background download…")
+            except Exception:
+                pass
+            announced_wait = True
+        if cancel_cb is not None:
+            try:
+                if cancel_cb():
+                    raise UpdaterError("Download cancelled by user.")
+            except UpdaterError:
+                raise
+            except Exception:
+                pass
+
     try:
-        net_download.download_file(
-            asset["url"], dest,
-            progress_cb=progress_cb,
-            cancel_cb=cancel_cb,
-            status_cb=status_cb,
-            validate_cb=_validate,
-            max_attempts=6)
-    except net_download.DownloadError as exc:
-        if _last["hash_failed"]:
-            raise UpdaterError(
-                "The download kept failing its integrity check — its SHA-256 "
-                "didn't match GitHub's, so the file is being corrupted in "
-                "transit (most likely this network or an antivirus product). "
-                "Nothing was installed. Download the installer manually from "
-                "the Releases page instead.",
-                reveal_path=updates_dir()) from exc
-        raise UpdaterError(str(exc), reveal_path=updates_dir()) from exc
-    return dest
+        # Covers both an overlapping background prefetch and a second click
+        # after helper staging failed: never fetch an installer we already
+        # authenticated for this release.
+        if os.path.isfile(dest) and _validate(dest):
+            if progress_cb is not None:
+                try:
+                    size = os.path.getsize(dest)
+                    progress_cb(size, expected_size or size)
+                except Exception:
+                    pass
+            # Emit the non-transfer phase last so a watching controller does
+            # not remain at the synthetic 100% cache-hit report.
+            if status_cb is not None:
+                try:
+                    status_cb("Using verified download…")
+                except Exception:
+                    pass
+            return dest
+
+        # A stale complete installer may have failed the cache fast-path hash.
+        # Do not let that result mislabel an unrelated network failure below as
+        # repeated in-transit corruption.
+        _last["hash_failed"] = False
+        _prepare_resume_state(dest, _asset_identity(asset))
+        try:
+            net_download.download_file(
+                asset["url"], dest,
+                progress_cb=progress_cb,
+                cancel_cb=cancel_cb,
+                status_cb=status_cb,
+                validate_cb=_validate,
+                max_attempts=6,
+                # Release installers use one coherent, resumable stream.  A
+                # late segmented/proxy failure otherwise discards discontiguous
+                # ranges and visibly starts an entire second transfer.
+                parallel_segments=1)
+        except net_download.DownloadError as exc:
+            if _last["hash_failed"]:
+                raise UpdaterError(
+                    "The download kept failing its integrity check — its SHA-256 "
+                    "didn't match GitHub's, so the file is being corrupted in "
+                    "transit (most likely this network or an antivirus product). "
+                    "Nothing was installed. Download the installer manually from "
+                    "the Releases page instead.",
+                    reveal_path=updates_dir()) from exc
+            raise UpdaterError(str(exc), reveal_path=updates_dir()) from exc
+        return dest
+    finally:
+        lock.release()
 
 
 # ── Locating the current install ──────────────────────────────────────────────
