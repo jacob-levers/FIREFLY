@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
-from firefly.analysis.fa_constants import N_CPUS, _tqdm, safe_process_workers
+from firefly.analysis.fa_constants import (N_CPUS, _tqdm, safe_process_workers,
+                                           MOBILE_D_THRESHOLD_DEFAULT)
 from firefly.analysis.fa_enums import GapPolicy
 
 
@@ -36,7 +37,10 @@ def msd_anomalous(t, D, alpha, offset):
 ALPHA_THRESHOLDS_DEFAULT = (0.5, 0.9, 1.1)
 
 
-MOBILE_D_THRESHOLD_DEFAULT = 0.05
+# MOBILE_D_THRESHOLD_DEFAULT is imported from fa_constants at the top of this
+# module (see the citation there).  The import alone re-exports it, so the many
+# callers that do `from fa_diffusion import MOBILE_D_THRESHOLD_DEFAULT` keep
+# resolving to the single canonical value.
 
 
 # Bump whenever an existing output column changes scientific meaning.  The
@@ -428,6 +432,13 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     """
     Single parallel pass that computes both MSD and diffusion fits.
     Replaces tp.imsd + tp.emsd + separate fit loop — all in one go.
+
+    Returns ``(imsd_df, emsd, diff_df)``.  NOTE both MSD frames are indexed by
+    lag in FRAMES (1..max_lagtime), NOT in seconds — unlike ``tp.imsd``, whose
+    index is already a lag time.  Callers must scale by ``frame_interval``
+    themselves (as fa_figure does).  Fitting against the raw index instead
+    silently rescales D by ``frame_interval`` and quietly changes every
+    mobility call downstream.
 
     ``gap_policy='all_pairs'`` (default) means each lag is formed from all
     timestamp-separated observation pairs.  ``'contiguous'`` preserves the

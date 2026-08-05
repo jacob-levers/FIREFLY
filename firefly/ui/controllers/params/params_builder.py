@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
 
 try:
     _N_CPUS = multiprocessing.cpu_count()
@@ -92,7 +93,7 @@ _DEFAULTS = {
     "alpha_immobile":        0.5,
     "alpha_confined":        0.9,
     "alpha_directed":        1.1,
-    "mobile_d":              0.05,
+    "mobile_d":              MOBILE_D_THRESHOLD_DEFAULT,
     "jdd_components":        2,
     "dcoeff_clip_min":       0.00001,   # LogD clip lower D bound (µm²/s) → log₁₀ −5
     "dcoeff_clip_max":       10.0,      # LogD clip upper D bound (µm²/s) → log₁₀ 1

@@ -26,6 +26,18 @@ from tqdm import tqdm
 DEFAULT_PIXEL_SIZE_UM = 0.106
 DEFAULT_FRAME_INTERVAL_S = 0.02
 
+# D (µm²/s) separating immobile from mobile.  This is the published threshold
+# for single-molecule receptor tracking in neurons — Constals et al. (2015)
+# Neuron 85:787-803, Figure 1C, which splits the log10(D) distribution at
+# log10(D) = -2 and reports the mobile/immobile ratio either side of it.
+#
+# It also matches the measurement floor: over a short track (~0.16 s) a particle
+# at this D covers sqrt(4·D·t) ~ 80 nm, roughly 3x a typical localisation
+# precision, so it is the point at which motion becomes resolvable above noise.
+# Lives here, not in fa_diffusion, so the worker can reach it without importing
+# numpy/scipy/trackpy at module scope.  fa_diffusion re-exports it.
+MOBILE_D_THRESHOLD_DEFAULT = 0.01
+
 # Worker-count default for the parallel localisation / MSD passes.
 N_CPUS = multiprocessing.cpu_count()
 

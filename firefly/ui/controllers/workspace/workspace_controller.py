@@ -30,6 +30,7 @@ from PySide6.QtGui import QImage, QGuiApplication, QClipboard, QDesktopServices
 
 from . import workspace_data as wd
 from . import workspace_figures as wf
+from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
 
 _PHASE_COLORS = ["#58a6ff", "#f78166", "#56d364", "#27c0e8", "#f6a623",
                  "#a371f7", "#e05252", "#7ed321"]
@@ -98,7 +99,7 @@ class _FigureJob(threading.Thread):
                     err=self._cfg.get("err", "95% CI"),
                     log_x=bool(self._cfg.get("logX", False)),
                     logd_style=self._cfg.get("_logd_style", "overlaid"),
-                    mobile_d=float(self._cfg.get("_mobile_d", 0.05)),
+                    mobile_d=float(self._cfg.get("_mobile_d", MOBILE_D_THRESHOLD_DEFAULT)),
                     logd_clip=(float(self._cfg.get("_logd_clip_min", 0.00001)),
                                float(self._cfg.get("_logd_clip_max", 10.0))),
                     group_style=self._cfg.get("_group_style", "box_points"),
@@ -911,9 +912,14 @@ class AnalysisWorkspaceController(QObject):
         mobile-d change alters them, and those all bump ``_data_rev``."""
         s = self._settings
         try:
-            mobile_d = float(s.get("analysis/mobile_d", 0.05)) if s else 0.05
+            mobile_d = (float(s.get("analysis/mobile_d", MOBILE_D_THRESHOLD_DEFAULT))
+                        if s else MOBILE_D_THRESHOLD_DEFAULT)
         except (TypeError, ValueError):
-            mobile_d = 0.05
+            mobile_d = MOBILE_D_THRESHOLD_DEFAULT
+        # Keep the live scalar (RunData._mobile_pct) on the SAME threshold the
+        # engine is about to draw with, so the stats card under the panel can
+        # never quote a different split than the bars above it.
+        wd.RunData.mobile_d = mobile_d
         return dict(groups=self._engine_groups(), mobile_d_threshold=mobile_d,
                     stats_config=self._stats_config())
 
@@ -1099,9 +1105,10 @@ class AnalysisWorkspaceController(QObject):
             cfg["_group_style"] = s.getStr("figures/group_style", "box_points")
             cfg["_length_style"] = s.getStr("figures/length_style", "density")
             try:
-                cfg["_mobile_d"] = float(s.get("analysis/mobile_d", 0.05))
+                cfg["_mobile_d"] = float(s.get("analysis/mobile_d", MOBILE_D_THRESHOLD_DEFAULT))
             except (TypeError, ValueError):
-                cfg["_mobile_d"] = 0.05
+                cfg["_mobile_d"] = MOBILE_D_THRESHOLD_DEFAULT
+            wd.RunData.mobile_d = cfg["_mobile_d"]   # see _compute_report_kwargs
             cfg["_logd_clip_min"], cfg["_logd_clip_max"] = self._dcoeff_clip()
             # Grouped-by-timepoint style needs the per-name × phase breakdown
             # (the live groups otherwise pool it away) — compute it for this metric.

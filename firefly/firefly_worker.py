@@ -38,7 +38,7 @@ import traceback
 from firefly.analysis.fa_enums import MsgKind, GapPolicy
 from firefly.analysis.fa_io import atomic_to_csv, atomic_write   # stdlib-only
 from firefly.analysis.fa_constants import (
-    DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S)
+    DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S, MOBILE_D_THRESHOLD_DEFAULT)
 
 
 # ── CUDA sidecar injection ───────────────────────────────────────────────────
@@ -1009,7 +1009,7 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
             d_values = _np.asarray(diff_df["D"], dtype=float)
             valid = _np.isfinite(d_values) & (d_values > 0)
             if valid.any():
-                threshold = float(p.get("mobile_d_threshold", 0.05))
+                threshold = float(p.get("mobile_d_threshold", MOBILE_D_THRESHOLD_DEFAULT))
                 mobile_fraction = float((d_values[valid] >= threshold).mean())
         except Exception:
             mobile_fraction = None
@@ -2365,7 +2365,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             vacf = None
         mf  = compute_mobile_fraction_over_time(
             tracks, diff_df, fi,
-            d_threshold=float(p.get("mobile_d_threshold", 0.05)))
+            d_threshold=float(p.get("mobile_d_threshold", MOBILE_D_THRESHOLD_DEFAULT)))
         # Guarded like van_hove/vacf above: a degenerate cluster input (e.g. a
         # stray non-finite coordinate that slipped through) must not crash an
         # otherwise-complete run after linking + MSD already succeeded.  (#6)
@@ -3028,7 +3028,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     summary["n_below_resolution"] = int(
                         (_fs == "below_resolution").sum())
                 if "D" in diff_df.columns:
-                    d_thresh = float(p.get("mobile_d_threshold", 0.05))
+                    d_thresh = float(p.get("mobile_d_threshold", MOBILE_D_THRESHOLD_DEFAULT))
                     # Match the canonical definition used by the mobile-fraction
                     # panel and the mob/immob ratio (fa_diffusion): D >= threshold
                     # over finite, positive D only.  The old `(D > thresh).mean()`
@@ -3703,7 +3703,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         out_stem  = p.get("output_stem", "comparison")
         theme     = p.get("theme", "Dark")
         pdf_report = bool(p.get("pdf_report", True))
-        mob_d     = float(p.get("mobile_d_threshold", 0.05))
+        mob_d     = float(p.get("mobile_d_threshold", MOBILE_D_THRESHOLD_DEFAULT))
         from firefly.analysis.fa_stats_config import (
             normalize_stats_config, describe_test_label, correction_display)
         stats_config = normalize_stats_config(p.get("stats_config"))

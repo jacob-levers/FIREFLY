@@ -53,11 +53,20 @@ def test_scan_series_groups_and_filters(tmp_path):
     _touch(os.path.join(d, "cellB", "b.czi"))
     _touch(os.path.join(d, "cellB", "b.tif"))
 
+    # Recursion OFF sees the top level ONLY — cellB/ must not appear.  This
+    # previously asserted the subfolder WAS found, codifying a bug: the walk
+    # pruned only once already inside a subfolder, so "Include subfolders" off
+    # still descended exactly one level.
     series = {s["key"]: s for s in batch_scan.scan_series(d)}
     assert "a" in series and series["a"]["fileCount"] == 3
-    bkey = next(k for k in series if k.endswith("b"))   # subfolder-prefixed key
-    assert series[bkey]["fileCount"] == 1
-    assert series[bkey]["primary"].endswith("b.czi")
+    assert not [k for k in series if k.endswith("b")]
+
+    # Recursion ON is where subfolder items belong, keyed by their subfolder,
+    # and where the czi-over-derived-tif preference applies.
+    rec = {s["key"]: s for s in batch_scan.scan_series(d, recursive=True)}
+    bkey = next(k for k in rec if k.endswith("b"))     # subfolder-prefixed key
+    assert rec[bkey]["fileCount"] == 1
+    assert rec[bkey]["primary"].endswith("b.czi")
 
 
 def test_scan_series_empty(tmp_path):

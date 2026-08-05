@@ -118,7 +118,11 @@ def test_exact_zero_msd_is_below_resolution_but_linear_geometry_stays_zero():
     assert row["directionality_ratio"] == pytest.approx(0.0)
 
     # A historic/manual D=0 must also stay out of the mobility/log-D contract.
-    ratio = _mob_immob_ratio(pd.DataFrame({"D": [0.0, 0.01, 0.10, np.nan]}))
+    # State the split explicitly: the claim here is that 0.0 and NaN are dropped
+    # from BOTH counts, which must hold whatever the default threshold happens
+    # to be (it previously rode on the default sitting between 0.01 and 0.10).
+    ratio = _mob_immob_ratio(pd.DataFrame({"D": [0.0, 0.01, 0.10, np.nan]}),
+                             d_threshold=0.05)
     assert ratio == pytest.approx(1.0)
     fractions = _motion_fractions(pd.DataFrame({
         "motion": ["Unknown", "Brownian", "Confined"],

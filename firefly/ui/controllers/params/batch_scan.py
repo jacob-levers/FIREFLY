@@ -28,6 +28,20 @@ _EXTERNAL_LOC_EXTS = (".csv", ".txt", ".tsv")
 _ROI_SISTER_SUFFIXES = ("_green",)
 
 
+def _sister_suffixes(suffix: str | None) -> tuple[str, ...]:
+    """The companion-image suffixes to fold away, honouring the user's setting.
+
+    ``analysis/roi_sister_suffix`` is editable (its default is ``_green``), so a
+    lab naming its companions ``-Green Image`` was still matched against the
+    hardcoded ``_green`` — every companion then queued as its own analysable
+    recording.  An explicit setting REPLACES the default rather than adding to
+    it: a user who renamed the suffix may well have real acquisitions ending in
+    ``_green``, and silently dropping those is the worse failure.
+    """
+    s = (suffix or "").strip()
+    return (s.casefold(),) if s else _ROI_SISTER_SUFFIXES
+
+
 def input_kind(name: str) -> str | None:
     """Return the supported batch input kind for *name*, or ``None``.
 
@@ -141,7 +155,7 @@ def _unique_key(proposed: str, source_type: str, used: set[str]) -> str:
     return candidate
 
 
-def _group_series(candidates: list) -> list:
+def _group_series(candidates: list, sister_suffix: str | None = None) -> list:
     """Group candidates into homogeneous image series or standalone tables.
 
     ``.czi`` preference is deliberately scoped to one normalised image stem in
@@ -166,9 +180,9 @@ def _group_series(candidates: list) -> list:
     # other underscore-suffixed names as separately analysable acquisitions.
     existing = {(folder, base.casefold()) for folder, base in image_groups}
     for folder, base in list(image_groups):
-        if any(base.lower().endswith(suffix)
+        if any(base.casefold().endswith(suffix)
                and (folder, base[:-len(suffix)].casefold()) in existing
-               for suffix in _ROI_SISTER_SUFFIXES):
+               for suffix in _sister_suffixes(sister_suffix)):
             image_groups.pop((folder, base), None)
 
     pending: list[tuple[str, str, list[tuple[str, str]]]] = []
@@ -202,7 +216,8 @@ def _group_series(candidates: list) -> list:
     return out
 
 
-def scan_series(folder: str, recursive: bool = False) -> list:
+def scan_series(folder: str, recursive: bool = False,
+                sister_suffix: str | None = None) -> list:
     """Return one entry per analysable series found by walking ``folder``:
     ``[{"key", "primary", "files": [abspath…], "parts": [...], "fileCount",
     "sizeBytes", "sizeStr", "name"}]``."""
@@ -216,7 +231,12 @@ def scan_series(folder: str, recursive: bool = False) -> list:
             and d.lower() not in ("batch_results", "compare_results")
             and not (recursive and is_analysis_output_dir(d)))
         rel = os.path.relpath(dirpath, folder)
-        if not recursive and rel != os.curdir:
+        if not recursive:
+            # Prune at EVERY level including the top.  Guarding this on
+            # `rel != os.curdir` only stopped the descent once already inside a
+            # subfolder, so os.walk still yielded one full level down and its
+            # files were queued -- "Include subfolders" off silently scanned
+            # one level deep, sweeping in Excluded/ and other set-aside dirs.
             dirnames[:] = []
         sub = None if rel == os.curdir else rel.replace(os.sep, "/")
         for cname in sorted(filenames):
@@ -227,10 +247,10 @@ def scan_series(folder: str, recursive: bool = False) -> list:
             full = os.path.join(dirpath, cname)
             if os.path.isfile(full) and looks_like_input_file(cname):
                 candidates.append((cname if sub is None else f"{sub}/{cname}", full, sub))
-    return _group_series(candidates)
+    return _group_series(candidates, sister_suffix)
 
 
-def scan_paths(paths: list) -> list:
+def scan_paths(paths: list, sister_suffix: str | None = None) -> list:
     """Group an explicit list of file paths into series (for ``Add files`` /
     drag-and-drop).  Same grouping + enrichment as ``scan_series``; non-input or
     missing paths are dropped."""
@@ -242,4 +262,4 @@ def scan_paths(paths: list) -> list:
         if (os.path.isfile(full) and not cname.startswith(".")
                 and looks_like_input_file(cname)):
             candidates.append((cname, full, None))
-    return _group_series(candidates)
+    return _group_series(candidates, sister_suffix)

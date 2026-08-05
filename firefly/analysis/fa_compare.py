@@ -752,7 +752,8 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
         band = maxd * 0.42
         ns = len(series)
         for si, (scolor, _pooled, medians, _slabel, dashed) in enumerate(series):
-            meds = [m for m in (medians or []) if np.isfinite(m)]
+            meds = [m for m in (() if medians is None else medians)
+                    if np.isfinite(m)]
             if not meds:
                 continue
             y0 = (-0.5 * band if ns == 1
@@ -763,6 +764,10 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
                        marker="o", zorder=6, clip_on=False)
         ax.axvline(thr, color=pal["GRD"], ls="--", lw=0.8, zorder=15)
         ax.axhline(0.0, color=pal["GRD"], lw=0.5, alpha=0.5, zorder=1)
+        if fi == 0:
+            # Facets share one x-axis, so the Immobile/Mobile key belongs on the
+            # top panel only — repeating it down the stack is pure noise.
+            _annotate_logd_mobility(ax, thr, pal, (xlo, xhi))
         ax.set_xlim(xlo, xhi)
         ax.set_ylim(-band * 1.05, maxd * 1.18)
         ax.set_yticks([])
@@ -790,6 +795,37 @@ def _logd_kde_or_none(pooled, xk):
         return None
 
 
+def _annotate_logd_mobility(ax, thr, pal, xlim, vertical=False):
+    """Label the two sides of the mobile/immobile split, as Constals et al.
+    (2015) Neuron 85:787-803 Fig. 1C does — ``<- Immobile | Mobile ->`` above
+    the axes.  Without it the dashed guide is just an unexplained line: the
+    reader cannot see which side is which, nor that the threshold is a CHOICE
+    rather than a property of the data.  Drawn outside the data area so it can
+    never occlude a density curve.
+
+    ``vertical`` handles the violin style, where log10 D runs up the y-axis.
+    """
+    lo, hi = xlim
+    if not (lo < thr < hi):
+        return                      # threshold off-scale → nothing to label
+    key = pal.get("MUT", "#9aa4b2")
+    kw = dict(color=key, fontsize=7.5, fontweight="bold", clip_on=False,
+              transform=(ax.get_xaxis_transform() if not vertical
+                         else ax.get_yaxis_transform()))
+    if vertical:
+        # y = log10 D: label just inside the left spine, rotated with the axis.
+        ax.text(0.012, (lo + thr) / 2, "Immobile", ha="left", va="center",
+                rotation=90, **kw)
+        ax.text(0.012, (thr + hi) / 2, "Mobile", ha="left", va="center",
+                rotation=90, **kw)
+        return
+    # x = log10 D: a labelled strip just above the axes, arrows pointing out.
+    ax.text((lo + thr) / 2, 1.015, "$\\leftarrow$ Immobile", ha="center",
+            va="bottom", **kw)
+    ax.text((thr + hi) / 2, 1.015, "Mobile $\\rightarrow$", ha="center",
+            va="bottom", **kw)
+
+
 def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
     """Classic ridgeline: one filled KDE per group, stacked with a vertical
     offset and directly labelled, plus a tick per replicate (per-cell median)
@@ -808,18 +844,20 @@ def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.
             ax.fill_between(xk, base, base + y, color=col, alpha=0.75,
                             linewidth=0, zorder=2 + i)
             ax.plot(xk, base + y, color=pal["BG"], lw=0.8, zorder=2 + i)
-        meds = [m for m in (medians or []) if np.isfinite(m)]
+        meds = [m for m in (() if medians is None else medians)
+                if np.isfinite(m)]
         if meds:
             ax.scatter(meds, np.full(len(meds), base), s=11, color=pal["BG"],
                        edgecolor=col, linewidth=0.8, zorder=12 + i, clip_on=False)
         ax.text(xlo, base, f" {lbl}", va="bottom", ha="left", fontsize=7.5,
                 color=col, fontweight="bold", zorder=20)
     ax.axvline(thr, color=pal["GRD"], ls="--", lw=0.8, zorder=15)
+    _annotate_logd_mobility(ax, thr, pal, (xlo, xhi))
     ax.set_yticks([])
     ax.set_xlim(xlo, xhi)
     ax.set_ylim(-step * 0.3, (len(dens) - 1) * step + maxd * 1.15)
     ax.set_xlabel("log₁₀ D  (µm²/s)")
-    ax.set_title("LogD distribution  (ridgeline)")
+    ax.set_title("LogD distribution  (ridgeline)", pad=15)  # room for the key
 
 
 def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
@@ -843,10 +881,11 @@ def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0
             ax.plot(centers, frac, "-o", color=col, label=lbl, ms=4, lw=1.2)
     ax.axvline(thr, color=pal["GRD"], ls="--", lw=0.8,
                label=f"D = {mobile_d_threshold:g} µm²/s")
+    _annotate_logd_mobility(ax, thr, pal, (xlo, xhi))
     ax.set_xlim(xlo, xhi)
     ax.set_xlabel("log₁₀ D  (µm²/s)")
     ax.set_ylabel("Density")
-    ax.set_title("LogD distribution  (overlaid)")
+    ax.set_title("LogD distribution  (overlaid)", pad=15)   # room for the key
     ax.legend(frameon=False, loc="best", fontsize=7)
 
 
@@ -872,7 +911,8 @@ def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 
         pc.set_facecolor(col); pc.set_edgecolor(col); pc.set_alpha(0.38)
     rng = np.random.default_rng(0)
     for pos, (_lbl, col, _v, medians) in zip(positions, valid):
-        meds = [m for m in (medians or []) if np.isfinite(m)]
+        meds = [m for m in (() if medians is None else medians)
+                if np.isfinite(m)]
         if meds:
             jit = (rng.random(len(meds)) - 0.5) * 0.24
             ax.scatter(np.full(len(meds), pos) + jit, meds, s=18, color=col,
@@ -882,6 +922,7 @@ def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 
     ax.set_xticks(positions)
     ax.set_xticklabels([l for l, _, _, _ in valid], rotation=30, ha="right",
                        fontsize=7)
+    _annotate_logd_mobility(ax, thr, pal, xlim, vertical=True)
     ax.set_ylabel("log₁₀ D  (µm²/s)")
     ax.set_ylim(xlim)
     ax.set_title("LogD distribution  (violins + per-cell medians)")
@@ -971,7 +1012,8 @@ def render_logd_preview(fig, style, theme="Dark"):
             _render_logd_facets(fig, fig.add_gridspec(1, 1)[0], facets, thr, pal,
                                 "LogD distribution", threshold_label=thr_lbl)
         else:
-            _render_logd_overlaid(fig.add_subplot(111), per_card, thr, pal, 0.05)
+            _render_logd_overlaid(fig.add_subplot(111), per_card, thr, pal,
+                                  MOBILE_D_THRESHOLD_DEFAULT)
         # Tidy small previews: drop axes legends for the non-faceted styles
         # (the faceted strip legend is part of its layout).
         if style != "faceted":

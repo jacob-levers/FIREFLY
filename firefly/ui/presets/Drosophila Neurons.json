@@ -25,7 +25,7 @@
   "analysis/alpha_immobile": 0.5,
   "analysis/alpha_confined": 0.9,
   "analysis/alpha_directed": 1.1,
-  "analysis/mobile_d": 0.021,
+  "analysis/mobile_d": 0.01,
   "analysis/jdd_components": 2,
   "analysis/roi_mode": "Manual polygon",
   "analysis/roi_auto_method": "Li",

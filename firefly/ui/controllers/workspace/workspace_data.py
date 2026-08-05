@@ -37,7 +37,8 @@ import numpy as np
 import pandas as pd
 
 from firefly.analysis.fa_constants import (DEFAULT_FRAME_INTERVAL_S,
-                                           DEFAULT_PIXEL_SIZE_UM)
+                                           DEFAULT_PIXEL_SIZE_UM,
+                                           MOBILE_D_THRESHOLD_DEFAULT)
 
 # ── canonical motion-class palette (dark theme — never recolour) ──────────
 # Mirrors firefly.analysis.fa_constants; hard-coded so this stays importable
@@ -80,6 +81,12 @@ class RunData:
     accessor degrades to ``None`` / empty rather than raising, so a malformed or
     partial run never breaks the live recompute.
     """
+
+    # D (µm²/s) splitting mobile from immobile, for metrics recomputed live.
+    # A CLASS attribute so changing the Preferences value re-reads every loaded
+    # run without rebuilding them; the controller sets it alongside the value it
+    # hands the engine, keeping the stats card and the drawn panel on one number.
+    mobile_d: float = MOBILE_D_THRESHOLD_DEFAULT
 
     def __init__(self, folder: str, stem: str, extras_dir: str, summary: dict):
         self.folder = folder
@@ -255,6 +262,21 @@ def _summary(run: RunData, key: str) -> Optional[float]:
 
 
 def _mobile_pct(run: RunData) -> Optional[float]:
+    """Mobile fraction (%), recomputed from the per-track D at the CURRENT
+    threshold rather than read from the summary.
+
+    ``mobile_fraction`` is frozen into summary_metrics.json by the worker at
+    process time, so a run analysed under one threshold kept reporting that
+    value forever — while the Mobile/Immobile panel drawn right above the stats
+    card was recomputed live by the engine.  The two could disagree on the same
+    run.  Recomputing here puts both on one number and makes a threshold change
+    apply retroactively, with no reprocessing.
+
+    The stored value is still the fallback for runs with no per-track table
+    (palmTRACER caches, partial outputs)."""
+    d = run._diff_col("D", positive=True)
+    if d is not None and d.size:
+        return 100.0 * float((d >= float(run.mobile_d)).mean())
     v = run.summary.get("mobile_fraction")
     return float(v) * 100.0 if v is not None else None
 

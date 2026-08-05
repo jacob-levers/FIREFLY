@@ -189,11 +189,20 @@ class BatchController(QObject):
         self.folderChanged.emit()
         self.rescan()
 
+    def _sister_suffix(self) -> str:
+        """The user's companion-image suffix, so the scan folds companions into
+        their recording instead of queueing each one as its own analysis."""
+        try:
+            return (self._s.get_str("analysis/roi_sister_suffix", "_green") or "").strip()
+        except Exception:
+            return "_green"
+
     @Slot()
     def rescan(self):
         if self._scanning or not self._folder:
             return
         folder, recursive = self._folder, self._recursive
+        sfx = self._sister_suffix()
         self._scanning = True
         self._scan_result = None
         self.scanningChanged.emit()
@@ -201,7 +210,8 @@ class BatchController(QObject):
 
         def _work():
             try:
-                self._scan_result = ("ok", batch_scan.scan_series(folder, recursive))
+                self._scan_result = ("ok", batch_scan.scan_series(
+                    folder, recursive, sister_suffix=sfx))
             except Exception as exc:
                 self._scan_result = ("err", str(exc))
         threading.Thread(target=_work, daemon=True).start()
@@ -536,7 +546,8 @@ class BatchController(QObject):
             self._folder = path
             self.folderChanged.emit()
         try:
-            self._append(batch_scan.scan_series(path, self._recursive))
+            self._append(batch_scan.scan_series(
+                path, self._recursive, sister_suffix=self._sister_suffix()))
         except Exception as exc:
             self.logLine.emit(f"Scan failed: {exc}")
 
@@ -551,7 +562,8 @@ class BatchController(QObject):
         if not self._folder:
             self._folder = os.path.dirname(paths[0])
             self.folderChanged.emit()
-        self._append(batch_scan.scan_paths(list(paths)))
+        self._append(batch_scan.scan_paths(
+            list(paths), sister_suffix=self._sister_suffix()))
 
     @Slot("QVariantList", result=int)
     def addPaths(self, urls):
@@ -572,14 +584,16 @@ class BatchController(QObject):
                 self._folder = d
                 self.folderChanged.emit()
             try:
-                added += self._append(batch_scan.scan_series(d, self._recursive))
+                added += self._append(batch_scan.scan_series(
+                    d, self._recursive, sister_suffix=self._sister_suffix()))
             except Exception:
                 pass
         if files:
             if not self._folder:
                 self._folder = os.path.dirname(files[0])
                 self.folderChanged.emit()
-            added += self._append(batch_scan.scan_paths(files))
+            added += self._append(batch_scan.scan_paths(
+                files, sister_suffix=self._sister_suffix()))
         return added
 
     @staticmethod

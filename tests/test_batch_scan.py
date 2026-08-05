@@ -150,3 +150,97 @@ def test_hyperfly_machine_eligible(monkeypatch):
     monkeypatch.setattr(hf, "N_CPUS", hf.HYPERFLY_MIN_CORES)
     monkeypatch.setattr(hf, "_total_ram_gb", lambda: float(hf.HYPERFLY_MIN_RAM_GB))
     assert hf.hyperfly_machine_eligible() is True
+
+
+# ── "Include subfolders" must actually mean it ───────────────────────────
+def test_non_recursive_scan_does_not_descend_one_level(tmp_path):
+    """The prune was guarded on `rel != os.curdir`, which only stops the walk
+    once it is ALREADY inside a subfolder — so os.walk still yielded one full
+    level down and queued its files.  A user who moved a bad recording into
+    `Excluded/` had it silently swept back into the run queue."""
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "keep.czi")
+    excluded = tmp_path / "Excluded"; excluded.mkdir()
+    _touch(excluded / "bad.czi")
+    rows = {s["key"] for s in batch_scan.scan_series(str(tmp_path))}
+    assert rows == {"keep"}, "a subfolder was scanned with recursion OFF"
+
+
+def test_non_recursive_scan_ignores_deeper_levels_too(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "keep.czi")
+    deep = tmp_path / "a" / "b"; deep.mkdir(parents=True)
+    _touch(deep / "deep.czi")
+    assert {s["key"] for s in batch_scan.scan_series(str(tmp_path))} == {"keep"}
+
+
+def test_recursive_scan_still_finds_subfolders(tmp_path):
+    """The fix must not break the ON state."""
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "keep.czi")
+    sub = tmp_path / "Excluded"; sub.mkdir()
+    _touch(sub / "bad.czi")
+    rows = {s["name"] for s in batch_scan.scan_series(str(tmp_path), recursive=True)}
+    assert rows == {"keep.czi", "bad.czi"}
+
+
+# ── the companion suffix is the USER'S, not a hardcoded "_green" ─────────
+def test_configured_companion_suffix_folds_the_companion_away(tmp_path):
+    """Preferences makes the suffix editable; the scan ignored it and matched
+    only `_green`, so a lab naming companions `-Green Image` got every
+    companion queued as its own 2 GB analysis."""
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "Fly-1-LSide.czi")
+    _touch(tmp_path / "Fly-1-LSide-Green Image.czi")
+    rows = {s["name"] for s in batch_scan.scan_series(
+        str(tmp_path), sister_suffix="-Green Image")}
+    assert rows == {"Fly-1-LSide.czi"}
+
+
+def test_companion_suffix_matching_is_case_insensitive(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "cell.czi")
+    _touch(tmp_path / "cell-GREEN IMAGE.czi")
+    rows = {s["name"] for s in batch_scan.scan_series(
+        str(tmp_path), sister_suffix="-green image")}
+    assert rows == {"cell.czi"}
+
+
+def test_the_default_suffix_is_unchanged_when_none_is_configured(tmp_path):
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "cell.tif"); _touch(tmp_path / "cell_green.tif")
+    assert {s["key"] for s in batch_scan.scan_series(str(tmp_path))} == {"cell"}
+    assert {s["key"] for s in batch_scan.scan_series(
+        str(tmp_path), sister_suffix="")} == {"cell"}
+
+
+def test_a_configured_suffix_replaces_rather_than_extends_the_default(tmp_path):
+    """Someone who renames the suffix may have REAL acquisitions ending in
+    `_green`; dropping those silently is worse than one extra queue row."""
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "cell.czi")
+    _touch(tmp_path / "cell_green.czi")          # a real recording, not a companion
+    _touch(tmp_path / "cell-Green Image.czi")    # the actual companion
+    rows = {s["key"] for s in batch_scan.scan_series(
+        str(tmp_path), sister_suffix="-Green Image")}
+    assert rows == {"cell", "cell_green"}
+
+
+def test_a_companion_without_its_recording_is_still_queued(tmp_path):
+    """Folding is only safe when the primary is present; otherwise the file is
+    the only thing there and dropping it would hide the folder's contents."""
+    from firefly.ui.controllers.params import batch_scan
+    _touch(tmp_path / "orphan-Green Image.czi")
+    rows = {s["name"] for s in batch_scan.scan_series(
+        str(tmp_path), sister_suffix="-Green Image")}
+    assert rows == {"orphan-Green Image.czi"}
+
+
+def test_add_files_path_also_honours_the_configured_suffix(tmp_path):
+    """Drag-and-drop / Add files goes through scan_paths, not scan_series."""
+    from firefly.ui.controllers.params import batch_scan
+    a, b = tmp_path / "cell.czi", tmp_path / "cell-Green Image.czi"
+    _touch(a); _touch(b)
+    rows = {s["name"] for s in batch_scan.scan_paths(
+        [str(a), str(b)], sister_suffix="-Green Image")}
+    assert rows == {"cell.czi"}

@@ -1,5 +1,60 @@
 # Changelog
 
+## v2.76.47-rc.4 — 5 Aug 2026
+
+### Changed
+
+- **The mobile/immobile threshold is now the published value, 0.01 µm²/s.** It
+  was 0.05 by default (and 0.021 in the Drosophila Neurons preset), both picked
+  by eye. 0.01 is the split used for single-molecule receptor tracking in
+  neurons by Constals et al. 2015, *Neuron* 85:787–803 (Figure 1C, which divides
+  the log₁₀ D distribution at log₁₀ D = −2), so the number in your methods is now
+  citable rather than arbitrary. It also matches the measurement floor: over a
+  short track a particle at this D moves about 80 nm, roughly three times a
+  typical localisation precision, which is where motion becomes distinguishable
+  from noise. On a control recording it is the most stable choice of the three —
+  raising the minimum track length from 8 to 25 frames moves the mobile fraction
+  by 1 point at 0.01, against 6 points at 0.021 and 8 at 0.05.
+
+  **This changes your existing numbers.** On a control recording the
+  Mobile/Immobile ratio goes from 1.38 to 2.11 and the mobile fraction from 58%
+  to 68%. Nothing needs reprocessing — both are recomputed from data you already
+  have. The threshold remains editable under Preferences → Analysis.
+
+### Fixed
+
+- **Mobile fraction ignored the current threshold.** It was frozen into each
+  run's record when the run was processed, while the Mobile/Immobile panel drawn
+  directly above it was recomputed live — so the stats card and the chart could
+  quote different splits for the same run, and changing the threshold left the
+  fraction stale. It is now recomputed from the per-track diffusion
+  coefficients, so both agree and a threshold change applies immediately to
+  already-processed data.
+
+- **The Diffusion D chart now labels which side is which**, as `← Immobile |
+  Mobile →` either side of the threshold line, matching the source figure.
+  Previously the dashed guide was unexplained, giving no indication of which
+  side counted as mobile or that the position is a choice rather than a property
+  of the data. Applies to all four chart styles.
+
+- **Ridgeline and violin styles silently fell back to a different chart.** The
+  live preview passes its per-replicate medians as arrays, which those two
+  renderers could not accept, so selecting either one quietly drew the generic
+  chart instead of the one requested.
+
+- **"Include subfolders" did nothing — batch always scanned one level down.**
+  With the switch off, the scan still descended a single level into every
+  subfolder and queued what it found, so a recording moved into an `Excluded`
+  folder was swept straight back into the run queue. Off now means the selected
+  folder only, at any depth.
+
+- **Companion images were queued as separate recordings.** The batch scan
+  matched companions against a hardcoded `_green` instead of the suffix set in
+  Preferences → Analysis, so anyone using a different naming convention got
+  every companion image listed as its own analysis. It now uses your configured
+  suffix, for folder scans, drag-and-drop and Add files alike. A companion with
+  no matching recording is still listed, rather than silently disappearing.
+
 ## v2.76.47-rc.3 — 4 Aug 2026
 
 ### Added

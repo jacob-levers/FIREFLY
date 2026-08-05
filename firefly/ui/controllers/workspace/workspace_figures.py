@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
 from . import workspace_data as _wd
 from .workspace_data import Metric, MOTION_CLASSES, MOTION_COLORS
 
@@ -211,11 +212,12 @@ def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi,
         pooled = _clip_log(g["dist"]) if g.get("dist") is not None else None
         medians = _clip_log(g.get("values"))
         per_card.append((g["label"], g["color"], pooled, medians))
-    thr = float(np.log10(mobile_d)) if mobile_d and mobile_d > 0 else float(np.log10(0.05))
+    thr = float(np.log10(mobile_d if mobile_d and mobile_d > 0
+                        else MOBILE_D_THRESHOLD_DEFAULT))
     fig, ax = _new_axes(width_px, height_px, dpi)
     fn = {"ridgeline": _render_logd_ridgeline, "violin": _render_logd_violin}.get(
         style, _render_logd_overlaid)
-    fn(ax, per_card, thr, pal, mobile_d or 0.05, xlim=(_lo, _hi))
+    fn(ax, per_card, thr, pal, mobile_d or MOBILE_D_THRESHOLD_DEFAULT, xlim=(_lo, _hi))
     # keep the live dark theme: re-tint labels/title/legend the engine left default
     ax.title.set_color(_INK)
     ax.xaxis.label.set_color(_MUTED); ax.yaxis.label.set_color(_MUTED)
@@ -300,7 +302,8 @@ def _render_length_density(groups, metric, width_px, height_px, dpi):
 def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
                   err: str = "95% CI", log_x: bool = False,
                   width_px: int = 720, height_px: int = 380, dpi: int = 100,
-                  logd_style: str = "overlaid", mobile_d: float = 0.05,
+                  logd_style: str = "overlaid",
+                  mobile_d: float = MOBILE_D_THRESHOLD_DEFAULT,
                   logd_clip: tuple = (0.00001, 10.0),
                   group_style: str = "box_points", length_style: str = "density",
                   grouped_data=None):
