@@ -23,6 +23,49 @@ from test_workspace_data import make_run_folder
 _app = QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _dispose_controllers(monkeypatch):
+    """Tear every controller down before the interpreter exits.
+
+    Each test builds an AnalysisWorkspaceController, which owns two QTimers and
+    a background loader, and nothing here ever disposed of them.  On Linux the
+    process then SEGFAULTED at interpreter shutdown — after all 19 tests had
+    PASSED — because Qt was destroyed with live timers still attached.  That
+    crash took down the whole release-validation job, and while the suite ran in
+    one process it surfaced in whichever unrelated test happened to be running.
+
+    Stop the timers, let the loader settle, then flush the deferred deletes.
+    Mirrors the qml_window fixture in test_qml_smoke.
+    """
+    from PySide6.QtCore import QTimer, QEvent
+    made = []
+    original = AnalysisWorkspaceController.__init__
+
+    def _record(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        made.append(self)
+
+    monkeypatch.setattr(AnalysisWorkspaceController, "__init__", _record)
+    yield
+    import time
+    for ctrl in made:
+        deadline = time.monotonic() + 5.0
+        try:
+            while ctrl.loadingFolders and time.monotonic() < deadline:
+                _app.processEvents(); time.sleep(0.01)
+        except Exception:
+            pass
+        for value in list(vars(ctrl).values()):
+            if isinstance(value, QTimer):
+                try: value.stop()
+                except Exception: pass
+        try: ctrl.deleteLater()
+        except Exception: pass
+    for _ in range(3):
+        _app.processEvents()
+        _app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def _await_load(c, timeout=10.0):
     """Folder loading is async (off the GUI thread); pump the event loop until
     every dropped folder has resolved so the synchronous readout is settled."""
