@@ -69,7 +69,32 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run release tests (including slow regressions)
-        run: pytest
+        # ONE PROCESS PER TEST FILE, deliberately.
+        #
+        # This is the only job that runs the whole suite with Qt AND the slow
+        # tests in a single process (pytest-core installs no Qt; pytest-qt runs
+        # `-m "not slow"`).  In that combination the run segfaults on Linux:
+        # test_updater_helper's concurrency tests park the main thread in a
+        # plain threading wait for a second or two, and Qt state left behind by
+        # an earlier test file — deferred deletes, timers — fires during that
+        # window with no event loop to service it.  Every Python thread is idle
+        # in the fault dump, which is what a native-thread crash looks like.
+        #
+        # Per-file processes give each file a clean interpreter, which is how
+        # the suite is verified locally.  Slower by a few process starts; the
+        # alternative is a release gate that fails on unrelated commits.
+        shell: bash
+        run: |
+          failed=()
+          for f in tests/test_*.py; do
+            echo "── $f"
+            pytest "$f" -q || failed+=("$f")
+          done
+          if (( ${#failed[@]} )); then
+            printf '\nFAILED: %s\n' "${failed[@]}"
+            exit 1
+          fi
+          echo "All test files passed."
 
       - name: Build package distributions
         run: |
