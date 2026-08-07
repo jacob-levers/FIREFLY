@@ -64,6 +64,27 @@ def _dispose_controllers(monkeypatch):
     for _ in range(3):
         _app.processEvents()
         _app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    # Drain the controller's worker threads.  They are daemon threads, so the
+    # interpreter does NOT wait for them: at shutdown they are killed wherever
+    # they happen to be, and one killed inside matplotlib/Qt native code faults
+    # the process AFTER every test has passed.  That is the crash the release
+    # job hit — several seconds after the last test, with no faulthandler dump
+    # because pytest had already finished.
+    import threading
+    jobs = ("_FigureJob", "_PanelJob", "_GroupAllPanelsJob",
+            "_ReportJob", "_EngineFigJob")
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        alive = [th for th in threading.enumerate()
+                 if type(th).__name__ in jobs and th.is_alive()]
+        if not alive:
+            break
+        _app.processEvents()
+        time.sleep(0.02)
+    else:
+        raise AssertionError(
+            "worker threads still running at teardown: "
+            + ", ".join(sorted(type(th).__name__ for th in alive)))
 
 
 def _await_load(c, timeout=10.0):
