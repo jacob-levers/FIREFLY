@@ -162,3 +162,36 @@ def test_manifest_replay_restores_gap_policy_from_wire_contract():
         "widget_state": {},
     }, "legacy-compatible")
     assert sb.get("analysis/gap_policy") == "Contiguous observations (legacy)"
+
+
+def test_builtin_presets_declare_the_same_keys():
+    """A preset only writes the keys it contains — ``applyState`` leaves every
+    other setting alone.  So a key set by one built-in and omitted by the other
+    silently survives the switch: loading PC12 Cells after Drosophila Neurons
+    kept ``minmass_mode = Density-matched``, quietly density-matching a PC12
+    run.  Requiring both to declare the same keys makes a switch total.
+    """
+    import json
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "firefly/ui/presets"
+    sets = {}
+    for f in sorted(root.glob("*.json")):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        d.pop("__firefly_builtin__", None)
+        sets[f.stem] = set(d)
+    names = sorted(sets)
+    base = sets[names[0]]
+    for n in names[1:]:
+        diff = base ^ sets[n]
+        assert not diff, (
+            f"'{names[0]}' and '{n}' disagree on {sorted(diff)} — whichever "
+            f"preset omits a key inherits the other's value on switch")
+
+
+def test_pc12_does_not_density_match():
+    """Density-matching is a Drosophila-specific policy; PC12 must say so."""
+    import json
+    from pathlib import Path
+    p = json.loads((Path(__file__).resolve().parents[1]
+                    / "firefly/ui/presets/PC12 Cells.json").read_text(encoding="utf-8"))
+    assert p["analysis/minmass_mode"] == "Linkability"

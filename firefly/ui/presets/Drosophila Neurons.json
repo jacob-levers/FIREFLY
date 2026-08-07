@@ -35,5 +35,6 @@
   "analysis/drift_correct": true,
   "analysis/drift_segment": 400,
   "analysis/cluster_eps_nm": 40.0,
-  "analysis/cluster_min_samples": 8
+  "analysis/cluster_min_samples": 8,
+  "analysis/linker": "Crocker–Grier — Trackpy"
 }
