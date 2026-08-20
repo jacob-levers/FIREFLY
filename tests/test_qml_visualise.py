@@ -633,3 +633,70 @@ def test_cluster_info_note_describes_the_selected_mode():
     # not assert a single dominant class either.
     c._cl_color_mode = "ID"
     assert c._cluster_info(0)["note"].startswith("Motion mix:")
+
+
+# ── one-click cluster load for the run already open ─────────────────────────
+def test_open_run_cluster_button_is_hidden_until_a_run_can_supply_clusters(tmp_path):
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    import os
+    c = VisualiseController()
+    assert c.openRunHasClusters is False          # nothing loaded at all
+    assert c.openRunClusterName == ""
+
+    run_dir = _make_run(tmp_path)
+    c.loadTracksPath(os.path.join(run_dir, "firefly_extras",
+                                  "cell1_trajectories.csv"), None)
+    # tracks are open, but this run was analysed WITHOUT clustering
+    assert c.openRunHasClusters is False
+
+    _add_cluster_labels(run_dir)
+    assert c.openRunHasClusters is True
+    assert c.openRunClusterName == "run1"         # names the run on the button
+
+
+def test_load_clusters_for_open_run_needs_no_directory_navigation(tmp_path):
+    """The whole point: same run, no file dialog."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    import os
+    run_dir = _make_run(tmp_path)
+    _add_cluster_labels(run_dir)
+    c = VisualiseController()
+    c.loadTracksPath(os.path.join(run_dir, "firefly_extras",
+                                  "cell1_trajectories.csv"), None)
+    assert c.loadClustersForOpenRun() is True
+    assert c.hasClusters
+    assert c.clusterCount == 2                    # ids 0 and 1; -1 is noise
+
+
+def test_browse_loading_still_works_after_the_one_click_load(tmp_path):
+    """The new button must not replace the browse path — a second map still
+    loads, so several cluster maps can be worked through in one session."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    import os
+    run_a = _make_run(tmp_path)
+    _add_cluster_labels(run_a)
+    c = VisualiseController()
+    c.loadTracksPath(os.path.join(run_a, "firefly_extras",
+                                  "cell1_trajectories.csv"), None)
+    assert c.loadClustersForOpenRun() is True
+
+    other = tmp_path / "other"
+    other.mkdir()
+    run_b = _make_run(other)
+    _add_cluster_labels(run_b)
+    assert c.loadClustersFolder(run_b) is True    # the browse path, unchanged
+    assert c.hasClusters
+
+
+def test_a_run_outside_a_firefly_extras_folder_does_not_offer_the_button(tmp_path):
+    """Tracks opened from a loose CSV have no run folder to take clusters from."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    import shutil, os
+    run_dir = _make_run(tmp_path)
+    loose = tmp_path / "loose_trajectories.csv"
+    shutil.copy(os.path.join(run_dir, "firefly_extras", "cell1_trajectories.csv"),
+                loose)
+    c = VisualiseController()
+    c.loadTracksPath(str(loose), None)
+    assert c.openRunHasClusters is False
+    assert c.loadClustersForOpenRun() is False    # reports, does not raise

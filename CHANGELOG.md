@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.76.50-rc.2 — 20 Aug 2026
+
+### Added
+
+- **A one-click button to load the cluster map for the run you already have
+  open**, in Visualise → Clusters. It names the run it will load, so with
+  several track runs open it is clear which one you are getting, and it appears
+  only when a loaded run actually has a cluster map to give. "Load cluster map"
+  is unchanged beneath it, so you can still add as many further cluster maps
+  from anywhere as you like.
+
 ## v2.76.50-rc.1 — 20 Aug 2026
 
 ### Changed

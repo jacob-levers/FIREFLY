@@ -457,8 +457,16 @@ class VisualiseController(QObject):
             if diff_df is not None and "particle" in diff_df.columns:
                 diff_df = diff_df.copy()
                 diff_df["particle"] = diff_df["particle"].astype("int64") + off
+            # Keep the source path: the run folder is what "load this run's
+            # clusters" needs, and a loaded run had no record of where it came
+            # from.  <run_dir>/firefly_extras/<stem>_trajectories.csv → run_dir.
+            _extras = os.path.dirname(os.path.abspath(csv_path))
+            _run_dir = (os.path.dirname(_extras)
+                        if os.path.basename(_extras) == "firefly_extras" else "")
             self._runs.append({"name": name, "df": df, "diff": diff_df,
-                               "color": _RUN_COLOURS[ri % len(_RUN_COLOURS)], "offset": off})
+                               "color": _RUN_COLOURS[ri % len(_RUN_COLOURS)], "offset": off,
+                               "csv_path": os.path.abspath(csv_path),
+                               "run_dir": _run_dir})
             self._cl_motion_tried_derive = False   # new tracks → re-derive cluster motion
             self._tracks_df = self._runs[0]["df"]      # primary
             self._diff_df = self._runs[0]["diff"]
@@ -1092,6 +1100,57 @@ class VisualiseController(QObject):
             self.clusterChanged.emit()
             if self._cl_present:
                 self._render_cluster_layer()
+
+    def _open_run_cluster_dir(self) -> str:
+        """Run folder of an OPEN track run that has cluster labels, else "".
+
+        Prefers the primary (first) run, which already drives clusters, super-res
+        and the explorer; otherwise the first loaded run that actually has a
+        ``*_cluster_labels.csv`` beside it, so the button is not dead just
+        because run 1 was never clustered.
+        """
+        def _has_labels(run_dir):
+            extras = os.path.join(run_dir or "", "firefly_extras")
+            if not (run_dir and os.path.isdir(extras)):
+                return False
+            try:
+                return any(f.endswith("_cluster_labels.csv")
+                           for f in _listdir_visible(extras))
+            except Exception:
+                return False
+        for run in self._runs:
+            if _has_labels(run.get("run_dir")):
+                return run["run_dir"]
+        return ""
+
+    @Property(bool, notify=dataChanged)
+    def openRunHasClusters(self):
+        """Drives the 'this run' button — false when nothing is loaded, when the
+        tracks came from somewhere without a firefly_extras/ folder, or when the
+        run was analysed without cluster labels."""
+        return bool(self._open_run_cluster_dir())
+
+    @Property(str, notify=dataChanged)
+    def openRunClusterName(self):
+        """Folder name behind that button, so the label can say WHICH run it
+        will load rather than leaving the user to guess with several open."""
+        d = self._open_run_cluster_dir()
+        return os.path.basename(d.rstrip(os.sep)) if d else ""
+
+    @Slot(result=bool)
+    def loadClustersForOpenRun(self) -> bool:
+        """Load the cluster map belonging to a run whose tracks are already open,
+        with no directory navigation.  Adds to the view exactly as the browse
+        path does, so loading further maps afterwards still works."""
+        run_dir = self._open_run_cluster_dir()
+        if not run_dir:
+            self.warn.emit("No cluster map for this run",
+                           "The open run has no *_cluster_labels.csv in its "
+                           "firefly_extras folder. Re-run the analysis with "
+                           "clustering enabled, or use Load cluster map to pick "
+                           "another run.")
+            return False
+        return self.loadClustersFolder(run_dir)
 
     @Slot()
     def loadClusters(self):

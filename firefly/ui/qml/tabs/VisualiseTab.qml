@@ -175,6 +175,15 @@ Item {
                     CollapsibleSection {
                         Layout.fillWidth: true
                         title: "Clusters"; icon: "circle-dot"; expanded: false
+                        // One click for the common case — the clusters that
+                        // belong to the run whose tracks are already open — with
+                        // "Load cluster map" kept beside it so any number of
+                        // further maps can still be added from anywhere.
+                        Button { width: parent.width; variant: "primary"
+                                 visible: Vis.openRunHasClusters
+                                 text: "Load clusters for " + Vis.openRunClusterName
+                                 icon: "circle-dot"
+                                 onClicked: Vis.loadClustersForOpenRun() }
                         Button { width: parent.width; variant: "secondary"; text: "Load cluster map"
                                  icon: "folder-open"; onClicked: Vis.loadClusters() }
                         Alert {
