@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.50-rc.1 — 20 Aug 2026
+
+### Changed
+
+- **The cluster colour mode "Motion" is now "Individual motion."** Sitting next
+  to "Cluster motion" it was unclear which was which — both colour by motion,
+  and what differs is whether the colour belongs to each localisation or to the
+  whole cluster.
+
+### Fixed
+
+- **The cluster info box now describes the colouring you actually chose.** It
+  reported a single dominant motion class whatever the mode, so with
+  "Individual motion" selected it claimed one class for a cluster you were
+  looking at as a mixture of colours. It now reports the dominant class only in
+  "Cluster motion" mode, and the full motion mix otherwise.
+
 ## v2.76.49 — 6 Aug 2026
 
 ### Fixed

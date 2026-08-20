@@ -171,7 +171,7 @@ class VisualiseController(QObject):
         self._cl_min_samples = 8
         self._cl_point_size = (int(settings.get_float("visualise/cluster_point_size", 3))
                                if settings else 3)
-        self._cl_color_mode = "Motion"
+        self._cl_color_mode = "Individual motion"
         self._cl_count = 0
         self._cl_status = ""
         # ── super-resolution ─────────────────────────────────────────────
@@ -908,10 +908,20 @@ class VisualiseController(QObject):
                 motions = self._cl_motion[self._cl_labels == cid]
                 if motions.size:
                     counts = Counter(motions.tolist())
-                    total = sum(counts.values())
-                    top, top_n = counts.most_common(1)[0]
-                    info["note"] = (f"Dominant motion: {top} "
-                                    f"({100.0 * top_n / max(1, total):.0f}%)")
+                    total = max(1, sum(counts.values()))
+                    # Describe what is actually ON SCREEN.  This used to report
+                    # the dominant class unconditionally, so in per-localisation
+                    # mode the box claimed a single motion for a cluster drawn
+                    # as a mixture of colours.
+                    if self._cl_color_mode == "Cluster motion":
+                        top, top_n = counts.most_common(1)[0]
+                        info["note"] = (f"Dominant motion: {top} "
+                                        f"({100.0 * top_n / total:.0f}%)")
+                    else:
+                        mix = ", ".join(
+                            f"{cls} {100.0 * n / total:.0f}%"
+                            for cls, n in counts.most_common(4))
+                        info["note"] = f"Motion mix: {mix}"
         except Exception:
             pass
         return info
@@ -1060,10 +1070,12 @@ class VisualiseController(QObject):
             if self._cl_present:
                 self._render_cluster_layer()
 
-    # "Motion" = colour each localisation by its own motion class.
-    # "Cluster motion" = colour each whole cluster by its DOMINANT motion class.
-    # "ID" = a distinct colour per cluster.
-    _CLUSTER_COLOR_MODES = ("Motion", "Cluster motion", "ID")
+    # "Individual motion" = colour each localisation by its OWN motion class, so one
+    #   cluster can show a mixture.
+    # "Cluster motion" = colour every loc in a cluster by that cluster's
+    #   DOMINANT class, so each cluster reads as a single colour.
+    # "ID" = a distinct colour per cluster; motion is not used.
+    _CLUSTER_COLOR_MODES = ("Individual motion", "Cluster motion", "ID")
 
     @Property("QStringList", constant=True)
     def clusterColorModes(self):
@@ -1142,7 +1154,7 @@ class VisualiseController(QObject):
             # Only fall back to ID when there's genuinely no motion data anywhere
             # (no motion column AND nothing to derive it from).
             if (self._cl_motion is None and not self._runs and not self._motion_src
-                    and self._cl_color_mode in ("Motion", "Cluster motion")):
+                    and self._cl_color_mode in ("Individual motion", "Cluster motion")):
                 self._cl_color_mode = "ID"
             self._cl_present = True
             self._cl_visible = True          # new clusters load shown
@@ -1271,11 +1283,11 @@ class VisualiseController(QObject):
         # Fall back to per-cluster ID colours when there is no real motion data
         # — otherwise "colour by motion" would be a uniform grey blob (every loc
         # tagged "Unmatched"/"Unclassified" collapses to the Unknown grey).
-        if mode in ("Motion", "Cluster motion") and not self._has_real_motion():
+        if mode in ("Individual motion", "Cluster motion") and not self._has_real_motion():
             mode = "ID"
         ys, xs = self._cl_xy_px[:, 0], self._cl_xy_px[:, 1]
         noise = ids == -1
-        if mode in ("Motion", "Cluster motion"):
+        if mode in ("Individual motion", "Cluster motion"):
             pal = self._palette()
 
             def rgba(hex_str, a):

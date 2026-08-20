@@ -595,3 +595,41 @@ def test_alloc_stack_honours_dtype_and_reserve_override():
     assert not isinstance(a, np.memmap)          # small + tiny reserve → in-RAM
     b = _alloc_or_memmap_stack((4, 8, 8))        # default float32
     assert b.dtype == np.float32
+
+
+# ── cluster colour modes ────────────────────────────────────────────────────
+def test_cluster_colour_modes_are_named_for_what_they_colour():
+    """"Motion" was ambiguous next to "Cluster motion" — both are motion, they
+    differ in whether the unit coloured is the localisation or the cluster."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController()
+    assert c.clusterColorModes == ["Individual motion", "Cluster motion", "ID"]
+    assert c.clusterColorMode == "Individual motion"      # the default
+
+
+def test_cluster_info_note_describes_the_selected_mode():
+    """The inspector reported "Dominant motion" whatever the mode, so in
+    per-localisation mode it claimed one class for a cluster drawn as a mixture.
+    """
+    import numpy as np
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController()
+    # cluster 0 holds a deliberate mixture: 3 Immobile, 2 Directed
+    c._cl_labels = np.array([0, 0, 0, 0, 0])
+    c._cl_motion = np.array(["Immobile", "Immobile", "Immobile",
+                             "Directed", "Directed"])
+
+    c._cl_color_mode = "Cluster motion"
+    note = c._cluster_info(0)["note"]
+    assert note.startswith("Dominant motion: Immobile"), note
+    assert "60%" in note, note
+
+    c._cl_color_mode = "Individual motion"
+    note = c._cluster_info(0)["note"]
+    assert note.startswith("Motion mix:"), note
+    assert "Immobile 60%" in note and "Directed 40%" in note, note
+
+    # ID colours by cluster, not motion — the mix stays informative, but it must
+    # not assert a single dominant class either.
+    c._cl_color_mode = "ID"
+    assert c._cluster_info(0)["note"].startswith("Motion mix:")
