@@ -1454,11 +1454,11 @@ class VisualiseController(QObject):
         from firefly.analysis.fa_clustering import suggest_eps_nm
         eps_nm = suggest_eps_nm(self._cl_xy_um, min_samples=int(self._cl_min_samples))
         if not eps_nm:
-            self._cl_status = "eps estimate failed"
+            self._cl_status = "EPS estimate failed"
             self.clusterChanged.emit()
             return
         v = int(round(eps_nm))
-        self._cl_status = f"suggested eps ≈ {v} nm (k-distance knee)"
+        self._cl_status = f"suggested EPS ≈ {v} nm (k-distance knee)"
         self.clusterEpsNm = v          # triggers debounced re-cluster
 
     @Slot(result=bool)

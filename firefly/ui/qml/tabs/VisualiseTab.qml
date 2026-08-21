@@ -190,9 +190,9 @@ Item {
                             visible: Vis.noClustersBanner
                             width: parent.width
                             severity: "warn"
-                            text: "No clusters at this eps — lower it."
+                            text: "No clusters at this EPS — lower it."
                         }
-                        NumRow { label: "eps (nm)"; value: "" + Vis.clusterEpsNm
+                        NumRow { label: "EPS (nm)"; value: "" + Vis.clusterEpsNm
                                  onCommitted: (t) => { var v = parseInt(t); if (!isNaN(v)) Vis.clusterEpsNm = v } }
                         NumRow { label: "min samples"; value: "" + Vis.clusterMinSamples
                                  onCommitted: (t) => { var v = parseInt(t); if (!isNaN(v)) Vis.clusterMinSamples = v } }
@@ -200,7 +200,7 @@ Item {
                                  onCommitted: (t) => { var v = parseInt(t); if (!isNaN(v)) Vis.clusterPointSize = v } }
                         RowLayout {
                             width: parent.width; spacing: sc.sp2
-                            Button { variant: "secondary"; text: "Suggest eps"; Layout.fillWidth: true
+                            Button { variant: "secondary"; text: "Suggest EPS"; Layout.fillWidth: true
                                      onClicked: Vis.suggestEps() }
                             Button { variant: "secondary"; text: "Export"; Layout.fillWidth: true
                                      onClicked: Vis.exportTunedClusters() }

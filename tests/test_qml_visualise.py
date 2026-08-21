@@ -700,3 +700,26 @@ def test_a_run_outside_a_firefly_extras_folder_does_not_offer_the_button(tmp_pat
     c.loadTracksPath(str(loose), None)
     assert c.openRunHasClusters is False
     assert c.loadClustersForOpenRun() is False    # reports, does not raise
+
+
+def test_eps_is_capitalised_everywhere_the_user_sees_it():
+    """EPS is an acronym; it read as lowercase prose in the UI.  Guarded because
+    the same word is ALSO the Greenhouse-Geisser epsilon in the statistics
+    modules, which is a different quantity and must stay lowercase."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    from firefly.ui.controllers.params import sidebar_schema as S
+    assert S.BY_KEY["analysis/cluster_eps_nm"]["label"] == "EPS (nm)"
+    assert S.BY_KEY["analysis/cluster_auto_eps"]["label"] == "Auto EPS (k-distance knee)"
+
+    qml = (root / "firefly/ui/qml/tabs/VisualiseTab.qml").read_text(encoding="utf-8")
+    assert 'text: "Suggest EPS"' in qml
+    assert 'label: "EPS (nm)"' in qml
+    # no lowercase 'eps' left inside any user-visible string in that file
+    for s in re.findall(r'"([^"]*)"', qml):
+        assert not re.search(r"\beps\b", s), s
+
+    # the statistics tables must NOT have been swept up
+    comp = (root / "firefly/analysis/fa_compare.py").read_text(encoding="utf-8")
+    assert '"eps"' in comp, "Greenhouse-Geisser epsilon was renamed by mistake"

@@ -487,11 +487,11 @@ ANALYSIS_GLOSSARY = {
     "drift segment":
         "How many frames per block when estimating drift — finer blocks capture "
         "faster drift but are noisier.",
-    "DBSCAN eps":
+    "DBSCAN EPS":
         "How close two localisations must be (in nm) to count as neighbours when "
         "clustering — larger merges nearby clusters, smaller splits them.",
     "min samples":
-        "How many neighbours within eps are needed to seed a cluster — higher "
+        "How many neighbours within EPS are needed to seed a cluster — higher "
         "gives fewer, denser clusters and more points labelled as noise.",
     "detection backend":
         "Which engine runs spot detection — the Trackpy CPU path or the "

@@ -78,7 +78,7 @@ def compute_clusters(locs, pixel_size_um, eps_um=0.05, min_samples=5,
               f"{n_input:,} localisations")
     else:
         print(f"  Cluster analysis  : {len(xy):,} localisations  "
-              f"(eps={eps_um*1000:.0f} nm, min_samples={min_samples})")
+              f"(EPS={eps_um*1000:.0f} nm, min_samples={min_samples})")
 
     # ── Safety guard: bound the neighbourhood graph for a large eps ───────────
     # DBSCAN's region queries return ~all points when eps approaches the data's
@@ -106,7 +106,7 @@ def compute_clusters(locs, pixel_size_um, eps_um=0.05, min_samples=5,
             _r2 = np.random.default_rng(7)
             xy = xy[_r2.choice(len(xy), n_safe, replace=False)]
             subsampled = True
-            print(f"  Cluster analysis  : eps={eps_um*1000:.0f} nm large for this "
+            print(f"  Cluster analysis  : EPS={eps_um*1000:.0f} nm large for this "
                   f"data — sub-sampled to {n_safe:,} localisations to stay within "
                   f"memory")
 

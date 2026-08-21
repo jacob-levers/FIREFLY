@@ -2523,7 +2523,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # almost entirely into noise (a 2,862-loc recording at 40 nm came out
         # 98% noise with 5 clusters, where its own k-distance knee said 172 nm).
         # With auto on, each file gets the knee of its OWN localisations — the
-        # same estimator behind the Visualise tab's "Suggest eps".
+        # same estimator behind the Visualise tab's "Suggest EPS".
         cluster_min_samples = int(p.get("cluster_min_samples", 10))
         cluster_eps_nm = float(p.get("cluster_eps_nm", 50.0))
         cluster_eps_auto = bool(p.get("cluster_auto_eps", False))
@@ -2535,14 +2535,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     locs[["x", "y"]].to_numpy(dtype=float) * px,
                     min_samples=cluster_min_samples)
             except Exception as _eps_exc:
-                _log(f"  WARN: auto eps failed ({_eps_exc}) — keeping "
+                _log(f"  WARN: auto EPS failed ({_eps_exc}) — keeping "
                      f"{cluster_eps_nm:.0f} nm.")
             if cluster_eps_suggested:
-                _log(f"  Cluster eps       : auto → {cluster_eps_suggested:.0f} nm "
+                _log(f"  Cluster EPS       : auto → {cluster_eps_suggested:.0f} nm "
                      f"(k-distance knee; the set value was {cluster_eps_nm:.0f} nm)")
                 cluster_eps_nm = float(cluster_eps_suggested)
             else:
-                _log(f"  WARN: auto eps could not be estimated — keeping "
+                _log(f"  WARN: auto EPS could not be estimated — keeping "
                      f"{cluster_eps_nm:.0f} nm.")
         try:
             cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(

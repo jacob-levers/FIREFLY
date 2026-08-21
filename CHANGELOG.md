@@ -1,8 +1,15 @@
 # Changelog
 
-## v2.76.50-rc.6 — 21 Aug 2026
+## v2.76.50 — 21 Aug 2026
 
 ### Added
+
+- **A one-click button to load the cluster map for the run you already have
+  open**, in Visualise → Clusters. It names the run it will load, so with
+  several track runs open it is clear which one you are getting, and it appears
+  only when a loaded run actually has a cluster map to give. "Load cluster map"
+  is unchanged beneath it, so you can still add as many further cluster maps
+  from anywhere as you like.
 
 - **Automatic cluster radius.** A new "Auto eps (k-distance knee)" tick box
   under Clustering picks the neighbourhood radius from each recording's own
@@ -18,9 +25,12 @@
   button uses, so the number you see there is the number an automatic run will
   choose.
 
-## v2.76.50-rc.5 — 21 Aug 2026
-
 ### Changed
+
+- **The cluster colour mode "Motion" is now "Individual motion."** Sitting next
+  to "Cluster motion" it was unclear which was which — both colour by motion,
+  and what differs is whether the colour belongs to each localisation or to the
+  whole cluster.
 
 - **The exported cluster map is now coloured by motion class**, each cluster
   taking its dominant class with a legend, the same way the Visualise tab
@@ -29,23 +39,22 @@
   no motion information is available it falls back to the old per-cluster
   colours rather than showing a single flat colour.
 
-### Fixed
-
-- **The exported cluster map and the one on screen no longer disagree.** A run
-  never recorded the clustering settings it used, so opening it in Visualise
-  fell back to that tab's own default of 50 nm instead of adopting the run's
-  value — the two views were clustering the same data differently. Runs now
-  record their eps and minimum-samples settings.
-
-- **Large runs lost their cluster motion entirely.** Clustering samples down to
-  250,000 localisations on big recordings, and the step that assigns a motion
-  class to each localisation was skipped whenever that happened, leaving every
-  point in the run marked unmatched. On one 16,000-frame recording this recovers
-  motion for around 19,000 localisations that previously had none.
-
-## v2.76.50-rc.4 — 21 Aug 2026
+- **The clustering radius is written EPS throughout**, rather than a
+  lowercase word in some places and an acronym in others.
 
 ### Fixed
+
+- **The cluster info box now describes the colouring you actually chose.** It
+  reported a single dominant motion class whatever the mode, so with
+  "Individual motion" selected it claimed one class for a cluster you were
+  looking at as a mixture of colours. It now reports the dominant class only in
+  "Cluster motion" mode, and the full motion mix otherwise.
+
+- **The cluster "Colour by" options no longer sit on top of their label.** The
+  label and the three options shared one row that could not shrink, so once
+  "Individual motion" replaced the shorter "Motion" they overlapped it. The
+  label now sits above the options, which wrap onto a second line if they ever
+  run out of room.
 
 - **The indeterminate progress bar no longer looks like it keeps restarting.**
   Its sweeping highlight used an ease-in-out motion, which is meant for
@@ -60,43 +69,17 @@
   moved, for the whole of a ~570 MB download. It now updates only when the
   progress or the status text actually changes.
 
-## v2.76.50-rc.3 — 20 Aug 2026
+- **The exported cluster map and the one on screen no longer disagree.** A run
+  never recorded the clustering settings it used, so opening it in Visualise
+  fell back to that tab's own default of 50 nm instead of adopting the run's
+  value — the two views were clustering the same data differently. Runs now
+  record their eps and minimum-samples settings.
 
-### Fixed
-
-- **The cluster "Colour by" options no longer sit on top of their label.** The
-  label and the three options shared one row that could not shrink, so once
-  "Individual motion" replaced the shorter "Motion" they overlapped it. The
-  label now sits above the options, which wrap onto a second line if they ever
-  run out of room.
-
-## v2.76.50-rc.2 — 20 Aug 2026
-
-### Added
-
-- **A one-click button to load the cluster map for the run you already have
-  open**, in Visualise → Clusters. It names the run it will load, so with
-  several track runs open it is clear which one you are getting, and it appears
-  only when a loaded run actually has a cluster map to give. "Load cluster map"
-  is unchanged beneath it, so you can still add as many further cluster maps
-  from anywhere as you like.
-
-## v2.76.50-rc.1 — 20 Aug 2026
-
-### Changed
-
-- **The cluster colour mode "Motion" is now "Individual motion."** Sitting next
-  to "Cluster motion" it was unclear which was which — both colour by motion,
-  and what differs is whether the colour belongs to each localisation or to the
-  whole cluster.
-
-### Fixed
-
-- **The cluster info box now describes the colouring you actually chose.** It
-  reported a single dominant motion class whatever the mode, so with
-  "Individual motion" selected it claimed one class for a cluster you were
-  looking at as a mixture of colours. It now reports the dominant class only in
-  "Cluster motion" mode, and the full motion mix otherwise.
+- **Large runs lost their cluster motion entirely.** Clustering samples down to
+  250,000 localisations on big recordings, and the step that assigns a motion
+  class to each localisation was skipped whenever that happened, leaving every
+  point in the run marked unmatched. On one 16,000-frame recording this recovers
+  motion for around 19,000 localisations that previously had none.
 
 ## v2.76.49 — 6 Aug 2026
 
