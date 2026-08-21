@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.76.50-rc.3 — 20 Aug 2026
+
+### Fixed
+
+- **The cluster "Colour by" options no longer sit on top of their label.** The
+  label and the three options shared one row that could not shrink, so once
+  "Individual motion" replaced the shorter "Motion" they overlapped it. The
+  label now sits above the options, which wrap onto a second line if they ever
+  run out of room.
+
 ## v2.76.50-rc.2 — 20 Aug 2026
 
 ### Added

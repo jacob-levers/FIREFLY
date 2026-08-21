@@ -205,23 +205,33 @@ Item {
                             Button { variant: "secondary"; text: "Export"; Layout.fillWidth: true
                                      onClicked: Vis.exportTunedClusters() }
                         }
-                        RowLayout {
-                            width: parent.width; spacing: sc.sp2
-                            Text { text: "Colour by"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
-                                   Layout.fillWidth: true }
-                            Repeater {
-                                model: Vis.clusterColorModes
-                                delegate: Rectangle {
-                                    required property string modelData
-                                    readonly property bool active: Vis.clusterColorMode === modelData
-                                    implicitWidth: cbLabel.implicitWidth + sc.sp3 * 2   // fit the label
-                                    implicitHeight: 24; radius: sc.radiusMd
-                                    color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
-                                    border.width: 1; border.color: active ? pal.ACC : pal.BORDER
-                                    Text { id: cbLabel; anchors.centerIn: parent; text: modelData
-                                           color: active ? pal.ACC : pal.TXT_MUTED; font.pixelSize: sc.textXs }
-                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                                onClicked: Vis.clusterColorMode = modelData }
+                        // Label ABOVE a wrapping Flow, not beside the chips.  A
+                        // RowLayout cannot shrink a chip below its implicit
+                        // width, so once "Individual motion" replaced "Motion"
+                        // the row overflowed and the chips sat on top of the
+                        // "Colour by" text.  Wrapping also keeps this honest if
+                        // a mode is renamed again or the sidebar narrows.
+                        ColumnLayout {
+                            width: parent.width; spacing: sc.sp1
+                            Text { text: "Colour by"; color: pal.TXT_MUTED
+                                   font.pixelSize: sc.textXs }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: sc.sp2
+                                Repeater {
+                                    model: Vis.clusterColorModes
+                                    delegate: Rectangle {
+                                        required property string modelData
+                                        readonly property bool active: Vis.clusterColorMode === modelData
+                                        implicitWidth: cbLabel.implicitWidth + sc.sp3 * 2   // fit the label
+                                        implicitHeight: 24; radius: sc.radiusMd
+                                        color: active ? Qt.rgba(pal.ACC.r, pal.ACC.g, pal.ACC.b, 0.14) : pal.PANEL_ALT
+                                        border.width: 1; border.color: active ? pal.ACC : pal.BORDER
+                                        Text { id: cbLabel; anchors.centerIn: parent; text: modelData
+                                               color: active ? pal.ACC : pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                                    onClicked: Vis.clusterColorMode = modelData }
+                                    }
                                 }
                             }
                         }
