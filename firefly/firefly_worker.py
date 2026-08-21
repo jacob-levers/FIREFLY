@@ -287,6 +287,52 @@ def _canonicalize_tracks(tracks):
     return ordered
 
 
+def _cluster_motion_per_loc(cluster_labels, cluster_xy, px_um, tracks, diff_df):
+    """Per-localisation motion class for the CLUSTERED locs, or None.
+
+    Matches on rounded micron coordinates rather than array position.  The old
+    index-based join required len(locs) == len(cluster_labels), which is false
+    exactly when compute_clusters sub-samples above its 250k cap — so every
+    large run silently got a motion column of nothing but "Unmatched", and the
+    Visualise tab had to re-derive the whole thing on load.
+
+    "Unmatched" is the honest answer for a loc that is in no track at all: with
+    a minimum track length most localisations never join one, so a majority of
+    Unmatched is expected, not a failure.
+    """
+    import numpy as _np
+    if cluster_labels is None or cluster_xy is None:
+        return None
+    n = len(cluster_labels)
+    if n == 0 or len(cluster_xy) != n:
+        return None
+    out = ["Unmatched"] * n
+    try:
+        if (tracks is None or len(tracks) == 0 or diff_df is None
+                or "motion" not in getattr(diff_df, "columns", [])):
+            return out
+        motion_map = dict(zip(diff_df["particle"].astype(int),
+                              diff_df["motion"].astype(str)))
+        px = float(px_um) or 1.0
+        # tracks are in PIXELS, cluster_xy in MICRONS — compare in microns,
+        # rounded to 4dp to absorb float32 round-trip noise.
+        key_to_motion = {}
+        for x_, y_, p_ in zip(tracks["x"].to_numpy(),
+                              tracks["y"].to_numpy(),
+                              tracks["particle"].to_numpy()):
+            key = (round(float(x_) * px, 4), round(float(y_) * px, 4))
+            key_to_motion[key] = motion_map.get(int(p_), "Unknown")
+        xs = _np.asarray(cluster_xy[:, 0], dtype=float)
+        ys = _np.asarray(cluster_xy[:, 1], dtype=float)
+        for i in range(n):
+            m_ = key_to_motion.get((round(xs[i], 4), round(ys[i], 4)))
+            if m_:
+                out[i] = m_
+    except Exception:
+        pass                      # a partial/absent map beats no map at all
+    return out
+
+
 def _compute_diffusion_population(
         tracks, compute_msd_and_fit, pixel_size, frame_interval, *,
         max_lagtime, n_fit, workers, alpha_thresholds, gap_policy,
@@ -2490,6 +2536,13 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                  f"{cluster_subsampled_n:,} of "
                  f"{int(_cl_attrs.get('n_input_locs', 0)):,} localisations "
                  f"(250k cap) — cluster counts/areas reflect the subsample.")
+        # Per-loc motion for the clustered locs.  Computed HERE, before the
+        # figure, so the exported cluster map can colour by motion class the
+        # same way the Visualise tab does; the saved cluster_labels.csv reuses
+        # this exact array rather than recomputing it.
+        cluster_motion = _cluster_motion_per_loc(
+            cluster_labels, cluster_xy, px, tracks, diff_df)
+
         # Pass n_frames so dwell τ uses the right-censored MLE (tracks still present
         # at the final frame are right-censored, not completed events).
         dwell_df, dwell_tau = compute_dwell_times(tracks, diff_df, fi,
@@ -2561,6 +2614,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
                     jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
                     cluster_labels=cluster_labels, cluster_locs=cluster_xy,
+                    cluster_motion=cluster_motion,
                     cluster_subsampled_n=cluster_subsampled_n,
                     dwell_df=dwell_df, dwell_tau=dwell_tau,
                     van_hove=van_hove, vacf=vacf,
@@ -2856,51 +2910,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 # subset of the post-link locs (some dropped by min_len),
                 # and within tracks each row has a `particle` ID we can
                 # join against `diff_df` for the motion column.
-                motion_per_loc = ["Unmatched"] * len(cluster_labels)
-                try:
-                    if (tracks is not None and len(tracks) > 0
-                            and diff_df is not None
-                            and "motion" in diff_df.columns):
-                        # particle → motion mapping
-                        motion_map = dict(zip(
-                            diff_df["particle"].astype(int),
-                            diff_df["motion"].astype(str)))
-                        # Build a quick (frame, x_rounded, y_rounded) → motion
-                        # lookup so we can match track rows to original locs.
-                        # Rounding to 4 dp handles float32 round-trip noise
-                        # without falsely merging spatially-distinct locs.
-                        key_to_motion = {}
-                        for f_, x_, y_, p_ in zip(
-                                tracks["frame"].to_numpy(),
-                                tracks["x"].to_numpy(),
-                                tracks["y"].to_numpy(),
-                                tracks["particle"].to_numpy()):
-                            key = (int(f_), round(float(x_), 4),
-                                   round(float(y_), 4))
-                            m_ = motion_map.get(int(p_), "Unknown")
-                            key_to_motion[key] = m_
-                        # locs columns at this point: x, y, frame, mass.
-                        loc_xy_um = cluster_xy  # already in µm
-                        # locs.x / locs.y are in PIXELS — convert to µm to
-                        # match the keys we built (tracks is also in pixels
-                        # though; let's match in pixel space directly).
-                        if (len(locs) == len(cluster_labels)
-                                and "frame" in locs.columns
-                                and "x" in locs.columns
-                                and "y" in locs.columns):
-                            for i, (f_, x_, y_) in enumerate(zip(
-                                    locs["frame"].to_numpy(),
-                                    locs["x"].to_numpy(),
-                                    locs["y"].to_numpy())):
-                                key = (int(f_), round(float(x_), 4),
-                                       round(float(y_), 4))
-                                m_ = key_to_motion.get(key)
-                                if m_:
-                                    motion_per_loc[i] = m_
-                except Exception as exc_join:
-                    _log(f"  NOTE: cluster ↔ motion join skipped "
-                         f"({exc_join}) — saving cluster_labels without "
-                         f"motion column.")
+                # Reuse the array already built for the figure, so the saved
+                # CSV and the exported cluster map can never disagree.
+                motion_per_loc = (cluster_motion if cluster_motion is not None
+                                  else ["Unmatched"] * len(cluster_labels))
                 atomic_to_csv(_pd.DataFrame({
                     "loc_index": _np.arange(len(cluster_labels),
                                              dtype=_np.int64),
@@ -3006,6 +3019,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "minmass_spurious_rate": (mm_diag.get("spurious_rate") if mm_diag else None),
                     "minmass_score":    (mm_diag.get("score") if mm_diag else None),
                     "minmass_noise_floor": (mm_diag.get("noise_floor") if mm_diag else None),
+                    # Cluster parameters actually used.  Without these the
+                    # Visualise tab could not adopt the run's settings on load
+                    # (its loader reads cluster_eps_nm from here) and silently
+                    # fell back to its own 50 nm default — so the exported
+                    # cluster map and the on-screen one showed DIFFERENT
+                    # clusterings of the same run.
+                    "cluster_eps_nm":   float(p.get("cluster_eps_nm", 50.0)),
+                    "cluster_min_samples": int(p.get("cluster_min_samples", 10)),
                     "backend":          p.get("backend"),
                     # Path to the original input file/folder — Post-process
                     # tab uses this to reload a background image.  Stored as

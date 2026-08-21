@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.76.50-rc.5 — 21 Aug 2026
+
+### Changed
+
+- **The exported cluster map is now coloured by motion class**, each cluster
+  taking its dominant class with a legend, the same way the Visualise tab
+  colours it. Previously it used an arbitrary colour per cluster, which showed
+  only which points belonged together and nothing about what a cluster was. If
+  no motion information is available it falls back to the old per-cluster
+  colours rather than showing a single flat colour.
+
+### Fixed
+
+- **The exported cluster map and the one on screen no longer disagree.** A run
+  never recorded the clustering settings it used, so opening it in Visualise
+  fell back to that tab's own default of 50 nm instead of adopting the run's
+  value — the two views were clustering the same data differently. Runs now
+  record their eps and minimum-samples settings.
+
+- **Large runs lost their cluster motion entirely.** Clustering samples down to
+  250,000 localisations on big recordings, and the step that assigns a motion
+  class to each localisation was skipped whenever that happened, leaving every
+  point in the run marked unmatched. On one 16,000-frame recording this recovers
+  motion for around 19,000 localisations that previously had none.
+
 ## v2.76.50-rc.4 — 21 Aug 2026
 
 ### Fixed

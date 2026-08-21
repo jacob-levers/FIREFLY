@@ -178,6 +178,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 fig_theme="Dark", proj_cmap="Inferno", jdd=None,
                 turning_angles=None, mobile_frac_df=None,
                 cluster_labels=None, cluster_locs=None,
+                cluster_motion=None,
                 cluster_subsampled_n=None,
                 dwell_df=None, dwell_tau=None, return_pdf_bytes=False,
                 van_hove=None, vacf=None,
@@ -692,14 +693,45 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                        s=0.5, c="#444", alpha=0.3, linewidths=0, rasterized=True)
         clustered = ~noise
         if clustered.any():
-            n_c = max(cluster_labels.max() + 1, 1)
-            # matplotlib.cm.get_cmap was removed in mpl 3.9 — use the colormap
-            # registry (mpl >= 3.6) so this works on the bundled build too.
-            cmap_c = matplotlib.colormaps["tab20"].resampled(n_c)
-            ax.scatter(xy_um[clustered, 0], xy_um[clustered, 1],
-                       s=1.5, c=cluster_labels[clustered], cmap=cmap_c,
-                       alpha=0.7, linewidths=0, rasterized=True,
-                       vmin=0, vmax=n_c - 1)
+            # Colour each cluster by its DOMINANT motion class, matching the
+            # Visualise tab's "Cluster motion" mode.  tab20 by cluster id said
+            # nothing except "these points are together"; motion says what the
+            # cluster IS, and makes the exported map comparable to the one on
+            # screen.  Falls back to tab20 when no motion data came through.
+            _mot = None
+            if cluster_motion is not None and len(cluster_motion) == len(cluster_labels):
+                _mot = np.asarray(cluster_motion, dtype=object)
+            _real = (set(MOTION_CLASS_ORDER) & set(np.unique(_mot).tolist())
+                     if _mot is not None else set())
+            if _real:
+                from collections import Counter
+                mcol = motion_class_colors(fig_theme)
+                dom = {}
+                for cid in np.unique(cluster_labels[clustered]):
+                    ms = _mot[cluster_labels == cid]
+                    dom[int(cid)] = (Counter(str(m) for m in ms).most_common(1)[0][0]
+                                     if len(ms) else "Unknown")
+                cols = [mcol.get(dom.get(int(c), "Unknown"), mcol["Unknown"])
+                        for c in cluster_labels[clustered]]
+                ax.scatter(xy_um[clustered, 0], xy_um[clustered, 1],
+                           s=1.5, c=cols, alpha=0.7, linewidths=0,
+                           rasterized=True)
+                seen = [m for m in MOTION_CLASS_ORDER if m in set(dom.values())]
+                if seen:
+                    ax.legend(handles=[Line2D([], [], marker="o", ls="none",
+                                              ms=4, color=mcol[m], label=m)
+                                       for m in seen],
+                              fontsize=6, loc="upper right", frameon=False,
+                              labelcolor=TXT, handletextpad=0.4)
+            else:
+                n_c = max(cluster_labels.max() + 1, 1)
+                # matplotlib.cm.get_cmap was removed in mpl 3.9 — use the colormap
+                # registry (mpl >= 3.6) so this works on the bundled build too.
+                cmap_c = matplotlib.colormaps["tab20"].resampled(n_c)
+                ax.scatter(xy_um[clustered, 0], xy_um[clustered, 1],
+                           s=1.5, c=cluster_labels[clustered], cmap=cmap_c,
+                           alpha=0.7, linewidths=0, rasterized=True,
+                           vmin=0, vmax=n_c - 1)
         ax.set_xlabel("X  (µm)", fontsize=9)
         ax.set_ylabel("Y  (µm)", fontsize=9)
         n_shown = int(cluster_labels.max()) + 1 if cluster_labels.max() >= 0 else 0

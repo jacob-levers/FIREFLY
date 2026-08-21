@@ -183,3 +183,65 @@ def test_align_frames_to_drift_sharpens_projection():
     assert (int(py), int(px)) == base
     # no drift_df → returned unchanged
     assert align_frames_to_drift(frames, idx, None) is frames
+
+
+# ── cluster ↔ motion join ───────────────────────────────────────────────────
+def _cluster_inputs(px=0.1, n_locs=6):
+    """tracks in PIXELS, cluster_xy in MICRONS — as the worker holds them."""
+    import numpy as np, pandas as pd
+    xs = np.arange(n_locs, dtype=float) + 10.0
+    ys = np.arange(n_locs, dtype=float) + 20.0
+    # only the first three localisations ended up in a track
+    tracks = pd.DataFrame({"x": xs[:3], "y": ys[:3], "frame": [0, 1, 2],
+                           "particle": [7, 7, 9]})
+    diff = pd.DataFrame({"particle": [7, 9], "motion": ["Immobile", "Directed"]})
+    cluster_xy = np.column_stack([xs * px, ys * px])
+    labels = np.zeros(n_locs, dtype=int)
+    return labels, cluster_xy, px, tracks, diff
+
+
+def test_cluster_motion_join_matches_on_coordinates_not_array_position():
+    """compute_clusters sub-samples above 250k locs, so cluster_labels and the
+    full locs table have DIFFERENT lengths.  The old index-based join required
+    them to be equal and silently produced nothing but "Unmatched" for every
+    large run."""
+    from firefly.firefly_worker import _cluster_motion_per_loc
+    labels, xy, px, tracks, diff = _cluster_inputs()
+    got = _cluster_motion_per_loc(labels, xy, px, tracks, diff)
+    assert got[:3] == ["Immobile", "Immobile", "Directed"]
+    # a sub-sample keeps only some rows — matching must still work
+    keep = [0, 2, 4]
+    got2 = _cluster_motion_per_loc(labels[keep], xy[keep], px, tracks, diff)
+    assert got2 == ["Immobile", "Directed", "Unmatched"]
+
+
+def test_locs_in_no_track_are_unmatched_not_mislabelled():
+    """With a minimum track length most localisations join no track at all;
+    that is an honest "Unmatched", not a failed join."""
+    from firefly.firefly_worker import _cluster_motion_per_loc
+    labels, xy, px, tracks, diff = _cluster_inputs()
+    got = _cluster_motion_per_loc(labels, xy, px, tracks, diff)
+    assert got[3:] == ["Unmatched"] * 3
+
+
+def test_cluster_motion_join_degrades_quietly():
+    from firefly.firefly_worker import _cluster_motion_per_loc
+    import numpy as np, pandas as pd
+    labels, xy, px, tracks, diff = _cluster_inputs()
+    assert _cluster_motion_per_loc(None, xy, px, tracks, diff) is None
+    assert _cluster_motion_per_loc(labels, xy[:2], px, tracks, diff) is None  # length mismatch
+    # no motion column -> everything Unmatched rather than an exception
+    bare = pd.DataFrame({"particle": [7, 9]})
+    assert _cluster_motion_per_loc(labels, xy, px, tracks, bare) == ["Unmatched"] * 6
+
+
+def test_cluster_params_are_recorded_in_the_run_params():
+    """The Visualise tab reads cluster_eps_nm from params.json to adopt the run's
+    settings; without it, it fell back to its own 50nm default and drew a
+    DIFFERENT clustering than the exported figure."""
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "firefly/firefly_worker.py").read_text(encoding="utf-8")
+    assert re.search(r'"cluster_eps_nm":\s*float\(p\.get\("cluster_eps_nm"', src)
+    assert re.search(r'"cluster_min_samples":\s*int\(p\.get\("cluster_min_samples"', src)
