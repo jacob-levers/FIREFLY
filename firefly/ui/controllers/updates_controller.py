@@ -89,6 +89,7 @@ class UpdatesController(QObject):
         # ── in-app download+install state (same off-thread→GUI-drain pattern) ──
         self._installing = False
         self._inst_progress = 0.0                  # 0..1, or -1 = indeterminate
+        self._inst_last_emitted = (None, None)   # last published (progress, status)
         self._inst_status = ""
         self._inst_error = ""
         self._inst_state = ""                      # ""|downloading|installing|done|error (off-thread)
@@ -415,6 +416,7 @@ class UpdatesController(QObject):
         self._inst_discard_prefetch = False
         self._inst_progress = -1.0            # indeterminate until the first byte
         self._inst_status = "Preparing…"
+        self._inst_last_emitted = (None, None)   # a new run always publishes
         self._inst_state = "downloading"
         self.installingChanged.emit()
         self.installProgressChanged.emit()
@@ -497,8 +499,13 @@ class UpdatesController(QObject):
         self._inst_cancel = True
 
     def _drain_install(self):
-        # progress/status advance every tick while downloading/installing
-        self.installProgressChanged.emit()
+        # The worker thread mutates progress/status without signalling, so this
+        # GUI-thread tick is what publishes them.  Emit only on an ACTUAL change:
+        # firing unconditionally re-evaluated every dependent binding ten times a
+        # second for the whole of a ~570 MB download, for nothing.
+        if (self._inst_progress, self._inst_status) != self._inst_last_emitted:
+            self._inst_last_emitted = (self._inst_progress, self._inst_status)
+            self.installProgressChanged.emit()
         st = self._inst_state
         if st == "done":
             self._inst_poll.stop()

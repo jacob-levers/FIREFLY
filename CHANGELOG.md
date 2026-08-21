@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.50-rc.4 — 21 Aug 2026
+
+### Fixed
+
+- **The indeterminate progress bar no longer looks like it keeps restarting.**
+  Its sweeping highlight used an ease-in-out motion, which is meant for
+  something that starts and stops once. Looped forever it made the highlight
+  crawl almost to a stop at each edge and then race across the middle, reading
+  as a stall and a restart every cycle. It now moves at a constant speed.
+  Affects every "working" bar — processing, analysis, HYPER-FLY, CUDA setup and
+  the updater.
+
+- **The update progress bar no longer refreshes ten times a second when nothing
+  has changed.** It republished its value on a timer whether or not it had
+  moved, for the whole of a ~570 MB download. It now updates only when the
+  progress or the status text actually changes.
+
 ## v2.76.50-rc.3 — 20 Aug 2026
 
 ### Fixed

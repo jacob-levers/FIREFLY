@@ -26,13 +26,19 @@ Item {
             GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.18) }
             GradientStop { position: 1.0; color: "transparent" }
         }
+        // LINEAR, deliberately.  Ease-in-out is for a motion that starts and
+        // stops once; on an infinite loop it made the band crawl at the edges
+        // — where it is mostly clipped — and race across the middle, a 16x
+        // speed swing that reads as the animation stalling and restarting each
+        // cycle.  Constant speed sweeps smoothly and keeps the band at least
+        // half visible for 77% of the cycle rather than 56%.
         XAnimator on x {
             running: root.active && !Theme.reducedMotion
             loops: Animation.Infinite
             from: -band.width
             to: root.width
             duration: 1100
-            easing.type: Easing.InOutSine
+            easing.type: Easing.Linear
         }
     }
 }

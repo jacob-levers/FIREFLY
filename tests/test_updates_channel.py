@@ -402,3 +402,31 @@ def test_clean_release_notes_strips_redundant_version_heading():
     assert _clean_release_notes("") == ""
     # a body without a leading version heading is returned intact (trimmed)
     assert _clean_release_notes("\n- just a bullet\n") == "- just a bullet"
+
+
+# ── install progress is published on change, not on every tick ──────────────
+def test_install_progress_signal_only_fires_when_something_changed():
+    """_drain_install runs at 10Hz for the whole of a ~570MB download.  It used
+    to emit unconditionally, re-evaluating every dependent QML binding ten times
+    a second even while the value sat still at "waiting"."""
+    from firefly.ui.controllers.updates_controller import UpdatesController
+    c = UpdatesController(settings=None)
+    fired = []
+    c.installProgressChanged.connect(lambda: fired.append(1))
+
+    c._inst_state = "downloading"
+    c._inst_progress, c._inst_status = -1.0, "Waiting for the background download…"
+    c._inst_last_emitted = (None, None)
+
+    c._drain_install()                       # first tick publishes
+    assert len(fired) == 1
+    c._drain_install(); c._drain_install()   # nothing changed -> silent
+    assert len(fired) == 1
+
+    c._inst_progress = 0.42                  # a real byte update
+    c._drain_install()
+    assert len(fired) == 2
+
+    c._inst_status = "Verifying…"            # status alone also counts
+    c._drain_install()
+    assert len(fired) == 3
