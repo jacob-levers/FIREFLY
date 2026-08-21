@@ -243,5 +243,96 @@ def test_cluster_params_are_recorded_in_the_run_params():
     from pathlib import Path
     src = (Path(__file__).resolve().parents[1]
            / "firefly/firefly_worker.py").read_text(encoding="utf-8")
-    assert re.search(r'"cluster_eps_nm":\s*float\(p\.get\("cluster_eps_nm"', src)
-    assert re.search(r'"cluster_min_samples":\s*int\(p\.get\("cluster_min_samples"', src)
+    assert '"cluster_eps_nm":' in src and '"cluster_min_samples":' in src
+    # the value RESOLVED for the run, not the value requested — they differ
+    # whenever automatic eps is on.
+    assert '"cluster_eps_nm":   float(cluster_eps_nm),' in src
+
+
+# ── automatic eps ───────────────────────────────────────────────────────────
+def _two_blobs(gap_um=1.0, spread=0.02, n=120, seed=3):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    a = rng.normal((0.0, 0.0), spread, (n, 2))
+    b = rng.normal((gap_um, 0.0), spread, (n, 2))
+    return np.vstack([a, b])
+
+
+def test_suggest_eps_scales_with_the_data_not_a_fixed_number():
+    """The whole point of automatic eps: a tight field and a loose one need
+    different radii.  One fixed value silently turns the sparse recording into
+    noise."""
+    from firefly.analysis.fa_clustering import suggest_eps_nm
+    tight = suggest_eps_nm(_two_blobs(spread=0.01), min_samples=8)
+    loose = suggest_eps_nm(_two_blobs(spread=0.10), min_samples=8)
+    assert tight and loose
+    assert loose > tight * 3, (tight, loose)
+
+
+def test_suggest_eps_rescues_a_sparse_field_a_tight_eps_would_lose():
+    """40nm on a real 2,862-loc recording gave 5 clusters and 98% noise; its own
+    knee gave 53 clusters and 5%.  Same shape, reproduced small."""
+    import numpy as np
+    from firefly.analysis.fa_clustering import suggest_eps_nm
+    from sklearn.cluster import DBSCAN
+    xy = _two_blobs(spread=0.15)      # 40nm finds NOTHING here
+    tight = DBSCAN(eps=0.040, min_samples=8).fit_predict(xy)
+    auto = DBSCAN(eps=suggest_eps_nm(xy, 8) / 1000.0, min_samples=8).fit_predict(xy)
+    n = lambda l: len(set(l.tolist())) - (1 if -1 in l else 0)
+    # auto recovers BOTH blobs; the fixed 40nm loses structure and calls most
+    # of the field noise.  Directional, not exact counts — DBSCAN's output on a
+    # random draw is seed-sensitive, the failure mode is not.
+    assert n(auto) == 2, n(auto)
+    assert n(tight) < n(auto), (n(tight), n(auto))
+    assert np.mean(tight == -1) > 0.75            # fixed eps: mostly noise
+    assert np.mean(auto == -1) < 0.25             # auto: mostly clustered
+
+
+def test_suggest_eps_degrades_quietly():
+    from firefly.analysis.fa_clustering import suggest_eps_nm
+    import numpy as np
+    assert suggest_eps_nm(np.zeros((0, 2)), 8) is None
+    assert suggest_eps_nm(np.zeros((2, 2)), 8) is None          # < 3 points
+    assert suggest_eps_nm(np.full((20, 2), np.nan), 8) is None  # all non-finite
+
+
+def test_the_visualise_button_and_automatic_mode_share_one_estimator():
+    """They were two inline copies of the same maths, free to drift."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "firefly/ui/controllers/visualise_controller.py").read_text(encoding="utf-8")
+    assert "from firefly.analysis.fa_clustering import suggest_eps_nm" in src
+    assert "NearestNeighbors" not in src, "the inline k-distance copy is back"
+
+
+def test_auto_eps_setting_reaches_the_worker_params():
+    from firefly.ui.controllers.params.params_builder import build_params, _DEFAULTS
+    from firefly.ui.controllers.params import sidebar_schema as S
+
+    class _S:
+        def __init__(self, on): self.on = on
+        def get_str(self, k, d=""): return d
+        def get_bool(self, k, d=False):
+            return self.on if k == "analysis/cluster_auto_eps" else d
+        def get_float(self, k, d=0.0): return d
+
+    class _Imp:
+        filePath = "/d/rec.czi"; outDir = None; isCsv = False
+        overridePx = False; pixelSize = 0.1; overrideFi = False; frameInterval = 0.02
+
+    assert _DEFAULTS["cluster_auto_eps"] is False        # opt-in, not a silent change
+    assert S.BY_KEY["analysis/cluster_auto_eps"]["kind"] == "bool"
+    assert build_params(_S(False), _Imp())["cluster_auto_eps"] is False
+    assert build_params(_S(True), _Imp())["cluster_auto_eps"] is True
+
+
+def test_the_run_records_which_eps_was_actually_used():
+    """params.json must show the resolved value, plus what was requested and
+    what the knee suggested — otherwise an automatic run is unreproducible."""
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "firefly/firefly_worker.py").read_text(encoding="utf-8")
+    assert '"cluster_eps_nm":   float(cluster_eps_nm),' in src
+    for key in ("cluster_eps_auto", "cluster_eps_requested", "cluster_eps_suggested"):
+        assert f'"{key}"' in src, key

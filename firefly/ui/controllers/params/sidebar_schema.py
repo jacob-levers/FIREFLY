@@ -105,6 +105,7 @@ _TOOLTIPS = {
     "analysis/drift_correct": "Correct sample drift (redundant cross-correlation) before linking.",
     "analysis/drift_segment": "Frames per drift-estimation segment. Smaller tracks faster drift; larger is more robust.",
     # Clustering
+    "analysis/cluster_auto_eps": "Choose eps per file from the k-distance knee of its own localisations, instead of using one fixed radius for every recording. A dense field and a sparse one need different radii — too small a radius turns a sparse recording almost entirely into noise. The value chosen is recorded in the run.",
     "analysis/cluster_eps_nm": "DBSCAN neighbourhood radius (nm) — the max gap within a cluster.",
     "analysis/cluster_min_samples": "DBSCAN minimum localisations needed to seed a cluster.",
     # Performance
@@ -250,6 +251,7 @@ FIELDS = [
        min=50, max=5000, step=50),
 
     # ── Clustering (DBSCAN) ──────────────────────────────────────────────
+    _f("clustering", "analysis/cluster_auto_eps", "bool", "Auto eps (k-distance knee)", False),
     _f("clustering", "analysis/cluster_eps_nm", "double", "eps (nm)", 50.0,
        min=5.0, max=2000.0, step=5.0, decimals=1),
     _f("clustering", "analysis/cluster_min_samples", "int", "Min samples", 10,

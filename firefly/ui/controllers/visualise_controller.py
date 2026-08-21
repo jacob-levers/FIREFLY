@@ -1447,32 +1447,17 @@ class VisualiseController(QObject):
     def suggestEps(self):
         if self._cl_xy_um is None:
             return
-        import numpy as np
-        xy = np.asarray(self._cl_xy_um, dtype=float)
-        try:
-            from sklearn.neighbors import NearestNeighbors
-            n = len(xy)
-            k = max(2, min(int(self._cl_min_samples), n - 1))
-            nn = NearestNeighbors(n_neighbors=k).fit(xy)
-            d, _ = nn.kneighbors(xy)
-            kd = np.sort(d[:, -1])
-            m = len(kd)
-            lo, hi = max(0, int(0.02 * m)), min(m - 1, int(0.98 * m))
-            seg = kd[lo:hi + 1]
-            mm = len(seg)
-            if mm < 3:
-                eps_nm = float(np.median(kd)) * 1000.0
-            else:
-                x = np.arange(mm, dtype=float)
-                y0, y1 = seg[0], seg[-1]
-                num = np.abs((y1 - y0) * x - (mm - 1) * seg + (mm - 1) * y0)
-                den = np.hypot(y1 - y0, mm - 1) or 1.0
-                eps_nm = float(seg[int(np.argmax(num / den))]) * 1000.0
-        except Exception as exc:
-            self._cl_status = f"eps estimate failed: {exc}"
+        # ONE estimator, shared with the worker's automatic mode — this used to
+        # be a second inline copy of the same k-distance maths, so the number
+        # this button showed and the number an automatic run would pick could
+        # drift apart silently.
+        from firefly.analysis.fa_clustering import suggest_eps_nm
+        eps_nm = suggest_eps_nm(self._cl_xy_um, min_samples=int(self._cl_min_samples))
+        if not eps_nm:
+            self._cl_status = "eps estimate failed"
             self.clusterChanged.emit()
             return
-        v = int(round(max(5, min(2000, eps_nm))))
+        v = int(round(eps_nm))
         self._cl_status = f"suggested eps ≈ {v} nm (k-distance knee)"
         self.clusterEpsNm = v          # triggers debounced re-cluster
 

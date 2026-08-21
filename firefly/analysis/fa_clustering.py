@@ -20,6 +20,49 @@ import pandas as pd
 from sklearn.cluster import DBSCAN
 
 
+def suggest_eps_nm(xy_um, min_samples=8, max_locs=50_000):
+    """k-distance knee estimate of DBSCAN's eps, in nm, or None.
+
+    Sort every point's distance to its k-th nearest neighbour (k = min_samples)
+    and take the point of maximum deviation from the chord joining the ends of
+    that curve — the classic DBSCAN elbow.  Trim the outer 2% first so a handful
+    of isolated localisations cannot drag the chord.
+
+    A fixed eps cannot suit every recording: a dense field and a sparse one need
+    different neighbourhood radii, and using one number for both silently turns
+    the sparse recording into noise.  Shared by the Visualise tab's "Suggest
+    eps" button and the worker's automatic mode so the two cannot disagree.
+    """
+    xy = np.asarray(xy_um, dtype=float)
+    xy = xy[np.isfinite(xy).all(axis=1)]
+    if len(xy) < 3:
+        return None
+    if len(xy) > max_locs:                 # the knee is a shape, not a census
+        rng = np.random.default_rng(0)
+        xy = xy[rng.choice(len(xy), max_locs, replace=False)]
+    try:
+        from sklearn.neighbors import NearestNeighbors
+        k = max(2, min(int(min_samples), len(xy) - 1))
+        dist, _ = NearestNeighbors(n_neighbors=k).fit(xy).kneighbors(xy)
+        kd = np.sort(dist[:, -1])
+        m = len(kd)
+        seg = kd[max(0, int(0.02 * m)): min(m - 1, int(0.98 * m)) + 1]
+        mm = len(seg)
+        if mm < 3:
+            eps_nm = float(np.median(kd)) * 1000.0
+        else:
+            x = np.arange(mm, dtype=float)
+            y0, y1 = seg[0], seg[-1]
+            num = np.abs((y1 - y0) * x - (mm - 1) * seg + (mm - 1) * y0)
+            den = np.hypot(y1 - y0, mm - 1) or 1.0
+            eps_nm = float(seg[int(np.argmax(num / den))]) * 1000.0
+    except Exception:
+        return None
+    if not np.isfinite(eps_nm) or eps_nm <= 0:
+        return None
+    return float(np.clip(eps_nm, 5.0, 2000.0))
+
+
 def compute_clusters(locs, pixel_size_um, eps_um=0.05, min_samples=5,
                      max_locs=250_000):
     from sklearn.cluster import DBSCAN

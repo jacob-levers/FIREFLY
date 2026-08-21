@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.76.50-rc.6 — 21 Aug 2026
+
+### Added
+
+- **Automatic cluster radius.** A new "Auto eps (k-distance knee)" tick box
+  under Clustering picks the neighbourhood radius from each recording's own
+  localisations, instead of applying one fixed radius to every file. A radius
+  that finds structure in a dense recording can turn a sparse one almost
+  entirely into noise: on a 2,862-localisation recording the fixed 40 nm gave 5
+  clusters and 98% noise, while its own data suggested 172 nm — which gives 53
+  clusters and 5% noise. It is off by default, so nothing changes unless you
+  turn it on, and each run records the radius it actually used alongside the one
+  you asked for.
+
+- The estimate is now the **same calculation** the Visualise tab's "Suggest eps"
+  button uses, so the number you see there is the number an automatic run will
+  choose.
+
 ## v2.76.50-rc.5 — 21 Aug 2026
 
 ### Changed

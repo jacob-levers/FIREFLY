@@ -2518,11 +2518,37 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # Guarded like van_hove/vacf above: a degenerate cluster input (e.g. a
         # stray non-finite coordinate that slipped through) must not crash an
         # otherwise-complete run after linking + MSD already succeeded.  (#6)
+        # Resolve eps.  A FIXED radius cannot suit every recording: the
+        # neighbourhood that finds structure in a dense field turns a sparse one
+        # almost entirely into noise (a 2,862-loc recording at 40 nm came out
+        # 98% noise with 5 clusters, where its own k-distance knee said 172 nm).
+        # With auto on, each file gets the knee of its OWN localisations — the
+        # same estimator behind the Visualise tab's "Suggest eps".
+        cluster_min_samples = int(p.get("cluster_min_samples", 10))
+        cluster_eps_nm = float(p.get("cluster_eps_nm", 50.0))
+        cluster_eps_auto = bool(p.get("cluster_auto_eps", False))
+        cluster_eps_suggested = None
+        if cluster_eps_auto:
+            try:
+                from firefly.analysis.fa_clustering import suggest_eps_nm
+                cluster_eps_suggested = suggest_eps_nm(
+                    locs[["x", "y"]].to_numpy(dtype=float) * px,
+                    min_samples=cluster_min_samples)
+            except Exception as _eps_exc:
+                _log(f"  WARN: auto eps failed ({_eps_exc}) — keeping "
+                     f"{cluster_eps_nm:.0f} nm.")
+            if cluster_eps_suggested:
+                _log(f"  Cluster eps       : auto → {cluster_eps_suggested:.0f} nm "
+                     f"(k-distance knee; the set value was {cluster_eps_nm:.0f} nm)")
+                cluster_eps_nm = float(cluster_eps_suggested)
+            else:
+                _log(f"  WARN: auto eps could not be estimated — keeping "
+                     f"{cluster_eps_nm:.0f} nm.")
         try:
             cluster_labels, cluster_stats_df, _, cluster_xy = compute_clusters(
                 locs, px,
-                eps_um=float(p.get("cluster_eps_nm", 50.0)) / 1000.0,
-                min_samples=int(p.get("cluster_min_samples", 10)))
+                eps_um=cluster_eps_nm / 1000.0,
+                min_samples=cluster_min_samples)
         except Exception as _cl_exc:
             _log(f"  WARN: cluster analysis failed ({_cl_exc}) — skipping it; the "
                  f"localisation/track/diffusion results are unaffected.")
@@ -3025,8 +3051,12 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     # fell back to its own 50 nm default — so the exported
                     # cluster map and the on-screen one showed DIFFERENT
                     # clusterings of the same run.
-                    "cluster_eps_nm":   float(p.get("cluster_eps_nm", 50.0)),
-                    "cluster_min_samples": int(p.get("cluster_min_samples", 10)),
+                    "cluster_eps_nm":   float(cluster_eps_nm),
+                    "cluster_eps_auto": bool(cluster_eps_auto),
+                    "cluster_eps_requested": float(p.get("cluster_eps_nm", 50.0)),
+                    "cluster_eps_suggested": (float(cluster_eps_suggested)
+                                              if cluster_eps_suggested else None),
+                    "cluster_min_samples": int(cluster_min_samples),
                     "backend":          p.get("backend"),
                     # Path to the original input file/folder — Post-process
                     # tab uses this to reload a background image.  Stored as
