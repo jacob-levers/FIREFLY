@@ -711,7 +711,7 @@ Item {
                                  onToggled: (c) => Settings.setValue("figures/save_pdf", c) }
                     }
                     PrefRow {
-                        label: "Per-panel PNGs"; desc: "Also write each of the 17 panels as a separate raster."
+                        label: "Per-panel PNGs"; desc: "Also write each of the 19 panels as a separate raster."
                         Checkbox { checked: (root.rev, Settings.getBool("figures/per_panel", false))
                                  onToggled: (c) => Settings.setValue("figures/per_panel", c) }
                     }

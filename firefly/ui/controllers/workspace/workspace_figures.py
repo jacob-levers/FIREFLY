@@ -30,32 +30,52 @@ _GRID = "#1d232c"
 
 # ── Combined-figure panel geometry ────────────────────────────────────────────
 # The saved single-run figure (<stem>_sptpalm_figure.png) is fa_figure's full
-# 6×3 grid: figsize (20, 38), GridSpec(6, 3, hspace=0.45, wspace=0.32,
-# left=0.06, right=0.97, top=0.95, bottom=0.035).  We can therefore crop the
-# exact cell of any panel out of it — so a spatial panel that didn't export its
-# own per-panel PNG still shows JUST that graph (never the whole grid).  Cells
-# below are (x0, y_bottom, x1, y_top) in figure fractions (y is bottom-up).
-def _combined_cells():
-    left, right, top, bottom = 0.06, 0.97, 0.95, 0.035
-    nr, nc, hspace, wspace = 6, 3, 0.45, 0.32
+# grid, so we can crop the exact cell of any panel out of it — a spatial panel
+# that didn't export its own per-panel PNG still shows JUST that graph (never
+# the whole grid).  The grid geometry is imported from fa_figure rather than
+# copied, so it cannot drift when the figure gains a row.
+#
+# Two row counts are supported: the CURRENT 7-row grid and the 6-row grid every
+# run analysed before Track Length / Track Duration were added.  Old runs are
+# still browsable, so both must crop correctly; the saved image's aspect ratio
+# says which one it is.  Cells are (x0, y_bottom, x1, y_top) in figure fractions
+# (y is bottom-up).  Row/column positions of the cropped panels are unchanged by
+# the extra row — it is appended below them.
+_CROP_ROWS = (6, 7)
+# only the spatial panels are cropped (the rest are group-averaged)
+_CROP_POS = {"A": (0, 0), "B": (0, 1), "C": (0, 2), "H": (2, 1), "L": (4, 0)}
+# The figure is saved with bbox_inches="tight", which trims the outer margins
+# and so slightly compresses the raw canvas fractions toward the centre.  A
+# small linear correction about a pivot (calibrated against a rendered 6-row
+# reference: top-row titles were riding high, bottom-row panels sat low)
+# realigns every row.  Held here in INCHES of trim so it rescales exactly when
+# the figure gets taller — at the 6-row height it reproduces the original
+# gain 0.080 / pivot 0.573.
+_TIGHT_TRIM_IN = (1.2019, 1.6129)              # (top, bottom)
+
+
+def _combined_geometry(nr):
+    """(cells, aspect, y_gain, y_pivot) for an `nr`-row saved figure."""
+    from firefly.analysis import fa_figure as _ff
+    h_in = _ff.GRID_ROW_H_IN * nr
+    m = _ff.grid_margins(h_in)
+    left, right = m["left"], m["right"]
+    top, bottom = m["top"], m["bottom"]
+    nc, hspace, wspace = _ff.GRID_COLS, _ff.GRID_HSPACE, _ff.GRID_WSPACE
     cw = (right - left) / (nc + (nc - 1) * wspace)
     ch = (top - bottom) / (nr + (nr - 1) * hspace)
     xs = [left + c * (cw + wspace * cw) for c in range(nc)]          # col left edges
     ytops = [top - r * (ch + hspace * ch) for r in range(nr)]        # row top edges
-    # only the spatial panels are cropped (the rest are group-averaged)
-    pos = {"A": (0, 0), "B": (0, 1), "C": (0, 2), "H": (2, 1), "L": (4, 0)}
-    return {l: (xs[c], ytops[r] - ch, xs[c] + cw, ytops[r])
-            for l, (r, c) in pos.items()}
+    cells = {l: (xs[c], ytops[r] - ch, xs[c] + cw, ytops[r])
+             for l, (r, c) in _CROP_POS.items() if r < nr}
+    t_top, t_bot = (v / h_in for v in _TIGHT_TRIM_IN)
+    scale = 1.0 / (1.0 - t_top - t_bot)
+    gain = scale - 1.0
+    pivot = (scale * t_bot / gain) if gain else 0.5
+    return cells, _ff.GRID_W_IN / h_in, gain, pivot
 
-_COMBINED_CELL = _combined_cells()
-_COMBINED_ASPECT = 20.0 / 38.0                 # full-grid figure aspect (W/H)
-# The figure is saved with bbox_inches="tight", which trims the outer margins
-# and so slightly compresses the raw canvas fractions toward the centre.  A
-# small linear correction about the grid's vertical centre (calibrated against a
-# rendered reference: top-row titles were riding high, bottom-row panels sat low)
-# realigns every row; the middle row is the pivot and is already exact.
-_CROP_Y_PIVOT = 0.573
-_CROP_Y_GAIN = 0.08
+
+_COMBINED_GEOM = {nr: _combined_geometry(nr) for nr in _CROP_ROWS}
 # Padding around each cell to keep its title/letter + axis labels.
 _CROP_PAD = {"top": 0.024, "left": 0.048, "bottom": 0.024, "right": 0.020}
 _COMBINED_QIMG_CACHE: dict = {}                # path → decoded QImage (small LRU)
@@ -63,12 +83,11 @@ _COMBINED_QIMG_CACHE: dict = {}                # path → decoded QImage (small 
 
 def _crop_combined_panel(path, letter):
     """Crop panel `letter`'s cell out of a saved combined single-run figure.
-    Returns a detached QImage, or None if the file isn't the full 6×3 grid (a
+    Returns a detached QImage, or None if the file isn't a full grid (a
     user-selected panel subset has a different geometry → don't guess)."""
     from PySide6.QtGui import QImage
     from PySide6.QtCore import QRect
-    box = _COMBINED_CELL.get(letter)
-    if box is None:
+    if letter not in _CROP_POS:
         return None
     img = _COMBINED_QIMG_CACHE.get(path)
     if img is None:
@@ -79,12 +98,21 @@ def _crop_combined_panel(path, letter):
             _COMBINED_QIMG_CACHE.clear()
         _COMBINED_QIMG_CACHE[path] = img
     W, H = img.width(), img.height()
-    if W <= 0 or H <= 0 or abs(W / H - _COMBINED_ASPECT) > 0.04:
-        return None                            # not the full grid → geometry unknown
+    if W <= 0 or H <= 0:
+        return None
+    # Which grid is this?  The row count is read off the saved aspect ratio, so
+    # figures from before the grid grew still crop with their own geometry.
+    geom = min(_COMBINED_GEOM.values(), key=lambda g: abs(W / H - g[1]))
+    cells, aspect, y_gain, y_pivot = geom
+    if abs(W / H - aspect) > 0.04:
+        return None                            # not a full grid → geometry unknown
+    box = cells.get(letter)
+    if box is None:
+        return None
     x0, yb, x1, yt = box
     # correct the bbox_inches="tight" compression about the grid's vertical centre
-    yt += _CROP_Y_GAIN * (yt - _CROP_Y_PIVOT)
-    yb += _CROP_Y_GAIN * (yb - _CROP_Y_PIVOT)
+    yt += y_gain * (yt - y_pivot)
+    yb += y_gain * (yb - y_pivot)
     p = _CROP_PAD
     left = int(max(0.0, x0 - p["left"]) * W)
     right = int(min(1.0, x1 + p["right"]) * W)

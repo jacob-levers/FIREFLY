@@ -29,7 +29,7 @@ firefly/
     fa_clustering   DBSCAN clustering
     fa_circular     turning-angle / circular statistics
     fa_compare      multi-group comparison figure + stats
-    fa_figure       single-run master figure (matplotlib, panels A–Q)
+    fa_figure       single-run master figure (matplotlib, panels A–S)
     fa_loaders      image + external-localisation (CSV) loaders
     fa_stats_config / fa_twoway   stats config + two-way mixed ANOVA
   ui/               PySide6 GUI: app_qml, QML controllers/views, and bespoke

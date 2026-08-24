@@ -1,7 +1,7 @@
 """Group-averaged single-run analysis panels for the All-panels view.
 
 The All-panels view shows the rich per-run analysis figure (firefly.analysis.
-fa_figure.make_figure — panels A..Q).  To show a *group* (a condition with
+fa_figure.make_figure — panels A..S).  To show a *group* (a condition with
 several replicate folders) we POOL each folder's loaded summary data and call
 the real make_figure with the chosen panel subset, then take its ready-cropped
 per-panel image.  This reuses the exact matplotlib look — no analysis-core edits.
@@ -21,21 +21,23 @@ Panel letters (fa_figure._LAYOUT):
     G Anomalous Exponent α      H Position Density Map     I Turning Angle dist
     J Mobile Fraction Over Time K Jump Distance dist       L Cluster Map
     M Dwell Time dist           N Moment Scaling Spectrum  O Radial Distribution
-    P van Hove                  Q Velocity Autocorrelation
+    P van Hove                  Q Velocity Autocorrelation R Track Length
+    S Total Tracks
 """
 from __future__ import annotations
 
 # fa_figure panels that pool meaningfully across a group's folders.  D/E/F/G/I/
-# M/N/O pool directly from the loaded summary; J/K/P/Q are recomputed from the
-# pooled tracks (their precomputed inputs aren't carried in the summary).
-AVERAGEABLE_LETTERS = {"D", "E", "F", "G", "I", "J", "K", "M", "N", "O", "P", "Q"}
+# M/N/O/R/S pool directly from the loaded summary; J/K/P/Q are recomputed from
+# the pooled tracks (their precomputed inputs aren't carried in the summary).
+AVERAGEABLE_LETTERS = {"D", "E", "F", "G", "I", "J", "K", "M", "N", "O", "P", "Q",
+                       "R", "S"}
 # Spatial maps tied to each replicate's real field of view — overlaying several
 # distinct FOVs into one image is not a meaningful average → per-replicate only.
 SPATIAL_LETTERS = {"A", "B", "C", "H", "L"}
 
 # Panels drawn in the single accent colour → recolour to the group's colour.
-# The others (E/F/G/N) are coloured by MOTION CLASS (red/orange/blue/green) which
-# is meaningful, so they are left as the engine drew them.
+# The others (E/F/G/N/R/S) are coloured by MOTION CLASS (red/orange/blue/green)
+# which is meaningful, so they are left as the engine drew them.
 RECOLOR_LETTERS = {"D", "I", "M", "O"}
 _THEME_ACCENT = {"Dark": "#58a6ff", "AMOLED": "#58a6ff",
                  "Light": "#0969da", "Publication": "#333333"}
@@ -275,6 +277,18 @@ def render_group_panels(folders, letters, theme="Dark", proj_cmap="Inferno",
             want.discard("Q")
         if "J" in want and (mobile_frac is empty or not len(mobile_frac)):
             want.discard("J")
+        # R reads n_observations straight off the pooled diffusion table;
+        # folders analysed before that column existed don't have it, and an
+        # "unavailable" placeholder is worse than no panel.  S only needs the
+        # row count, which every pooled table has.
+        if "R" in want:
+            d = pooled["diff"]
+            if d is None or "n_observations" not in getattr(d, "columns", ()) \
+                    or int(pd.to_numeric(d["n_observations"],
+                                         errors="coerce").gt(0).sum()) < 2:
+                want.discard("R")
+        if "S" in want and (pooled["diff"] is None or not len(pooled["diff"])):
+            want.discard("S")
         if not want:
             return {}
 

@@ -66,7 +66,7 @@ GAP_POLICY_LABEL_TO_VALUE = {
 # Pristine widget-construction defaults — captured from a freshly-built Widgets
 # sidebar against an EMPTY QSettings store.  Used as the fallback for any key the
 # user's QSettings doesn't carry, and as the canonical default set in tests.
-FIG_PANELS_ALL = list("ABCDEFGHIJKLMNOPQ")
+FIG_PANELS_ALL = list("ABCDEFGHIJKLMNOPQRS")
 
 _DEFAULTS = {
     "channel":               0,

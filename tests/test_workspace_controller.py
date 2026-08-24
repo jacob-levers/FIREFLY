@@ -17,6 +17,7 @@ pytest.importorskip("PySide6")
 # allowed, and QMainWindow/QQuickWidget need the QtWidgets app.
 from PySide6.QtWidgets import QApplication
 
+from firefly.ui.controllers.workspace import workspace_data as wd
 from firefly.ui.controllers.workspace.workspace_controller import AnalysisWorkspaceController
 from test_workspace_data import make_run_folder
 
@@ -204,10 +205,13 @@ def test_panels_view_state(tmp_path):
     assert len(c.panelConditions) == 2
     cats = c.panelCategories
     assert [g["cat"] for g in cats] == ["Imaging", "Tracking", "Diffusion", "Population"]
-    assert sum(g["count"] for g in cats) == c.panelCount == 17
+    # every panel is filed under exactly one category — count from the gallery
+    # itself rather than a literal, which goes stale each time a panel is added
+    n = len(wd.PANELS)
+    assert sum(g["count"] for g in cats) == c.panelCount == n
     c.setPanelSel(0)
     assert c.panelSel == 0 and c.panelHeroCat == "Imaging"
-    assert c.panelIndexLabel == "01 / 17"
+    assert c.panelIndexLabel == f"01 / {n}"
 
 
 def test_export_stats_writes_csv(tmp_path):

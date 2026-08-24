@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.76.51-rc.1 — 24 Aug 2026
+
+### Added
+
+- **Two new graphs on every single-file analysis: Track Length and Total
+  Tracks.** They are the sampling behind every per-track number in the figure —
+  D, the anomalous exponent and the MSS slope are each a curve fitted to one
+  track's handful of points, so how many points there were, and how many tracks
+  there are to average over, decide how much weight the rest of the figure can
+  carry.
+
+  **Track Length** is a box plot of every trajectory in the recording, with the
+  mean marked alongside the median. A box rather than a mean bar because the
+  quantity is heavily right-skewed: on real recordings the mean runs 1.5–2× the
+  median, pulled up by a handful of stuck or aggregated emitters that stay lit
+  for thousands of frames. The box shows what a typical trajectory actually
+  carried, and the distance between the median line and the mean marker is the
+  skew, made visible instead of hidden inside one number. Outlier markers are
+  not drawn — with thousands of tracks they pile into a solid vertical streak
+  that reads as a line of individual samples — but nothing is trimmed from the
+  data the box is computed from, and the longest track is stated in the corner,
+  since a trajectory persisting for thousands of frames is the tell for a stuck
+  or aggregated emitter.
+
+  **Total Tracks** is a plain bar giving the number of trajectories, stated
+  large enough to read straight off for a slide or a table. Note it is a raw
+  count, so it is not comparable between recordings with different ROI sizes
+  without dividing by area first.
+
+  Both appear in the exported figure, in the per-panel PNGs, and as two more
+  choices in the Analysis tab's All-panels gallery, where they pool across a
+  condition's replicates. Runs analysed before this release need re-processing
+  to gain them.
+
 ## v2.76.50 — 21 Aug 2026
 
 ### Added
@@ -11,7 +45,7 @@
   is unchanged beneath it, so you can still add as many further cluster maps
   from anywhere as you like.
 
-- **Automatic cluster radius.** A new "Auto eps (k-distance knee)" tick box
+- **Automatic cluster radius.** A new "Auto EPS (k-distance knee)" tick box
   under Clustering picks the neighbourhood radius from each recording's own
   localisations, instead of applying one fixed radius to every file. A radius
   that finds structure in a dense recording can turn a sparse one almost
@@ -21,7 +55,7 @@
   turn it on, and each run records the radius it actually used alongside the one
   you asked for.
 
-- The estimate is now the **same calculation** the Visualise tab's "Suggest eps"
+- The estimate is now the **same calculation** the Visualise tab's "Suggest EPS"
   button uses, so the number you see there is the number an automatic run will
   choose.
 

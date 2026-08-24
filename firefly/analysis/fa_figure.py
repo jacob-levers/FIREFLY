@@ -30,6 +30,32 @@ from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORD
 MC   = dict(MOTION_CLASS_COLORS)
 MORD = list(MOTION_CLASS_ORDER)
 
+# ── Combined-figure geometry ─────────────────────────────────────────────────
+# The single source of truth for the FULL (all-panels) single-run grid.  The UI
+# crops an individual panel out of the saved PNG using exactly these numbers
+# (firefly.ui.controllers.workspace.workspace_figures), so they must never be
+# duplicated by hand there.  Row height and the outer margins are pinned at
+# their historical 6-row values *in inches*, so adding a row grows the figure
+# without changing how any existing panel is laid out or looks.
+GRID_ROWS, GRID_COLS     = 7, 3
+GRID_HSPACE, GRID_WSPACE = 0.45, 0.32
+GRID_W_IN                = 20.0
+GRID_ROW_H_IN            = 38.0 / 6.0      # historical: 6 rows in a 38" figure
+GRID_H_IN                = GRID_ROW_H_IN * GRID_ROWS
+_MARGIN_TOP_IN           = 1.90            # (1 - 0.95) * 38
+_MARGIN_BOTTOM_IN        = 1.33            # 0.035 * 38
+_SUPTITLE_DROP_IN        = 1.14            # (1 - 0.97) * 38
+
+
+def grid_margins(height_in):
+    """GridSpec left/right/top/bottom for a figure `height_in` inches tall,
+    holding the outer margins at their historical size in INCHES.  At the old
+    38" height this returns exactly the historical 0.06/0.97/0.95/0.035."""
+    return dict(left=0.06, right=0.97,
+                top=1.0 - _MARGIN_TOP_IN / height_in,
+                bottom=_MARGIN_BOTTOM_IN / height_in)
+
+
 def _safe_linear_bins(values, n=40, *, nonnegative=False):
     """Return strictly increasing histogram edges, including for constants.
 
@@ -186,12 +212,12 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 combined_panels=None):
     # combined_panels selects which panels appear IN the combined figure (and
     # therefore which are available to export).  None / the full set → the
-    # historical 6×3 layout, unchanged.  A subset → the chosen panels are
-    # repacked (canonical A→Q order) into a fresh 3-column grid.
+    # historical full-grid layout, unchanged.  A subset → the chosen panels are
+    # repacked (canonical A→S order) into a fresh 3-column grid.
     #
     # want_panels controls the per-panel PNG export, which is expensive:
     # each panel is produced by a full-figure savefig() cropped to that
-    # panel's bbox, so rendering all 15 panels means ~15 full rasterisations
+    # panel's bbox, so rendering every panel means one full rasterisation each
     # of the whole figure.  Callers that don't need per-panel PNGs should
     # pass an empty collection to skip the loop entirely.
     #   * None            → render every panel (back-compat default)
@@ -253,18 +279,19 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         "font.family":      _font})
 
     _has_jdd = jdd is not None
-    # Grid expanded from 5 to 6 rows in v1.0.64 to fit the new Radial
-    # Distribution polar panel.
-    fig = plt.figure(figsize=(20, 38), facecolor=BG)
-    gs  = GridSpec(6, 3, figure=fig, hspace=0.45, wspace=0.32,
-                   left=0.06, right=0.97, top=0.95, bottom=0.035)
+    # Grid expanded from 5 to 6 rows in v1.0.64 (the Radial Distribution polar
+    # panel), and from 6 to 7 in v2.76.51 (Track Length / Track Duration).
+    fig = plt.figure(figsize=(GRID_W_IN, GRID_H_IN), facecolor=BG)
+    gs  = GridSpec(GRID_ROWS, GRID_COLS, figure=fig,
+                   hspace=GRID_HSPACE, wspace=GRID_WSPACE,
+                   **grid_margins(GRID_H_IN))
 
     _panels          = []   # (letter, axes) collected for per-panel export
     _letter_artists  = []   # text objects for letter labels (hidden for panel renders)
 
     # ── Panel layout / selection ──────────────────────────────────────────
-    # Default (combined_panels None / full set): keep the historical 6×3 grid
-    # untouched.  For a subset, repack the chosen panels (canonical A→Q order)
+    # Default (combined_panels None / full set): keep the canonical full grid
+    # untouched.  For a subset, repack the chosen panels (canonical A→S order)
     # into a fresh 3-column grid and shrink the figure height to match.  Each
     # panel keeps its original drawing code; `_ax(key)` hands it the right axes
     # (real, on `fig`, when selected — else a throwaway on a scratch figure that
@@ -277,17 +304,18 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ("J", gs[3, 0], None), ("K", gs[3, 1:], None),
         ("L", gs[4, 0], None), ("M", gs[4, 1], None), ("N", gs[4, 2], None),
         ("P", gs[5, 0], None), ("O", gs[5, 1], "polar"), ("Q", gs[5, 2], None),
+        ("R", gs[6, 0], None), ("S", gs[6, 1], None),
     ]
     _all_keys = [k for k, _, _ in _LAYOUT]
     _sel = (set(combined_panels) & set(_all_keys)) if combined_panels else set(_all_keys)
     if not _sel:
         _sel = set(_all_keys)
     _proj = {k: pj for k, _, pj in _LAYOUT}
-    _sup_y = 0.97
+    _sup_y = 1.0 - _SUPTITLE_DROP_IN / GRID_H_IN
     if _sel == set(_all_keys):
         _cp_pos = {k: sp for k, sp, _ in _LAYOUT}     # original layout, untouched
     else:
-        _chosen = [k for k in _all_keys if k in _sel]  # canonical A→Q order
+        _chosen = [k for k in _all_keys if k in _sel]  # canonical A→S order
         _n = len(_chosen)
         _nr, _nc = reflow_grid(_n)
         _H = max(1, _nr) * (38.0 / 6.0)                # ~6.33 inches per row
@@ -897,6 +925,95 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
     sax(ax, "Q", "Velocity Autocorrelation")
 
+    # ── R / S — the two headline sampling numbers ────────────────────────────
+    # Single-value bars, deliberately: these are the numbers that get read off
+    # and typed into a slide or a table, so each panel states one figure plainly
+    # rather than asking the reader to eyeball a distribution.  They are the
+    # sampling behind every per-track fit above — D, alpha and the MSS slope are
+    # each a curve fitted to one track's handful of points, so how many points
+    # there were, and how many tracks there are to average over, decide how much
+    # weight the rest of the figure can carry.
+
+    # R — Track Length
+    # A box rather than a mean bar because the quantity is heavily right-skewed:
+    # on real recordings the mean runs 1.5-2x the median, dragged up by a
+    # handful of stuck or aggregated emitters that stay lit for thousands of
+    # frames.  The box shows the median and the middle 50% of tracks — what a
+    # typical trajectory actually carried — while the mean is still marked, so
+    # the gap between the two is readable instead of hidden inside one number.
+    # Outlier markers are OFF: with thousands of tracks they pile into a solid
+    # vertical streak above the box that reads as a line of individual samples
+    # rather than as extreme values, and they force a log axis to fit.  Hidden,
+    # the whiskers frame the real population on a linear axis.  The longest
+    # track is still stated in the corner, so the tail is reported rather than
+    # quietly dropped — it is the tell for a stuck or aggregated emitter.
+    ax = _ax("R")
+    _tl = (pd.to_numeric(diff_df["n_observations"], errors="coerce").to_numpy(dtype=float)
+           if "n_observations" in diff_df.columns
+           else np.full(len(diff_df), np.nan))
+    _tl = _tl[np.isfinite(_tl) & (_tl > 0)]
+    if len(_tl) >= 5:
+        _bp = ax.boxplot([_tl], widths=0.42, patch_artist=True, showmeans=True,
+                         showfliers=False,
+                         meanprops=dict(marker="D", markersize=6,
+                                        markerfacecolor="#f78166",
+                                        markeredgecolor="none"),
+                         medianprops=dict(color=_kde_col, lw=2.0),
+                         whiskerprops=dict(color=TXT, lw=1.2),
+                         capprops=dict(color=TXT, lw=1.2))
+        for _box in _bp["boxes"]:
+            _box.set(facecolor=ACC, alpha=0.55, edgecolor=TXT, linewidth=1.2)
+        _mean, _med = float(np.mean(_tl)), float(np.median(_tl))
+        _q1, _q3 = (float(v) for v in np.percentile(_tl, [25, 75]))
+        # Frame the axis on the whiskers (the drawn extent), with headroom for
+        # the legend — and always include the mean marker, which on a skewed
+        # population can sit above the upper whisker.
+        _whisk = max((float(np.max(w.get_ydata())) for w in _bp["whiskers"]),
+                     default=_q3)
+        ax.set_ylim(0, max(_whisk, _mean) * 1.45)
+        ax.set_xticks([1])
+        ax.set_xticklabels([f"{len(_tl):,} tracks"], fontsize=9)
+        ax.set_xlim(0.4, 1.6)
+        ax.set_ylabel("Track length  (localisations)", fontsize=9)
+        ax.legend(handles=[
+            Line2D([], [], color=_kde_col, lw=2.0, label=f"median  {_med:,.0f}"),
+            Line2D([], [], color="none", marker="D", markersize=6,
+                   markerfacecolor="#f78166", markeredgecolor="none",
+                   label=f"mean  {_mean:,.1f}")],
+            fontsize=7, loc="upper right", framealpha=0.85,
+            facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
+        ax.text(0.02, 0.97,
+                f"IQR  {_q1:,.0f}–{_q3:,.0f}\nlongest  {float(_tl.max()):,.0f}",
+                transform=ax.transAxes, fontsize=7, color=TXT,
+                va="top", ha="left", alpha=0.95,
+                bbox=dict(boxstyle="round", fc=PNL, ec=GRD, alpha=0.7))
+        ax.grid(True, axis="y", ls="--", alpha=0.22, lw=0.5)
+    else:
+        ax.text(0.5, 0.5, "Track length unavailable\n(no per-track point count)",
+                transform=ax.transAxes, ha="center", va="center",
+                color=TXT, fontsize=10)
+        ax.set_xticks([]); ax.set_yticks([])
+    sax(ax, "R", "Track Length")
+
+    # S — Total Tracks
+    ax = _ax("S")
+    _n_tracks = int(len(diff_df))
+    if _n_tracks:
+        ax.bar([0], [_n_tracks], width=0.45, color=ACC, alpha=0.85)
+        ax.text(0, _n_tracks, f"{_n_tracks:,}", ha="center", va="bottom",
+                fontsize=15, fontweight="bold", color=TXT)
+        ax.set_xticks([0])
+        ax.set_xticklabels(["This recording"], fontsize=9)
+        ax.set_xlim(-0.6, 0.6)
+        ax.set_ylim(0, _n_tracks * 1.35)
+        ax.set_ylabel("Trajectories", fontsize=9)
+        ax.grid(True, axis="y", ls="--", alpha=0.22, lw=0.5)
+    else:
+        ax.text(0.5, 0.5, "No tracks", transform=ax.transAxes,
+                ha="center", va="center", color=TXT, fontsize=10)
+        ax.set_xticks([]); ax.set_yticks([])
+    sax(ax, "S", "Total Tracks")
+
     md = diff_df["D"].dropna().median()
     ma = diff_df["alpha"].dropna().median()
     fig.suptitle(
@@ -973,6 +1090,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     return {
         "combined":     combined_pil,
         "panels":       panel_images,
-        "panel_titles": {ltr: ax.get_title().strip() for ltr, ax in _panels},
+        # sax() sets every panel title with loc="left", and get_title()
+        # defaults to the CENTRE title — so this used to hand back a dict of
+        # empty strings for every panel.
+        "panel_titles": {ltr: ax.get_title("left").strip() for ltr, ax in _panels},
         "pdf_bytes":    pdf_bytes,
     }

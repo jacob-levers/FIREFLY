@@ -2615,7 +2615,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # none unless per-panel output is on, and just the selected subset when
         # fig_single_panels narrows it.
         # Which panels appear in the combined figure (and so are available to export):
-        # an empty / full selection → None = all panels (historical 6×3 layout).
+        # an empty / full selection → None = all panels (the canonical full grid).
         _sel_panels = p.get("fig_single_panels")
         combined_panels = set(_sel_panels) if _sel_panels else None
         if _eff_per_panel:

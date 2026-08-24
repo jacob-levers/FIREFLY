@@ -630,8 +630,8 @@ def _jdd_median_jump(run: RunData) -> Optional[float]:
 #   'raster' — representative saved image (art = figure-folder filename hint);
 #              degrades to a placeholder if the run didn't export it.
 PANEL_CATS = ["Imaging", "Tracking", "Diffusion", "Population"]
-# The All-panels view mirrors the single-run analysis figure EXACTLY — the 17
-# fa_figure.make_figure panels (A–Q) and nothing else.  Two render routes:
+# The All-panels view mirrors the single-run analysis figure EXACTLY — the 19
+# fa_figure.make_figure panels (A–S) and nothing else.  Two render routes:
 #   `letter`       → the make_figure panel, group-AVERAGED (pooled over the
 #                    condition's folders), exact matplotlib look.  (kind "mfig")
 #   raster + panel_letter → a SPATIAL map tied to one field of view; can't be
@@ -656,6 +656,8 @@ PANELS = [
     {"name": "Radial distribution",           "cat": "Tracking",   "kind": "mfig", "letter": "O"},
     {"name": "van Hove displacements",        "cat": "Population",  "kind": "mfig", "letter": "P"},
     {"name": "Velocity autocorrelation",      "cat": "Population",  "kind": "mfig", "letter": "Q"},
+    {"name": "Track length",                  "cat": "Tracking",   "kind": "mfig", "letter": "R"},
+    {"name": "Total tracks",                  "cat": "Tracking",   "kind": "mfig", "letter": "S"},
 ]
 
 # gallery index → fa_figure letter (derived from the `letter` fields above).

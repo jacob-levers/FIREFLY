@@ -334,13 +334,14 @@ Every run produces a **17-panel analysis figure**. A selection:
 
 <sub>Left→right, top→bottom: ensemble MSD (+ anomalous fit) · log₁₀(D) distribution · motion-class breakdown · anomalous-exponent α by class · position-density map · DBSCAN cluster map.</sub>
 
-- Single-sample combined figure with 17 panels (A–Q): max projection,
+- Single-sample combined figure with 19 panels (A–S): max projection,
   trajectories, MSD curves, log₁₀(D) distribution, motion-class
   breakdown, anomalous-exponent distribution, position density, mobile
   fraction over time, JDD with multi-population fit, cluster map,
   dwell-time histogram, MSS slope, radial distribution, van Hove
   displacement distribution (with non-Gaussian α₂), velocity
-  autocorrelation (with persistence index), and more.
+  autocorrelation (with persistence index), track length,
+  total tracks, and more.
 - Multi-group comparison figure (10 panels: ensemble MSD, log₁₀(D)
   distribution, mobile fraction, motion-class fractions, track-length
   CDF, JDD overlay, dwell-time CDF, turning-angle distribution, radial
