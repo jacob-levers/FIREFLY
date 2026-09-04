@@ -99,6 +99,15 @@ def _verdict_for_metric(disp, rec, n_groups):
     omn = rec.get("omnibus") or {}
     pairs = rec.get("pairwise") or []
     notes = [str(omn.get("note") or "")] + [str(p.get("note") or "") for p in pairs]
+    # A pair the engine could not test at all.  This must be caught BEFORE the
+    # two-group branch below, which would otherwise render a missing p-value as
+    # "not statistically significant" — asserting a null result that was never
+    # measured.
+    if any("no test possible" in nt for nt in notes):
+        return ("warn",
+                "<b>Not tested.</b> A condition has only one replicate, so there "
+                "is no between-animal variation for a test to work against. The "
+                "difference below is descriptive only.", True)
     if any("n<3" in nt for nt in notes):
         return ("warn",
                 "<b>Not interpretable.</b> At least one group has fewer than 3 "

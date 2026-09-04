@@ -1207,11 +1207,27 @@ def compute_mss(tracks, pixel_size_um, frame_interval, max_lagtime=10,
 
 
 def _msd_auc(emsd_df, frame_interval):
-    """Trapezoidal AUC of the MSD curve in µm²·s units."""
+    """Trapezoidal AUC of the MSD curve in µm²·s units.
+
+    Lags with no contributing track pairs are legitimately NaN — see the
+    ensemble-MSD construction in :func:`compute_msd_and_fit`, which fills only
+    ``where=valid_counts > 0``.  A curve whose longest lags are unpopulated is
+    an ordinary recording, not a broken one.
+
+    Integrating straight through those NaNs returned NaN for the WHOLE run, so
+    such a replicate silently vanished from the comparison's AUC panel while
+    every other panel kept it: n=4 per condition would render as n=2, and the
+    stats then degraded to "n<3 replicates - underpowered".  Integrate over the
+    lags that actually have data instead.
+    """
     if emsd_df is None or len(emsd_df) == 0:
         return np.nan
-    t = emsd_df["lag_frame"].values * frame_interval
-    y = emsd_df["msd_um2"].values
+    t = np.asarray(emsd_df["lag_frame"].values, dtype=float) * frame_interval
+    y = np.asarray(emsd_df["msd_um2"].values, dtype=float)
+    ok = np.isfinite(t) & np.isfinite(y)
+    if int(ok.sum()) < 2:
+        return np.nan
+    t, y = t[ok], y[ok]
     order = np.argsort(t)
     # NumPy 2.x renamed trapz → trapezoid
     _trap = getattr(np, "trapezoid", None) or np.trapz

@@ -482,7 +482,13 @@ class AnalysisWorkspaceController(QObject):
             pn = s.get("figures/compare_panels", "")
             if pn:
                 keys = {k for k, _ in wd.COMPARE_PANELS}
-                self._panels = {p for p in str(pn).split(",") if p in keys}
+                stored = {p for p in str(pn).split(",") if p in keys}
+                # See LEGACY_DEFAULT_COMPARE_PANELS: an exact match with the old
+                # default is the value setMetric() saved on the user's behalf,
+                # not a choice they made, so it follows the default forward.
+                if stored == wd.LEGACY_DEFAULT_COMPARE_PANELS:
+                    stored = set(wd.DEFAULT_COMPARE_PANELS)
+                self._panels = stored
         except Exception:
             pass
 
@@ -500,8 +506,19 @@ class AnalysisWorkspaceController(QObject):
             pass
 
     # ── recompute pipeline ──────────────────────────────────────────────
+    # A condition needs ONE loaded run folder to take part, not two.  A single
+    # replicate carries no between-animal variance, so no test can run on it —
+    # but that is the engine's business (fa_circular._stat_test_n already emits
+    # "n<2 replicates - no test possible" rows), not a reason to hide the
+    # condition from the tab entirely.  Excluding it meant a pilot n=1 arm was
+    # invisible: its figures couldn't be drawn, its numbers couldn't be read,
+    # and the tab gave no hint why.  `singleReplicateWarning` says plainly what
+    # is and isn't available.
+    _MIN_REPLICATES = 1
+
     def _shown(self) -> list[_Condition]:
-        return [c for c in self._conditions if len(c.active()) >= 2]
+        return [c for c in self._conditions
+                if len(c.active()) >= self._MIN_REPLICATES]
 
     def _metric_obj(self):
         # self._metric is a panel key; map it to the scalar metric that backs the
@@ -694,6 +711,8 @@ class AnalysisWorkspaceController(QObject):
                     groups, self._stats_config())
                 self._verdict = self._build_verdict(metric, self._omnibus, pw_raw, n_cond)
             n_sig = sum(1 for r in sig if r["sig"])
+            n_testable = sum(1 for r in sig
+                             if r.get("p") is not None and np.isfinite(r["p"]))
 
             self._headline = [
                 {"label": "Total tracks", "value": f"{ntot:,}", "unit": "",
@@ -707,8 +726,15 @@ class AnalysisWorkspaceController(QObject):
                  "color": "", "jump": False},
                 {"label": "Max difference", "value": metric.fmt(hi - lo),
                  "unit": metric.unit, "color": "#f6a623", "jump": False},
-                {"label": "Significant pairs", "value": f"{n_sig} / {len(sig)}",
-                 "unit": "", "color": "#56d364" if n_sig else "#5b636e", "jump": True},
+                # Denominator is the pairs a test could actually run on: a pair
+                # involving a one-replicate condition is UNTESTED, and counting
+                # it as a non-significant result overstates what was checked.
+                {"label": "Significant pairs",
+                 "value": (f"{n_sig} / {n_testable}" if n_testable
+                           else f"0 / 0"),
+                 "unit": ("" if n_testable == len(sig)
+                          else f"({len(sig) - n_testable} untestable)"),
+                 "color": "#56d364" if n_sig else "#5b636e", "jump": True},
             ]
             hi_bar = max([m for m in means if np.isfinite(m)] or [1.0]) or 1.0
             self._stats_rows = []
@@ -770,21 +796,37 @@ class AnalysisWorkspaceController(QObject):
             self._render_panel_async()
 
     def _sig_row(self, r):
-        mag = r["magnitude"]
+        mag = r["magnitude"] or ""
         mag_color = {"large": "#56d364", "medium": "#e6edf3",
-                     "small": "#8b949e", "negligible": "#5b636e"}[mag]
+                     "small": "#8b949e", "negligible": "#5b636e"}.get(mag, "#5b636e")
         a, b = r["a"], r["b"]
         if self._paired:
             label = f"{a.get('label')} vs {b.get('label')}"
         else:
             label = f"{a['label']} vs {b['label']}"
         p = r["p"]
-        p_txt = ("—" if p is None or not np.isfinite(p)
+        testable = p is not None and np.isfinite(p)
+        p_txt = ("—" if not testable
                  else f"{p:.1e}" if p < 0.001 else f"{p:.3f}")
+        d = r.get("delta")
+        d_txt = ("δ —" if d is None or not np.isfinite(d)
+                 else f"δ {abs(d):.2f}")
+        # Say WHY a pair has no p rather than leaving an em dash to be read as
+        # "not significant".  One replicate carries no between-animal variance,
+        # so there is nothing for a test to work with.
+        note = ""
+        if not testable:
+            ns = [n for n in (r.get("n_i"), r.get("n_j")) if n is not None]
+            if ns and min(ns) < 2:
+                note = "needs 2+ replicates per condition"
+            else:
+                note = "no test possible"
         return {
             "aColor": a["color"], "bColor": b["color"], "label": label,
-            "delta": f"δ {abs(r['delta']):.2f}", "mag": mag, "magColor": mag_color,
+            "delta": d_txt, "mag": mag or ("untested" if not testable else ""),
+            "magColor": mag_color,
             "p": f"p = {p_txt}", "stars": r["stars"], "sig": r["sig"],
+            "testable": bool(testable), "note": note,
         }
 
     def _omnibus_row(self, o, alpha):
@@ -894,10 +936,28 @@ class AnalysisWorkspaceController(QObject):
         corr_txt = ("" if corr == "None"
                     else f" with {corr.replace(' (FDR)', '')} correction")
         unit = "timepoints" if self._paired else "conditions"
-        return (f"{metric.label} was compared across {len(groups)} {unit} "
+        # This paragraph is written to be pasted into a methods section, so it
+        # must not name a test that did not run.  A condition with one replicate
+        # has no within-condition variance, so every pair touching it is
+        # descriptive only — say that instead of citing Mann-Whitney.
+        singles = [g["label"] for g in groups if len(g.get("values", ())) < 2]
+        if singles and len(singles) == len(groups):
+            return (f"{metric.label} is reported descriptively across "
+                    f"{len(groups)} {unit} (n = {ntot:,} localisations). No "
+                    f"significance test was run: every condition has a single "
+                    f"replicate, so there is no between-replicate variation to "
+                    f"test against.")
+        base = (f"{metric.label} was compared across {len(groups)} {unit} "
                 f"(n = {ntot:,} localisations) using {self._cfg['test']}{corr_txt} "
                 f"(α = {self._cfg['alpha']})"
                 + (", paired by timepoint" if self._paired else "") + ".")
+        if singles:
+            named = ", ".join(singles)
+            base += (f" {named} {'has' if len(singles) == 1 else 'have'} a single "
+                     f"replicate and {'was' if len(singles) == 1 else 'were'} not "
+                     f"tested; {'its' if len(singles) == 1 else 'their'} values "
+                     f"are reported descriptively.")
+        return base
 
     def _build_legend(self, groups, metric):
         if metric.id == "motion":
@@ -1670,6 +1730,61 @@ class AnalysisWorkspaceController(QObject):
                 f"runs or publishing."),
         }
 
+    @Property("QVariantMap", notify=conditionsChanged)
+    def singleReplicateWarning(self):
+        """Which conditions have only ONE replicate, and what that costs.
+
+        A one-replicate condition is allowed into the comparison — its figures,
+        distributions and pooled numbers are all real, and locking a pilot arm
+        out of the tab entirely was worse than letting it in with a caveat.  But
+        with a single animal there is no between-animal variance, so no
+        significance test can run against it, and nothing here should imply one
+        did.
+
+        The specific trap this warns about is pseudoreplication: the per-track
+        distributions still hold thousands of tracks, so a track-level test
+        would return a spectacular p-value that is really measuring tracks
+        within one animal, not a difference between conditions.
+
+        ``key`` changes only when the offending set changes, so the UI can show
+        this once per set instead of on every recompute.
+        """
+        singles = sorted(_glabel(c.name, c.phase) for c in self._conditions
+                         if len(c.active()) == 1)
+        if not singles:
+            return {"show": False, "key": "", "count": 0,
+                    "title": "", "text": "", "names": []}
+        n = len(singles)
+        listed = ", ".join(singles[:4]) + (f" and {n - 4} more" if n > 4 else "")
+        return {
+            "show": True,
+            "key": "|".join(singles),
+            "count": n,
+            "names": singles,
+            "title": ("Single replicate — no significance test"
+                      if n == 1 else "Single replicates — no significance test"),
+            "text": (
+                f"{listed} {'has' if n == 1 else 'have'} only one run folder.\n\n"
+                f"Everything descriptive still works: the figures, the "
+                f"distributions, the pooled medians and the per-condition "
+                f"numbers are all computed and exported as normal, and you can "
+                f"read the difference between conditions straight off them.\n\n"
+                f"What cannot run is any significance test involving "
+                f"{'that condition' if n == 1 else 'those conditions'}. A test "
+                f"compares the difference between conditions against the "
+                f"variation between animals within them, and one animal has no "
+                f"within-condition variation to measure. Those pairs show "
+                f"“p = —”, no stars and no effect size, and the omnibus test "
+                f"and the two-way ANOVA are skipped.\n\n"
+                f"Be careful of the tempting shortcut here. The per-track "
+                f"tables still hold thousands of tracks, so a test run over "
+                f"TRACKS rather than animals will return a very small p-value — "
+                f"but it is measuring variation between tracks inside one "
+                f"animal, not between conditions, and it will look significant "
+                f"whether or not a real effect exists. Two or three replicates "
+                f"per condition is the smallest honest comparison."),
+        }
+
     @Property("QVariantList", notify=conditionsChanged)
     def conditions(self):
         out = []
@@ -1680,7 +1795,8 @@ class AnalysisWorkspaceController(QObject):
                 "id": c.id, "name": c.name, "colorHex": c.color, "phase": c.phase,
                 "phaseColor": tp["color"] if tp else "#5b636e",
                 "activeFolders": len(active), "totalFolders": len(c.folders),
-                "ready": len(active) >= 2,
+                "ready": len(active) >= self._MIN_REPLICATES,
+                "singleReplicate": len(active) == 1,
                 "folders": [{
                     "id": f.run.id if f.run else os.path.basename(f.path),
                     "n": ("analysing…" if f.analysing else
@@ -1761,6 +1877,14 @@ class AnalysisWorkspaceController(QObject):
             recs.append({"tone": "info", "text":
                 f"{min_n} replicates in the smallest group — Auto picks a sensible "
                 f"test; more would let the normality check decide."})
+        elif min_n <= 1:
+            # No test runs at all here, so "a non-parametric test is safer" would
+            # be advice about a choice that has no effect.
+            recs.append({"tone": "warn", "text":
+                "One replicate in the smallest group — no significance test can "
+                "run against it, so the figures and medians are descriptive "
+                "only. Two or three replicates per condition is the smallest "
+                "honest comparison."})
         else:
             recs.append({"tone": "warn", "text":
                 f"Only {min_n} replicate(s) in the smallest group — results are "

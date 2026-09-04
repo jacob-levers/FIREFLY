@@ -1,5 +1,81 @@
 # Changelog
 
+## v2.76.51-rc.2 — 4 Sep 2026
+
+### Fixed
+
+- **The MSD-AUC comparison graph was silently dropping replicates.** A recording
+  whose ensemble-MSD curve has an unpopulated lag — no track long enough to
+  reach it, which is ordinary and expected at the longest lags — had its AUC
+  computed as "no value at all" rather than as the area under the part of the
+  curve that exists. That replicate then vanished from the AUC panel while every
+  other panel kept it, so a condition with four folders could render as two, and
+  the statistics beneath it degraded to "n<3 replicates — underpowered, not
+  interpretable" and reported no significant difference.
+
+  Nothing else was affected: the MSD panel, the medians and every other
+  comparison were correct throughout. Only the AUC panel, and only for
+  recordings with an unpopulated lag. If you have run a comparison where the AUC
+  graph showed fewer points than the others, or called a difference
+  non-significant that the other panels showed clearly, that comparison is worth
+  re-running.
+
+  The area is now integrated over the lags that have data. Curves with no
+  missing lags give exactly the number they always did.
+
+- The same quantity had **two separate implementations** — the analysis core's
+  and the Analysis tab's own copy — and they disagreed on precisely this case,
+  so the live AUC card showed a value the exported panel had already discarded.
+  The tab now uses the core's integrator, so the two cannot drift apart again.
+
+### Changed
+
+- **Every comparison graph you can browse is now exported by the report.** The
+  scroller offers 24 panels; Generate report was writing 21. Track count,
+  Observed-link distance and Observed-link speed were held out of the default
+  set, so a graph could be on screen in the tab and simply absent from the PDF
+  with nothing saying why. All 24 are on by default now.
+
+  If you had ever changed the selected graph, the old 21 were already saved to
+  your settings as a side effect — so the stored value would have overridden the
+  new default and nothing would have changed for you. A saved set that exactly
+  matches the old default is therefore treated as "never customised" and follows
+  the default forward. A set you genuinely picked is left alone.
+
+- **A condition now needs one run folder to take part in a comparison, not
+  two.** A single-replicate arm used to be filtered out of the Analysis tab
+  entirely — no figures, no numbers, and no hint as to why — which made a pilot
+  n=1 condition impossible to look at even descriptively. It is now included,
+  with a one-time popup naming which conditions are affected and what is and
+  isn't available.
+
+  Everything descriptive still works: the figures, distributions, pooled medians
+  and per-condition values are computed and exported exactly as before, and the
+  full report writes its complete bundle. What cannot run is any significance
+  test involving that condition — a test compares the difference between
+  conditions against the variation between animals within them, and one animal
+  has no within-condition variation to offer. Those pairs show "p = —", no stars
+  and no effect size; the omnibus test and the two-way ANOVA are skipped.
+
+  The warning also spells out the trap, because it is a tempting one: the
+  per-track tables still hold thousands of tracks, so a test run over TRACKS
+  rather than animals returns a very small p-value that is really measuring
+  variation between tracks inside one animal. It will look significant whether
+  or not a real effect exists.
+
+### Fixed
+
+- **An untestable pair no longer reports a null result it never measured.**
+  Where the engine returns no Cliff's δ, the significance table was coercing it
+  to zero and rendering "δ 0.00 · negligible" — stating a negligible effect for
+  a comparison that was never run. It now reads "δ —" and "untested", with a note
+  saying 2+ replicates are needed. In the same spirit: the plain-language
+  verdict says "Not tested" instead of "not statistically significant"; the
+  methods paragraph no longer names a test that did not run, and names the
+  untested condition instead; the "Significant pairs" count no longer counts an
+  untested pair in its denominator; and the replicate recommendation no longer
+  advises picking a non-parametric test when no test can run at all.
+
 ## v2.76.51-rc.1 — 24 Aug 2026
 
 ### Added

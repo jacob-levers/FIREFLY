@@ -1684,4 +1684,42 @@ Item {
             }
         }
     }
+
+    // ════ single-replicate warning ════
+    // A one-replicate condition is allowed into the comparison, but no test can
+    // run against it — say so once per distinct set, the same way the legacy
+    // warning does, so it informs without nagging on every recompute.
+    property string ackedSingleKey: ""
+    readonly property var singleInfo: Analysis.singleReplicateWarning
+
+    onSingleInfoChanged: {
+        if (singleInfo && singleInfo.show && singleInfo.key !== root.ackedSingleKey)
+            singleModal.open()
+    }
+
+    Modal {
+        id: singleModal
+        title: root.singleInfo ? (root.singleInfo.title || "") : ""
+        onClosed: root.ackedSingleKey = root.singleInfo ? (root.singleInfo.key || "") : ""
+
+        Text {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            text: root.singleInfo ? (root.singleInfo.text || "") : ""
+            color: pal.TXT_MUTED
+            font.pixelSize: sc.textSm
+            lineHeight: 1.35
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: sc.sp2
+            spacing: sc.sp3
+            Item { Layout.fillWidth: true }
+            Button {
+                variant: "primary"
+                text: "Got it"
+                onClicked: singleModal.close()
+            }
+        }
+    }
 }

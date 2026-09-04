@@ -155,12 +155,27 @@ def test_metric_switch_rescopes_everything(tmp_path):
     assert c.statsRows[0]["err"] == ""           # ± only shown for D
 
 
-def test_folder_exclude_drops_below_ready(tmp_path):
+def test_folder_exclude_down_to_one_keeps_the_comparison(tmp_path):
+    """Excluding a folder used to drop the condition below the two-replicate
+    minimum and collapse the whole tab.  One replicate is now enough to take
+    part — it just can't be tested (see test_single_replicate_comparison)."""
     c, ids = _ctrl_with_two_conditions(tmp_path, nf=2)
     assert c.enough is True
-    # exclude one of condition-0's two folders → only 1 active → not ready
     fid = c.conditions[0]["folders"][0]["id"]
-    c.toggleFolder(ids[0], fid)
+    c.toggleFolder(ids[0], fid)                   # → 1 active in condition 0
+    assert c.readyCount == 2
+    assert c.enough is True
+    assert c.headline != []
+    assert c.conditions[0]["singleReplicate"] is True
+    assert c.significanceRows[0]["testable"] is False
+
+
+def test_excluding_every_folder_drops_below_ready(tmp_path):
+    """A condition with NO active folders has nothing to contribute, so the
+    comparison really does fall back to not-ready."""
+    c, ids = _ctrl_with_two_conditions(tmp_path, nf=2)
+    for f in list(c.conditions[0]["folders"]):
+        c.toggleFolder(ids[0], f["id"])
     assert c.readyCount == 1
     assert c.enough is False
     assert c.headline == []

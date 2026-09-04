@@ -591,20 +591,22 @@ def _track_count(run: RunData) -> Optional[float]:
 
 
 def _msd_auc(run: RunData) -> Optional[float]:
-    """Area under the ensemble-MSD curve (µm²·s) — trapezoidal over lag-time."""
+    """Area under the ensemble-MSD curve (µm²·s) — the live card's value.
+
+    Delegates to the analysis core's integrator rather than repeating it.  The
+    two used to be separate implementations that disagreed whenever the curve
+    carried a NaN lag: this one skipped it, the engine's returned NaN for the
+    whole run, so the tab showed an AUC the exported panel had dropped.
+    """
     emsd = run._read_csv("_ensemble_msd.csv")
     if emsd is None or {"lag_frame", "msd_um2"} - set(emsd.columns):
         return None
     fi = run.fi_s
     if not fi:
         return None
-    lag_s = emsd["lag_frame"].to_numpy(dtype=float) * fi
-    msd = emsd["msd_um2"].to_numpy(dtype=float)
-    ok = np.isfinite(lag_s) & np.isfinite(msd)
-    if ok.sum() < 2:
-        return None
-    _trap = getattr(np, "trapezoid", None) or np.trapz   # np.trapz removed in numpy 2.0
-    return float(_trap(msd[ok], lag_s[ok]))
+    from firefly.analysis.fa_diffusion import _msd_auc as _core_msd_auc
+    v = _core_msd_auc(emsd, fi)
+    return float(v) if np.isfinite(v) else None
 
 
 def _jdd_median_jump(run: RunData) -> Optional[float]:
@@ -1229,7 +1231,15 @@ def cliffs_delta(x: np.ndarray, y: np.ndarray) -> float:
     return float(diff.sum() / (x.size * y.size))
 
 
-def effect_magnitude(d: float) -> str:
+def effect_magnitude(d: Optional[float]) -> str:
+    """Cohen magnitude word for a Cliff's δ, or "" when δ is UNKNOWN.
+
+    Unknown is not "negligible".  The engine returns no δ when a pair can't be
+    tested (a group with one replicate), and rendering that as 0.00/negligible
+    states a null result that was never measured — the single most misleading
+    thing this table could say."""
+    if d is None or not np.isfinite(d):
+        return ""
     a = abs(d)
     if a < 0.147:
         return "negligible"
@@ -1361,12 +1371,17 @@ def engine_pairwise_stats(groups: list[dict], stats_config: dict):
     rows = []
     for k, r in enumerate(pw):
         p_use = pcorr.get(k, r.get("p"))
+        # An absent δ stays absent.  It used to be coerced to 0.0, which the UI
+        # then rendered as "δ 0.00 · negligible" — an unmeasured pair claiming a
+        # null effect.
         d = r.get("cliffs_delta")
-        d = float(d) if (d is not None and np.isfinite(d)) else 0.0
+        d = float(d) if (d is not None and np.isfinite(d)) else None
         rows.append({
             "a": groups[r["i"]], "b": groups[r["j"]],
             "p_raw": r.get("p"), "p": p_use, "delta": d,
             "magnitude": effect_magnitude(d),
+            "n_i": r.get("n_i"), "n_j": r.get("n_j"),
+            "testable": bool(p_use is not None and np.isfinite(p_use)),
             "sig": bool(p_use is not None and np.isfinite(p_use) and p_use < alpha),
             "stars": fsc.stars_for(p_use, alpha),
             "test": r.get("test", ""), "note": r.get("note", ""),
@@ -1407,10 +1422,19 @@ COMPARE_PANEL_PRESETS = {
     "Diffusion": ("msd", "auc", "logd_dist", "jdd", "mob_immob"),
     "Dynamics": ("turning_angles", "radial_dist", "van_hove", "vacf", "dwell_cdf"),
 }
-# the engine's default set is every panel EXCEPT track_count
-DEFAULT_COMPARE_PANELS = {
-    k for k, _ in COMPARE_PANELS
-} - {"track_count", "linkstep", "linkspeed"}
+# Every panel the scroller lets you browse is also exported.  The default used
+# to hold three back (track_count, linkstep, linkspeed), which meant a graph you
+# were looking at in the tab could be absent from the report with nothing on
+# screen saying so.
+DEFAULT_COMPARE_PANELS = {k for k, _ in COMPARE_PANELS}
+
+# The pre-v2.76.51 default.  A stored selection identical to this was never an
+# actual choice: the panel set is persisted as a side effect of switching the
+# selected graph, so every user has one saved whether or not they ever opened
+# the picker.  An exact match is treated as "not customised" and upgraded to the
+# full set; any other combination is a real preference and is left alone.
+LEGACY_DEFAULT_COMPARE_PANELS = DEFAULT_COMPARE_PANELS - {
+    "track_count", "linkstep", "linkspeed"}
 LOGD_STYLES = [("overlaid", "Overlaid"), ("ridgeline", "Ridgeline"),
                ("violin", "Violin"), ("faceted", "Faceted")]
 
