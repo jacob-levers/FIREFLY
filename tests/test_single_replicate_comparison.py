@@ -20,9 +20,16 @@ The trap being guarded against is pseudoreplication: the per-track tables still
 hold thousands of tracks, so a track-level test would return a tiny p-value that
 measures tracks within one animal rather than a difference between conditions.
 """
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import numpy as np
 import pytest
 
+# The `pytest core` CI job installs the analysis stack WITHOUT PySide6 and runs
+# the whole suite; a module-level Qt import aborts collection for everything.
+pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication
 
 from firefly.ui.controllers.workspace import workspace_data as wd

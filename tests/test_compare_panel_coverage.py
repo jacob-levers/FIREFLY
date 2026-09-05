@@ -6,9 +6,16 @@ The default used to hold three panels back (track_count, linkstep, linkspeed),
 so a graph could be on screen in the tab and absent from the report with
 nothing saying so.
 """
+import os
 import re
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
+
+# The `pytest core` CI job installs the analysis stack WITHOUT PySide6 and runs
+# the whole suite; a module-level Qt import aborts collection for everything.
+pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication
 
 from firefly.ui.controllers.workspace import workspace_data as wd
