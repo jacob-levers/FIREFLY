@@ -55,6 +55,10 @@ class RoiController(QObject):
         self._store = store             # per-file polygon store
         self._ovr = override_store      # per-file roi-settings override store
         self._s = settings
+        self._run_scoped = False        # True while editing a FINISHED run's ROI:
+                                        # suppresses every write-through into the
+                                        # sidebar defaults (see _push_default)
+        self._run_dir = ""              # the run being edited, when run-scoped
         self._batch_mode = False        # single: viewer edits mirror into the
                                         # sidebar default; batch: per-file override
         self._file = ""
@@ -411,6 +415,171 @@ class RoiController(QObject):
         self.editingChanged.emit()
         self.splitChanged.emit()
 
+    @Slot(str, result=bool)
+    def editRun(self, run_dir):
+        """Open the editor over a COMPLETED run so its ROI can be added to or
+        edited, then re-applied by ``firefly_worker.run_postproc``.
+
+        Differs from :meth:`editFile` in four ways, each of which matters:
+
+        * **Background.**  Prefer the original movie (the run manifest records
+          its path), but fall back to rebuilding a localisation-density image
+          from the run's own saved localisations at the recorded field size.
+          The movies live on removable drives, so the fallback is the common
+          case, not the exotic one — without it the feature is unavailable
+          whenever the drive is unplugged.
+        * **Forces Manual polygon mode.**  ``editFile`` inherits
+          ``analysis/roi_mode`` from settings, which for the default "Auto
+          threshold" leaves the drawing canvas hidden entirely.
+        * **Seeds the run's saved polygon** so an existing ROI can be edited
+          rather than only replaced.
+        * **Run-scoped**: no write-through to the sidebar defaults.
+
+        Keyed on the run directory, not the movie path, so a post-hoc ROI can
+        never collide with the pre-run polygon stored for the same movie.
+        """
+        import os
+        run_dir = str(run_dir or "")
+        if not run_dir or not os.path.isdir(run_dir):
+            self.statusMessage.emit("That run folder is not available.")
+            return False
+
+        self._run_scoped = True
+        self._run_dir = run_dir
+        self._file = run_dir                      # store key + header caption
+        self._apply_spec(self._default_spec())
+        self._roi_mode = "Manual polygon"         # set directly: the setter
+                                                  # would push to settings
+        self._view_mode = "proj"
+        self._frame_idx = 0
+        self._raw_frame = None
+        self._mask_proj = None
+        self._mask_proj_mode = ""
+        self._green_path = ""                     # no companion image for a run
+        self._detect_on = False                   # no live detection over a run
+        self._spots = None
+        self._spots_token += 1
+
+        meta = self._run_meta(run_dir)
+        movie = meta.get("movie") or ""
+        if movie and os.path.isfile(movie):
+            self._load_background(movie)          # the real thing when we have it
+        else:
+            self._load_run_locs_background(meta)
+        self._n_frames = 0                        # hide the frame scrubber
+
+        self._draft = []
+        self._polys = [[(float(y), float(x)) for y, x in poly]
+                       for poly in (meta.get("polygons") or [])]
+        self._editing = True
+        for sig in (self.roiSettingsChanged, self.viewChanged, self.polygonsChanged,
+                    self.draftChanged, self.detectChanged, self.spotsChanged,
+                    self.editingChanged, self.splitChanged):
+            sig.emit()
+        return True
+
+    def _run_meta(self, run_dir):
+        """{movie, polygons, width, height, stem, extras} read from a run folder.
+
+        Everything is best-effort: a run produced before the polygon was
+        persisted simply has no polygons to seed, and one whose manifest is
+        missing just loses the movie shortcut.
+        """
+        import json
+        import os
+        out = {"movie": "", "polygons": None, "width": 0, "height": 0,
+               "stem": "", "extras": ""}
+        extras = os.path.join(run_dir, "firefly_extras")
+        if not os.path.isdir(extras):
+            return out
+        out["extras"] = extras
+        try:
+            locs = [f for f in os.listdir(extras)
+                    if f.endswith("_localisations.csv") and not f.startswith("._")]
+            if locs:
+                out["stem"] = locs[0][:-len("_localisations.csv")]
+        except OSError:
+            return out
+        stem = out["stem"]
+        try:
+            with open(os.path.join(extras, f"{stem}_params.json"),
+                      encoding="utf-8") as fh:
+                params = json.load(fh) or {}
+            out["width"] = int(params.get("width") or 0)
+            out["height"] = int(params.get("height") or 0)
+            out["polygons"] = params.get("roi_polygon") or None
+        except Exception:
+            pass
+        for cand in (os.path.join(run_dir, f"{stem}_run_manifest.json"),
+                     os.path.join(extras, f"{stem}_run_manifest.json")):
+            try:
+                with open(cand, encoding="utf-8") as fh:
+                    out["movie"] = ((json.load(fh) or {})
+                                    .get("input", {}).get("path") or "")
+                break
+            except Exception:
+                continue
+        return out
+
+    def _load_run_locs_background(self, meta):
+        """Rebuild the drawing canvas from the run's saved localisations.
+
+        Reuses the worker's own ``_make_loc_histogram_proj``, which already
+        prefers the run's recorded width/height — so the rebuilt image sits on
+        exactly the movie's pixel grid and polygons drawn on it stay valid for
+        the analysis.  (A canvas on any other grid would be silently rejected by
+        the worker's ROI extent check.)
+        """
+        import os
+        self._proj = None
+        self._n_frames = 0
+        try:
+            import pandas as pd
+            from firefly.firefly_worker import _make_loc_histogram_proj
+            csv = os.path.join(meta.get("extras") or "",
+                               f"{meta.get('stem')}_localisations.csv")
+            if not os.path.isfile(csv):
+                self.statusMessage.emit(
+                    "This run has no saved localisations to draw on.")
+                self._render_display()
+                return
+            locs = pd.read_csv(csv)
+            proj = _make_loc_histogram_proj(
+                locs, {"width": meta.get("width") or 0,
+                       "height": meta.get("height") or 0})
+            self._proj = proj[0] if getattr(proj, "ndim", 0) == 3 else proj
+            self.statusMessage.emit(
+                "Source movie not found — drawing on the run's own "
+                "localisation density.")
+        except Exception as exc:
+            self.statusMessage.emit(f"Couldn't rebuild the run image: {exc}")
+        self._render_display()
+
+    @Slot(result="QVariantList")
+    def runPolygons(self):
+        """The polygons drawn over a run, for dispatch to run_postproc.
+
+        Deliberately separate from :meth:`commit`, which writes the Import-tab
+        override store — a run-scoped ROI has no business touching that.
+        """
+        return [[[float(y), float(x)] for y, x in poly] for poly in self._polys]
+
+    @Property(bool, notify=editingChanged)
+    def runScoped(self):
+        return self._run_scoped
+
+    @Property(str, notify=editingChanged)
+    def runDir(self):
+        return self._run_dir
+
+    @Slot()
+    def closeRun(self):
+        """Leave a run-scoped edit without writing anything anywhere."""
+        self._run_scoped = False
+        self._run_dir = ""
+        self._editing = False
+        self.editingChanged.emit()
+
     def _load_background(self, path):
         # A sampled max-intensity projection (never a full stack load — that froze
         # the GUI on multi-GB recordings). (Y, X) layout matches load_file's.
@@ -619,8 +788,10 @@ class RoiController(QObject):
     def _push_default(self, key, value):
         """Mirror a viewer ROI edit into the global sidebar setting — single
         mode only.  In batch the viewer is a per-file override (RoiOverrideStore)
-        and must NOT touch the shared default."""
-        if self._batch_mode or self._s is None:
+        and must NOT touch the shared default.  Nor may a RUN-SCOPED edit: that
+        run is already finished, and rewriting the sidebar from it would change
+        the parameters of the NEXT analysis on the strength of a post-hoc ROI."""
+        if self._batch_mode or self._run_scoped or self._s is None:
             return
         self._s.set(key, value)
 
@@ -853,7 +1024,9 @@ class RoiController(QObject):
         if abs(v - self._minmass) < 1e-9:
             return
         self._minmass = v
-        if self._s is not None:                  # what you preview is what runs
+        # Run-scoped: the detection threshold of a COMPLETED run is history —
+        # previewing spots over it must not rewrite the sidebar for future runs.
+        if self._s is not None and not self._run_scoped:
             self._s.set("analysis/minmass", v)
             self._s.set("analysis/auto_minmass", False)
         self.detectChanged.emit()
@@ -961,6 +1134,8 @@ class RoiController(QObject):
             else:
                 self._ovr.clear(self._file)
         self._editing = False
+        self._run_scoped = False        # never leak run scope into the next edit
+        self._run_dir = ""
         self.editingChanged.emit()
         self.statusMessage.emit(
             f"ROI saved for {self.fileName}" if self._file else "ROI saved")
@@ -975,6 +1150,8 @@ class RoiController(QObject):
         spec = (self._ovr.get(self._file) if self._ovr else None) or self._default_spec()
         self._apply_spec(spec)
         self._editing = False
+        self._run_scoped = False        # never leak run scope into the next edit
+        self._run_dir = ""
         self.roiSettingsChanged.emit()
         self.polygonsChanged.emit()
         self.draftChanged.emit()

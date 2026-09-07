@@ -1,5 +1,61 @@
 # Changelog
 
+## v2.76.51-rc.3 — 7 Sep 2026
+
+### Added
+
+- **Regions of interest can now be drawn and edited AFTER an analysis has run.**
+  Until now an ROI had to be decided before processing, over the raw movie, in
+  the Import tab — before you had seen a single track. Open a run in Visualise,
+  expand "Region of interest", and draw or adjust a region; FIREFLY re-derives
+  the whole run for it (linking, MSD, diffusion, clusters, figure and every CSV)
+  into a new folder beside the original, leaving the original untouched.
+
+  **The editor is now genuinely an editor.** Individual vertices can be dragged,
+  a vertex removed with a right-click, and a whole region deleted. Previously a
+  finished shape could only be cleared and redrawn — the underlying operations
+  had existed since the editor was written but nothing in the interface ever
+  reached them.
+
+  **It works with the source movie unavailable.** The original recording is used
+  when it is on disk; otherwise the drawing canvas is rebuilt from the run's own
+  saved localisations at the recording's true field size. Since the movies
+  usually live on removable drives, this is the ordinary case rather than the
+  exception.
+
+  **A region can only be made smaller.** A run stores only the localisations its
+  own ROI kept, so a larger region cannot recover what an earlier one discarded —
+  the result would quietly cover just the overlap. FIREFLY refuses that outright
+  and explains that widening a region means re-analysing the original movie. When
+  the run had no ROI to begin with the full field was saved, so anything can be
+  drawn — which is the point of the feature.
+
+  Runs are also now recorded with their ROI's actual outline rather than only a
+  rasterised mask, which is what makes an existing region editable at all. Runs
+  analysed before this release open with an empty region.
+
+### Fixed
+
+- **The sample-drift QC number was never produced.** The calculation referred to
+  numpy by a name this file does not use, so it failed instantly on every run and
+  a catch-all replaced the failure with "no value". Nothing was wrong with your
+  data — drift correction itself ran normally — but the readout telling you how
+  far the sample drifted has always been blank.
+
+- **Every exported super-resolution image was cropped to the molecules.** The
+  reconstruction should be drawn on a canvas the size of the camera's field of
+  view; instead it asked the raw image stack for its dimensions after that stack
+  had already been freed from memory, and the same kind of catch-all turned the
+  failure into "no field size". The renderer then fell back to a tight box around
+  wherever localisations happened to be. On a 512-pixel field that is a 815×895
+  image where it should be 2560×2560. The molecules were always drawn in the
+  right places — only the framing was wrong, so images from different recordings
+  could not be compared at a common scale or lined up with the trajectory and
+  density panels. Re-process a recording to get a correctly framed one.
+
+- Post-processed runs are named after the original recording rather than after
+  the temporary file used to feed the pipeline.
+
 ## v2.76.51-rc.2 — 4 Sep 2026
 
 ### Fixed

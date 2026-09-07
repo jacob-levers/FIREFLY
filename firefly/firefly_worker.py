@@ -3025,6 +3025,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "n_frames":         int(n_frames),
                     "width":            int(stack_w),
                     "height":           int(stack_h),
+                    # The ROI as VERTICES, not just the rasterised mask.  Only
+                    # {stem}_roi_mask.npy used to be written, so the polygon a
+                    # user drew could be re-applied but never re-EDITED — there
+                    # was nothing to load back into the editor.  Stored in the
+                    # same (y, x) pixel convention the editor and
+                    # _roi_replicate_jobs use.
+                    "roi_polygon":      _roi_polygon_for_record(p),
+                    "roi_split_replicates": bool(p.get("roi_split_replicates", False)),
+                    "roi_labels":       list(p.get("roi_labels") or []),
                     "source":           "firefly",
                     # Detection threshold actually used (per-file when auto).
                     "auto_minmass":     bool(p.get("auto_minmass", False)),
@@ -3279,10 +3288,21 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             if locs is not None and len(locs) and {"x", "y"} <= set(locs.columns):
                 from firefly.analysis.fa_render import render_superres
                 import matplotlib.image as _mpimg
-                try:
-                    _field = (int(proj_sample.shape[-2]), int(proj_sample.shape[-1]))
-                except Exception:
-                    _field = None
+                # Camera-frame size for the canvas.  This used to read
+                # proj_sample.shape, but proj_sample is deleted right after the
+                # figure renders — hundreds of lines above — so the lookup
+                # always raised NameError into the except below and the render
+                # silently fell back to the localisations' BOUNDING BOX.  Every
+                # exported super-resolution image was therefore cropped to
+                # wherever molecules happened to be, at a size that varied run
+                # to run and did not line up with the trajectory/density panels.
+                # stack_h/stack_w already carry the field and outlive the del —
+                # they are the same values written to the CSV header and the run
+                # manifest.  Zero means the size is genuinely unknown (a 2-D
+                # projection on the external-CSV path), which is the one case
+                # the bounding-box fallback is actually right for.
+                _field = ((int(stack_h), int(stack_w))
+                          if stack_h and stack_w else None)
                 _sr = render_superres(
                     locs["x"].to_numpy(), locs["y"].to_numpy(), px,
                     sr_nm=float(p.get("superres_nm", 20.0) or 20.0),
@@ -3341,8 +3361,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 try:
                     ddx = drift_df["dx"].to_numpy(dtype=float)
                     ddy = drift_df["dy"].to_numpy(dtype=float)
-                    span = float(np.hypot(ddx.max() - ddx.min(),
-                                          ddy.max() - ddy.min()))
+                    span = float(_np.hypot(ddx.max() - ddx.min(),
+                                           ddy.max() - ddy.min()))
                     drift_total_nm = span * float(px) * 1000.0
                 except Exception:
                     drift_total_nm = None
@@ -3609,15 +3629,96 @@ def _postproc_linking_params(orig_params: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT — POST-PROCESS  (re-apply ROI to an existing run)
 # ══════════════════════════════════════════════════════════════════════════════
+def _roi_polygon_for_record(p: dict):
+    """The run's ROI as plain nested lists, JSON-safe, or None.
+
+    `roi_polygon` arrives as either a single polygon or a list of them, and its
+    vertices may be numpy arrays / tuples depending on the caller.  Normalise to
+    a list of [[y, x], ...] so params.json round-trips straight back into the
+    editor via RoiController.setPolygons.
+    """
+    polys = p.get("roi_polygon")
+    if polys is None:
+        return None
+    try:
+        import numpy as _np
+        arr = _np.asarray(polys, dtype=float)
+        # a bare single polygon is (N, 2); a list of polygons is ragged and
+        # falls through to the per-polygon branch below
+        if arr.ndim == 2 and arr.shape[1] == 2:
+            return [[[float(y), float(x)] for y, x in arr]]
+    except Exception:
+        pass
+    out = []
+    for poly in (polys if isinstance(polys, (list, tuple)) else []):
+        try:
+            import numpy as _np
+            a = _np.asarray(poly, dtype=float)
+            if a.ndim == 2 and a.shape[1] == 2 and a.shape[0] >= 3:
+                out.append([[float(y), float(x)] for y, x in a])
+        except Exception:
+            continue
+    return out or None
+
+
+def _warn_if_roi_grows(locs, polys, had_roi, log):
+    """Say so when a post-hoc ROI reaches outside the localisations it can see.
+
+    A post-process can only subset the source run's saved localisations, so a
+    polygon drawn beyond what the ORIGINAL ROI kept silently returns fewer
+    points than the user drew for.  When the source run had no ROI the saved
+    field is complete and there is nothing to warn about.
+
+    Advisory only — the UI blocks this case up front; this covers the worker
+    being driven from a script.
+    """
+    if not had_roi:
+        return False
+    try:
+        import numpy as _np
+        xs = _np.asarray(locs["x"], dtype=float)
+        ys = _np.asarray(locs["y"], dtype=float)
+        if not xs.size:
+            return False
+        x0, x1 = float(xs.min()), float(xs.max())
+        y0, y1 = float(ys.min()), float(ys.max())
+        for poly in polys:
+            a = _np.asarray(poly, dtype=float)
+            if a.ndim != 2 or a.shape[1] != 2 or a.shape[0] < 3:
+                continue
+            if (a[:, 0].min() < y0 - 1.0 or a[:, 0].max() > y1 + 1.0
+                    or a[:, 1].min() < x0 - 1.0 or a[:, 1].max() > x1 + 1.0):
+                log("  WARNING: the new ROI reaches OUTSIDE the region the "
+                    "source run kept.  That run's ROI already discarded the "
+                    "localisations there and they are not in its saved "
+                    "output, so this cannot widen the region — the result "
+                    "will cover the overlap only.  Re-analyse the original "
+                    "movie to use a larger ROI.")
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def run_postproc(params: dict, msg_queue, cancel_event):
     """Re-run a previously-completed FIREFLY analysis with a NEW ROI.
 
-    Reloads the original `_localisations.csv` (= pre-ROI locs) from
-    `source_folder/firefly_extras/`, applies the new polygon(s),
-    writes the filtered locs to a temp CSV, then dispatches the
-    existing `_run_one_analysis` in `external_csv` mode so the rest
-    of the pipeline (link → MSD → JDD → turning angles → dwell times
-    → clusters → figure → all CSVs) runs against the new loc set.
+    Reloads `_localisations.csv` from `source_folder/firefly_extras/`, applies
+    the new polygon(s), writes the filtered locs to a temp CSV, then dispatches
+    the existing `_run_one_analysis` in `external_csv` mode so the rest of the
+    pipeline (link → MSD → JDD → turning angles → dwell times → clusters →
+    figure → all CSVs) runs against the new loc set.
+
+    IMPORTANT — a new ROI can only ever SHRINK the previous one.  That CSV is
+    written AFTER `apply_roi_mask` in `_run_one_analysis`, so it holds only the
+    localisations the ORIGINAL run's ROI kept.  (This docstring used to claim it
+    held "pre-ROI locs", which is the opposite of the truth.)  Consequences:
+
+      * source run had NO ROI  → the full field was saved → a post-hoc ROI is
+        exact.  This is the intended workflow.
+      * source run HAD an ROI  → drawing a larger region cannot recover the
+        localisations that run discarded.  `_warn_if_roi_grows` below says so
+        loudly; only a fresh analysis from the movie can widen an ROI.
 
     `params` is a dict with:
         source_folder : str  — the analysis run to re-process
@@ -3690,7 +3791,8 @@ def run_postproc(params: dict, msg_queue, cancel_event):
         os.makedirs(out_dir, exist_ok=True)
         _log(f"  Output : {out_dir}")
 
-        # Load the pre-ROI localisations.
+        # Load the source run's localisations.  These are already ROI-filtered
+        # by that run (see the docstring) — the new polygon can only subset them.
         import pandas as _pd, numpy as _np
         locs_csv = os.path.join(extras_dir, f"{stem}_localisations.csv")
         locs = _pd.read_csv(locs_csv)
@@ -3704,6 +3806,12 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             raise ValueError(
                 "No ROI polygons supplied — post-processing needs at "
                 "least one polygon to filter the localisations.")
+
+        # Did the SOURCE run apply an ROI?  If so the saved localisations are
+        # already a subset and the new polygon cannot widen them.
+        _had_roi = bool(orig_params.get("roi_polygon")) or os.path.isfile(
+            os.path.join(extras_dir, f"{stem}_roi_mask.npy"))
+        _warn_if_roi_grows(locs, polys, _had_roi, _log)
 
         # Apply ROI directly in xy space using a Path containment test
         # (no need to build a raster mask, which would require the
@@ -3753,6 +3861,10 @@ def run_postproc(params: dict, msg_queue, cancel_event):
             # We've already chosen the wrapper name (`<source>_postprocN`);
             # don't let _run_one_analysis nest another `<stem>/` inside it.
             "wrap_in_stem_folder": False,
+            # Without this every output would be named "<stem>_postproc_input_*"
+            # after the temp CSV we feed the external-CSV path — the run would
+            # show up in the Analysis tab under that name.  Keep the original.
+            "stem_override":  stem,
             "channel":        0,
             "bg_image_path":  _bg_path,
             # ROI is already applied — tell downstream to skip it.

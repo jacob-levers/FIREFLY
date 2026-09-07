@@ -42,9 +42,45 @@ Item {
 
     function saveRoi() {
         if (root.isPoly && Roi.canClose) Roi.closeDraft()
+        // Run-scoped: this is a FINISHED run, so there is no sidebar override to
+        // write — hand the polygons straight to the post-process worker instead.
+        // Postproc.start re-checks that the region only shrinks the run's own
+        // ROI and refuses otherwise, because a run only stores the
+        // localisations its ROI kept.
+        if (Roi.runScoped) {
+            var runDir = Roi.runDir
+            var polys = Roi.runPolygons()
+            var verdict = Postproc.canApply(runDir, polys)
+            if (!verdict.ok) { roiBlocked.text = verdict.reason; roiBlocked.open(); return }
+            Roi.closeRun()
+            Postproc.start(runDir, polys)
+            return
+        }
         // Multiple-ROI handling is chosen inline via the "Analyse each ROI
         // separately" toggle, so saving just commits.
         Roi.commit()
+    }
+
+    // Refuses an ROI that reaches outside what the source run kept, rather than
+    // producing a result that silently covers only the overlap.
+    Modal {
+        id: roiBlocked
+        property alias text: roiBlockedText.text
+        title: "That region can't be applied"
+        Text {
+            id: roiBlockedText
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: pal.TXT_MUTED
+            font.pixelSize: sc.textSm
+            lineHeight: 1.35
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: sc.sp2
+            Item { Layout.fillWidth: true }
+            Button { variant: "primary"; text: "Got it"; onClicked: roiBlocked.close() }
+        }
     }
 
     Rectangle {
@@ -222,6 +258,112 @@ Item {
                             onClicked: (m) => {
                                 var yx = imgArea.toImg(m.x, m.y)
                                 Roi.addVertex(yx[0], yx[1])
+                            }
+                        }
+
+                        // ── editable vertices ───────────────────────────
+                        // The controller has had moveVertex / deleteVertex /
+                        // deletePolygon since the editor was written, but no QML
+                        // ever called them: a committed shape could only be
+                        // cleared and redrawn.  These handles are what make an
+                        // EXISTING region editable.
+                        //
+                        // Declared AFTER the drawing MouseArea so they sit above
+                        // it and take the press first — a click that misses a
+                        // handle still falls through and adds a vertex.
+                        //
+                        // Position is bound to Roi.polygons rather than moved
+                        // directly: the controller stays the single source of
+                        // truth, so a handle can never drift from the outline
+                        // the canvas paints from the same list.
+                        Repeater {
+                            model: root.isPoly && Roi.hasImage ? Roi.polygonCount : 0
+                            delegate: Item {
+                                id: polyHandles
+                                readonly property int polyIdx: index
+                                anchors.fill: parent
+
+                                Repeater {
+                                    model: {
+                                        var ps = Roi.polygons
+                                        return (polyHandles.polyIdx < ps.length)
+                                            ? ps[polyHandles.polyIdx].length : 0
+                                    }
+                                    delegate: Rectangle {
+                                        id: handle
+                                        readonly property int vertIdx: index
+                                        readonly property var pt: {
+                                            var ps = Roi.polygons
+                                            if (polyHandles.polyIdx >= ps.length) return [0, 0]
+                                            var poly = ps[polyHandles.polyIdx]
+                                            return (vertIdx < poly.length) ? poly[vertIdx] : [0, 0]
+                                        }
+                                        width: 11; height: 11; radius: width / 2
+                                        x: imgArea.toDispX(pt[1]) - width / 2
+                                        y: imgArea.toDispY(pt[0]) - height / 2
+                                        color: grab.containsMouse || grab.dragging
+                                               ? pal.SUCCESS : Qt.rgba(0, 0, 0, 0.55)
+                                        border.width: 1.5
+                                        border.color: pal.SUCCESS
+
+                                        MouseArea {
+                                            id: grab
+                                            anchors.fill: parent
+                                            anchors.margins: -5     // forgiving grab target
+                                            hoverEnabled: true
+                                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                            cursorShape: Qt.SizeAllCursor
+                                            property bool dragging: false
+                                            onPressed: (m) => {
+                                                if (m.button === Qt.LeftButton) dragging = true
+                                            }
+                                            onReleased: dragging = false
+                                            onCanceled: dragging = false
+                                            onPositionChanged: (m) => {
+                                                if (!dragging) return
+                                                var q = mapToItem(imgArea, m.x, m.y)
+                                                var yx = imgArea.toImg(q.x, q.y)
+                                                Roi.moveVertex(polyHandles.polyIdx,
+                                                               handle.vertIdx, yx[0], yx[1])
+                                            }
+                                            // Right-click removes the vertex; the
+                                            // controller drops the whole polygon if
+                                            // that would leave fewer than three.
+                                            onClicked: (m) => {
+                                                if (m.button === Qt.RightButton)
+                                                    Roi.deleteVertex(polyHandles.polyIdx,
+                                                                     handle.vertIdx)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // delete the whole region — anchored at its first vertex
+                                Rectangle {
+                                    readonly property var head: {
+                                        var ps = Roi.polygons
+                                        if (polyHandles.polyIdx >= ps.length) return [0, 0]
+                                        var poly = ps[polyHandles.polyIdx]
+                                        return poly.length ? poly[0] : [0, 0]
+                                    }
+                                    visible: Roi.polygonCount > 0
+                                    width: 18; height: 18; radius: width / 2
+                                    x: imgArea.toDispX(head[1]) + 10
+                                    y: imgArea.toDispY(head[0]) - 24
+                                    color: del.containsMouse ? pal.DANGER : Qt.rgba(0, 0, 0, 0.65)
+                                    border.width: 1; border.color: pal.DANGER
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "\u00d7"; color: "#ffffff"
+                                        font.pixelSize: 12; font.bold: true
+                                    }
+                                    MouseArea {
+                                        id: del
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: Roi.deletePolygon(polyHandles.polyIdx)
+                                    }                                }
                             }
                         }
 

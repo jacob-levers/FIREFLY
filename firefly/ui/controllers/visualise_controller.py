@@ -1123,6 +1123,28 @@ class VisualiseController(QObject):
                 return run["run_dir"]
         return ""
 
+    @Property(str, notify=dataChanged)
+    def openRunDir(self):
+        """Folder of the open (primary) run, or "" — the target for a post-hoc
+        ROI edit.  Unlike openRunHasClusters this only needs a firefly_extras/
+        with saved localisations, since that is all run_postproc consumes."""
+        for run in self._runs:
+            run_dir = run.get("run_dir") or ""
+            extras = os.path.join(run_dir, "firefly_extras")
+            if run_dir and os.path.isdir(extras):
+                try:
+                    if any(f.endswith("_localisations.csv")
+                           for f in _listdir_visible(extras)):
+                        return run_dir
+                except Exception:
+                    continue
+        return ""
+
+    @Property(str, notify=dataChanged)
+    def openRunName(self):
+        d = self.openRunDir
+        return os.path.basename(d.rstrip(os.sep)) if d else ""
+
     @Property(bool, notify=dataChanged)
     def openRunHasClusters(self):
         """Drives the 'this run' button — false when nothing is loaded, when the

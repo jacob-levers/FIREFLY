@@ -73,6 +73,7 @@ from firefly.ui.controllers.settings_controller import SettingsController
 from firefly.ui.controllers.import_controller import ImportController
 from firefly.ui.controllers.analysis_controller import AnalysisController
 from firefly.ui.controllers.visualise_controller import VisualiseController
+from firefly.ui.controllers.postproc_controller import PostprocController
 from firefly.ui.controllers.roi_controller import RoiController
 from firefly.ui.controllers.embed_controller import EmbedController
 from firefly.ui.controllers.workspace.workspace_controller import AnalysisWorkspaceController
@@ -170,6 +171,8 @@ def build_main_window(app: QtWidgets.QApplication):
                                   override_store=roi_override)
     visualise = VisualiseController(settings, importc)
     roi = RoiController(roi_store, settings, override_store=roi_override)
+    # Re-applies an edited ROI to a finished run (firefly_worker.run_postproc).
+    postproc = PostprocController()
     embed = EmbedController()
     # merged live Compare + Results workspace (the new "Analysis" tab); the old
     # run cockpit keeps its AnalysisController but is now exposed as "Process".
@@ -224,6 +227,7 @@ def build_main_window(app: QtWidgets.QApplication):
     ctx.setContextProperty("Analysis", workspace)    # merged Compare+Results workspace
     ctx.setContextProperty("Vis", visualise)
     ctx.setContextProperty("Roi", roi)
+    ctx.setContextProperty("Postproc", postproc)
     ctx.setContextProperty("Embed", embed)
     ctx.setContextProperty("Sidebar", sidebar)
     ctx.setContextProperty("Preset", presets)

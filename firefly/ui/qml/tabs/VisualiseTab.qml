@@ -171,6 +171,49 @@ Item {
                                     value: Vis.head; onMoved: (v) => Vis.head = v }
                     }
 
+                    // ── Region of interest ───────────────────────────────
+                    CollapsibleSection {
+                        Layout.fillWidth: true
+                        title: "Region of interest"; icon: "crop"; expanded: false
+                        // An ROI no longer has to be decided before you have seen
+                        // a single track: draw or edit one here and the run is
+                        // re-derived for it into a new folder beside the original.
+                        Text {
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            color: pal.TXT_MUTED
+                            font.pixelSize: sc.textXs
+                            text: "Draw or edit a region on this run, then re-derive "
+                                + "the results for it. A region can only be made "
+                                + "smaller than the one the run already used."
+                        }
+                        Button { width: parent.width; variant: "primary"
+                                 visible: Vis.openRunDir !== "" && !Postproc.running
+                                 text: "Edit ROI for " + Vis.openRunName
+                                 icon: "crop"
+                                 onClicked: Roi.editRun(Vis.openRunDir) }
+                        Button { width: parent.width; variant: "secondary"
+                                 visible: Postproc.running
+                                 text: "Stop"; icon: "square"
+                                 onClicked: Postproc.stop() }
+                        Text {
+                            width: parent.width
+                            visible: Postproc.running || Postproc.status !== ""
+                            wrapMode: Text.WordWrap
+                            color: pal.TXT_MUTED
+                            font.pixelSize: sc.textXs
+                            text: Postproc.running
+                                  ? Postproc.progress + "%  " + Postproc.status
+                                  : Postproc.status
+                        }
+                        Alert {
+                            visible: Vis.openRunDir === ""
+                            width: parent.width
+                            severity: "info"
+                            text: "Open a run's tracks to edit its region."
+                        }
+                    }
+
                     // ── Clusters ─────────────────────────────────────────
                     CollapsibleSection {
                         Layout.fillWidth: true
