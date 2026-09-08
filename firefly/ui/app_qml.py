@@ -328,8 +328,16 @@ def build_main_window(app: QtWidgets.QApplication):
     win.resize(1100, 760)
     # Keep controllers + widgets referenced on the window so Python doesn't GC
     # them while QML still binds to them (and the islands while they're hidden).
+    # Keep-alive: a controller registered ONLY as a context property has no
+    # other Python reference, so it is collected the moment this function
+    # returns and QML then sees `null` — every binding on it silently falls back
+    # to its default (a `visible:` binding fails OPEN, so hidden controls
+    # appear).  `postproc` hit exactly that.  Note `workspace` and `hyperfly`
+    # survive only incidentally, because an image provider happens to hold a
+    # bound method of theirs; that is luck, not design.
     win._firefly_ctx = (theme, appc, settings, importc, analysis, visualise,
-                        roi, embed, sidebar, presets, batchc,
+                        roi, postproc, embed, sidebar, presets, batchc,
+                        workspace, hyperfly,
                         updates, cuda, qw, hud, viewer_w, resizer, crash_ui)
     return win, qw
 

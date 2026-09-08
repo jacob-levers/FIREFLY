@@ -797,7 +797,7 @@ Flickable {
                     }
                     Button { variant: "secondary"; text: "Add folder"; icon: "folder-plus"
                              onClicked: Batch.addFolder() }
-                    Button { variant: "secondary"; text: "Add files"; icon: "file-plus"
+                    Button { variant: "secondary"; text: "Add files"; icon: "plus"
                              onClicked: Batch.addFiles() }
                 }
 

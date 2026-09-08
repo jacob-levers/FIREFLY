@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.76.51-rc.4 — 8 Sep 2026
+
+### Fixed
+
+- **The new Region of interest panel showed a Stop button when nothing was
+  running, and its heading had no icon.** The controller behind the panel was
+  being discarded as soon as the window finished building, so the interface had
+  nothing to ask whether a re-analysis was in progress — and a control whose
+  visibility cannot be determined is shown rather than hidden. The panel's icon
+  was simply a name with no artwork behind it.
+
+- **Three buttons elsewhere in FIREFLY have been rendering without their
+  icons**: "Remove" in Preferences, "Add files" in Import, and "Clear" in
+  Visualise. All three asked for artwork that does not exist. Found by a new
+  check that every icon named anywhere in the interface actually exists — a
+  missing one is invisible rather than an error, so it can sit unnoticed
+  indefinitely.
+
+- The Region of interest panel now says where to open a run when none is open,
+  rather than only that one is needed.
+
 ## v2.76.51-rc.3 — 7 Sep 2026
 
 ### Added

@@ -174,7 +174,7 @@ Item {
                     // ── Region of interest ───────────────────────────────
                     CollapsibleSection {
                         Layout.fillWidth: true
-                        title: "Region of interest"; icon: "crop"; expanded: false
+                        title: "Region of interest"; icon: "scan-search"; expanded: false
                         // An ROI no longer has to be decided before you have seen
                         // a single track: draw or edit one here and the run is
                         // re-derived for it into a new folder beside the original.
@@ -190,11 +190,11 @@ Item {
                         Button { width: parent.width; variant: "primary"
                                  visible: Vis.openRunDir !== "" && !Postproc.running
                                  text: "Edit ROI for " + Vis.openRunName
-                                 icon: "crop"
+                                 icon: "scan-search"
                                  onClicked: Roi.editRun(Vis.openRunDir) }
                         Button { width: parent.width; variant: "secondary"
                                  visible: Postproc.running
-                                 text: "Stop"; icon: "square"
+                                 text: "Stop"; icon: "x"
                                  onClicked: Postproc.stop() }
                         Text {
                             width: parent.width
@@ -210,7 +210,8 @@ Item {
                             visible: Vis.openRunDir === ""
                             width: parent.width
                             severity: "info"
-                            text: "Open a run's tracks to edit its region."
+                            text: "Open a run below to edit its region \u2014 use \"Open run\u2026\" "
+                                + "at the bottom of this panel."
                         }
                     }
 
@@ -508,7 +509,7 @@ Item {
                                  Layout.fillWidth: true; onClicked: Vis.resetView() }
                         // Clear everything loaded/generated back to an empty tab.
                         Button {
-                            variant: "secondary"; text: "Clear"; icon: "trash-2"
+                            variant: "secondary"; text: "Clear"; icon: "x"
                             Layout.fillWidth: true; enabled: Vis.hasContent
                             onClicked: clearConfirm.open()
                         }

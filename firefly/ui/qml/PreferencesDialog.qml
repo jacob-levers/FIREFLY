@@ -1082,7 +1082,7 @@ Item {
                         Button { variant: "primary"
                                  text: Cuda.installed ? "Reinstall / update" : "Install CUDA"
                                  icon: "download"; onClicked: Cuda.install() }
-                        Button { variant: "secondary"; text: "Remove"; icon: "trash-2"
+                        Button { variant: "secondary"; text: "Remove"; icon: "x"
                                  visible: Cuda.installed; onClicked: Cuda.uninstall() }
                         Button { variant: "ghost"; text: "Re-check"; icon: "refresh-cw"
                                  onClicked: Cuda.refresh() }
