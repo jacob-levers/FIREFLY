@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.76.51-rc.5 — 8 Sep 2026
+
+### Fixed
+
+- **With several runs open in Visualise, only the first could have its region
+  edited.** Overlaying runs is routine there — that is what the run colours in
+  the Layers panel are for — and each is a separate analysis with its own
+  region, so each now gets its own entry in the Region of interest panel.
+
+- **Two runs could offer identically-labelled buttons.** A run is labelled by
+  the name of its trajectories file, which is not unique: a run and the
+  post-processed copy this feature creates share one, as do two recordings
+  analysed from identically-named files in different folders. Where names
+  collide the folder name is shown instead, since that is what actually tells
+  the runs apart.
+
 ## v2.76.51-rc.4 — 8 Sep 2026
 
 ### Fixed

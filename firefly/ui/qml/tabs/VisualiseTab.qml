@@ -183,15 +183,28 @@ Item {
                             wrapMode: Text.WordWrap
                             color: pal.TXT_MUTED
                             font.pixelSize: sc.textXs
-                            text: "Draw or edit a region on this run, then re-derive "
+                            text: (Vis.editableRuns.length > 1
+                                   ? "Pick a run to draw or edit its region, then re-derive "
+                                   : "Draw or edit a region on this run, then re-derive ")
                                 + "the results for it. A region can only be made "
                                 + "smaller than the one the run already used."
                         }
-                        Button { width: parent.width; variant: "primary"
-                                 visible: Vis.openRunDir !== "" && !Postproc.running
-                                 text: "Edit ROI for " + Vis.openRunName
-                                 icon: "scan-search"
-                                 onClicked: Roi.editRun(Vis.openRunDir) }
+                        // One entry per open run.  Several runs are routinely
+                        // overlaid here and each is its own analysis with its own
+                        // region, so each needs its own way in — offering only the
+                        // primary left the others unreachable.
+                        Repeater {
+                            model: Postproc.running ? [] : Vis.editableRuns
+                            delegate: Button {
+                                required property var modelData
+                                width: parent.width; variant: "primary"
+                                text: Vis.editableRuns.length > 1
+                                      ? modelData.name
+                                      : "Edit ROI for " + modelData.name
+                                icon: "scan-search"
+                                onClicked: Roi.editRun(modelData.dir)
+                            }
+                        }
                         Button { width: parent.width; variant: "secondary"
                                  visible: Postproc.running
                                  text: "Stop"; icon: "x"

@@ -266,3 +266,101 @@ def test_deleting_a_whole_region(tmp_path):
     c.editRun(make_run(tmp_path, had_roi=True))
     c.deletePolygon(0)
     assert c.polygonCount == 0
+
+
+# ── several runs open at once ────────────────────────────────────────────────
+def _vis_with_runs(tmp_path, n):
+    """A Visualise controller with `n` runs loaded, as when several are overlaid."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController(settings=None, importc=None)
+    for i in range(n):
+        run = make_run(tmp_path, f"run{i}", seed=i)
+        extras = os.path.join(run, "firefly_extras")
+        # loadTracksPath keys the run folder off the trajectories CSV's location
+        pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0],
+                      "frame": [0, 1, 2], "particle": [0, 0, 0]}).to_csv(
+            os.path.join(extras, "rec_trajectories.csv"), index=False)
+        c.loadTracksPath(os.path.join(extras, "rec_trajectories.csv"))
+    return c
+
+
+def test_every_open_run_can_have_its_roi_edited(tmp_path):
+    """The regression: with several runs overlaid only the first was offered, so
+    the others were unreachable.  Each is a separate analysis with its own
+    region."""
+    c = _vis_with_runs(tmp_path, 3)
+    runs = c.editableRuns
+    assert len(runs) == 3, f"only {len(runs)} of 3 runs offered"
+    dirs = [r["dir"] for r in runs]
+    assert len(set(dirs)) == 3, "runs must be distinguishable by folder"
+    for r in runs:
+        assert r["name"] and r["color"], r
+
+
+def test_each_offered_run_actually_opens_in_the_editor(tmp_path):
+    """Not just listed — every entry must be a run editRun accepts."""
+    c = _vis_with_runs(tmp_path, 3)
+    roi = RoiController(settings=None)
+    for r in c.editableRuns:
+        assert roi.editRun(r["dir"]) is True, r["name"]
+        assert os.path.abspath(roi.runDir) == os.path.abspath(r["dir"])
+        roi.closeRun()
+
+
+def test_the_primary_accessor_still_names_the_first_run(tmp_path):
+    c = _vis_with_runs(tmp_path, 2)
+    assert c.openRunDir == c.editableRuns[0]["dir"]
+
+
+def test_a_run_without_saved_localisations_is_not_offered(tmp_path):
+    """Tracks can be loaded from anywhere; only a real run folder can be
+    re-processed."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0],
+                  "frame": [0, 1, 2], "particle": [0, 0, 0]}).to_csv(
+        loose / "rec_trajectories.csv", index=False)
+    c = VisualiseController(settings=None, importc=None)
+    c.loadTracksPath(str(loose / "rec_trajectories.csv"))
+    assert c.editableRuns == [] and c.openRunDir == ""
+
+
+def test_no_runs_open_offers_nothing(tmp_path):
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController(settings=None, importc=None)
+    assert c.editableRuns == [] and c.openRunDir == ""
+
+
+def test_runs_sharing_a_name_are_told_apart_by_their_folder(tmp_path):
+    """A run's display name is its CSV stem, which is NOT unique — a run and the
+    post-processed copy this very feature creates share one.  Two buttons
+    reading the same thing would be unusable."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController(settings=None, importc=None)
+    for folder in ("Fly-3", "Fly-3_postproc1"):
+        run = make_run(tmp_path, folder)
+        extras = os.path.join(run, "firefly_extras")
+        pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0],
+                      "frame": [0, 1, 2], "particle": [0, 0, 0]}).to_csv(
+            os.path.join(extras, "rec_trajectories.csv"), index=False)   # same stem
+        c.loadTracksPath(os.path.join(extras, "rec_trajectories.csv"))
+    names = [r["name"] for r in c.editableRuns]
+    assert len(names) == 2
+    assert len(set(names)) == 2, f"both buttons would read the same: {names}"
+    assert set(names) == {"Fly-3", "Fly-3_postproc1"}
+
+
+def test_distinct_names_are_left_alone(tmp_path):
+    """Only collisions fall back to the folder — normal runs keep their own
+    name, which is what the user recognises."""
+    from firefly.ui.controllers.visualise_controller import VisualiseController
+    c = VisualiseController(settings=None, importc=None)
+    for i, stem in enumerate(("cellA", "cellB")):
+        run = make_run(tmp_path, f"folder{i}")
+        extras = os.path.join(run, "firefly_extras")
+        pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0],
+                      "frame": [0, 1, 2], "particle": [0, 0, 0]}).to_csv(
+            os.path.join(extras, f"{stem}_trajectories.csv"), index=False)
+        c.loadTracksPath(os.path.join(extras, f"{stem}_trajectories.csv"))
+    assert sorted(r["name"] for r in c.editableRuns) == ["cellA", "cellB"]

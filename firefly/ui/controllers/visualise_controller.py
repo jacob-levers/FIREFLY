@@ -1123,22 +1123,52 @@ class VisualiseController(QObject):
                 return run["run_dir"]
         return ""
 
+    def _roi_editable(self, run) -> bool:
+        """A run can have its ROI re-applied if it kept its localisations —
+        that is all run_postproc consumes."""
+        run_dir = run.get("run_dir") or ""
+        extras = os.path.join(run_dir, "firefly_extras")
+        if not (run_dir and os.path.isdir(extras)):
+            return False
+        try:
+            return any(f.endswith("_localisations.csv")
+                       for f in _listdir_visible(extras))
+        except Exception:
+            return False
+
+    @Property("QVariantList", notify=dataChanged)
+    def editableRuns(self):
+        """EVERY open run whose ROI can be edited, not just the primary one.
+
+        Several runs are routinely overlaid in this tab (that is what the run
+        colours in the Layers panel are for), and each is a separate analysis
+        with its own region — so each needs its own way in.  Offering only the
+        first made the others unreachable.
+        """
+        rows = [{"dir": r["run_dir"],
+                 "name": r.get("name") or "",
+                 "color": r.get("color") or "#58a6ff"}
+                for r in self._runs if self._roi_editable(r)]
+        # A run's display name is its CSV stem, which is NOT unique: a run and
+        # the post-processed copy of it share one, and so do two recordings
+        # analysed from identically-named files in different folders.  Two
+        # buttons reading the same thing are unusable, so fall back to the
+        # folder — which is what actually identifies a run on disk.
+        seen = {}
+        for row in rows:
+            seen[row["name"]] = seen.get(row["name"], 0) + 1
+        for row in rows:
+            folder = os.path.basename(str(row["dir"]).rstrip(os.sep))
+            if not row["name"] or seen.get(row["name"], 0) > 1:
+                row["name"] = folder or row["name"]
+        return rows
+
     @Property(str, notify=dataChanged)
     def openRunDir(self):
-        """Folder of the open (primary) run, or "" — the target for a post-hoc
-        ROI edit.  Unlike openRunHasClusters this only needs a firefly_extras/
-        with saved localisations, since that is all run_postproc consumes."""
-        for run in self._runs:
-            run_dir = run.get("run_dir") or ""
-            extras = os.path.join(run_dir, "firefly_extras")
-            if run_dir and os.path.isdir(extras):
-                try:
-                    if any(f.endswith("_localisations.csv")
-                           for f in _listdir_visible(extras)):
-                        return run_dir
-                except Exception:
-                    continue
-        return ""
+        """Folder of the open PRIMARY run, or "" — kept for callers that only
+        need one; the ROI panel iterates `editableRuns` instead."""
+        runs = self.editableRuns
+        return runs[0]["dir"] if runs else ""
 
     @Property(str, notify=dataChanged)
     def openRunName(self):
