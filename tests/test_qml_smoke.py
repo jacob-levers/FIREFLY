@@ -73,9 +73,21 @@ def qml_window(monkeypatch, tmp_path):
     # These controllers are deliberately unparented because the root context
     # owns their logical lifetime.
     for obj in context_objects:
+        # vars() catches timers held as a direct attribute; findChildren catches
+        # the rest — a timer parented to the controller but referenced from a
+        # list, a dict or a helper object (RunSession's poller, for instance).
+        # Missing any of them leaves a 250ms-1s timer firing into a controller
+        # whose window is gone: harmless until a later test spins a long
+        # processEvents() loop, at which point it fires into freed memory and
+        # segfaults there instead of here.
         for value in vars(obj).values():
             if isinstance(value, QTimer):
                 value.stop()
+        try:
+            for timer in obj.findChildren(QTimer):
+                timer.stop()
+        except Exception:
+            pass
     win.hide()
     win.close()
     # Hold ``context_objects`` locally until after the window and both

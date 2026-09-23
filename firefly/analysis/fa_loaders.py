@@ -290,9 +290,14 @@ def _czi_subblock_data(entry, czi):
     legacy = getattr(entry, "data_segment", None)
     if callable(legacy):
         return legacy().data(raw=False)
+    # `czifile` is an OPTIONAL dependency imported behind HAS_CZIFILE, so the
+    # module-level name does not exist when it isn't installed — naming it here
+    # unguarded turned this error path into a NameError on any such machine
+    # (including the no-Qt CI job, which is how it was caught).
+    version = getattr(sys.modules.get("czifile"), "__version__", "not installed")
     raise AttributeError(
         "czifile subblock entry exposes neither read_segment_data() nor "
-        f"data_segment() (czifile {getattr(czifile, '__version__', '?')})")
+        f"data_segment() (czifile {version})")
 
 
 def _find_czi_series(path):

@@ -211,6 +211,31 @@ class UpdatesController(QObject):
         }
 
     # ── actions ──────────────────────────────────────────────────────────
+    def _track_worker(self, thread):
+        """Start a background worker and keep a handle on it.
+
+        These threads write their result back into this controller when they
+        finish.  Anonymous daemon threads therefore raced object teardown: the
+        controller could be deleted while one was still in flight, which is how
+        the Qt test job segfaulted inside ``processEvents`` (the crash surfaced
+        in whichever test happened to be running, not the one that started the
+        thread).  Holding the handle lets callers wait — see ``waitForWorkers``.
+        """
+        self._workers = [t for t in getattr(self, "_workers", []) if t.is_alive()]
+        self._workers.append(thread)
+        thread.start()
+        return thread
+
+    def waitForWorkers(self, timeout=5.0):
+        """Block until in-flight background checks finish.  Used at teardown so
+        nothing writes into this object after it is destroyed."""
+        import time as _t
+        deadline = _t.time() + float(timeout)
+        for t in list(getattr(self, "_workers", [])):
+            t.join(max(0.0, deadline - _t.time()))
+        self._workers = [t for t in getattr(self, "_workers", []) if t.is_alive()]
+        return not self._workers
+
     @Slot()
     def checkNow(self):
         if self._checking:
@@ -268,7 +293,7 @@ class UpdatesController(QObject):
             try:    self._result = payload
             except Exception: pass
 
-        threading.Thread(target=_work, daemon=True).start()
+        self._track_worker(threading.Thread(target=_work, daemon=True))
 
     def _drain(self):
         if self._result is None:
@@ -362,7 +387,7 @@ class UpdatesController(QObject):
             try:    self._pf_result = result
             except Exception: pass
 
-        threading.Thread(target=_work, daemon=True).start()
+        self._track_worker(threading.Thread(target=_work, daemon=True))
 
     def _drain_prefetch(self):
         if self._pf_result is None:
@@ -492,7 +517,7 @@ class UpdatesController(QObject):
                 self._inst_err_msg = str(exc)
                 self._inst_state = "error"
 
-        threading.Thread(target=_work, daemon=True).start()
+        self._track_worker(threading.Thread(target=_work, daemon=True))
 
     @Slot()
     def cancelInstall(self):

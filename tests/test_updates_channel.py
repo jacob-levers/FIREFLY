@@ -100,7 +100,20 @@ def mk_controller(monkeypatch):
 
     yield _make
 
+    # Order matters, and all three steps are load-bearing:
+    #   1. wait for in-flight background checks — they write back into the
+    #      controller when they finish, so deleting it first is a use-after-free
+    #      that surfaces as a segfault inside a LATER test's processEvents();
+    #   2. stop the timers so nothing new is queued;
+    #   3. actually run the deletion.  Bare processEvents() does NOT deliver
+    #      DeferredDelete, so deleteLater() alone left every controller alive
+    #      with its queued events for the rest of the session.
+    from PySide6.QtCore import QCoreApplication, QEvent
     for c in created:
+        try:
+            c.waitForWorkers(5.0)
+        except Exception:
+            pass
         for timer in (c._poll, c._inst_poll, c._pf_poll):
             try:
                 timer.stop()
@@ -108,6 +121,8 @@ def mk_controller(monkeypatch):
                 pass
         c.setParent(None)
         c.deleteLater()
+    _app.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     _app.processEvents()
 
 

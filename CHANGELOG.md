@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.76.51-rc.9 — 23 Sep 2026
+
+### Fixed
+
+- **The CZI shim crashed on machines without `czifile`.** Its error path named
+  the module directly, but `czifile` is an optional dependency imported behind
+  `HAS_CZIFILE`, so on any install without it the branch raised `NameError`
+  instead of the intended message. Introduced in rc.7 and caught by the no-Qt
+  CI job, which does not install it.
+- **The Qt test suite no longer segfaults intermittently.** Two independent
+  leaks, both of the same shape — something outliving the controller it calls
+  back into, then firing during a LATER test's `processEvents()` loop, so the
+  fault was attributed to whichever test happened to be running:
+  - controller QTimers (250ms-1s) left active after their window was gone. The
+    shared QML fixture only stopped timers held as a direct attribute; timers
+    reached through a list, dict or helper object survived. Teardown now also
+    walks `findChildren(QTimer)`, and any still-active timer is stopped after
+    every test.
+  - worker threads (`FIREFLY-CondLoad`, `FIREFLY-ExtAnalyse`, the figure/report
+    jobs) still writing into a controller being destroyed. Individual test files
+    waited for them, but their helpers are imported across files without those
+    waits, so the drain now happens once for every test.
+  Update checks additionally track their background threads so teardown can wait
+  for them rather than racing a daemon thread. Verified over eight consecutive
+  full runs, against roughly one failure in two before.
+
 ## v2.76.51-rc.8 — 23 Sep 2026
 
 ### Added

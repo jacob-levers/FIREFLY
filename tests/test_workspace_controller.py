@@ -72,12 +72,18 @@ def _dispose_controllers(monkeypatch):
     # job hit — several seconds after the last test, with no faulthandler dump
     # because pytest had already finished.
     import threading
+    # The named plain threads matter for the SAME reason as the job classes:
+    # they call back into the controller (queue puts, signal emits), so one
+    # still running while the controller is destroyed writes into freed memory.
+    # That fired much later, inside an unrelated test's processEvents loop.
     jobs = ("_FigureJob", "_PanelJob", "_GroupAllPanelsJob",
             "_ReportJob", "_EngineFigJob")
+    named = ("FIREFLY-CondLoad", "FIREFLY-ExtAnalyse")
     deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
         alive = [th for th in threading.enumerate()
-                 if type(th).__name__ in jobs and th.is_alive()]
+                 if (type(th).__name__ in jobs or th.name in named)
+                 and th.is_alive()]
         if not alive:
             break
         _app.processEvents()
@@ -85,7 +91,7 @@ def _dispose_controllers(monkeypatch):
     else:
         raise AssertionError(
             "worker threads still running at teardown: "
-            + ", ".join(sorted(type(th).__name__ for th in alive)))
+            + ", ".join(sorted(f"{type(th).__name__}/{th.name}" for th in alive)))
 
 
 def _await_load(c, timeout=10.0):
