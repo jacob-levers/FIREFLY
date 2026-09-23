@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.76.51-rc.8 — 23 Sep 2026
+
+### Added
+
+- **Paint ROIs with a brush.** Preview & ROI gains a Polygon / Brush / Eraser
+  tool selector, a brush-size slider with a true-scale cursor, undo-per-stroke
+  and erase-all — for branching neurites, where clicking a polygon vertex by
+  vertex is the wrong tool. A painted region is still stored as ORDINARY
+  polygons: each stroke end retraces the painted mask into `(y, x)` outlines, so
+  `roi_mode`, `params.json`'s `roi_polygon`, multi-ROI replicate fan-out, the
+  post-hoc shrink guard and the saved mask PNG are all untouched. The conversion
+  is exact (mask → polygons → mask round-trips at IoU 1.000, including regions
+  touching the frame edge). Switching to the brush seeds from the polygons
+  already drawn, so the two tools compose. An enclosed hole cannot be
+  represented — a polygon list is unioned downstream — so holes are filled and
+  the viewer says how many.
+- **Evidence for choosing a detection threshold by hand.** A DETECTION
+  THRESHOLD section, separate from the spot overlay and needing no preview
+  toggle: the mass histogram with your threshold splitting kept from discarded,
+  the survival-curve knee, spots/frame kept vs available, % kept, and warnings
+  for a dense result. Candidates are detected ONCE at minmass 0 across 16 frames
+  and cached, so any threshold re-scores in ~30 ms instead of re-running
+  detection.
+- **Per-file detection thresholds in batch.** "Use for this file only" saves the
+  threshold with that file's ROI override, so one queue can run each recording
+  at its own value; the shared sidebar threshold and every other file are left
+  alone, and auto-minmass is disabled for that file only. Runs record
+  `minmass_per_file`.
+
+### Fixed
+
+- Compare now warns when one group's runs mix detection thresholds (reading
+  `resolved_minmass`, so auto-picked variation counts). Mass is file-relative,
+  so a mixed group changes what counts as a spot between replicates — the exact
+  route by which a detection difference gets mistaken for a biological one.
+
+### Changed
+
+- The noise-floor marker is shown only when the sample supports one. Measured on
+  real recordings the valley estimate moved between ~0.27 and ~0.47 depending
+  only on which frames were sampled, identically at 16, 48 and 96 frames — so
+  more data does not settle it. The halves of the sample must now agree before a
+  floor is drawn; otherwise the panel reports the values it oscillated between
+  and draws no line, rather than offering a number to aim at.
+
 ## v2.76.51-rc.7 — 23 Sep 2026
 
 ### Fixed

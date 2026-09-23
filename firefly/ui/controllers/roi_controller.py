@@ -46,12 +46,24 @@ class RoiController(QObject):
     detectChanged = Signal()            # detection on/off + minmass
     previewInvalidated = Signal()
     spotsChanged = Signal()             # detected-spot overlay
+    brushChanged = Signal()             # brush tool / radius / painted preview
 
     def __init__(self, store=None, settings=None, override_store=None, parent=None):
         super().__init__(parent)
         self._editor = None
         self._polys: list = []          # list[list[(y, x)]]
         self._draft: list = []          # open polygon being drawn
+        # ── brush editing ─────────────────────────────────────────────────
+        # A painted region is still stored as POLYGONS: the mask below is only
+        # the editing buffer, converted back on every stroke end (exact — see
+        # fa_roi.mask_to_polygons).  Nothing downstream learns a new ROI type.
+        self._tool = "polygon"          # "polygon" | "brush" | "eraser"
+        self._brush_radius = 6.0        # image pixels
+        self._brush_mask = None         # np.bool_ (H, W) while a brush session is live
+        self._brush_img = None          # QImage preview of _brush_mask
+        self._brush_token = 0
+        self._brush_undo: list = []     # mask snapshots, newest last
+        self._brush_holes_warned = False
         # ── per-file editing ──────────────────────────────────────────────
         self._store = store             # per-file polygon store
         self._ovr = override_store      # per-file roi-settings override store
@@ -106,6 +118,15 @@ class RoiController(QObject):
         self._spot_summary = "Preview off"
         self._spot_inspection = ""
         self._spots_stale = True
+        # Candidate masses from a minmass=0 detection on the displayed frame,
+        # cached against the settings that change them.  Re-thresholding this
+        # array is instant, so the histogram and the consequence readouts can
+        # follow the slider without re-running the detector.
+        self._cand_masses = None
+        self._cand_key = None
+        self._cand_n_frames = 0
+        self._cand_per_frame = None
+        self._minmass_per_file = False   # write the threshold to THIS file only
         from firefly.ui.controllers.params.preview_loader import PREVIEW_CMAPS
         self._cmap = "Grayscale"
         if settings is not None:
@@ -144,13 +165,24 @@ class RoiController(QObject):
         # Split-replicates + labels are per-FILE only (never in the global default).
         self._split_replicates = bool(spec.get("roi_split_replicates", False))
         self._roi_labels = list(spec.get("roi_labels") or [])
+        if spec.get("minmass") is not None:
+            self._minmass_per_file = True
+            self._minmass = float(spec["minmass"])
+        else:
+            self._minmass_per_file = False
 
     def _current_spec(self):
-        return {"roi_mode": self._roi_mode, "roi_auto_method": self._auto_method,
+        spec = {"roi_mode": self._roi_mode, "roi_auto_method": self._auto_method,
                 "roi_threshold": self._threshold, "roi_mask_mode": self._mask_mode,
                 "roi_bg_sigma": self._bg_sigma,
                 "roi_split_replicates": self._split_replicates,
                 "roi_labels": list(self._roi_labels)}
+        # Only present when the user asked for it: an absent key means this file
+        # inherits the sidebar threshold, which is what most files should do.
+        if self._minmass_per_file:
+            spec["minmass"] = float(self._minmass)
+            spec["auto_minmass"] = False
+        return spec
 
     @staticmethod
     def _spec_differs(a, b):
@@ -307,6 +339,330 @@ class RoiController(QObject):
         self._polys = [[(float(p[0]), float(p[1])) for p in poly] for poly in polys]
         self._push_to_editor()
         self.polygonsChanged.emit()
+
+    # ── per-file detection threshold ─────────────────────────────────────
+    @Property(bool, notify=detectChanged)
+    def minmassPerFile(self):
+        return self._minmass_per_file
+
+    @Slot(bool)
+    def setMinmassPerFile(self, on):
+        """Route the threshold to THIS file instead of the sidebar default.
+
+        Off (the default) keeps the historic behaviour: the slider writes the
+        global ``analysis/minmass`` that every file in a batch uses.  On, the
+        value is saved with this file's ROI override on Save and only that file
+        is thresholded with it — and the global setting is left exactly as it
+        was, so turning this on for one recording cannot quietly move every
+        other file in the queue.
+        """
+        on = bool(on)
+        if on == self._minmass_per_file or self._run_scoped:
+            return
+        self._minmass_per_file = on
+        if not on and self._ovr is not None and self._file:
+            spec = self._ovr.get(self._file)
+            if spec and "minmass" in spec:
+                spec = dict(spec)
+                spec.pop("minmass", None); spec.pop("auto_minmass", None)
+                self._ovr.set(self._file, spec)
+        self.detectChanged.emit()
+
+    # ── manual-threshold guidance ────────────────────────────────────────
+    _PROFILE_FRAMES = 16        # frames pooled for the mass histogram
+    _HARVEST_CAP = 120          # per-frame candidate cap, matching the auto-picker
+
+    def _detect_key(self):
+        g = self._s
+        if g is None:
+            return None
+        return (self._file, int(self._frame_idx),
+                int(round(g.get_float("analysis/diameter", 7))),
+                int(round(g.get_float("analysis/bg_radius", 10))),
+                g.get_str("analysis/bg_method", "Uniform Filter"),
+                g.get_str("analysis/backend", "Auto"),
+                int(round(g.get_float("analysis/channel", 0))))
+
+    def _candidate_masses(self):
+        """Candidate masses with the threshold at ZERO, pooled over a spread of
+        frames, cached.  Returns ``(masses, n_frames)``.
+
+        Pooled deliberately: on ONE frame the noise and signal modes are not
+        separable (0.16-0.18 dex on real MB543B data, against the 0.5 the valley
+        finder needs), so the noise-floor marker — the single most useful thing
+        on the panel — never appears.  Sampling across the recording also makes
+        the per-frame numbers an average rather than one arbitrary frame's.
+        This mirrors what the auto-picker does with its contiguous windows.
+        """
+        import numpy as np
+        key = self._detect_key()
+        if key is not None and key == self._cand_key and self._cand_masses is not None:
+            return self._cand_masses, self._cand_n_frames
+        if self._s is None or not self._file:
+            return None, 0
+        try:
+            from firefly.analysis.fa_detection_preview import preview_detections
+            from firefly.ui.controllers.params.preview_loader import detection_frame
+            from firefly.ui.controllers.params.params_builder import (
+                BG_METHOD_MAP, BACKEND_LABEL_TO_VALUE)
+            g = self._s
+            opts = dict(
+                diameter=int(round(g.get_float("analysis/diameter", 7))),
+                minmass=0.0,
+                bg_radius=int(round(g.get_float("analysis/bg_radius", 10))),
+                bg_method=BG_METHOD_MAP.get(
+                    g.get_str("analysis/bg_method", "Uniform Filter"),
+                    "uniform_filter"),
+                backend=BACKEND_LABEL_TO_VALUE.get(
+                    g.get_str("analysis/backend", "Auto"), "auto"),
+                min_cnr=0.0, roi_mask=None, roi_known=False)
+            channel = int(round(g.get_float("analysis/channel", 0)))
+            total = int(self._n_frames or 0)
+            if total > 1:
+                idx = np.unique(np.linspace(0, total - 1,
+                                            min(self._PROFILE_FRAMES, total)).astype(int))
+            else:
+                idx = np.array([int(self._frame_idx)])
+            pooled, capped, used = [], [], 0
+            for i in idx:
+                frame = (self._raw_frame if (int(i) == int(self._frame_idx)
+                                             and self._raw_frame is not None)
+                         else detection_frame(self._file, int(i), channel))
+                if frame is None:
+                    continue
+                rows, _ = preview_detections(frame, **opts)
+                mm = np.asarray(rows["mass"].to_numpy(), dtype=float)
+                pooled.append(mm)
+                capped.append(mm)      # per-frame; estimate_noise_floor applies the cap
+                used += 1
+            if not used:
+                raise ValueError("no frames could be read for the profile")
+            self._cand_masses = np.concatenate(pooled) if pooled else np.array([])
+            self._cand_per_frame = capped
+            self._cand_n_frames = used
+            self._cand_key = key
+        except Exception as exc:
+            self._cand_masses = None
+            self._cand_key = None
+            self._cand_n_frames = 0
+            self.statusMessage.emit(f"Threshold guidance unavailable: {exc}")
+            return None, 0
+        return self._cand_masses, self._cand_n_frames
+
+    @Slot(result="QVariantMap")
+    def massProfile(self):
+        """Histogram + markers + the cost of the current threshold, for the
+        guidance panel.  Safe to call on every slider move."""
+        from firefly.analysis.fa_localize import threshold_guidance
+        masses, n_frames = self._candidate_masses()
+        if masses is None or not len(masses):
+            return {"n_candidates": 0, "edges": [], "counts": [],
+                    "warning": "Open a recording to profile its detection threshold."}
+        from firefly.analysis.fa_localize import estimate_noise_floor
+        floor, status = estimate_noise_floor(self._cand_per_frame or [],
+                                             cap=self._HARVEST_CAP)
+        out = threshold_guidance(masses, float(self._minmass), n_frames=n_frames,
+                                 noise_floor=floor, floor_status=status)
+        out["n_frames_sampled"] = int(n_frames)
+        return out
+
+    @Slot()
+    def invalidateMassProfile(self):
+        self._cand_masses = None
+        self._cand_key = None
+
+    # ── brush / eraser ───────────────────────────────────────────────────
+    # Design note: the brush is an INPUT METHOD for the existing polygon ROI,
+    # not a new ROI kind.  Strokes accumulate in a boolean mask, and each stroke
+    # end retraces that mask into `_polys`.  So `roi_mode` stays "Manual
+    # polygon", params.json still carries `roi_polygon`, and multi-ROI replicate
+    # fan-out, the post-hoc shrink guard and the saved mask PNG all keep working
+    # untouched.  The alternative — shipping a raster mask through the worker —
+    # would have needed new plumbing in every one of those places.
+
+    @Property(str, notify=brushChanged)
+    def tool(self):
+        return self._tool
+
+    @Slot(str)
+    def setTool(self, name):
+        name = str(name).lower()
+        if name not in ("polygon", "brush", "eraser") or name == self._tool:
+            return
+        was_brush = self._tool in ("brush", "eraser")
+        self._tool = name
+        if name in ("brush", "eraser"):
+            self.cancelDraft()              # an open polygon draft has no meaning here
+            if not was_brush:
+                self._begin_brush_session()
+        else:
+            self._end_brush_session()
+        self.brushChanged.emit()
+
+    @Property(float, notify=brushChanged)
+    def brushRadius(self):
+        return self._brush_radius
+
+    @brushRadius.setter
+    def brushRadius(self, r):
+        r = max(0.5, min(float(r), 200.0))
+        if abs(r - self._brush_radius) > 1e-9:
+            self._brush_radius = r
+            self.brushChanged.emit()
+
+    @Property(bool, notify=brushChanged)
+    def brushActive(self):
+        return self._tool in ("brush", "eraser")
+
+    @Property(bool, notify=brushChanged)
+    def hasBrushPreview(self):
+        return self._brush_img is not None and not self._brush_img.isNull()
+
+    @Property(int, notify=brushChanged)
+    def brushToken(self):
+        return self._brush_token
+
+    @Property(bool, notify=brushChanged)
+    def canUndoStroke(self):
+        return bool(self._brush_undo)
+
+    def roi_brush_image(self):
+        return self._brush_img
+
+    def _begin_brush_session(self):
+        """Seed the paint buffer from the polygons already drawn, so the brush
+        EXTENDS an existing ROI instead of starting from blank."""
+        import numpy as np
+        H, W = int(self._img_h), int(self._img_w)
+        if H <= 0 or W <= 0:
+            self._brush_mask = None
+            self.statusMessage.emit("Load an image before painting a region.")
+            return
+        from firefly.analysis.fa_roi import polygons_to_mask
+        self._brush_mask = polygons_to_mask(self._polys, (H, W))
+        self._brush_undo = []
+        self._brush_holes_warned = False
+        self._render_brush_preview()
+
+    def _end_brush_session(self):
+        self._brush_mask = None
+        self._brush_img = None
+        self._brush_undo = []
+        self._brush_token += 1
+
+    def _render_brush_preview(self):
+        """Translucent green fill of the painted mask, for the overlay."""
+        import numpy as np
+        from PySide6.QtGui import QImage
+        m = self._brush_mask
+        if m is None or not m.any():
+            self._brush_img = None
+            self._brush_token += 1
+            return
+        h, w = m.shape
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        rgba[m] = (86, 211, 100, 90)
+        rgba = np.ascontiguousarray(rgba)
+        self._brush_img = QImage(rgba.data, w, h, 4 * w,
+                                 QImage.Format.Format_RGBA8888).copy()
+        self._brush_token += 1
+
+    @Slot()
+    def beginStroke(self):
+        """Snapshot for undo.  One entry per STROKE, not per painted dab."""
+        if self._brush_mask is None:
+            self._begin_brush_session()
+        if self._brush_mask is not None:
+            self._brush_undo.append(self._brush_mask.copy())
+            del self._brush_undo[:-30]      # bound the history
+            self.brushChanged.emit()
+
+    @Slot(float, float)
+    @Slot(float, float, float, float)
+    def paintAt(self, y, x, y_prev=None, x_prev=None):
+        """Stamp the brush at ``(y, x)`` in IMAGE pixels.
+
+        Given the previous point too, the segment between them is filled, so a
+        fast drag paints a continuous stroke instead of a dotted line.
+        """
+        import numpy as np
+        if self._brush_mask is None:
+            self._begin_brush_session()
+        m = self._brush_mask
+        if m is None:
+            return
+        H, W = m.shape
+        r = float(self._brush_radius)
+        pts = [(float(y), float(x))]
+        if y_prev is not None and x_prev is not None:
+            dy, dx = float(y) - float(y_prev), float(x) - float(x_prev)
+            dist = float(np.hypot(dy, dx))
+            if dist > 0:
+                # step under a radius so consecutive dabs always overlap
+                n = int(dist / max(r * 0.5, 0.5)) + 1
+                pts = [(float(y_prev) + dy * k / n, float(x_prev) + dx * k / n)
+                       for k in range(n + 1)]
+        erase = self._tool == "eraser"
+        rad = int(np.ceil(r))
+        for py, px in pts:
+            iy, ix = int(round(py)), int(round(px))
+            y0, y1 = max(0, iy - rad), min(H, iy + rad + 1)
+            x0, x1 = max(0, ix - rad), min(W, ix + rad + 1)
+            if y0 >= y1 or x0 >= x1:
+                continue
+            yy = np.arange(y0, y1)[:, None] - py
+            xx = np.arange(x0, x1)[None, :] - px
+            disc = (yy * yy + xx * xx) <= r * r
+            if erase:
+                m[y0:y1, x0:x1] &= ~disc
+            else:
+                m[y0:y1, x0:x1] |= disc
+        self._render_brush_preview()
+        self.brushChanged.emit()
+
+    @Slot()
+    def endStroke(self):
+        """Retrace the painted mask into polygons — the analysis ROI."""
+        if self._brush_mask is None:
+            return
+        from firefly.analysis.fa_roi import count_mask_holes, mask_to_polygons
+        holes = count_mask_holes(self._brush_mask)
+        # A tolerance of 0 is exact but yields ~1400 vertices on a hand-painted
+        # region; 0.5 keeps ~99% of the area at a quarter of the vertices, which
+        # is what makes the shape editable and params.json small.
+        polys = mask_to_polygons(self._brush_mask, simplify_tol=0.5)
+        self._polys = [[(float(pt[0]), float(pt[1])) for pt in poly]
+                       for poly in polys]
+        del self._roi_labels[len(self._polys):]
+        self._push_to_editor()
+        self.polygonsChanged.emit()
+        self.splitChanged.emit()
+        if holes and not self._brush_holes_warned:
+            self._brush_holes_warned = True
+            self.statusMessage.emit(
+                f"Filled {holes} enclosed gap(s): an ROI is the union of its "
+                f"regions, so a hole inside one cannot be analysed as excluded. "
+                f"Erase from an edge instead.")
+
+    @Slot()
+    def undoStroke(self):
+        if not self._brush_undo:
+            return
+        self._brush_mask = self._brush_undo.pop()
+        self._render_brush_preview()
+        self.brushChanged.emit()
+        self.endStroke()
+
+    @Slot()
+    def clearBrush(self):
+        import numpy as np
+        if self._brush_mask is None:
+            return
+        self.beginStroke()
+        self._brush_mask[:] = False
+        self._render_brush_preview()
+        self.brushChanged.emit()
+        self.endStroke()
 
     @Slot(result="QVariantList")
     def getPolygons(self):
@@ -1048,7 +1404,9 @@ class RoiController(QObject):
         self._invalidate_spots()
         # Run-scoped: the detection threshold of a COMPLETED run is history —
         # previewing spots over it must not rewrite the sidebar for future runs.
-        if self._s is not None and not self._run_scoped:
+        # Per-file: the value belongs to this file's override, saved on commit;
+        # writing the sidebar here would change every other file in the batch.
+        if self._s is not None and not self._run_scoped and not self._minmass_per_file:
             self._s.set("analysis/minmass", v)
             self._s.set("analysis/auto_minmass", False)
         self.detectChanged.emit()
@@ -1252,7 +1610,8 @@ class RoiController(QObject):
             is_poly = ROI_MODE_MAP.get(self._roi_mode) == "polygon"
             custom = (self._spec_differs(spec, self._default_spec())
                       or (is_poly and bool(self._polys))
-                      or self._split_replicates or any(self._roi_labels))
+                      or self._split_replicates or any(self._roi_labels)
+                      or spec.get("minmass") is not None)
             if custom:
                 self._ovr.set(self._file, spec)
             else:

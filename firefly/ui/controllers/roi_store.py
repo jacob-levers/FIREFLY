@@ -39,14 +39,23 @@ class RoiStore:
 
 
 class RoiOverrideStore:
-    """Per-file ROI-settings override (abspath → spec dict of the analysis/roi_*
-    values: ``roi_mode``/``roi_auto_method``/``roi_threshold``/``roi_mask_mode``/
-    ``roi_bg_sigma`` in their settings-label form).
+    """Per-file analysis override (abspath → spec dict), read by
+    ``params_builder`` at run time.  Session-only, like ``RoiStore``.
 
-    The left sidebar holds the DEFAULT ROI applied to every file; a file with an
+    Carries the ``analysis/roi_*`` values in their settings-label form
+    (``roi_mode`` / ``roi_auto_method`` / ``roi_threshold`` / ``roi_mask_mode`` /
+    ``roi_bg_sigma``, plus ``roi_split_replicates`` / ``roi_labels``) and,
+    optionally, a per-file DETECTION threshold: ``minmass`` and ``auto_minmass``.
+
+    The left sidebar holds the default applied to every file; a file with an
     entry here overrides that default for THAT file only (set from the Preview &
-    ROI viewer).  Read by ``params_builder`` at run time.  Session-only, like
-    ``RoiStore``.
+    ROI viewer).  A per-file minmass is deliberately opt-in per file rather than
+    a mode: in a batch it lets one recording be thresholded differently from the
+    rest, which is powerful and easy to misuse — mass is file-relative (frames
+    are min-max normalised), so the same number is not the same brightness in
+    two files, but tuning each file by eye until the counts match is how a
+    detection difference gets manufactured.  Every run records the value it
+    used, and Compare warns when one group mixes thresholds.
     """
 
     def __init__(self):

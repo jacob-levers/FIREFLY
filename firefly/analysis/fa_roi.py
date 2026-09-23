@@ -643,6 +643,74 @@ def _load_imagej_roi_polygons(path: str) -> list:
     return polys
 
 
+def polygons_to_mask(polygons, shape):
+    """Rasterise ``(y, x)`` polygons into one boolean mask, OR-ing them.
+
+    The same union the worker applies, factored out so the brush editor and the
+    analysis cannot drift apart on what a polygon list means.
+    """
+    from skimage.draw import polygon2mask
+    mask = np.zeros(tuple(int(v) for v in shape), dtype=bool)
+    for poly in polygons or []:
+        pts = np.asarray(poly, dtype=float)
+        if pts.ndim == 2 and len(pts) >= 3:
+            mask |= polygon2mask(mask.shape, pts)
+    return mask
+
+
+def count_mask_holes(mask):
+    """Number of enclosed background regions in ``mask``.
+
+    A polygon list is UNIONED downstream, so an enclosed hole cannot be
+    represented: :func:`mask_to_polygons` fills holes, and callers use this to
+    say so rather than silently changing the region the user drew.
+    """
+    from scipy.ndimage import binary_fill_holes, label
+    m = np.asarray(mask, dtype=bool)
+    if not m.any():
+        return 0
+    holes = binary_fill_holes(m) & ~m
+    return 0 if not holes.any() else int(label(holes)[1])
+
+
+def mask_to_polygons(mask, simplify_tol=0.0):
+    """Trace each connected region of a boolean mask to a closed ``(y, x)``
+    polygon, so a painted/raster ROI becomes the polygon list the rest of
+    FIREFLY already speaks.
+
+    The array is padded before tracing: without it a region touching the frame
+    edge yields an OPEN contour, which rasterises back to a different shape.
+    With the pad, mask -> polygons -> :func:`polygons_to_mask` is exact at
+    ``simplify_tol=0`` (verified to IoU 1.000 on real hand-drawn ROI masks);
+    a positive tolerance trades a little fidelity for far fewer vertices
+    (~0.99 IoU at 0.5).
+
+    Holes are filled first — see :func:`count_mask_holes`.
+    """
+    from skimage import measure as _skmeasure
+    from scipy.ndimage import binary_fill_holes, label
+
+    m = np.asarray(mask, dtype=bool)
+    if not m.any():
+        return []
+    m = binary_fill_holes(m)
+    labels, n = label(m, structure=np.ones((3, 3), dtype=bool))
+    polys = []
+    for lv in range(1, int(n) + 1):
+        padded = np.pad((labels == lv).astype(np.float32), 1)
+        for c in _skmeasure.find_contours(padded, 0.5):
+            c = c - 1.0                      # undo the pad offset
+            if simplify_tol > 0:
+                try:
+                    c = _skmeasure.approximate_polygon(c, float(simplify_tol))
+                except Exception:
+                    pass
+            if len(c) >= 3:
+                polys.append(np.clip(c, 0.0,
+                                     [m.shape[0] - 1, m.shape[1] - 1]).astype(float))
+    return polys
+
+
 def _load_tif_mask_polygons(path: str, simplify_tol: float = 0.5) -> list:
     """Read a raster ROI mask (`.tif`/`.tiff`, e.g. palmTRACER's mask export)
     and convert each connected region to a polygon (N, 2) in [y, x] pixel

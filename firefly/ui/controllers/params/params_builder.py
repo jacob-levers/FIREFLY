@@ -196,6 +196,16 @@ def build_params(settings, importc, fpath: str | None = None,
     roi_mask_mode   = g.get_str("analysis/roi_mask_mode", _DEFAULTS["roi_mask_mode"])
     roi_bg_sigma    = g.get_float("analysis/roi_bg_sigma", _DEFAULTS["roi_bg_sigma"])
     ovr = override_store.get(fpath) if (override_store and fpath) else None
+    # Per-file DETECTION threshold, when one was saved for this file.  Absent
+    # keys fall through to the sidebar default, so a file that only carries an
+    # ROI override is unaffected.
+    minmass_val = g.get_float("analysis/minmass", _DEFAULTS["minmass"])
+    auto_minmass_val = g.get_bool("analysis/auto_minmass", _DEFAULTS["auto_minmass"])
+    minmass_is_per_file = False
+    if ovr and ovr.get("minmass") is not None:
+        minmass_val = float(ovr["minmass"])
+        auto_minmass_val = bool(ovr.get("auto_minmass", False))
+        minmass_is_per_file = True
     # Multiple drawn ROIs → treat each as its own replicate (separate output).
     # Per-file, set in the ROI viewer (flag + optional per-ROI labels).
     roi_split_replicates = bool(ovr.get("roi_split_replicates", False)) if ovr else False
@@ -224,8 +234,11 @@ def build_params(settings, importc, fpath: str | None = None,
         "camera_qe":         g.get_float("analysis/camera_qe", _DEFAULTS["camera_qe"]),
         "camera_bg_photons": g.get_float("analysis/camera_bg_photons", _DEFAULTS["camera_bg_photons"]),
         "diameter":       _i(g, "analysis/diameter", _DEFAULTS["diameter"]),
-        "auto_minmass":   g.get_bool("analysis/auto_minmass", _DEFAULTS["auto_minmass"]),
-        "minmass":        g.get_float("analysis/minmass", _DEFAULTS["minmass"]),
+        "auto_minmass":   auto_minmass_val,
+        "minmass":         minmass_val,
+        # Recorded so the run manifest shows the threshold was set for THIS file
+        # rather than inherited — Compare reads it to warn about mixed groups.
+        "minmass_per_file": minmass_is_per_file,
         "min_cnr":        g.get_float("analysis/min_cnr", 0.0),
         "minmass_sensitivity": g.get_str(
             "analysis/minmass_sensitivity", _DEFAULTS["minmass_sensitivity"]).lower(),

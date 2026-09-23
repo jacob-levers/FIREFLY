@@ -208,6 +208,18 @@ Item {
                             source: Roi.hasSpots ? ("image://roispots/" + Roi.spotToken) : ""
                         }
 
+                        // Painted-region preview. Same PreserveAspectFit box and
+                        // drawPad inset as the background, so the mask and the
+                        // image cannot drift apart.
+                        Image {
+                            anchors.fill: parent
+                            anchors.margins: imgArea.drawPad
+                            fillMode: Image.PreserveAspectFit
+                            smooth: false; cache: false; asynchronous: false
+                            visible: Roi.brushActive && Roi.hasBrushPreview
+                            source: Roi.hasBrushPreview ? ("image://roibrush/" + Roi.brushToken) : ""
+                        }
+
                         ScanLine { anchors.fill: parent; anchors.margins: imgArea.drawPad; active: root.scanning }
 
                         Text {
@@ -255,16 +267,63 @@ Item {
                             }
                         }
 
+                        // Brush-size cursor: what you are about to paint, at the
+                        // same scale as the image, so the size slider is honest.
+                        Canvas {
+                            id: brushCursor
+                            anchors.fill: parent
+                            visible: Roi.brushActive && drawArea.containsMouse
+                            onPaint: {
+                                var ctx = getContext("2d"); ctx.reset()
+                                ctx.clearRect(0, 0, width, height)
+                                var rpx = Roi.brushRadius * imgArea.sscale
+                                ctx.beginPath()
+                                ctx.arc(drawArea.mouseX, drawArea.mouseY, rpx, 0, 2 * Math.PI)
+                                ctx.strokeStyle = (Roi.tool === "eraser") ? pal.DANGER : pal.SUCCESS
+                                ctx.lineWidth = 1.5; ctx.stroke()
+                            }
+                        }
+
                         MouseArea {
+                            id: drawArea
                             anchors.fill: parent
                             enabled: Roi.hasImage && (root.isPoly || Roi.detectEnabled)
                             cursorShape: root.isPoly ? Qt.CrossCursor : Qt.ArrowCursor
+                            hoverEnabled: Roi.brushActive
+                            property real lastY: NaN
+                            property real lastX: NaN
+                            // Brush strokes: press -> snapshot for undo, drag ->
+                            // paint the segment since the last point (so a fast
+                            // drag is continuous, not dotted), release -> retrace
+                            // the mask into polygons.
+                            onPressed: (m) => {
+                                if (!Roi.brushActive) return
+                                var yx = imgArea.toImg(m.x, m.y)
+                                Roi.beginStroke()
+                                Roi.paintAt(yx[0], yx[1])
+                                lastY = yx[0]; lastX = yx[1]
+                            }
+                            onPositionChanged: (m) => {
+                                brushCursor.requestPaint()
+                                if (!Roi.brushActive || !(m.buttons & Qt.LeftButton)) return
+                                var yx = imgArea.toImg(m.x, m.y)
+                                if (isNaN(lastY)) Roi.paintAt(yx[0], yx[1])
+                                else              Roi.paintAt(yx[0], yx[1], lastY, lastX)
+                                lastY = yx[0]; lastX = yx[1]
+                            }
+                            onReleased: {
+                                if (!Roi.brushActive) return
+                                lastY = NaN; lastX = NaN
+                                Roi.endStroke()
+                            }
                             // Vertices MAY sit outside the image (in the margin
                             // around it) so a region can comfortably enclose
                             // samples pressed against an edge; closeDraft() clips
                             // the finished shape back to the image rectangle.
                             onClicked: (m) => {
                                 var yx = imgArea.toImg(m.x, m.y)
+                                if (Roi.brushActive)
+                                    return              // press/drag already painted
                                 if (Roi.detectEnabled && (!root.isPoly || (m.modifiers & Qt.ControlModifier)))
                                     Roi.inspectSpot(yx[0], yx[1])
                                 else
@@ -288,7 +347,11 @@ Item {
                         // truth, so a handle can never drift from the outline
                         // the canvas paints from the same list.
                         Repeater {
-                            model: root.isPoly && Roi.hasImage ? Roi.polygonCount : 0
+                            // Hidden while painting: a traced brush outline can
+                            // carry hundreds of vertices, and dragging one of
+                            // them is not how you edit a painted shape.
+                            model: (root.isPoly && Roi.hasImage && !Roi.brushActive)
+                                   ? Roi.polygonCount : 0
                             delegate: Item {
                                 id: polyHandles
                                 readonly property int polyIdx: index
@@ -553,6 +616,194 @@ Item {
                             onPicked: (t) => Roi.cmap = t
                         }
 
+                        // ── DETECTION THRESHOLD ─────────────────────────
+                        // Its own section, deliberately: choosing the number is
+                        // a separate job from drawing spots on the image, and it
+                        // needs no overlay — the profile reads frames directly.
+                        // Previously this evidence was only reachable by first
+                        // switching the preview on.
+                        ColumnLayout {
+                            visible: !Roi.runScoped
+                            Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PanelLabel { text: "DETECTION THRESHOLD" }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    text: Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
+                                    color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
+                                }
+                            }
+                            Slider {
+                                Layout.fillWidth: true
+                                showValue: false
+                                from: 0; to: 50; step: 0.01; decimals: 3
+                                value: Roi.detectMinmass
+                                onMoved: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                                  if (Roi.detectEnabled) spotsDebounce.restart() }
+                                onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                                      if (Roi.detectEnabled) Roi.refreshSpots() }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: sc.sp2
+                                Text { text: "Exact"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                                SpinBox {
+                                    Layout.fillWidth: true
+                                    from: 0; to: 1000000; step: 0.01; decimals: 4
+                                    value: Roi.detectMinmass
+                                    onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                                          if (Roi.detectEnabled) spotsDebounce.restart() }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: sc.sp3
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: 1
+                                    Text { text: "Use for this file only"; color: pal.TXT
+                                           font.pixelSize: sc.textSm }
+                                    Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                           text: "Saves the threshold with this file's ROI, so a batch can " +
+                                                 "run one recording at a different value. Off, the slider sets " +
+                                                 "the shared sidebar threshold every file uses."
+                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
+                                }
+                                Switch {
+                                    checked: Roi.minmassPerFile
+                                    onToggled: (c) => Roi.setMinmassPerFile(c)
+                                }
+                            }
+                            Alert {
+                                Layout.fillWidth: true
+                                visible: Roi.minmassPerFile
+                                severity: "warn"
+                                text: "Per-file thresholds are not comparable by default: mass is " +
+                                      "file-relative, and tuning each recording until the counts agree is " +
+                                      "how a detection difference gets manufactured. Use a stated rule, " +
+                                      "apply it to every condition, and report it."
+                            }
+                            Text {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: "Sets the sidebar's Threshold (minmass) and turns Auto minmass off. " +
+                                      "Mass is in the selected detector's own units and is file-relative — " +
+                                      "a value from another backend or recording does not carry over."
+                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                            }
+                        // ── threshold guidance ──────────────────
+                        // Detect once at minmass 0, then re-score any
+                        // threshold instantly: the histogram and the
+                        // readouts follow the slider with no detection.
+                        ColumnLayout {
+                            id: guide
+                            Layout.fillWidth: true; spacing: sc.sp1
+                            property var prof: ({})
+                            function refresh() { prof = Roi.massProfile(); massHist.requestPaint() }
+
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: sc.sp2
+                                Text { text: "Mass distribution"; color: pal.TXT
+                                       font.pixelSize: sc.textSm }
+                                Item { Layout.fillWidth: true }
+                                Button {
+                                    variant: "secondary"; text: "Profile"; icon: "chart-spline"
+                                    onClicked: { Roi.invalidateMassProfile(); guide.refresh() }
+                                }
+                            }
+
+                            Canvas {
+                                id: massHist
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 92
+                                onPaint: {
+                                    var ctx = getContext("2d"); ctx.reset()
+                                    ctx.clearRect(0, 0, width, height)
+                                    var p = guide.prof
+                                    if (!p || !p.counts || p.counts.length === 0) return
+                                    var e = p.edges, c = p.counts
+                                    var lo = e[0], hi = e[e.length - 1]
+                                    var span = (hi - lo) || 1
+                                    var mx = 0
+                                    for (var i = 0; i < c.length; ++i) mx = Math.max(mx, c[i])
+                                    if (mx <= 0) return
+                                    var toX = function (log10m) {
+                                        return (log10m - lo) / span * width }
+                                    // bars, split at the threshold so the
+                                    // kept fraction is visible, not inferred
+                                    var cut = Math.log(p.minmass) / Math.LN10
+                                    var bw = width / c.length
+                                    for (i = 0; i < c.length; ++i) {
+                                        var h = c[i] / mx * (height - 14)
+                                        var mid = (e[i] + e[i + 1]) / 2
+                                        ctx.fillStyle = (mid >= cut) ? pal.SUCCESS : pal.TXT_MUTED
+                                        ctx.globalAlpha = (mid >= cut) ? 0.85 : 0.30
+                                        ctx.fillRect(i * bw, height - 14 - h, Math.max(1, bw - 1), h)
+                                    }
+                                    ctx.globalAlpha = 1
+                                    // markers
+                                    var mark = function (v, colour, dash) {
+                                        if (!v) return
+                                        var x = toX(Math.log(v) / Math.LN10)
+                                        if (x < 0 || x > width) return
+                                        ctx.beginPath(); ctx.setLineDash(dash)
+                                        ctx.moveTo(x, 0); ctx.lineTo(x, height - 14)
+                                        ctx.strokeStyle = colour; ctx.lineWidth = 1.5
+                                        ctx.stroke(); ctx.setLineDash([])
+                                    }
+                                    mark(p.knee, pal.WARN || "#e0a33a", [4, 3])
+                                    mark(p.noise_floor, pal.DANGER, [2, 2])
+                                    mark(p.minmass, pal.TXT, [])
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                visible: guide.prof && guide.prof.n_candidates > 0
+                                text: {
+                                    var p = guide.prof
+                                    if (!p || !p.n_candidates) return ""
+                                    return "— threshold · " +
+                                        (p.knee ? "– – knee " + p.knee.toFixed(3) + " · " : "") +
+                                        (p.noise_floor ? "· · noise floor " + p.noise_floor.toFixed(3) : "no noise floor")
+                                }
+                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                            }
+
+                            Text {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                visible: guide.prof && guide.prof.n_candidates > 0
+                                text: {
+                                    var p = guide.prof
+                                    if (!p || !p.n_candidates) return ""
+                                    return p.per_frame_kept.toFixed(1) + " spots/frame kept of " +
+                                           p.per_frame_all.toFixed(0) + " candidates (" +
+                                           (p.kept_fraction * 100).toFixed(1) + "%), from " +
+                                           p.n_frames_sampled + " frames across the recording."
+                                }
+                                color: pal.TXT; font.pixelSize: sc.textXs
+                            }
+
+                            Text {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                visible: text.length > 0
+                                text: (guide.prof && guide.prof.floor_status &&
+                                       !guide.prof.noise_floor) ? guide.prof.floor_status : ""
+                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                            }
+
+                            Alert {
+                                Layout.fillWidth: true
+                                visible: guide.prof && guide.prof.warning &&
+                                         guide.prof.warning.length > 0
+                                severity: (guide.prof && guide.prof.below_noise_floor) ? "danger" : "warn"
+                                text: (guide.prof && guide.prof.warning) ? guide.prof.warning : ""
+                            }
+
+                            Connections {
+                                target: Roi
+                                function onDetectChanged() { if (Roi.detectEnabled) guide.refresh() }
+                            }
+                        }
+                        }
+
                         // detection-threshold (minmass) preview + slider
                         ColumnLayout {
                             visible: !Roi.runScoped
@@ -572,33 +823,13 @@ Item {
                                 }
                             }
                             // explicitly labelled so it's clear this is the minmass
-                            // detection threshold (mirrors the sidebar's field name)
+                            // overlay controls only — the threshold itself lives
+                            // in its own section above
                             ColumnLayout {
                                 visible: Roi.detectEnabled
                                 Layout.fillWidth: true; spacing: 2
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Text { text: "Threshold (minmass)"; color: pal.TXT; font.pixelSize: sc.textXs }
-                                    Item { Layout.fillWidth: true }
-                                    Text { text: Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
-                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs; font.family: "Menlo" }
-                                }
-                                Slider {
-                                    Layout.fillWidth: true
-                                    showValue: false
-                                    from: 0; to: 50; step: 0.01; decimals: 3
-                                    value: Roi.detectMinmass
-                                    onMoved: (v) => { Roi.detectMinmass = v; spotsDebounce.restart() }
-                                    onCommitted: (v) => { Roi.detectMinmass = v; Roi.refreshSpots() }
-                                }
-                                SpinBox {
-                                    Layout.fillWidth: true
-                                    from: 0; to: 1000000; step: 0.01; decimals: 4
-                                    value: Roi.detectMinmass
-                                    onCommitted: (v) => { Roi.detectMinmass = v; spotsDebounce.restart() }
-                                }
                                 Button {
-                                    text: "Refresh detection preview"
+                                    text: "Refresh overlay"
                                     Layout.fillWidth: true
                                     onClicked: { spotsDebounce.stop(); Roi.refreshSpots() }
                                 }
@@ -609,7 +840,7 @@ Item {
                                 }
                                 Text {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: "Click a spot to inspect (Ctrl-click in polygon mode). Manual preview turns Auto minmass off. Save ROI to apply edits."
+                                    text: "Click a spot to inspect (Ctrl-click in polygon mode). Set the threshold under Detection threshold above. Save ROI to apply edits."
                                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                                 }
                                 Text {
@@ -618,9 +849,80 @@ Item {
                                     visible: text.length > 0
                                     color: pal.TXT; font.pixelSize: sc.textXs
                                 }
+
                                 Text {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
                                     text: Roi.spotSummary
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                                }
+                            }
+                        }
+
+                        // ── drawing tool: click-a-polygon vs paint ──────────
+                        ColumnLayout {
+                            Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp2
+                            visible: root.isPoly
+                            Text { text: "Drawing tool"; color: pal.TXT_MUTED
+                                   font.pixelSize: sc.textXs }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: sc.sp2
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "Polygon"; icon: "waypoints"
+                                    variant: Roi.tool === "polygon" ? "primary" : "secondary"
+                                    onClicked: Roi.setTool("polygon")
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "Brush"; icon: "palette"
+                                    variant: Roi.tool === "brush" ? "primary" : "secondary"
+                                    onClicked: Roi.setTool("brush")
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "Eraser"; icon: "x"
+                                    variant: Roi.tool === "eraser" ? "primary" : "secondary"
+                                    onClicked: Roi.setTool("eraser")
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: sc.sp1
+                                visible: Roi.brushActive
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Text { text: "Brush size"; color: pal.TXT
+                                           font.pixelSize: sc.textSm }
+                                    Item { Layout.fillWidth: true }
+                                    Text { text: (Roi.brushRadius * 2).toFixed(0) + " px"
+                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                                }
+                                Slider {
+                                    Layout.fillWidth: true
+                                    showValue: false
+                                    from: 1; to: 60; step: 0.5; decimals: 1
+                                    value: Roi.brushRadius
+                                    onMoved: (v) => Roi.brushRadius = v
+                                    onCommitted: (v) => Roi.brushRadius = v
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Button {
+                                        Layout.fillWidth: true
+                                        variant: "secondary"; text: "Undo stroke"; icon: "rotate-ccw"
+                                        enabled: Roi.canUndoStroke
+                                        onClicked: Roi.undoStroke()
+                                    }
+                                    Button {
+                                        Layout.fillWidth: true
+                                        variant: "secondary"; text: "Erase all"; icon: "x"
+                                        onClicked: Roi.clearBrush()
+                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: "Drag to paint the region; the eraser trims it. " +
+                                          "Painted shapes are stored as ordinary ROI outlines, " +
+                                          "so everything downstream is unchanged."
                                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
                             }

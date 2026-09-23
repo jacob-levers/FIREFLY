@@ -1281,6 +1281,26 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
 
     compatibility_warnings, metric_contract_labels, legacy_only = (
         _comparison_metric_contracts(all_summaries))
+    # Detection thresholds that differ WITHIN a group are a live way to
+    # manufacture a difference: mass is file-relative, so a per-file minmass is
+    # legitimate only under a stated rule applied to every condition.  Say so
+    # loudly here rather than letting it pass silently into a p-value.
+    for _label, _summaries in zip(labels, all_summaries):
+        _vals = []
+        for _s in _summaries:
+            _p = _s.get("params") or {}
+            _v = _p.get("resolved_minmass")
+            if _v is None:
+                _v = _p.get("minmass")
+            if _v is not None:
+                _vals.append(round(float(_v), 6))
+        _uniq = sorted(set(_vals))
+        if len(_uniq) > 1:
+            print(f"  Compare WARNING: '{_label}' mixes detection thresholds "
+                  f"({', '.join(f'{v:g}' for v in _uniq)}) across its runs. "
+                  f"Mass is file-relative, so this changes what counts as a "
+                  f"spot between replicates; state the rule that set them or "
+                  f"re-run the group on one threshold.")
     for warning in compatibility_warnings.values():
         print(f"  Compare WARNING: {warning}")
     if legacy_only:

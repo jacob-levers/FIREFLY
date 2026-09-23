@@ -972,6 +972,114 @@ def _noise_floor_valley(masses, sep_min=0.5):
         return None, None, None
 
 
+def estimate_noise_floor(per_frame_masses, cap=120, agree_dex=0.15):
+    """A noise/signal valley only if the SAMPLE actually supports one.
+
+    Returns ``(floor_or_None, status)``.
+
+    Two things make a naive call untrustworthy here, both measured on real
+    MB543B recordings:
+
+      * it depends on the harvest.  Over every candidate the low-mass flood
+        merges into the real mode (0.25 dex separation, below the 0.5 the valley
+        finder needs, so no floor at all); capped at the auto-picker's
+        candidates-per-frame it separates (0.57 dex).  So the cap is applied
+        here, matching auto.
+      * it depends on WHICH frames.  16 frames spread across one recording gave
+        0.49 where 480 contiguous frames gave 0.29, and a second recording gave
+        no floor at all from the same procedure.  Deeper sampling does not fix
+        it: at 16, 48 and 96 frames the two halves still land near 0.27 and
+        0.47, i.e. the distribution has two candidate valleys rather than one.
+
+    A number that moves that much must not be drawn as a line the user aims at.
+    So the sample is split in half and the halves must agree within
+    ``agree_dex``; otherwise no floor is returned and the status explains which
+    values it oscillated between.
+    """
+    arrays = [np.asarray(a, dtype=float) for a in (per_frame_masses or [])]
+    arrays = [np.sort(a[np.isfinite(a) & (a > 0)])[::-1][:int(cap)] for a in arrays]
+    arrays = [a for a in arrays if a.size]
+    if len(arrays) < 2:
+        return None, "too few frames sampled"
+    whole, _sep, _w = _noise_floor_valley(np.concatenate(arrays))
+    if not whole:
+        return None, "no separable noise mode in this sample"
+    half_a, _s, _w = _noise_floor_valley(np.concatenate(arrays[0::2]))
+    half_b, _s, _w = _noise_floor_valley(np.concatenate(arrays[1::2]))
+    if not half_a or not half_b:
+        return None, "noise mode not reproducible across the sample"
+    if abs(np.log10(half_a) - np.log10(half_b)) > float(agree_dex):
+        # Measured on real recordings: the halves land on ~0.27 and ~0.47 no
+        # matter whether 16, 48 or 96 frames are sampled.  So this is NOT a
+        # sampling shortfall to be fixed with more frames — the mass
+        # distribution has more structure than one noise/signal split, and no
+        # single "floor" describes it.  Say that, rather than inviting the user
+        # to collect more data that will not change the answer.
+        lo, hi = sorted((float(half_a), float(half_b)))
+        return None, (f"no single floor: the distribution splits at {lo:.3g} and "
+                      f"{hi:.3g} depending on which frames are used, so pick a "
+                      f"threshold from the spot counts and your other conditions")
+    return float(whole), "agreed across split halves"
+
+
+def threshold_guidance(masses, minmass, *, n_frames=1, bins=64,
+                       noise_floor=None, floor_status=""):
+    """Everything needed to choose a detection threshold ON PURPOSE.
+
+    The estimators exist for the AUTO picker; this exposes the same evidence for
+    a MANUAL choice, which previously offered only a spot count.  Given every
+    candidate mass detected with the threshold at zero, a proposed ``minmass``
+    is scored instantly — no re-detection — so consequences follow a slider live.
+
+    ``masses`` must come from a minmass=0 detection on the SAME backend the run
+    will use: mass is in that backend's native units and is file-relative
+    (per-frame normalisation), so a number carried from another detector or
+    recording means nothing.  ``noise_floor`` comes from
+    :func:`estimate_noise_floor`, which returns one only when the sample
+    supports it.
+    """
+    m = np.asarray(masses, dtype=float)
+    m = m[np.isfinite(m) & (m > 0)]
+    out = {"n_candidates": int(m.size), "minmass": float(minmass),
+           "noise_floor": (float(noise_floor) if noise_floor else None),
+           "floor_status": str(floor_status),
+           "knee": None, "edges": [], "counts": [], "n_kept": 0,
+           "kept_fraction": 0.0, "per_frame_all": 0.0, "per_frame_kept": 0.0,
+           "below_noise_floor": False, "warning": ""}
+    if m.size == 0:
+        out["warning"] = "No candidates detected."
+        return out
+
+    lm = np.log10(m)
+    counts, edges = np.histogram(lm, bins=int(bins))
+    out["edges"] = [float(v) for v in edges]
+    out["counts"] = [int(v) for v in counts]
+    knee = _knee_minmass(m)
+    out["knee"] = float(10.0 ** knee) if knee is not None else None
+
+    n_frames = max(1, int(n_frames))
+    kept = int((m >= float(minmass)).sum())
+    out["n_kept"] = kept
+    out["kept_fraction"] = float(kept / m.size)
+    out["per_frame_all"] = float(m.size / n_frames)
+    out["per_frame_kept"] = float(kept / n_frames)
+
+    if noise_floor and float(minmass) < float(noise_floor):
+        out["below_noise_floor"] = True
+        out["warning"] = (
+            f"Below the noise floor this sample supports ({noise_floor:.3g}): "
+            f"the extra detections are mostly noise, which links into short "
+            f"spurious tracks that read as immobile.")
+    elif kept == 0:
+        out["warning"] = "Nothing survives this threshold."
+    elif out["per_frame_kept"] > 100:
+        out["warning"] = (
+            f"{out['per_frame_kept']:.0f} spots/frame is dense: localisation "
+            f"precision degrades and mis-linking rises. Match this against your "
+            f"other conditions rather than optimising one recording.")
+    return out
+
+
 # ── Linkability-optimised auto-threshold ────────────────────────────────────
 # A human picks the detection threshold by eyeballing single-frame spot
 # brightness.  The signal a human CANNOT see is temporal linkability: a real
