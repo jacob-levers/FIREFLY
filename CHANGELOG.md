@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.76.51-rc.7 — 23 Sep 2026
+
+### Fixed
+
+- **The parallel CZI decoder works again.** czifile moved subblock decoding off
+  the directory entry — `entry.data_segment()` up to 2024.5.22,
+  `entry.read_segment_data(czi)` since — and all three call sites sat inside
+  `except Exception`, so on a current czifile the decoder raised AttributeError
+  on its first subblock and every file silently fell back to the
+  single-threaded read. One "Parallel decode failed (…)" line in the log was
+  the only symptom. Loading a 16,000-frame Elyra recording drops from ~3 min to
+  **21 s** (955 vs 81 frames/s, 11.8×); decoded frames are byte-identical to
+  aicspylibczi's bulk read, which the decoder's own spot-check already enforced.
+  Both czifile spellings are now supported, and a third rename will raise
+  loudly instead of quietly disabling the fast path.
+
 ## v2.76.51-rc.6 — 23 Sep 2026
 
 ### Fixed

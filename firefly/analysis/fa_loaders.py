@@ -236,8 +236,7 @@ def load_projection_fast(path, channel=0, max_frames=100):
                 frames = []
                 for entry in entries[::step]:
                     try:
-                        seg = entry.data_segment()
-                        arr = np.asarray(seg.data(raw=False),
+                        arr = np.asarray(_czi_subblock_data(entry, czi),
                                          dtype=np.float32).squeeze()
                         if arr.size == 0:
                             continue
@@ -271,6 +270,29 @@ def load_projection_fast(path, channel=0, max_frames=100):
 
     lo, hi = proj.min(), proj.max()
     return (proj - lo) / (hi - lo) if hi > lo else np.zeros_like(proj)
+
+
+def _czi_subblock_data(entry, czi):
+    """Decoded pixel data for one czifile subblock-directory entry.
+
+    czifile moved this off the entry: up to 2024.5.22 it was
+    ``entry.data_segment()``; current releases (>= 2025) expose
+    ``entry.read_segment_data(czi)`` and dropped the old name.  Every call site
+    here sat inside ``except Exception``, so on the new API the parallel decoder
+    raised ``AttributeError`` on its first subblock and fell back to the
+    single-threaded bulk read on EVERY file — logged once as "Parallel decode
+    failed (...)" and otherwise invisible, costing ~3 minutes per 16k-frame
+    recording.  Support both spellings so the fast path survives either version.
+    """
+    reader = getattr(entry, "read_segment_data", None)
+    if callable(reader):
+        return reader(czi).data(raw=False)
+    legacy = getattr(entry, "data_segment", None)
+    if callable(legacy):
+        return legacy().data(raw=False)
+    raise AttributeError(
+        "czifile subblock entry exposes neither read_segment_data() nor "
+        f"data_segment() (czifile {getattr(czifile, '__version__', '?')})")
 
 
 def _find_czi_series(path):
@@ -388,7 +410,7 @@ def _decode_czi_parallel(path, channel, n_t, H, W, stop_event=None):
         with czifile.CziFile(path) as czi:
             ents = list(czi.subblock_directory)
             for i in range(lo, hi):
-                arr = np.asarray(ents[i].data_segment().data(raw=False)).squeeze()
+                arr = np.asarray(_czi_subblock_data(ents[i], czi)).squeeze()
                 while arr.ndim > 2:
                     arr = arr[0]
                 if arr.shape != (H, W):
@@ -594,8 +616,7 @@ def _load_single_czi(path, channel=0, stop_event=None, dtype=np.float32,
             _first_err = None   # log first decode error for diagnosis
             for i, entry in enumerate(entries):
                 try:
-                    seg = entry.data_segment()
-                    arr = np.asarray(seg.data(raw=False),
+                    arr = np.asarray(_czi_subblock_data(entry, czi),
                                      dtype=cz_dtype).squeeze()
                     if arr.size == 0:
                         continue
