@@ -145,18 +145,27 @@ def test_below_resolution_checks_all_valid_msd_bins_not_only_fit_window():
     assert np.isnan(row["D"])
 
 
-def test_offset_dominated_nonzero_track_has_its_own_status_and_finite_D():
-    """Static-error-floor fits are not the same as an exactly zero MSD curve."""
+def test_negative_slope_has_no_physical_D_but_still_counts_as_immobile():
+    """A noisy finite-sample negative slope is not a physical D -- but it is not
+    a reason to delete the track either. Roughly half of a truly immobile
+    population lands here, so dropping these rows from the D-based fractions
+    inflates the mobile fraction (69%->79% on real data)."""
     x = [0.0, 0.01, -0.01, 0.01, -0.01, 0.01,
          -0.01, 0.01, -0.01, 0.01, -0.01, 0.01]
     _, _, diff = compute_msd_and_fit(
         _tracks(range(len(x)), x), 1.0, 1.0, max_lagtime=10, n_fit=5, workers=1)
     row = diff.iloc[0]
 
-    assert row["fit_status"] == "offset_dominated"
-    assert np.isfinite(row["D"]) and row["D"] > 0
+    assert row["fit_status"] == "nonpositive_slope"
+    assert row["D_linear_raw"] < 0
+    assert np.isnan(row["D"])
     assert np.isnan(row["alpha"])
     assert row["motion"] == "Immobile"
+
+    from firefly.analysis.fa_diffusion import mobility_masks
+    mobile, immobile = mobility_masks(diff, 0.021)
+    assert not mobile.any() and immobile.all(), (
+        "a non-positive slope must stay in the immobile denominator")
 
 
 def test_singleton_track_geometry_is_unmeasurable_not_zero():
@@ -457,15 +466,14 @@ def test_dwell_is_exactly_one_frame_longer_than_duration():
     from firefly.analysis.fa_diffusion import compute_msd_and_fit, compute_dwell_times
     dt, n = 0.02, 12
     rng = np.random.default_rng(0)
-    # Jitter-dominated → classified Immobile, which is the confined/immobile
-    # population dwell times are computed for (a perfectly static track is
-    # below-resolution and carries no dwell row).  Gapless, so both formulas
-    # are unambiguous.
+    # Test the duration definitions with an explicitly supplied motion label;
+    # a short jittering trajectory itself no longer establishes immobility.
     tr = pd.DataFrame({"particle": 0, "frame": np.arange(n),
                        "x": rng.normal(0, 0.3, n), "y": rng.normal(0, 0.3, n)})
     _i, _e, diff = compute_msd_and_fit(tr, 1.0, dt, max_lagtime=5, n_fit=4, workers=1)
     duration = float(diff.iloc[0]["track_duration_s"])
     assert duration == pytest.approx((n - 1) * dt)            # span = 11 × dt
+    diff["motion"] = "Confined"
     dw, _tau = compute_dwell_times(tr, diff, dt)
     assert dw is not None and len(dw), "no dwell row to compare against"
     total = float(dw.iloc[0]["dwell_time_total_s"])

@@ -504,6 +504,36 @@ class TrackpyBackend(LocaliserBackend):
         return result
 
 
+def _suppress_duplicate_localisations(loc, separation=1.0):
+    """Suppress converged same-frame peaks within one pixel, keeping strongest.
+
+    Max-pool equality can admit several pixels of one plateau; independently
+    refined seeds can also converge to the same emitter. Use deterministic
+    mass/coordinate ordering and apply the mask to EVERY characterisation field.
+    The one-pixel exclusion is deliberately narrower than the detection window.
+    """
+    from scipy.spatial import cKDTree
+    keep = np.ones(len(loc["frame"]), dtype=bool)
+    for frame in np.unique(loc["frame"]):
+        ix = np.flatnonzero(loc["frame"] == frame)
+        if len(ix) < 2:
+            continue
+        xy = np.column_stack((loc["x"][ix], loc["y"][ix]))
+        pairs = cKDTree(xy).query_pairs(separation)
+        if not pairs:
+            continue
+        neighbours = {}
+        for a, b in pairs:
+            neighbours.setdefault(a, []).append(b)
+            neighbours.setdefault(b, []).append(a)
+        order = np.lexsort((xy[:, 1], xy[:, 0], -loc["mass"][ix]))
+        for i in order:
+            if keep[ix[i]]:
+                for j in neighbours.get(i, ()):
+                    keep[ix[j]] = False
+    return {key: value[keep] for key, value in loc.items()}
+
+
 class TorchBackend(LocaliserBackend):
     """PyTorch-based localiser, calibrated to reproduce TrackpyBackend.
 
@@ -1525,6 +1555,7 @@ class TorchBackend(LocaliserBackend):
                         char["loc_sigma_x_px"][keep].detach().cpu().numpy())
                     loc["loc_sigma_y_px"] = (
                         char["loc_sigma_y_px"][keep].detach().cpu().numpy())
+            loc = _suppress_duplicate_localisations(loc)
             all_locs.append(loc)
 
             # ── Live preview emission ─────────────────────────────────
@@ -1542,9 +1573,9 @@ class TorchBackend(LocaliserBackend):
             if preview_cb is not None and len(chunk_np) > 0:
                 try:
                     import numpy as _np
-                    t_np      = t_ix.detach().cpu().numpy().astype(_np.int64)
-                    x_sub_np  = x_sub.detach().cpu().numpy()
-                    y_sub_np  = y_sub.detach().cpu().numpy()
+                    t_np      = loc["frame"] - chunk_start
+                    x_sub_np  = loc["x"]
+                    y_sub_np  = loc["y"]
                     # Group spots by their frame index within the chunk
                     # so each preview_cb call hands the GUI just the
                     # detections for that frame.  Using a dict-of-lists
@@ -1573,7 +1604,7 @@ class TorchBackend(LocaliserBackend):
             # (memory pressure forcing a swap, for example).
             try:
                 _ct = time.perf_counter()
-                _n_spots = int(mass.numel())
+                _n_spots = len(loc["mass"])
                 _avg_fps = (chunk_end - chunk_start) / max(1e-3,
                                                               _ct - last_chunk_end_t)
                 _plog(f"  Chunk {chunk_idx+1}/{n_chunks} "

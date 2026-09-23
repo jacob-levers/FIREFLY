@@ -133,3 +133,59 @@ def test_polygon_roi_restricts_the_analysis(tmp_path):
                                       roi_polygon=half)))
     assert roi["n_locs"] < full["n_locs"], "ROI did not restrict the localisations"
     assert roi["n_locs"] > 0, "ROI removed everything — polygon/frame mismatch"
+
+
+def test_requested_polygon_cannot_silently_fall_back(tmp_path):
+    mov = _synthetic_movie(tmp_path / "cells.tif", n_frames=10)
+    with pytest.raises(ValueError, match="requested polygon ROI"):
+        _run(_params(mov, str(tmp_path / "missing_roi"),
+                     roi_mode="polygon", roi_polygon=None,
+                     auto_minmass=False, minmass=.45, backend="trackpy"))
+
+
+def test_raw_gate_and_new_metric_contract_survive_pipeline_exports(tmp_path):
+    import json
+    import pandas as pd
+    from pathlib import Path
+    mov = _synthetic_movie(tmp_path / "cells.tif", n_frames=25)
+    result = _run(_params(mov, str(tmp_path / "gated"),
+                          auto_minmass=False, minmass=.45, min_cnr=3.,
+                          backend="trackpy", skip_figure=True))
+    folder = Path(result['out_dir'])
+    manifest = json.loads((folder / (result['stem']+'_run_manifest.json')).read_text())
+    assert manifest['metrics_schema_version'] == 3
+    assert manifest['parameters']['min_cnr'] == 3
+    assert 'n_localisations_excluded_by_cnr' in manifest['parameters']
+    loc = pd.read_csv(folder/'firefly_extras'/(result['stem']+'_localisations.csv'))
+    assert len(loc) > 0 and loc.raw_cnr.ge(3).all()
+    diff = pd.read_csv(folder/'firefly_extras'/(result['stem']+'_diffusion_summary.csv'))
+    assert {'D_linear_raw','K_alpha','alpha_fit_status'} <= set(diff)
+    assert diff.loc_sigma_nm.isna().all()
+
+
+def test_drift_quality_and_reference_provenance_are_exported(tmp_path):
+    import json
+    import pandas as pd
+    from pathlib import Path
+    mov = _synthetic_movie(tmp_path/'stable.tif', n_frames=40, step=0)
+    result = _run(_params(mov, str(tmp_path/'drift'), backend='trackpy',
+        auto_minmass=False, minmass=.45, drift_correct=True, drift_segment=10,
+        drift_adaptive=False, drift_min_locs=20, skip_figure=True))
+    folder=Path(result['out_dir']); stem=result['stem']
+    extras=folder/'firefly_extras'
+    d=json.loads((extras/(stem+'_drift_diagnostics.json')).read_text())
+    assert d['status']=='applied' and d['reference']['mode']=='Analysis region'
+    assert d['n_accepted_pairs'] >= d['n_segments']
+    assert (folder/'figures'/(stem+'_drift_diagnostic.png')).is_file()
+    drift=pd.read_csv(extras/(stem+'_drift.csv'))
+    assert {'status','support_pairs','extrapolated'} <= set(drift)
+    manifest=json.loads((folder/(stem+'_run_manifest.json')).read_text())
+    assert manifest['parameters']['drift_diagnostics']['status']=='applied'
+
+
+def test_unsupported_drift_can_stop_pipeline(tmp_path):
+    mov=_synthetic_movie(tmp_path/'sparse.tif', n_frames=10)
+    with pytest.raises(ValueError,match='Drift correction unsupported'):
+        _run(_params(mov,str(tmp_path/'stopped'),backend='trackpy',auto_minmass=False,
+            minmass=.45,drift_correct=True,drift_min_locs=100000,drift_failure_policy='Stop run',
+            skip_figure=True))

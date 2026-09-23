@@ -281,3 +281,32 @@ def test_app_controller_navigation():
     assert a.currentTab == 3
     a.goLanding()
     assert a.page == "landing"
+
+
+def test_manual_minmass_overlay_renders_and_inspects_candidates(qml_window, tmp_path):
+    import numpy as np
+    import tifffile
+    win, qw = qml_window
+    roi = qw.rootContext().contextProperty('Roi')
+    sidebar = qw.rootContext().contextProperty('Sidebar')
+    sidebar.setValue('analysis/backend', 'Crocker–Grier — Trackpy (CPU)')
+    sidebar.setValue('analysis/roi_mode', 'None')
+    sidebar.setValue('analysis/min_cnr', 0.)
+    y,x=np.mgrid[:64,:64]
+    raw=np.random.default_rng(9).normal(100,1,(64,64))+90*np.exp(-((x-30)**2+(y-30)**2)/3)
+    path=tmp_path/'preview.tif'
+    tifffile.imwrite(path,np.repeat(raw[None].astype('float32'),3,axis=0),photometric='minisblack')
+    roi.editFile(str(path));roi.detectMinmass=.45;roi.detectEnabled=True
+    win.resize(1400,950);win.show();_app.processEvents()
+    assert qw.status()==QQuickWidget.Status.Ready and not qw.errors()
+    assert roi.viewMode=='raw' and not roi.spotsStale and roi.spotCount > 0
+    roi.inspectSpot(30,30)
+    assert 'mass=' in roi.spotInspection and 'Track retention not evaluated' in roi.spotInspection
+    assert not win.grab().isNull()
+    from PySide6.QtTest import QTest
+    QTest.qWait(700)
+    win.grab().save(str(tmp_path/'manual_minmass_preview.png'))
+    roi._roi_mode='Manual polygon';roi._polys=[];roi.refreshSpots()
+    assert not roi.spotsStale and 'ROI NOT evaluated' in roi.spotSummary
+    assert 'Draw and close' in roi.spotSummary
+    win.hide()

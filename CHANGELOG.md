@@ -1,5 +1,70 @@
 # Changelog
 
+## v2.76.51-rc.6 — 23 Sep 2026
+
+### Fixed
+
+- **The ensemble MSD is now a mean over displacement pairs, not over tracks.**
+  Each track used to count equally whether it contributed one pair or twenty.
+  Pair counts fall with lag at a rate set by each track's own length and gaps,
+  so the weighting drifted with lag and bent the curve: every MB543B recording,
+  in both conditions, showed the ensemble MSD going DOWN from lag 4 to lag 5 —
+  a step that reads as confinement that isn't there. All 14 are monotonic under
+  the new estimator, with roughly half the curvature. This is the standard
+  estimator (what `trackpy.emsd` computes). It changes the MSD panel and
+  `auc_msd` (both drop 15–35%, in both conditions); per-track D, α and the other
+  per-track metrics are fitted separately and are unaffected. Re-run to update
+  existing outputs — saved `_ensemble_msd.csv` files keep the old curve.
+- **A non-positive MSD slope no longer deletes the track from the mobile
+  fraction.** Roughly half of a genuinely immobile population produces a
+  negative finite-sample slope, and those rows carry no D, so every
+  `isfinite(D) & (D > 0)` filter silently dropped them from the denominator —
+  ~10% of real tracks, inflating the mobile fraction from 69% to 79% (control)
+  and 72% to 81% (1-AMA). They now count as immobile, via one shared rule
+  (`fa_diffusion.mobility_masks`) used by the headline number, the
+  mobile-fraction panel and the mob/immob ratio so the three cannot disagree.
+- **Separate ordinary diffusion D from anomalous Kα.** D now comes from a
+  signed-intercept linear MSD fit in µm²/s; Kα and α are separate diagnostics.
+  Negative estimates remain in D_linear_raw, with physical D unavailable.
+- A ballistic α near 2 no longer implies immobility. A track whose MSD never
+  rises above its own static floor is still classified Immobile by its
+  displacement, which needs no exponent — there is no track-length gate on the
+  motion classes (a blanket "fewer than 20 observations → Unknown" rule left
+  ~80% of real tracks, median length 12, unclassified).
+- Suppress duplicate converged Torch peaks consistently in exports and previews.
+  The Trackpy iterator now preserves empty frames and filtered DataFrame indices.
+- Drift smoothing preserves linear trends, including at acquisition endpoints.
+- Requested ROI failures stop analysis instead of silently falling back to a
+  different mask or the whole image.
+
+### Changed
+
+- Manual minmass preview now calls the production detector on raw frames,
+  honours the selected backend/CZI channel, and distinguishes contrast/ROI
+  rejections with inspectable masses and reasons. Old overlays are invalidated
+  on edits; exact numeric threshold entry and scrollable controls were added.
+  Unsupported ROI predictions and final track retention are explicitly labelled.
+- Drift correction now uses quality-weighted subpixel RCC, adaptive windows,
+  rejection of weak/ambiguous peaks and a graph check that excludes disconnected
+  or single-bridge support. Unsupported corrections can be skipped or stop a run.
+- Added a separate rectangular drift-reference region, reference CSV input and
+  stationary-fiducial mode. Exports include drift plots, segment/pair diagnostics,
+  reference provenance and QC status. See `docs/drift_correction.md`.
+- Metrics schema 3 prevents pooling the changed estimators with older outputs.
+- Both built-in presets explicitly set all scientific sidebar controls, so
+  nothing is inherited from the previous run. The Drosophila preset uses a fixed
+  minmass of 0.45 with density matching off, ten MSD lags and four fit lags.
+  This is a starting point requiring validation, not an established optimum.
+- Raw contrast/noise filtering is available and records its exclusions in the
+  run parameters, preserving raw_cnr per localisation. It ships **off** in both
+  presets: at a threshold of 3 it removes roughly half of low-density
+  detections and ~99% of high-density ones, and discards every candidate within
+  `diameter` px of the frame edge, so the cutoff is a per-experiment choice.
+  Original raw data and previous output folders are not migrated or rewritten.
+- The JDD keeps subtracting the MSD fit's static offset by default, so its D's
+  stay comparable with the MSD D. That intercept also absorbs motion blur, so it
+  is not a calibrated noise variance; the output labels itself accordingly.
+
 ## v2.76.51-rc.5 — 8 Sep 2026
 
 ### Fixed

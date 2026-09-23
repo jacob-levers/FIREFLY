@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC
 import "components"
 
 // Preview & ROI viewer (Phase 6c → batch redesign): a centered modal card over
@@ -39,6 +40,13 @@ Item {
     Timer { running: true; interval: 2800; onTriggered: root.scanning = false }
     Timer { id: maskDebounce; interval: 160; onTriggered: Roi.refreshMask() }
     Timer { id: spotsDebounce; interval: 200; onTriggered: Roi.refreshSpots() }
+    Connections {
+        target: Roi
+        function onSpotsChanged() { if (!Roi.spotsStale) spotsDebounce.stop() }
+        function onPreviewInvalidated() {
+            if (Roi.editing && Roi.detectEnabled) spotsDebounce.restart()
+        }
+    }
 
     function saveRoi() {
         if (root.isPoly && Roi.canClose) Roi.closeDraft()
@@ -182,7 +190,7 @@ Item {
                             anchors.margins: imgArea.drawPad
                             fillMode: Image.PreserveAspectFit
                             smooth: false; cache: false; asynchronous: true
-                            visible: (root.isThresh || root.isSister) && Roi.hasMask
+                            visible: (root.isThresh || root.isSister) && Roi.hasMask && !(Roi.detectEnabled && root.isThresh)
                             opacity: visible ? 1 : 0
                             Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 160 } }
                             source: Roi.hasMask ? ("image://roimask/" + Roi.maskToken) : ""
@@ -249,7 +257,7 @@ Item {
 
                         MouseArea {
                             anchors.fill: parent
-                            enabled: Roi.hasImage && root.isPoly
+                            enabled: Roi.hasImage && (root.isPoly || Roi.detectEnabled)
                             cursorShape: root.isPoly ? Qt.CrossCursor : Qt.ArrowCursor
                             // Vertices MAY sit outside the image (in the margin
                             // around it) so a region can comfortably enclose
@@ -257,7 +265,10 @@ Item {
                             // the finished shape back to the image rectangle.
                             onClicked: (m) => {
                                 var yx = imgArea.toImg(m.x, m.y)
-                                Roi.addVertex(yx[0], yx[1])
+                                if (Roi.detectEnabled && (!root.isPoly || (m.modifiers & Qt.ControlModifier)))
+                                    Roi.inspectSpot(yx[0], yx[1])
+                                else
+                                    Roi.addVertex(yx[0], yx[1])
                             }
                         }
 
@@ -423,10 +434,19 @@ Item {
                     color: "transparent"
                     Rectangle { anchors.left: parent.left; anchors.top: parent.top
                                 anchors.bottom: parent.bottom; width: 1; color: pal.BORDER }
-                    ColumnLayout {
+                    Flickable {
+                        id: controlsScroll
                         anchors.fill: parent
                         anchors.margins: sc.sp4
-                        spacing: sc.sp3
+                        contentWidth: width
+                        contentHeight: controlsColumn.implicitHeight
+                        clip: true
+                        flickableDirection: Flickable.VerticalFlick
+                        QQC.ScrollBar.vertical: QQC.ScrollBar {}
+                        ColumnLayout {
+                            id: controlsColumn
+                            width: controlsScroll.width - 8
+                            spacing: sc.sp3
 
                         // view toggle
                         ColumnLayout {
@@ -535,6 +555,7 @@ Item {
 
                         // detection-threshold (minmass) preview + slider
                         ColumnLayout {
+                            visible: !Roi.runScoped
                             Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
                             RowLayout {
                                 Layout.fillWidth: true
@@ -542,13 +563,12 @@ Item {
                                 Item { Layout.fillWidth: true }
                                 Text {
                                     visible: Roi.detectEnabled
-                                    text: Roi.hasSpots ? (Roi.spotCount.toLocaleString(Qt.locale(), "f", 0) + " spots") : "0 spots"
+                                    text: Roi.spotsStale ? "outdated" : Roi.spotCount + " pass"
                                     color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
                                 }
                                 Switch {
                                     checked: Roi.detectEnabled
-                                    onToggled: (c) => { Roi.detectEnabled = c
-                                                        if (c) Roi.refreshSpots() }
+                                    onToggled: (c) => { Roi.detectEnabled = c }
                                 }
                             }
                             // explicitly labelled so it's clear this is the minmass
@@ -566,14 +586,41 @@ Item {
                                 Slider {
                                     Layout.fillWidth: true
                                     showValue: false
-                                    from: 0; to: 50; step: 0.25; decimals: 2
+                                    from: 0; to: 50; step: 0.01; decimals: 3
                                     value: Roi.detectMinmass
                                     onMoved: (v) => { Roi.detectMinmass = v; spotsDebounce.restart() }
                                     onCommitted: (v) => { Roi.detectMinmass = v; Roi.refreshSpots() }
                                 }
+                                SpinBox {
+                                    Layout.fillWidth: true
+                                    from: 0; to: 1000000; step: 0.01; decimals: 4
+                                    value: Roi.detectMinmass
+                                    onCommitted: (v) => { Roi.detectMinmass = v; spotsDebounce.restart() }
+                                }
+                                Button {
+                                    text: "Refresh detection preview"
+                                    Layout.fillWidth: true
+                                    onClicked: { spotsDebounce.stop(); Roi.refreshSpots() }
+                                }
                                 Text {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: "Green circles = spots detected at this threshold. Updates the sidebar's Detection ▸ Threshold (minmass) and the run."
+                                    text: "Green: detection + ROI. Orange: contrast rejected. Red: outside ROI. Blue: ROI unchecked."
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: "Click a spot to inspect (Ctrl-click in polygon mode). Manual preview turns Auto minmass off. Save ROI to apply edits."
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: Roi.spotInspection
+                                    visible: text.length > 0
+                                    color: pal.TXT; font.pixelSize: sc.textXs
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    text: Roi.spotSummary
                                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
                             }
@@ -639,6 +686,7 @@ Item {
                                 onClicked: root.saveRoi()
                             }
                         }
+                    }
                     }
                 }
             }

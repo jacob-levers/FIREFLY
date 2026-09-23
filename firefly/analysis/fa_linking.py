@@ -103,17 +103,19 @@ def _link_via_trackpy(locs, *, search_range, memory,
     iterator path errors out.
     """
     iter_ok = hasattr(tp, "link_iter") and len(locs) > 0
+    # Index labels need not be dense after a quality/ROI filter.
+    locs = locs.reset_index(drop=True)
     linked = None
     if iter_ok:
         # Per-frame coordinate iterator + index map so we can re-attach
         # particle IDs to the original locs DataFrame.
         try:
-            frame_nums = sorted(int(f) for f in locs["frame"].unique())
+            frame_nums = range(int(locs["frame"].min()), int(locs["frame"].max()) + 1)
             grouped = locs.groupby("frame")
             coords_per_frame: list = []
             indices_per_frame: list = []
             for f in frame_nums:
-                sub = grouped.get_group(f)
+                sub = grouped.get_group(f) if f in grouped.groups else locs.iloc[:0]
                 coords_per_frame.append(sub[["y", "x"]].to_numpy())
                 indices_per_frame.append(sub.index.to_numpy())
             n_frames = len(frame_nums)

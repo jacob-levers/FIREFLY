@@ -25,11 +25,9 @@ def msd_anomalous(t, D, alpha, offset):
 
         MSD(t) = 4·D·t^alpha + offset
 
-    `offset` is the static localisation-error term (≈ 4·sigma²); it lifts the
-    whole curve and must be modelled jointly with `alpha`, otherwise a plain
-    log-log slope of the raw MSD reads alpha < 1 for genuinely Brownian (and
-    especially slow) particles — the offset dominates the first lags and
-    flattens the log-log curve.
+    D here denotes the generalized coefficient K_alpha (µm²/s^alpha), not
+    ordinary diffusion D. The signed offset combines noise and exposure effects;
+    it must not be interpreted as calibrated localization precision.
     """
     return 4 * D * t ** alpha + offset
 
@@ -46,7 +44,7 @@ ALPHA_THRESHOLDS_DEFAULT = (0.5, 0.9, 1.1)
 # Bump whenever an existing output column changes scientific meaning.  The
 # worker persists this alongside the gap policy so Compare can distinguish a
 # legacy run from one made with the timestamp-aware estimators below.
-DIFFUSION_METRICS_SCHEMA_VERSION = 2
+DIFFUSION_METRICS_SCHEMA_VERSION = 3
 
 
 def classify_motion(alpha, thresholds=ALPHA_THRESHOLDS_DEFAULT):
@@ -58,6 +56,8 @@ def classify_motion(alpha, thresholds=ALPHA_THRESHOLDS_DEFAULT):
         t_confined  ≤ α  <  t_directed → "Brownian"
         α  ≥  t_directed   → "Directed"
     """
+    if not np.isfinite(alpha):
+        return "Unknown"
     t_imm, t_conf, t_dir = thresholds
     if   alpha < t_imm:  return "Immobile"
     elif alpha < t_conf: return "Confined"
@@ -188,6 +188,10 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
     old policy of using only uninterrupted observed runs.
     """
     msd_vals = np.full(max_lagtime, np.nan)
+    # Pairs behind each lag's mean.  The ensemble MSD weights by these (see
+    # compute_msd_and_fit): a track contributing one pair must not carry the
+    # same weight as one contributing twenty.
+    n_pairs = np.zeros(max_lagtime, dtype=np.int64)
     n_pts = len(xy_um)
     policy = GapPolicy.parse(gap_policy)
     frame_interval = float(lag_times[0]) if len(lag_times) else np.nan
@@ -203,6 +207,7 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             dx = x[lag:] - x[:-lag]
             dy = y[lag:] - y[:-lag]
             msd_vals[lag_idx] = np.mean(dx * dx + dy * dy)
+            n_pairs[lag_idx] = dx.size
     else:
         for lag_idx, lag in enumerate(range(1, max_lagtime + 1)):
             # A two-observation track at frames 0 and 10 legitimately has a
@@ -214,133 +219,80 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
             d = _lag_displacements(xy_um, frames, lag, policy)
             if len(d):
                 msd_vals[lag_idx] = np.mean(d[:, 0] ** 2 + d[:, 1] ** 2)
+                n_pairs[lag_idx] = len(d)
 
-    # Fit using the first n_fit lag times.  ONE consistent model —
-    #     MSD(t) = 4·D·t^alpha + offset
-    # — so the anomalous exponent (alpha) and the diffusion coefficient (D)
-    # come from the SAME curve.  Crucially this fits the localisation-error
-    # floor (offset == 4·sigma²) jointly: a naive log-log slope of the raw MSD
-    # ignores that floor and biases alpha DOWN at short lags, mislabelling slow
-    # Brownian tracks as confined/immobile.  offset is constrained ≥ 0 (it is a
-    # squared quantity).
-    t   = lag_times[:n_fit]
-    m   = msd_vals[:n_fit]
-    D = alpha = np.nan
-    msd0 = np.nan        # localisation-error offset (4·sigma²) == PALM-Tracer "MSD(0)"
-    mse  = np.nan        # mean squared residual of the fit
-    immobile = False     # set when alpha can't be measured (jitter-dominated track)
+    # Ordinary short-lag diffusion and anomalous scaling are different models.
+    # D is ALWAYS the slope / 4 in µm²/s. A signed intercept accommodates
+    # static noise AND finite-exposure blur; it is not a calibrated 4σ².
+    t = lag_times[:n_fit]
+    m = msd_vals[:n_fit]
+    D = d_raw = alpha = k_alpha = msd0 = mse = np.nan
+    alpha_offset = alpha_mse = np.nan
+    offset_dominated = False   # MSD never rises above its own static floor
     fit_status = "insufficient_lags"
-    # The zero-MSD diagnosis is a property of the whole measured curve, not
-    # merely the user-selected fit window.  A track can sit still in the first
-    # five lags yet have a legitimate longer-lag displacement across a blink;
-    # calling that ``below_resolution`` would discard real geometry/data.
+    alpha_status = "insufficient_lags"
     finite_msd = msd_vals[np.isfinite(msd_vals)]
-
-    # An exactly zero MSD is below the measurement resolution, not evidence for
-    # a numerically exact physical D=0.  Preserve the finite geometric zeros,
-    # but leave D/alpha unmeasured so mobility and log-D populations do not
-    # accidentally turn a degenerate fit into a hard biological class.
-    if finite_msd.size and np.all(finite_msd == 0.0):
-        D = np.nan
-        alpha = np.nan
-        msd0 = np.nan
-        mse = 0.0
-        immobile = False
-        fit_status = "below_resolution"
-
-    ok  = np.isfinite(m) & (m > 0)
-    n_ok = int(ok.sum())
+    below_resolution = bool(finite_msd.size and np.all(finite_msd == 0.0))
+    ok = np.isfinite(m)
     t_ok, m_ok = t[ok], m[ok]
-    if not immobile and n_ok >= 4:
-        # Seed D and offset from a quick linear (alpha=1) fit; seed alpha=1.
-        try:
-            slope, intercept = np.polyfit(t_ok, m_ok, 1)
-            d_seed   = max(slope / 4.0, 1e-6)
-            off_seed = max(intercept, 0.0)
-        except Exception:
-            d_seed, off_seed = 0.01, max(0.0, float(m_ok[0]))
-        try:
-            # alpha upper bound 2.0 — physically alpha ∈ [0, 2] (2 = ballistic);
-            # anything above is non-physical and only ever appears as a fitting
-            # artefact.
-            popt, _ = curve_fit(msd_anomalous, t_ok, m_ok,
-                                p0=[d_seed, 1.0, off_seed],
-                                bounds=([0, 0, 0], [np.inf, 2.0, np.inf]),
-                                maxfev=5000)
-            D, alpha, msd0 = float(popt[0]), float(popt[1]), float(popt[2])
-            _resid = m_ok - msd_anomalous(t_ok, *popt)
-            mse = float(np.mean(_resid ** 2))
+    if below_resolution:
+        fit_status = alpha_status = "below_resolution"
+        mse = 0.0
+    elif len(t_ok) >= 3 and np.any(m_ok > 0):
+        slope, msd0 = np.polyfit(t_ok, m_ok, 1)
+        d_raw = float(slope / 4.0)
+        msd0 = float(msd0)
+        mse = float(np.mean((m_ok - msd_linear(t_ok, d_raw, msd0)) ** 2))
+        # Preserve the signed estimate for audit/ensemble work. A nonpositive
+        # finite-sample slope does not establish a physical negative or zero D.
+        if d_raw > 0:
+            D = d_raw
             fit_status = "fit"
-            # ── Identifiability guard ──────────────────────────────────────
-            # For a near-immobile / jitter-dominated track the measured MSD is
-            # essentially the flat localisation floor (offset): the dynamic
-            # 4·D·t^alpha term ≈ 0, so alpha is UNCONSTRAINED and curve_fit
-            # parks it at a bound — the unphysical spike pinned at the maximum
-            # that an alpha histogram shows as a "wall".  When alpha is pinned
-            # at a bound, or the dynamic rise is a negligible fraction of the
-            # MSD across the fit window, alpha simply cannot be measured: drop
-            # it (NaN) and treat the track as Immobile (classified by its
-            # displacement, not by a meaningless exponent).  Genuinely mobile
-            # tracks (dynamics well above the floor) are unaffected.
-            t_hi     = float(t_ok[-1])
-            dyn      = 4.0 * D * (t_hi ** alpha)          # moving part at the longest fit lag
-            total    = dyn + max(msd0, 0.0)               # ≈ MSD(t_hi)
-            dyn_frac = (dyn / total) if total > 0 else 0.0
-            if alpha <= 1e-3 or alpha >= 2.0 - 1e-3 or dyn_frac < 0.10:
-                alpha = np.nan
-                immobile = True
-                # A non-zero curve that is dominated by the fitted static
-                # offset is scientifically different from an exactly-zero MSD:
-                # D remains a finite (albeit floor-limited) fit, while alpha
-                # is not identifiable.  Keep that distinction in the output
-                # rather than conflating both cases as below-resolution.
-                fit_status = ("offset_dominated" if dyn_frac < 0.10
-                              else "alpha_unmeasurable")
-        except Exception:
-            fit_status = "fit_failed"
-            pass
-    if not np.isfinite(D) and not immobile and n_ok >= 3:
-        # Fallback for very short tracks (or a non-converging joint fit): the
-        # legacy two-step estimate (linear D + log-log alpha).  Less accurate
-        # near the localisation floor but always returns something.
-        # The bare log-log slope on as few as 3 noisy MSD points is UNBOUNDED,
-        # so a 4-frame jitter track could yield alpha = 4.5 / -3 and be
-        # confidently mislabelled "Directed"/"Immobile".  Keep it only when it
-        # lands in the physical [0, 2] the joint fit enforces; an out-of-range
-        # slope is a noise artefact, not super-/sub-diffusion → treat alpha as
-        # UNMEASURABLE rather than trusting it.  (#10)  We classify it as
-        # "Unknown", NOT "Immobile": a directed-but-noisy 3-point track is not
-        # necessarily immobile, so claiming Immobile would just swap one
-        # misclassification for another — Unknown is the honest label.  (R2-14)
-        try:
-            _slope = float(np.polyfit(np.log(t_ok), np.log(m_ok), 1)[0])
-            if 0.0 <= _slope <= 2.0:
-                alpha = _slope
-            else:
-                alpha = np.nan   # → "Unknown" (immobile stays False)
-        except Exception:
-            pass
-        try:
-            popt, _ = curve_fit(msd_linear, t_ok, m_ok, p0=[0.01, 0],
-                                bounds=([0, -np.inf], [np.inf, np.inf]),
-                                maxfev=2000)
-            D = float(popt[0])
-            msd0 = float(popt[1])
-            _resid = m_ok - msd_linear(t_ok, *popt)
-            mse = float(np.mean(_resid ** 2))
-            fit_status = ("fit" if np.isfinite(alpha)
-                          else "alpha_unmeasurable")
-        except Exception: pass
+        else:
+            fit_status = "nonpositive_slope"
 
-    # Motion class: a measurable alpha → threshold classification; an
-    # unmeasurable alpha on a jitter-dominated track → "Immobile"; a complete
-    # fit failure → "Unknown".
+        if len(t_ok) >= 4:
+            try:
+                popt, _ = curve_fit(
+                    msd_anomalous, t_ok, m_ok,
+                    p0=[max(d_raw, 1e-6), 1.0, msd0],
+                    bounds=([0, 0, -np.inf], [np.inf, 2.0, np.inf]),
+                    maxfev=5000)
+                k_alpha, alpha, alpha_offset = map(float, popt)
+                alpha_mse = float(np.mean((m_ok - msd_anomalous(t_ok, *popt))**2))
+                # Test the dynamic RISE, not the total t^alpha term: alpha≈0
+                # is degenerate with the intercept. The ballistic alpha=2
+                # boundary is legitimate and must not imply immobility.
+                rise = 4*k_alpha*(t_ok[-1]**alpha - t_ok[0]**alpha)
+                scale = max(float(np.max(np.abs(m_ok))), np.finfo(float).tiny)
+                if alpha <= 1e-3 or rise / scale < .10:
+                    # Either the exponent collapsed to zero (an MSD that does
+                    # not grow with lag) or the dynamic rise is negligible
+                    # against the static floor.  alpha is unusable in both
+                    # cases — but both are the signature of a track that barely
+                    # moves, so the DISPLACEMENT classifies it without needing
+                    # an exponent.  Only the alpha>=2 bound is excluded here:
+                    # a ballistic fit is real motion, not immobility.
+                    offset_dominated = True
+                    alpha = np.nan
+                    alpha_status = "unidentifiable"
+                else:
+                    alpha_status = "descriptive_fit"
+            except (ValueError, RuntimeError, FloatingPointError):
+                alpha_status = "fit_failed"
+
+    # Alpha bins are descriptive, not demonstrated transport states — but an
+    # unusable exponent is not the same as an unknown molecule.  A track whose
+    # MSD never rises above its own static floor is classified Immobile by its
+    # DISPLACEMENT, which needs no exponent; only a genuinely ambiguous fit is
+    # left Unknown.  (Dropping that rule pushed ~80% of real tracks — median
+    # length 12 — into Unknown and emptied the motion-class panel.)
+    motion = "Unknown"
     if np.isfinite(alpha):
         motion = classify_motion(alpha, alpha_thresholds)
-    elif immobile:
+    elif offset_dominated:
         motion = "Immobile"
-    else:
-        motion = "Unknown"
+        alpha_status = "offset_dominated"
 
     # Two distinct radial-spread metrics, both useful and named explicitly:
     #   mean_radial_displacement_um  = ⟨|r − r̄|⟩       (1st moment)
@@ -385,23 +337,24 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
         net_disp    = np.nan
         directionality = np.nan
 
-    # Localisation precision from the fitted MSD offset.  Static localisation
-    # error adds a constant 4·sigma² to the 2D MSD (sigma = 1D per-axis
-    # precision), which is exactly the `offset` term of the joint fit.  So
-    # sigma = sqrt(MSD0 / 4); report it in nm.  This is an always-available,
-    # per-track estimate of the effective localisation precision — and because
-    # the offset is modelled jointly, the fitted D is already free of this
-    # static-error inflation.  NaN when the offset isn't a usable positive.
-    if np.isfinite(msd0) and msd0 > 0:
-        loc_sigma_nm = float(np.sqrt(msd0 / 4.0) * 1000.0)
-    else:
-        loc_sigma_nm = np.nan
+    # Neither the linear nor anomalous intercept isolates localization noise
+    # without an exposure/noise model. Preserve its positive square-root scale
+    # as a diagnostic, never present it as calibrated localization precision.
+    loc_sigma_nm = np.nan
+    msd_offset_scale_nm = (float(np.sqrt(msd0 / 4.0) * 1000.0)
+                           if np.isfinite(msd0) and msd0 > 0 else np.nan)
 
     track_duration_s = (float(frames[-1] - frames[0]) * frame_interval
                         if n_pts else np.nan)
 
     return pid, msd_vals, dict(particle=pid, D=D, alpha=alpha, motion=motion,
                                fit_status=fit_status,
+                               D_linear_raw=d_raw, D_model="linear_msd_with_intercept",
+                               K_alpha=k_alpha, K_alpha_units="um^2/s^alpha",
+                               alpha_fit_status=alpha_status,
+                               alpha_MSD0=alpha_offset, alpha_MSE=alpha_mse,
+                               msd_offset_scale_nm=msd_offset_scale_nm,
+                               precision_status="not_calibrated",
                                MSD0=msd0, MSE=mse, loc_sigma_nm=loc_sigma_nm,
                                mean_radial_displacement_um=mean_radial,
                                radius_of_gyration_um=rg,
@@ -413,7 +366,7 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
                                track_duration_s=track_duration_s,
                                n_observations=int(n_pts),
                                net_displacement_um=net_disp,
-                               directionality_ratio=directionality)
+                               directionality_ratio=directionality), n_pairs
 
 
 def _require_positive_finite(name, val):
@@ -495,6 +448,8 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
             index=np.arange(1, max_lagtime + 1))
         diff_empty = pd.DataFrame(columns=[
             "particle", "D", "alpha", "motion", "fit_status", "MSD0", "MSE", "loc_sigma_nm",
+            "D_linear_raw", "D_model", "K_alpha", "K_alpha_units", "alpha_fit_status",
+            "alpha_MSD0", "alpha_MSE", "msd_offset_scale_nm", "precision_status",
             "mean_radial_displacement_um", "radius_of_gyration_um",
             "path_length_um", "mean_link_displacement_um", "mean_link_speed_um_s",
             "mean_step_um", "n_single_frame_steps", "track_duration_s",
@@ -562,12 +517,31 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
                               index=np.arange(1, max_lagtime + 1),
                               columns=[r[0] for r in results])
 
-    # Ensemble MSD = nanmean across tracks at each lag.  Avoid NumPy's
-    # all-NaN RuntimeWarning: sparse timestamp lags legitimately have no pairs.
-    valid_counts = np.isfinite(msd_matrix).sum(axis=1)
+    # Ensemble MSD = mean over every DISPLACEMENT PAIR at each lag, i.e. each
+    # track weighted by how many pairs it contributes.
+    #
+    # This used to be an unweighted nanmean across tracks, which gives a track
+    # contributing one pair the same weight as one contributing twenty.  That
+    # is not merely noisier: the pair count per track falls with lag at a rate
+    # that depends on the track's own length and gaps, so the effective
+    # weighting DRIFTS WITH LAG and deforms the curve's shape.  On real
+    # recordings it produced a reproducible step at lag 5 — MSD that went DOWN
+    # from lag 4 to lag 5 in every MB543B movie, in both conditions — which
+    # reads as confinement that isn't there, and feeds `_msd_auc` and the
+    # comparison's MSD panel.  Pair weighting is the standard estimator (what
+    # `trackpy.emsd` computes) and is the minimum-variance one for <r²(tau)>.
+    #
+    # NB the two estimators answer different questions and differ by ~15-25%
+    # here: equal-weight-per-track is dominated by the numerous SHORT tracks
+    # (enriched in fast molecules, which blink out sooner), pair weighting by
+    # the LONG ones (enriched in immobile molecules).  Neither cures that
+    # track-length selection; only pair weighting is free of the lag-dependent
+    # artefact, so shape — alpha, AUC, confinement — can be read off it.
+    pair_matrix = np.column_stack([r[3] for r in results]).astype(float)
+    total_pairs = pair_matrix.sum(axis=1)
     emsd_vals = np.full(max_lagtime, np.nan, dtype=float)
-    np.divide(np.nansum(msd_matrix, axis=1), valid_counts,
-              out=emsd_vals, where=valid_counts > 0)
+    np.divide(np.nansum(msd_matrix * pair_matrix, axis=1), total_pairs,
+              out=emsd_vals, where=total_pairs > 0)
     emsd_series = pd.Series(emsd_vals, index=np.arange(1, max_lagtime + 1))
 
     diff_df = pd.DataFrame([r[2] for r in results])
@@ -578,11 +552,9 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
                  ).rename("loc_precision_nm").reset_index()
         diff_df = diff_df.merge(ep_nm, on="particle", how="left")
 
-    # Merge per-track mean MEASURED per-localisation precision: the per-spot
-    # loc_sigma_x_nm/_y_nm from detection (Gaussian-MLE Fisher info / trackpy ep /
-    # camera-CRLB), reduced to a 1D-equivalent (hypot/√2) so it is directly
-    # comparable to the MSD-offset `loc_sigma_nm`.  Three independent precision
-    # estimates that should agree — a useful cross-check (kept distinct columns).
+    # Aggregate backend-dependent per-spot precision estimates as a 1D
+    # equivalent (hypot/√2). Their calibration assumptions still apply; these
+    # are not interchangeable with an MSD intercept or independent estimates.
     if {"loc_sigma_x_nm", "loc_sigma_y_nm"} <= set(ordered_tracks.columns):
         _sm = (np.hypot(ordered_tracks["loc_sigma_x_nm"],
                         ordered_tracks["loc_sigma_y_nm"]) / np.sqrt(2.0))
@@ -595,7 +567,7 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
 
 
 def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
-                loc_offset_um2=0.0):
+                loc_offset_um2=None):
     """
     Jump Distance Distribution (JDD) analysis.
 
@@ -605,25 +577,12 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
 
         CDF(r) = 1 - Σᵢ fᵢ · exp(–r² / (4·Dᵢ·Δt + loc_offset_um2))
 
-    where ``loc_offset_um2 = 4σ²`` is the SAME static localisation-error offset
-    the MSD fit subtracts jointly (``msd_anomalous``'s ``offset`` / ``MSD0``).
-    It is supplied by the caller (NOT fit): from single-lag jumps alone D and σ
-    are mathematically degenerate (the Rayleigh scale is only ``4DΔt + 4σ²``), so
-    σ cannot be separated here — it must come from the multi-lag MSD.  Passing the
-    MSD's offset removes the σ²/Δt inflation that otherwise made the JDD D's
-    systematically LARGER than the offset-corrected MSD D, so the two estimators
-    now agree.  ``loc_offset_um2 = 0`` (the default) reproduces the legacy
-    uncorrected fit.
-
-    Fitting the CDF (rather than histogram) avoids binning artefacts and
-    gives robust estimates even with short tracks — ideal for sptPALM where
-    many tracks have only 2–5 frames.
-
-    Parameters
-    ----------
-    n_components   : 1, 2, or 3
-    loc_offset_um2 : static localisation-error offset 4σ² (µm²) to subtract,
-                     typically the MSD fit's median ``MSD0``.  0 → no correction.
+    An explicitly supplied ``loc_offset_um2`` must be an independently known
+    static offset under the instantaneous-exposure model. Do not pass an MSD
+    intercept: it also contains motion blur. With None, fit an APPARENT jump
+    diffusivity without a noise correction, marked as such in the output.
+    Single-lag data cannot identify both noise and diffusion. Mixture fits are
+    descriptive; correlated empirical-CDF residuals do not give likelihood AIC.
 
     Returns
     -------
@@ -637,7 +596,10 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
           + (f"  |  loc offset {loc_offset_um2:.2g} µm²"
              if loc_offset_um2 else ""))
     dt = frame_interval_s
-    loc_offset_um2 = float(max(0.0, loc_offset_um2))
+    correction_known = loc_offset_um2 is not None
+    if correction_known and (not np.isfinite(loc_offset_um2) or loc_offset_um2 < 0):
+        raise ValueError("loc_offset_um2 must be finite and nonnegative, or None")
+    loc_offset_um2 = float(loc_offset_um2) if correction_known else 0.0
 
     # Vectorised across all tracks at once.  Old per-track Python loop
     # was O(n_tracks × Python-step) → seconds on 100k tracks.  We:
@@ -720,7 +682,7 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
             print(f"  WARN: 3-component JDD gave a negative population fraction "
                   f"(f3 = {f3:.3f}); falling back to a 2-component fit.")
             return compute_jdd(srt, pixel_size_um, frame_interval_s,
-                               n_components=2, loc_offset_um2=loc_offset_um2)
+                               n_components=2, loc_offset_um2=loc_offset_um2 if correction_known else None)
         # Tiny negative from optimiser noise → clamp + renormalise to a valid
         # simplex (fractions in [0,1] summing to 1).
         f3 = max(f3, 0.0)
@@ -751,11 +713,9 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
             for D, frac in zip(D_values, fractions)]
     pdf_total = np.sum(pdfs, axis=0)
 
-    # ── Goodness of fit on the CDF (for objective model selection) ────────
-    # Residuals of the fitted vs empirical CDF; R²/RMSE describe fit quality,
-    # AIC/BIC penalise the extra free parameters of richer mixtures so the
-    # user can justify 1- vs 2- vs 3-population models (lower AIC/BIC = better,
-    # but only worth the extra component if it drops by ≳10).
+    # Descriptive CDF residual diagnostics. The legacy AIC/BIC-shaped scores
+    # below assume independent errors, which empirical CDF residuals violate;
+    # they are not likelihood evidence for a particular population count.
     cdf_fit = model(r_sorted, *popt)
     resid   = cdf_emp - cdf_fit
     n_obs   = len(r_sorted)
@@ -786,7 +746,9 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
         "aic":           aic,
         "bic":           bic,
         "n_params":      k,
-        "sigma_loc_um":  sigma_loc_um,    # 1-D localisation precision √(s2/4)
+        "diffusion_interpretation": "static_offset_corrected_instantaneous" if correction_known else "apparent_uncorrected",
+        "precision_status": "supplied_static_offset" if correction_known else "unknown",
+        "sigma_loc_um":  sigma_loc_um if correction_known else np.nan,    # 1-D localisation precision √(s2/4)
         "s2_um2":        s2_fit,          # fitted static offset 4σ² (µm²)
     }
 
@@ -1034,10 +996,14 @@ def compute_mobile_fraction_over_time(tracks, diff_df, frame_interval,
     ordered_tracks = _canonicalize_tracks(tracks, require_xy=False)
     track_times = ordered_tracks.groupby("particle")["frame"].mean().reset_index()
     track_times.columns = ["particle", "mean_frame"]
-    merged = track_times.merge(diff_df[["particle", "D"]], on="particle", how="inner")
-    # A non-positive D is not log-/mobility-identifiable.  In particular,
-    # below-resolution zero-MSD tracks intentionally retain D=NaN upstream.
-    merged = merged[np.isfinite(merged["D"]) & (merged["D"] > 0)]
+    # Classify with the shared rule so this panel and the headline mobile
+    # fraction can never disagree — notably, a non-positive slope counts as
+    # immobile here too rather than dropping out of the denominator.
+    _cols = ["particle", "D"] + (["fit_status"] if "fit_status" in diff_df.columns else [])
+    _mobile, _immobile = mobility_masks(diff_df, d_threshold)
+    _classified = diff_df.loc[_mobile | _immobile, _cols].assign(
+        _is_mobile=_mobile[_mobile | _immobile])
+    merged = track_times.merge(_classified, on="particle", how="inner")
 
     max_frame = int(ordered_tracks["frame"].max())
     windows   = range(0, max_frame, window_frames)
@@ -1048,7 +1014,7 @@ def compute_mobile_fraction_over_time(tracks, diff_df, frame_interval,
         total = len(sel)
         if total < 5:
             continue
-        mobile = int((sel["D"] >= d_threshold).sum())
+        mobile = int(sel["_is_mobile"].sum())
         rows.append({
             "time_s":          (w + window_frames / 2) * frame_interval,
             "mobile_fraction": mobile / total,
@@ -1234,25 +1200,48 @@ def _msd_auc(emsd_df, frame_interval):
     return float(_trap(y[order], t[order]))
 
 
+def mobility_masks(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
+    """``(mobile, immobile)`` boolean masks over ``diff_df``'s rows.
+
+    Mobile = finite D ≥ threshold.  Immobile = finite D < threshold, **plus
+    every track whose linear MSD slope came out non-positive**.
+
+    That last clause is the whole point of this helper.  A track that does not
+    move has a ~50% chance of a negative finite-sample slope, so
+    ``fit_status == "nonpositive_slope"`` is the expected outcome for half the
+    immobile population, not a failure.  Dropping those rows (they carry
+    ``D = NaN``, so every ``isfinite(D) & (D > 0)`` filter silently did) deletes
+    immobile molecules from the DENOMINATOR and inflates the mobile fraction:
+    on real MB543B recordings ~10% of tracks land here and the mobile fraction
+    jumped 69%→79% (control) and 72%→81% (1-AMA).  They have no usable D, but
+    "no measurable displacement" is exactly the evidence for immobility.
+
+    Genuinely unmeasurable rows — below-resolution, failed or too-short fits —
+    stay excluded from both masks, as they always were.
+    """
+    n = 0 if diff_df is None else len(diff_df)
+    if not n or "D" not in getattr(diff_df, "columns", ()):
+        empty = np.zeros(n, dtype=bool)
+        return empty, empty
+    d = np.asarray(diff_df["D"].values, dtype=float)
+    usable = np.isfinite(d) & (d > 0)
+    mobile = usable & (d >= d_threshold)
+    immobile = usable & (d < d_threshold)
+    if "fit_status" in diff_df.columns:
+        immobile |= (diff_df["fit_status"].to_numpy() == "nonpositive_slope")
+    return mobile, immobile
+
+
 def _mob_immob_ratio(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
     """Mobile / Immobile ratio defined by a diffusion-coefficient threshold.
 
-    Tracks with D ≥ d_threshold count as Mobile; D < d_threshold count as
-    Immobile.  Tracks with non-finite D (alpha fit failed) are excluded
-    from BOTH numerator and denominator — they contribute neither mobility
-    state, which avoids inflating either count.
+    See :func:`mobility_masks` for which tracks count as what — in particular
+    why a non-positive slope counts as immobile rather than vanishing.
     """
-    if diff_df is None or "D" not in diff_df.columns:
+    mobile, immobile = mobility_masks(diff_df, d_threshold)
+    n_mob, n_imm = int(mobile.sum()), int(immobile.sum())
+    if n_mob + n_imm == 0:
         return np.nan
-    d = diff_df["D"].values
-    # Keep the established population contract: only finite positive D values
-    # are mobile/immobile-classifiable; below-resolution tracks are excluded.
-    valid = np.isfinite(d) & (d > 0)
-    if valid.sum() == 0:
-        return np.nan
-    d = d[valid]
-    n_mob = int((d >= d_threshold).sum())
-    n_imm = int((d <  d_threshold).sum())
     return float(n_mob / n_imm) if n_imm > 0 else np.nan
 
 

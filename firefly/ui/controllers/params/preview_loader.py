@@ -166,3 +166,40 @@ def sampled_frame(path, idx: int):
     except Exception:
         return None
     return None
+
+
+def detection_frame(path, idx, channel=0):
+    """Read an exact raw plane for detection; never collapse unknown dimensions.
+
+    Index is local to the selected file. Unsupported layouts fail explicitly
+    instead of displaying a different plane as a faithful detection preview.
+    """
+    import numpy as np
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.czi':
+        from aicspylibczi import CziFile
+        czi = CziFile(path)
+        dims = dict(zip(czi.dims, czi.size))
+        ch = min(int(channel), int(dims.get('C',1))-1)  # same clamp as load_czi
+        frame = np.squeeze(czi.read_image(T=int(idx), C=ch)[0])
+    elif ext in ('.tif', '.tiff'):
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            if len(series.shape) > 3 or series.axes[-2:] != 'YX':
+                raise ValueError('Detection preview requires a planar YX/TYX TIFF; this layout is unsupported.')
+            n = series.shape[0] if len(series.shape) == 3 else 1
+            if not 0 <= int(idx) < n: raise ValueError('Frame outside TIFF series')
+            if len(series.pages) == n:
+                frame = series.pages[int(idx)].asarray()
+            else:
+                # Contiguous TIFF blocks may have only one physical IFD. Map
+                # them without loading the complete recording into RAM.
+                mapped = tifffile.memmap(path, series=0, mode='r')
+                frame = np.array(mapped[int(idx)] if mapped.ndim == 3 else mapped)
+    else:
+        raise ValueError('Detection preview supports raw CZI and planar TIFF files.')
+    frame = np.asarray(frame, dtype=np.float32)
+    if frame.ndim != 2:
+        raise ValueError('Ambiguous image dimensions: cannot preview the production detector safely.')
+    return frame

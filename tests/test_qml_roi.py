@@ -448,3 +448,28 @@ def test_split_replicates_is_off_until_the_inline_toggle_is_used(tmp_path):
     c3 = RoiController(store, override_store=ovr)
     c3.editFile(f)
     assert c3.splitReplicates is True
+
+
+def test_minmass_preview_invalidates_on_settings_and_frame_changes(tmp_path):
+    import numpy as np
+    from firefly.ui.controllers.roi_controller import RoiController
+    from PySide6.QtCore import QObject,Signal
+    class Settings(QObject):
+        changed=Signal(str)
+        def __init__(self): super().__init__();self.values={'analysis/backend':'Crocker–Grier — Trackpy (CPU)','analysis/roi_mode':'None'}
+        def get_str(self,k,d=''):return self.values.get(k,d)
+        def get_float(self,k,d=0):return float(self.values.get(k,d))
+        def get_bool(self,k,d=False):return bool(self.values.get(k,d))
+        def set(self,k,v):self.values[k]=v;self.changed.emit(k)
+    settings=Settings();r=RoiController(settings=settings)
+    r._detect_on=True;r._view_mode='raw';r._n_frames=10
+    r._spots_stale=False;r._spot_count=12
+    settings.set('analysis/minmass',.47)
+    assert r.spotsStale and r.spotCount==0 and not r.hasSpots
+    assert r.detectMinmass==.47
+    r._spots_stale=False;r._spot_count=4
+    r.setFrame(2)
+    assert r.spotsStale and r.spotCount==0
+    r._raw_frame=np.ones((32,32),np.float32)
+    r._view_mode='proj';r.refreshSpots()
+    assert r.spotsStale and 'projections' in r.spotSummary

@@ -258,7 +258,28 @@ processes, each shown as a live tile with its own preview and progress.
 
 ### Diffusion & motion analysis
 
-- Per-track MSD with linear-LSQ fits for D and α.
+The Drosophila Neurons preset is a **starting point requiring validation**, not
+a species-wide optimum. It explicitly sets every scientific control, so nothing
+carries over from your previous run: Auto (Torch-first) detection, search radius
+3 px, memory 5, eight observations, a fixed minmass of 0.45, ten MSD lags, four
+fit lags and no D filter. Density matching is off — matching detection counts
+does not match detection quality, and it must not be used to compare abundance.
+
+A raw-image contrast/noise gate is available and ships **off**: central 3×3 mean
+minus annular median, divided by 1.4826 times the annular MAD. The statistic is
+independent of frame normalization but is not a false-positive probability, and
+at a cutoff of 3 it removes roughly half of low-density detections, ~99% of
+high-density ones, and every candidate within `diameter` px of the frame edge.
+Check spot overlays and negative controls before enabling it. The gate needs raw
+images and is unavailable for imported localization tables.
+Manual-polygon mode requires a valid drawn ROI; a requested ROI failure stops
+the run rather than silently selecting another region. Reanalyse all conditions
+with the same validated settings; existing saved results are not rewritten.
+
+- Per-track MSD with a signed-intercept linear fit for ordinary **D (µm²/s)**.
+  The anomalous coefficient **Kα (µm²/s^α)** and exponent α are fitted separately.
+  Nonpositive linear slopes remain available as `D_linear_raw`; physical D is
+  unavailable for those tracks, which are excluded from D-based fractions.
 - **Frame-aware lag estimation.** The default **All timestamp pairs** policy
   uses every position pair whose actual frame-number difference equals the
   requested lag, including across missing observations. This is the standard
@@ -279,8 +300,11 @@ processes, each shown as a live tile with its own preview and progress.
   averaging. Track duration is `(max(frame) − min(frame)) × Δt`; localisation
   count and observed sampling time are separate. Path length is the observed
   polyline, so a gap contributes an unknowable-path straight chord.
-- Motion classification (Immobile / Confined / Brownian / Directed) with
-  configurable α thresholds.
+- Descriptive α bins (Immobile / Confined / Brownian / Directed), not confirmed
+  transport states. A track whose MSD never rises above its own static floor is
+  classified Immobile by its displacement, which needs no exponent; a fit that
+  is genuinely ambiguous is left unclassified. α on a short track is noisier —
+  a caveat to report, not a reason to discard the classification.
 - Tracks whose valid displacement bins are all exactly zero are reported
   separately as `below_resolution`: D and α remain unavailable, their
   α-derived class is unclassified, and they are excluded from log-D and
@@ -291,17 +315,30 @@ processes, each shown as a live tile with its own preview and progress.
 - Turning-angle and signed-angle radial distributions; VACF velocities carry
   their true start frame and export a pair count at every lag.
 - DBSCAN clustering of localisations with per-cluster area / density.
-- New outputs use metrics schema 2 and manifest schema 4. Legacy runs remain
+- New outputs use metrics schema 3 and manifest schema 4. Legacy runs remain
   loadable and explicitly labelled. Stable metrics may still compare, while
-  incompatible MSD/D/MSS/VACF or step/speed definitions produce a warning and
+  incompatible MSD/D/MSS/VACF/JDD/dwell or step/speed definitions produce a warning and
   no pooled inference.
+
+### Manual minmass preview
+
+The Preview & ROI detector uses the production preprocessing/backend on raw
+frames, with separate colours for accepted spots, contrast failures and ROI
+exclusion. Click spots to inspect mass and contrast; edits invalidate old
+results immediately. Numeric entry supports precise thresholds. Projection-based
+ROI acceptance and final track retention are explicitly distinguished from
+single-frame detection. See [the minmass preview guide](docs/minmass_preview.md).
 
 ### Drift correction
 
-- Redundant cross-correlation (RCC) drift correction (Wang et al. 2014).
-- Solves the over-determined `drift[j] − drift[i] = Δᵢⱼ` system across
-  every pair of time segments — robust to bad segments, redundancy
-  averages out cross-correlation noise.
+- Quality-weighted redundant cross-correlation with subpixel peak refinement,
+  adaptive time windows, outlier rejection and connected-support checks.
+- Independent rectangular reference regions or reference CSVs; optional
+  stationary-fiducial tracking, including supplied marker identities.
+- Unsupported estimates are flagged and skipped, or stop the run if selected.
+  Applied drift, pair/segment diagnostics, reference provenance and a trace
+  plot are saved. Support scores are not calibrated uncertainties.
+- See [drift settings and reference requirements](docs/drift_correction.md).
 
 ### ROI handling
 
@@ -591,10 +628,13 @@ the step/link/duration definitions used.
 Beyond per-track D and α, each run reports several ensemble metrics that
 capture structure the per-track averages hide:
 
-- **Localisation precision (`loc_sigma_nm`)** — derived per track from the
-  static offset of the MSD fit (`MSD(t) = 4·D·t^α + 4σ²`), so
-  `σ = √(MSD₀/4)`. Reported in nm in `diffusion_summary.csv`; a direct read
-  of the positional noise floor without a separate immobile-bead calibration.
+- **Localisation precision** — the MSD intercept combines localization error
+  and exposure blur, so it cannot independently calibrate precision.
+  `loc_sigma_nm` is unavailable; `msd_offset_scale_nm` preserves the positive
+  intercept's square-root scale as a diagnostic only. The JDD subtracts that
+  same intercept by default so its D's stay comparable with the MSD D; because
+  the intercept is not a calibrated noise variance, the JDD output records how
+  it was corrected rather than claiming a precision.
 - **van Hove + non-Gaussian parameter α₂** (`<stem>_van_hove.json`) — the
   pooled single-frame displacement distribution and
   `α₂ = ⟨r⁴⟩ / (2⟨r²⟩²) − 1`. α₂ ≈ 0 for a homogeneous Brownian ensemble and
@@ -706,7 +746,7 @@ Built on the shoulders of:
 Algorithm references:
 
 - Crocker & Grier (1996) — feature detection
-- Wang et al. (2014, *Nature Methods*) — RCC drift correction
+- Wang et al. (2014, *Optics Express* 22:15982–15991) — RCC drift correction
 - Saxton (1997), Yu et al. (2014) — jump-distance distribution
 - Ferrari et al. (2001) — moment-scaling spectrum
 - Thompson, Larson & Webb (2002) — localisation precision

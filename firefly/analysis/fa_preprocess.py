@@ -14,6 +14,61 @@ from scipy.ndimage import uniform_filter, gaussian_filter, gaussian_filter1d
 from skimage import filters, exposure
 
 
+def filter_raw_contrast(locs, stack, diameter=7, min_cnr=0.0, stop_event=None):
+    """Gate candidates by local RAW-image contrast, independent of normalization.
+
+    CNR = (mean central 3×3 pixels − median background annulus) / robust raw
+    pixel noise (1.4826 MAD in the annulus). The annulus radii are diameter/2
+    and diameter pixels. This is a contrast diagnostic, not photon precision
+    or a calibrated false-positive probability. Complete patches are required;
+    undefined/zero-noise measurements fail an enabled gate. Off preserves rows.
+    """
+    import numpy as np
+    from firefly.analysis.fa_constants import _Cancelled
+    if not np.isfinite(min_cnr) or min_cnr < 0:
+        raise ValueError("min_cnr must be finite and nonnegative")
+    if min_cnr == 0:
+        return locs.copy()
+    result = measure_raw_contrast(locs, stack, diameter, stop_event)
+    return result[np.isfinite(result.raw_cnr) & (result.raw_cnr >= min_cnr)].reset_index(drop=True)
+
+
+def measure_raw_contrast(locs, stack, diameter=7, stop_event=None):
+    """Measure the same raw contrast for every candidate, retaining rejected rows."""
+    from firefly.analysis.fa_constants import _Cancelled
+    result = locs.reset_index(drop=True).copy()
+    if result.empty:
+        for col in ("frame", "x", "y", "mass", "raw_cnr"):
+            if col not in result:
+                result[col] = np.empty(0, dtype=float)
+        return result
+    cnr = np.full(len(result), np.nan)
+    radius = int(diameter)
+    yy, xx = np.mgrid[-radius:radius+1, -radius:radius+1]
+    annulus = (xx*xx+yy*yy >= (diameter/2)**2) & (xx*xx+yy*yy <= radius**2)
+    core = (np.abs(xx) <= 1) & (np.abs(yy) <= 1)
+    for frame, group in result.groupby("frame", sort=False):
+        if stop_event is not None and stop_event.is_set():
+            raise _Cancelled()
+        raw = np.asarray(stack[int(frame)], dtype=float)
+        x = np.rint(group.x.to_numpy()).astype(int)
+        y = np.rint(group.y.to_numpy()).astype(int)
+        valid = (x >= radius) & (x < raw.shape[1]-radius) & (y >= radius) & (y < raw.shape[0]-radius)
+        ix = group.index.to_numpy()[valid]
+        x, y = x[valid], y[valid]
+        for a in range(0, len(ix), 2048):
+            patches = raw[y[a:a+2048, None, None]+yy, x[a:a+2048, None, None]+xx]
+            bg = patches[:, annulus]
+            med = np.median(bg, axis=1)
+            noise = 1.4826*np.median(np.abs(bg-med[:, None]), axis=1)
+            signal = patches[:, core].mean(axis=1)-med
+            values = np.full(len(noise), np.nan)
+            np.divide(signal, noise, out=values, where=noise > 0)
+            cnr[ix[a:a+2048]] = values
+    result["raw_cnr"] = cnr
+    return result
+
+
 def _preprocess_fast(frame, bg_radius=50, sigma=1.0):
     """
     Fast background subtraction using uniform_filter.

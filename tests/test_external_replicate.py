@@ -206,3 +206,30 @@ def test_controller_stages_loc_file_then_loads_replicate(tmp_path, monkeypatch):
     assert fol[0]["analysing"] is False and fol[0]["loading"] is False
     assert fol[0]["qc"] in ("ok", "warn")
     assert c.conditions[0]["activeFolders"] == 1
+
+
+def test_external_cache_changes_when_drift_reference_contents_change(tmp_path, monkeypatch):
+    from firefly import firefly_worker
+    loc=_palmtracer_loc_csv(tmp_path/'sample_locPALMTracer.csv',n_frames=4)
+    reference=tmp_path/'reference.csv'
+    reference.write_text('frame,x,y\n0,1,1\n1,1.1,1\n')
+    settings=CalibratedSettings(pixel_size=.1,frame_interval=.02)
+    settings.get_str = lambda key, default='': str(settings.values.get(key, default))
+    settings.get_bool = lambda key, default=False: bool(settings.values.get(key, default))
+    settings.values.update({'analysis/drift_correct':True,
+        'analysis/drift_reference':'Reference CSV','analysis/drift_reference_file':str(reference)})
+    calls=[]
+    def fake_run(params,*args):
+        calls.append(params)
+        out=params['out_dir'];extras=os.path.join(out,'firefly_extras')
+        os.makedirs(extras,exist_ok=True)
+        stem=os.path.splitext(os.path.basename(params['file']))[0]
+        open(os.path.join(extras,stem+'_diffusion_summary.csv'),'w').close()
+        return {'out_dir':out}
+    monkeypatch.setattr(firefly_worker,'_run_one_analysis',fake_run)
+    first=wd.analyse_external_file(loc,settings,cache_root=str(tmp_path/'cache'))
+    assert wd.analyse_external_file(loc,settings,cache_root=str(tmp_path/'cache'))==first
+    assert len(calls)==1
+    reference.write_text('frame,x,y\n0,1,1\n1,2.1,1\n')
+    second=wd.analyse_external_file(loc,settings,cache_root=str(tmp_path/'cache'))
+    assert second is not None and second!=first and len(calls)==2

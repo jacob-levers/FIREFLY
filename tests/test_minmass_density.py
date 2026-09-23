@@ -108,15 +108,15 @@ def test_settings_plumbing_reaches_worker_params():
     assert p["minmass_mode"] == "density" and p["minmass_target_density"] == 25.0
 
 
-def test_the_fly_preset_requests_density_matching():
-    """The Drosophila preset is the reason this exists — it must ask for it,
-    and every key it sets must be one the sidebar actually applies."""
+def test_the_fly_preset_does_not_equalize_detection_counts():
+    """The fly preset uses a raw-quality gate, not an abundance target."""
     import json
     from pathlib import Path
     from firefly.ui.controllers.params import sidebar_schema as S
     p = json.loads((Path(__file__).resolve().parents[1]
                     / "firefly/ui/presets/Drosophila Neurons.json").read_text())
     p.pop("__firefly_builtin__", None)
-    assert p["analysis/minmass_mode"] == "Density-matched"
-    assert p["analysis/auto_minmass"] is True
+    assert p["analysis/minmass_mode"] == "Linkability"
+    assert p["analysis/auto_minmass"] is False
+    assert p["analysis/min_cnr"] == 0.0      # the raw-contrast gate is opt-in
     assert [k for k in p if k not in S.BY_KEY] == []

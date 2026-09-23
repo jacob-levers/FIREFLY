@@ -226,6 +226,7 @@ def build_params(settings, importc, fpath: str | None = None,
         "diameter":       _i(g, "analysis/diameter", _DEFAULTS["diameter"]),
         "auto_minmass":   g.get_bool("analysis/auto_minmass", _DEFAULTS["auto_minmass"]),
         "minmass":        g.get_float("analysis/minmass", _DEFAULTS["minmass"]),
+        "min_cnr":        g.get_float("analysis/min_cnr", 0.0),
         "minmass_sensitivity": g.get_str(
             "analysis/minmass_sensitivity", _DEFAULTS["minmass_sensitivity"]).lower(),
         "minmass_mode": ("density"
@@ -282,6 +283,17 @@ def build_params(settings, importc, fpath: str | None = None,
         "roi_labels":     roi_labels,
         "drift_correct":  g.get_bool("analysis/drift_correct", _DEFAULTS["drift_correct"]),
         "drift_segment":  _i(g, "analysis/drift_segment", _DEFAULTS["drift_segment"]),
+        "drift_method": "fiducials" if g.get_str("analysis/drift_method", "RCC (density maps)") == "Stationary fiducials" else "rcc",
+        "drift_adaptive": g.get_bool("analysis/drift_adaptive", True),
+        "drift_min_locs": _i(g, "analysis/drift_min_locs", 200),
+        "drift_min_correlation": g.get_float("analysis/drift_min_correlation", .2),
+        "drift_reference": g.get_str("analysis/drift_reference", "Analysis region"),
+        "drift_reference_file": g.get_str("analysis/drift_reference_file", ""),
+        "drift_ref_rect": [g.get_float("analysis/drift_ref_x", 0.), g.get_float("analysis/drift_ref_y", 0.),
+                           g.get_float("analysis/drift_ref_width", 64.), g.get_float("analysis/drift_ref_height", 64.)],
+        "drift_min_fiducials": _i(g, "analysis/drift_min_fiducials", 3),
+        "drift_fiducial_range": g.get_float("analysis/drift_fiducial_range", 2.),
+        "drift_failure_policy": g.get_str("analysis/drift_failure_policy", "Skip correction"),
         "cluster_auto_eps": g.get_bool("analysis/cluster_auto_eps",
                                        _DEFAULTS["cluster_auto_eps"]),
         "cluster_eps_nm": g.get_float("analysis/cluster_eps_nm", _DEFAULTS["cluster_eps_nm"]),
@@ -339,7 +351,7 @@ def _widget_state_snapshot(g, importc) -> dict:
     ]
     keys_num = [
         "analysis/bg_radius", "analysis/camera_gain", "analysis/camera_qe",
-        "analysis/camera_bg_photons", "analysis/diameter", "analysis/minmass",
+        "analysis/camera_bg_photons", "analysis/diameter", "analysis/minmass", "analysis/min_cnr",
         "analysis/minmass_max_false_track_rate", "analysis/search_range",
         "analysis/memory", "analysis/min_track_len", "analysis/max_track_len",
         "analysis/max_lagtime", "analysis/n_fit", "analysis/alpha_immobile",
@@ -364,6 +376,13 @@ def _widget_state_snapshot(g, importc) -> dict:
         out[k] = g.get_float(k, float(_DEFAULTS.get(k.split("/")[-1], 0.0) or 0.0))
     for k in keys_bool:
         out[k] = g.get_bool(k, bool(_DEFAULTS.get(k.split("/")[-1], False)))
+    from .sidebar_schema import FIELDS
+    for field in FIELDS:
+        if field["section"] == "drift":
+            key, default, kind = field["key"], field["default"], field["kind"]
+            out[key] = (g.get_bool(key, default) if kind == "bool" else
+                        g.get_float(key, default) if kind in ("int", "double") else
+                        g.get_str(key, default))
     out["analysis/pixel_size"] = float(importc.pixelSize)
     out["analysis/frame_interval"] = float(importc.frameInterval)
     out["analysis/override_px"] = bool(importc.overridePx)

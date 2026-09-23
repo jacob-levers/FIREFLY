@@ -62,9 +62,31 @@ Column {
         width: parent.width
         active: !root.isBool; visible: !root.isBool
         sourceComponent: root.field.kind === "combo" ? selectC
+                       : root.field.kind === "file" ? fileC
                        : root.field.kind === "logdrange" ? logdRangeC
                        : root.field.slider ? sliderC
                        : spinC
+    }
+
+    Component {
+        id: fileC
+        RowLayout {
+            spacing: 4
+            QQC.TextField {
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                enabled: root.en
+                text: (Sidebar.revision, Sidebar.get(root.field.key) || "")
+                placeholderText: "CSV path or {stem} template"
+                selectByMouse: true
+                onEditingFinished: Sidebar.setValue(root.field.key, text)
+            }
+            QQC.Button {
+                text: "…"
+                enabled: root.en
+                onClicked: Sidebar.chooseFile(root.field.key)
+            }
+        }
     }
 
     // ── bool ─────────────────────────────────────────────────────────────

@@ -44,6 +44,7 @@ class RoiController(QObject):
     maskChanged = Signal()              # threshold-mask preview
     viewChanged = Signal()              # proj ↔ raw + frame scrub
     detectChanged = Signal()            # detection on/off + minmass
+    previewInvalidated = Signal()
     spotsChanged = Signal()             # detected-spot overlay
 
     def __init__(self, store=None, settings=None, override_store=None, parent=None):
@@ -101,6 +102,10 @@ class RoiController(QObject):
         self._spots = None              # green detected-spot overlay QImage
         self._spots_token = 0
         self._spot_count = 0
+        self._spot_rows = None
+        self._spot_summary = "Preview off"
+        self._spot_inspection = ""
+        self._spots_stale = True
         from firefly.ui.controllers.params.preview_loader import PREVIEW_CMAPS
         self._cmap = "Grayscale"
         if settings is not None:
@@ -109,6 +114,11 @@ class RoiController(QObject):
                 self._cmap = c
         # load the global defaults so an un-overridden file opens showing them
         self._apply_spec(self._default_spec())
+        if settings is not None and hasattr(settings, "changed"):
+            settings.changed.connect(self._spot_settings_changed)
+        self.polygonsChanged.connect(self._invalidate_spots)
+        self.roiSettingsChanged.connect(self._invalidate_spots)
+
 
     # ── default / effective ROI spec ──────────────────────────────────────
     def _default_spec(self):
@@ -681,6 +691,7 @@ class RoiController(QObject):
             i = max(0, min(i, self._n_frames - 1))
         if i == self._frame_idx and self._raw_frame is not None:
             return
+        self._invalidate_spots()
         self._frame_idx = i
         if self._view_mode == "raw":
             self._load_frame(i)
@@ -693,7 +704,9 @@ class RoiController(QObject):
     def _load_frame(self, i):
         from firefly.ui.controllers.params.preview_loader import sampled_frame
         try:
-            self._raw_frame = sampled_frame(self._file, i)
+            from firefly.ui.controllers.params.preview_loader import detection_frame
+            channel = int(round(self._s.get_float("analysis/channel", 0))) if self._s else 0
+            self._raw_frame = detection_frame(self._file, i, channel)
         except Exception:
             self._raw_frame = None
 
@@ -997,10 +1010,8 @@ class RoiController(QObject):
         self._sister_status = note      # provenance on success, reason on skip
 
     # ── detection-threshold (minmass) preview ─────────────────────────────
-    # Runs the SAME detect path the analysis uses (preprocess + trackpy.locate)
-    # on the displayed frame so the user can see which spots a given minmass
-    # catches.  The slider writes through to the sidebar analysis/minmass (and
-    # turns auto-minmass off) so what you preview is what the run detects.
+    # Preview the production localizer on raw acquired frames. Acceptance
+    # after contrast/known ROI filtering is distinct from track retention.
     @Property(bool, notify=detectChanged)
     def detectEnabled(self):
         return self._detect_on
@@ -1008,11 +1019,21 @@ class RoiController(QObject):
     @detectEnabled.setter
     def detectEnabled(self, on):
         on = bool(on)
+        if on and self._run_scoped:
+            self.statusMessage.emit("Open the raw input to preview detection; completed-run settings are historical.")
+            return
         if on == self._detect_on:
             return
         self._detect_on = on
+        if on and not self._run_scoped and self._s is not None:
+            self._s.set("analysis/auto_minmass", False)
+        self._invalidate_spots()
+        switched = on and self._view_mode != "raw"
+        if switched:
+            self.setViewMode("raw")
         self.detectChanged.emit()
-        self._recompute_spots()
+        if not switched:
+            self._recompute_spots()
 
     @Property(float, notify=detectChanged)
     def detectMinmass(self):
@@ -1024,6 +1045,7 @@ class RoiController(QObject):
         if abs(v - self._minmass) < 1e-9:
             return
         self._minmass = v
+        self._invalidate_spots()
         # Run-scoped: the detection threshold of a COMPLETED run is history —
         # previewing spots over it must not rewrite the sidebar for future runs.
         if self._s is not None and not self._run_scoped:
@@ -1051,7 +1073,7 @@ class RoiController(QObject):
     def refreshSpots(self):
         self._recompute_spots()
 
-    def _spots_qimage(self, h, w, xs, ys):
+    def _spots_qimage(self, h, w, xs, ys, decisions=None):
         from PySide6.QtCore import QPointF, Qt as _Qt
         from PySide6.QtGui import QImage, QPainter, QPen, QColor
         img = QImage(int(w), int(h), QImage.Format.Format_ARGB32)
@@ -1060,47 +1082,149 @@ class RoiController(QObject):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         pen = QPen(QColor(57, 255, 110)); pen.setWidthF(1.3)   # match live-detection green
         p.setPen(pen); p.setBrush(_Qt.NoBrush)
-        for x, y in zip(xs, ys):
+        colors = {"passes_detection": "#39ff6e", "roi_unchecked": "#55c8ff",
+                  "outside_roi": "#ff5577", "low_contrast": "#ffb347",
+                  "contrast_unavailable": "#ffb347"}
+        for i, (x, y) in enumerate(zip(xs, ys)):
+            if decisions is not None:
+                pen.setColor(QColor(colors[decisions[i]])); p.setPen(pen)
             p.drawEllipse(QPointF(float(x), float(y)), 4.0, 4.0)
         p.end()
         return img
 
-    def _recompute_spots(self):
-        """Detect spots on the displayed frame at the current minmass + render
-        them as a green-circle overlay (run-matching preprocess + trackpy)."""
+    @Property(bool, notify=spotsChanged)
+    def spotsStale(self):
+        return self._spots_stale
+
+    @Property(str, notify=spotsChanged)
+    def spotSummary(self):
+        return self._spot_summary
+
+    @Property(str, notify=spotsChanged)
+    def spotInspection(self):
+        return self._spot_inspection
+
+    def _invalidate_spots(self, *args, schedule=True):
+        self._spots_stale = True
         self._spots = None
+        self._spot_rows = None
         self._spot_count = 0
-        if self._detect_on:
-            src = self._mask_source()
-            if src is not None:
-                try:
-                    import numpy as np
-                    import trackpy as tp
-                    from firefly.analysis.fa_preprocess import preprocess_stack
-                    from firefly.ui.controllers.params.params_builder import BG_METHOD_MAP
-                    g = self._s
-                    diameter = int(g.get_float("analysis/diameter", 7)) if g else 7
-                    if diameter % 2 == 0:
-                        diameter += 1
-                    bg_radius = int(g.get_float("analysis/bg_radius", 10)) if g else 10
-                    bg_method = (BG_METHOD_MAP.get(g.get_str("analysis/bg_method",
-                                 "Uniform Filter"), "uniform_filter") if g else "uniform_filter")
-                    frame = np.asarray(src, dtype=np.float32)
-                    pp = preprocess_stack(frame[None], bg_radius=bg_radius,
-                                          bg_method=bg_method, workers=1, quiet=True)[0]
-                    import warnings
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        f = tp.locate(pp, diameter, minmass=float(self._minmass),
-                                      percentile=64)
-                    if f is not None and len(f):
-                        self._spot_count = int(len(f))
-                        self._spots = self._spots_qimage(
-                            frame.shape[0], frame.shape[1],
-                            f["x"].to_numpy(), f["y"].to_numpy())
-                except Exception as exc:
-                    self._spots = None
-                    self.statusMessage.emit(f"Detection preview failed: {exc}")
+        self._spot_inspection = ""
+        if schedule:
+            self.previewInvalidated.emit()
+        self._spot_summary = "Preview outdated — refresh to see current settings" if self._detect_on else "Preview off"
+        self._spots_token += 1
+        self.spotsChanged.emit()
+
+    def _spot_settings_changed(self, key):
+        if str(key).startswith("analysis/"):
+            if key == "analysis/minmass" and self._s is not None:
+                self._minmass = float(self._s.get_float(key, self._minmass))
+                self.detectChanged.emit()
+            if key == "analysis/channel":
+                self._raw_frame = None
+                if self._view_mode == "raw":
+                    self._load_frame(self._frame_idx)
+                    self._render_display()
+            self._invalidate_spots()
+
+    @Slot(float, float)
+    def inspectSpot(self, y, x):
+        if self._spots_stale or self._spot_rows is None or not len(self._spot_rows):
+            return
+        import numpy as np
+        rows = self._spot_rows
+        distance = (rows.x-float(x))**2 + (rows.y-float(y))**2
+        i = int(np.argmin(distance.to_numpy()))
+        if distance.iloc[i] > 36:
+            self._spot_inspection = "No candidate within 6 pixels. Spots below minmass are not displayed."
+        else:
+            r = rows.iloc[i]
+            cnr = f"{r.raw_cnr:.3g}" if np.isfinite(r.raw_cnr) else "unavailable (edge/zero noise)"
+            names = {"passes_detection":"passes detection + ROI", "roi_unchecked":"passes detection; ROI not evaluated",
+                     "outside_roi":"rejected: outside ROI", "low_contrast":"rejected: raw contrast",
+                     "contrast_unavailable":"rejected: raw contrast unavailable"}
+            roi = "not evaluated" if r.inside_roi is None else ("inside" if r.inside_roi else "outside")
+            self._spot_inspection = (f"ROI={roi} · x={r.x:.2f}, y={r.y:.2f} · mass={r.mass:.4g} · raw CNR={cnr} · "
+                                     + names[r.decision] + ". Track retention not evaluated.")
+        self.spotsChanged.emit()
+
+    def _detection_roi(self, shape):
+        """Only promise ROI acceptance where the exact production mask is available."""
+        import numpy as np
+        from pathlib import Path
+        from firefly.analysis.fa_roi import (build_sister_roi_mask, find_sister_roi_path,
+            find_sibling_imagej_roi, load_roi_polygons_any)
+        polys = self._polys
+        mode = self._roi_mode
+        if mode == "ImageJ ROI" and not polys:
+            path = find_sibling_imagej_roi(str(Path(self._file).parent), Path(self._file).stem)
+            if not path: raise ValueError("Requested ImageJ ROI is missing")
+            polys = load_roi_polygons_any(path)
+        if polys or mode == "Manual polygon":
+            from skimage.draw import polygon2mask
+            if not polys: raise ValueError("Draw and close the requested polygon ROI first")
+            mask = np.zeros(shape, dtype=bool)
+            for poly in polys:
+                points = np.asarray(poly, dtype=float)
+                if (points.min() < -1 or points[:,0].max() > shape[0]+1 or points[:,1].max() > shape[1]+1):
+                    raise ValueError("Polygon extends beyond the camera frame")
+                mask |= polygon2mask(shape, points)
+            return mask, True
+        if mode == "Sister TIFF":
+            suffix = self._s.get_str("analysis/roi_sister_suffix", "_green") if self._s else "_green"
+            path = find_sister_roi_path(self._file, suffix)
+            if not path: raise ValueError("Requested sister ROI is missing")
+            mask, note = build_sister_roi_mask(path, target_shape=shape)
+            if mask is None: raise ValueError(note)
+            return mask, True
+        return None, mode == "None"
+
+    def _recompute_spots(self):
+        self._invalidate_spots(schedule=False)
+        if not self._detect_on:
+            return
+        if self._view_mode != "raw":
+            self._spot_summary = "Select Raw frames: projections/companion images are not detection inputs."
+            self.spotsChanged.emit()
+            return
+        try:
+            from firefly.analysis.fa_detection_preview import preview_detections
+            from firefly.ui.controllers.params.params_builder import BG_METHOD_MAP, BACKEND_LABEL_TO_VALUE
+            if self._raw_frame is None:
+                self._load_frame(self._frame_idx)
+                self._render_display()
+            if self._raw_frame is None:
+                raise ValueError("Cannot read the exact raw plane for this file/layout")
+            g = self._s
+            diameter = int(round(g.get_float("analysis/diameter", 7))) if g else 7
+            radius = int(round(g.get_float("analysis/bg_radius",10))) if g else 10
+            bg = BG_METHOD_MAP.get(g.get_str("analysis/bg_method", "Uniform Filter"), "uniform_filter") if g else "uniform_filter"
+            backend = BACKEND_LABEL_TO_VALUE.get(g.get_str("analysis/backend", "Auto"), "auto") if g else "auto"
+            cnr = float(g.get_float("analysis/min_cnr",0)) if g else 0.
+            roi_note = "requires the run projection"
+            try:
+                mask, known = self._detection_roi(self._raw_frame.shape)
+            except ValueError as exc:
+                mask, known = None, False
+                roi_note = f"{exc}; fix/save the ROI before running"
+            rows, summary = preview_detections(self._raw_frame, diameter=diameter,
+                minmass=self._minmass, bg_radius=radius, bg_method=bg, backend=backend,
+                min_cnr=cnr, roi_mask=mask, roi_known=known)
+            self._spot_rows = rows
+            self._spot_count = summary['passed']
+            self._spots = self._spots_qimage(*self._raw_frame.shape, rows.x, rows.y, rows.decision.tolist())
+            self._spots_stale = False
+            self._spot_summary = (f"{backend} · frame {self._frame_idx+1} · minmass {self._minmass:g}\n"
+                f"{summary['candidates']} pass minmass · {summary['contrast_rejected']} contrast rejected · "
+                f"{summary['outside_roi']} outside ROI · {summary['passed']} pass "
+                + ("detection + ROI." if known else f"detection. ROI NOT evaluated: {roi_note}.")
+                + " Final track retention is not evaluated.")
+            if g and g.get_bool("analysis/auto_minmass", False):
+                self._spot_summary += " Auto minmass is ON: the run will choose a different threshold."
+        except Exception as exc:
+            self._spot_summary = f"Preview unavailable: {exc}"
+            self.statusMessage.emit(self._spot_summary)
         self._spots_token += 1
         self.spotsChanged.emit()
 

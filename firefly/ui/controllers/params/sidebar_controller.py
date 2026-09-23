@@ -115,6 +115,17 @@ class SidebarController(QObject):
         if self._write(key, v):
             self._bump(key)
 
+    @Slot(str)
+    def chooseFile(self, key):
+        if S.BY_KEY.get(key, {}).get("kind") != "file":
+            return
+        from PySide6 import QtWidgets
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None, "Select drift reference localisations", self.get(key) or "",
+            "Localisations (*.csv)")
+        if path:
+            self.setValue(key, path)
+
     @Slot(result="QVariantMap")
     def snapshot(self):
         """All schema keys → current values (the preset/widget-state dict).

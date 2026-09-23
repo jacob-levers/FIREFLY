@@ -28,7 +28,7 @@ from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORD
 # `MC` is the Dark default at module scope; `make_figure` rebinds it to the
 # theme-specific palette so panels render in colours that suit the figure theme.
 MC   = dict(MOTION_CLASS_COLORS)
-MORD = list(MOTION_CLASS_ORDER)
+MORD = list(MOTION_CLASS_ORDER) + ["Unknown"]
 
 # ── Combined-figure geometry ─────────────────────────────────────────────────
 # The single source of truth for the FULL (all-panels) single-run grid.  The UI
@@ -556,9 +556,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.set_xticklabels(classes, fontsize=8)
         ax.set_ylim(0, 100)
         ax.set_yticks([0, 25, 50, 75, 100])
-        ax.set_ylabel("% of classified tracks", fontsize=9)
+        ax.set_ylabel("% of tracks (including unclassified)", fontsize=9)
         ax.grid(True, axis="y", ls="--", alpha=0.22, lw=0.5)
-    sax(ax,"F","Motion Classification")
+    sax(ax,"F","Descriptive α Classes")
 
     # G — alpha distribution
     ax = _ax("G")
@@ -685,7 +685,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         _comp_labels = ["Slow", "Medium", "Fast"]
         for k, (pdf_k, D_k, f_k) in enumerate(
                 zip(jdd["pdfs"], jdd["D_values"], jdd["fractions"])):
-            lbl = (f"{_comp_labels[k]}  D={D_k:.4f} µm²/s  "
+            d_label = ("apparent D" if jdd.get("diffusion_interpretation") == "apparent_uncorrected" else "D")
+            lbl = (f"{_comp_labels[k]}  {d_label}={D_k:.4f} µm²/s  "
                    f"({f_k*100:.1f}%)")
             ax.plot(jdd["r_range"], pdf_k,
                     color=_jdd_colors[k], lw=2, label=lbl)

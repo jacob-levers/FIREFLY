@@ -156,9 +156,9 @@ def _attach_loc_sigma(locs, *, p, px, backend, external=False, log_cb=None):
          approximated, so this is a reference estimate, not a calibrated absolute.
       4. else NaN, with a one-time NOTE.
 
-    Distinct from the existing per-track ``loc_sigma_nm`` (MSD-offset estimate)
-    and ``loc_precision_nm`` (trackpy ep) — three independent precision estimates
-    that should agree (a cross-check)."""
+    These backend-dependent estimates retain their calibration assumptions.
+    ``loc_precision_nm`` may reuse trackpy ep and is not independent; the
+    uncalibrated MSD-intercept ``loc_sigma_nm`` remains unavailable."""
     import numpy as _np
     if locs is None or "x" not in getattr(locs, "columns", []):
         return locs
@@ -232,7 +232,7 @@ STEP_DEFINITION = "mean displacement between adjacent observations exactly one f
 LINK_DEFINITION = "mean displacement/speed across every adjacent observed localisation"
 DURATION_DEFINITION = "(max(frame)-min(frame))*frame_interval_s"
 OBSERVED_TIME_DEFINITION = "n_observations*frame_interval_s"
-CURRENT_METRIC_CONTRACT = "firefly_metrics_schema_2"
+CURRENT_METRIC_CONTRACT = "firefly_metrics_schema_3"
 
 # A PALM-Tracer native render preserves PALM-Tracer's own D/MSD tables rather
 # than rerunning FIREFLY's schema-2 estimator.  It must therefore never inherit
@@ -647,7 +647,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
     definitions = definitions or {}
     manifest = {
         "schema_version":   RUN_MANIFEST_SCHEMA_VERSION,
-        "metrics_schema_version": int(params.get("metrics_schema_version", 2)),
+        "metrics_schema_version": int(params.get("metrics_schema_version", 3)),
         "gap_policy":       str(params.get("gap_policy", GapPolicy.ALL_PAIRS.value)),
         "step_definition":  str(definitions.get("step_definition", STEP_DEFINITION)),
         "link_definition":  str(definitions.get("link_definition", LINK_DEFINITION)),
@@ -1765,6 +1765,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             return
         try:
             import numpy as _np
+            if p.get("min_cnr", 0.0) and not external_csv:
+                import pandas as _pd
+                from firefly.analysis.fa_preprocess import filter_raw_contrast
+                candidates = _pd.DataFrame({"frame": 0, "x": xs, "y": ys})
+                candidates = filter_raw_contrast(
+                    candidates, stack[int(frame_idx):int(frame_idx)+1],
+                    diameter=int(p["diameter"]), min_cnr=float(p["min_cnr"]))
+                xs, ys = candidates.x.to_numpy(), candidates.y.to_numpy()
             f = _np.asarray(frame, dtype=_np.float32)
             # Downsample anything larger than 384 px on the long edge
             scale_y = scale_x = 1.0
@@ -1869,7 +1877,19 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         except Exception:
             pass
     if not external_csv:
+        from firefly.analysis.fa_preprocess import filter_raw_contrast
+        p["n_localisations_before_cnr"] = int(len(locs))
+        locs = filter_raw_contrast(
+            locs, stack, diameter=int(p["diameter"]),
+            min_cnr=float(p.get("min_cnr", 0.0)), stop_event=cancel_event)
+        p["n_localisations_excluded_by_cnr"] = p["n_localisations_before_cnr"] - len(locs)
+        if p.get("min_cnr", 0.0):
+            _log(f"  Raw contrast gate: {p['n_localisations_before_cnr']:,} → "
+                 f"{len(locs):,} candidates (CNR ≥ {p['min_cnr']})")
         del stack
+    elif p.get("min_cnr", 0.0):
+        _log("  Raw contrast gate unavailable for imported tables; no raw movie supplied.")
+        p["raw_cnr_status"] = "unavailable_external_table"
     _log(f"  → {len(locs):,} localisations")
     # Per-localisation precision (loc_sigma_x_nm / loc_sigma_y_nm) — guaranteed
     # present for every engine (NaN where unavailable), propagated through linking
@@ -1966,9 +1986,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             except Exception as _exc:
                 _log(f"  WARN: ImageJ ROI load failed: {_exc}")
             if not _found:
-                _log("  NOTE: ROI mode 'ImageJ ROI' but no sibling RoiSet/.roi "
-                     "found — analysing the whole image.")
-                roi_mode = "none"
+                raise ValueError("ImageJ ROI requested but no usable sibling ROI was found. "
+                                 "Supply the ROI or explicitly select None.")
 
         # Sister ROI image (a microscope-exported companion, e.g. `<base>_green.tif`).
         # Used ONLY when the user explicitly selects "Sister TIFF" — an Auto / Manual /
@@ -1982,10 +2001,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 from firefly.analysis.fa_roi import find_sister_roi_path as _find_sister
                 roi_sister_path = _find_sister(fpath, roi_sister_suffix)
             if roi_sister_path is None:
-                _log(f"  NOTE: ROI mode set to 'Sister TIFF' but no "
-                     f"`<base>{roi_sister_suffix}.tif` found — falling back "
-                     f"to no ROI.")
-                roi_mode = "none"
+                raise ValueError("Sister-image ROI requested but no matching image was found. "
+                                 "Supply the image or explicitly select None.")
 
         _roi_skipped = False   # set True if a polygon ROI is dropped (shape mismatch)
         if roi_mode != "none" and len(locs) > 0:
@@ -2080,16 +2097,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                             _log(f"  WARN: polygon ROI failed — {poly_exc}.")
                             roi_mask = None
 
+                if roi_mask is None and roi_mode not in ("auto", "manual"):
+                    raise ValueError(f"The requested {roi_mode} ROI could not be applied. "
+                                     "Check the saved polygon/image and its dimensions.")
                 if roi_mask is None and mean_proj is not None:
-                    # If a SPECIFIC ROI (polygon / sister / ImageJ) was requested but
-                    # couldn't be applied (skipped above — e.g. a frame-size
-                    # mismatch), this intensity-threshold pipeline runs as a fallback
-                    # and would otherwise apply an ROI the user didn't ask for with
-                    # no indication.  Say so explicitly.  (R2-13)
-                    if roi_mode not in ("auto", "manual"):
-                        _log(f"  NOTE: the requested '{roi_mode}' ROI was not applied "
-                             f"(see the warning above) — falling back to an "
-                             f"intensity-threshold ROI for this file.")
                     # Shared GUI/worker ROI pipeline — DoG background
                     # subtraction + morphology + top-N components.
                     # Whatever the user tunes in the ROI preview viewer is
@@ -2144,8 +2155,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                          f"{100.0 * info['fraction']:.1f}% of frame")
 
                 if roi_mask is None:
-                    _log("  WARN: could not build a ROI mask.  "
-                         "Continuing without ROI.")
+                    raise ValueError("Could not build the requested ROI mask.")
                 else:
                     n_before = len(locs)
                     locs = apply_roi_mask(locs, roi_mask)
@@ -2263,34 +2273,51 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             except Exception as roi_exc:
                 import traceback as _tb, sys as _sys
                 _tb.print_exc(file=_sys.stderr)
-                _log(f"  WARN: ROI mask failed — {roi_exc}.  Continuing without ROI.")
+                raise ValueError(f"Requested ROI failed: {roi_exc}") from roi_exc
 
-        # ── Drift correction (optional) ───────────────────────────────────────
+        # ── Drift correction: measured independently, applied only if supported ──
         drift_df = None
         if p.get("drift_correct", False) and len(locs) > 0:
-            _log(f"\n── Drift correction ───────────────")
-            _prog(40, "Correcting drift…")
+            import pandas as _pd_drift
+            from firefly.analysis.fa_drift import select_drift_reference, save_drift_diagnostic
+            _log("\n── Drift correction ───────────────")
+            _prog(40, "Estimating drift and checking reference support…")
+            reference, reference_source = select_drift_reference(
+                _locs_base, locs, p,
+                image_shape=(stack_h, stack_w) if stack_h and stack_w else None)
+            locs, drift_df = correct_drift(
+                locs, n_seg_frames=int(p.get("drift_segment", 500)),
+                reference_locs=reference, adaptive=bool(p.get("drift_adaptive", True)),
+                min_locs=int(p.get("drift_min_locs", 200)),
+                min_correlation=float(p.get("drift_min_correlation", .2)),
+                method=p.get("drift_method", "rcc"),
+                min_fiducials=int(p.get("drift_min_fiducials", 3)),
+                fiducial_search_range=float(p.get("drift_fiducial_range", 2.)),
+                stop_event=cancel_event)
+            diagnostics = drift_df.attrs["diagnostics"]
+            diagnostics["reference"] = reference_source
+            p["drift_diagnostics"] = {k: v for k, v in diagnostics.items() if k not in ("pairs", "segments")}
+            atomic_to_csv(drift_df, os.path.join(extras_dir, f"{stem}_drift.csv"), index=False)
+            atomic_to_csv(_pd_drift.DataFrame(diagnostics["segments"]),
+                          os.path.join(extras_dir, f"{stem}_drift_segments.csv"), index=False)
+            atomic_to_csv(_pd_drift.DataFrame(diagnostics["pairs"]),
+                          os.path.join(extras_dir, f"{stem}_drift_pairs.csv"), index=False)
+            _atomic_write_json(diagnostics, os.path.join(extras_dir, f"{stem}_drift_diagnostics.json"), indent=2)
             try:
-                locs, drift_df = correct_drift(
-                    locs, n_seg_frames=int(p.get("drift_segment", 500)))
-                atomic_to_csv(drift_df,
-                    os.path.join(extras_dir, f"{stem}_drift.csv"), index=False)
-                _log(f"  Drift correction applied  |  saved {stem}_drift.csv")
-                # Re-align the figure-background sample by the SAME per-frame drift
-                # we just removed from the localisations — otherwise make_figure's
-                # projection stays smeared by the drift while the overlaid tracks are
-                # sharp.  Image inputs only (a CSV/histogram background has no
-                # per-frame image to shift).
-                if proj_idx is not None and getattr(proj_sample, "ndim", 0) == 3:
-                    try:
-                        from firefly.analysis.fa_drift import align_frames_to_drift
-                        align_frames_to_drift(proj_sample, proj_idx, drift_df)
-                        _log("  Drift: re-aligned figure-background sample")
-                    except Exception as _pexc:
-                        _log(f"  NOTE: couldn't drift-align figure background "
-                             f"({_pexc})")
+                save_drift_diagnostic(drift_df, os.path.join(fig_dir, f"{stem}_drift_diagnostic.png"), fi)
             except Exception as exc:
-                _log(f"  WARN: drift correction failed — {exc}")
+                _log(f"  NOTE: could not render drift diagnostic: {exc}")
+            if diagnostics["status"] != "applied":
+                _log(f"  WARN: drift correction SKIPPED — {diagnostics['reason']}")
+                if p.get("drift_failure_policy", "Skip correction") == "Stop run":
+                    raise ValueError(f"Drift correction unsupported: {diagnostics['reason']}")
+            else:
+                _log(f"  Drift applied: {diagnostics['n_accepted_pairs']}/{diagnostics['n_pairs']} "
+                     "supported segment pairs; diagnostic trace saved.")
+                if proj_idx is not None and getattr(proj_sample, "ndim", 0) == 3:
+                    from firefly.analysis.fa_drift import align_frames_to_drift
+                    align_frames_to_drift(proj_sample, proj_idx, drift_df)
+                    _log("  Drift: re-aligned figure-background sample")
 
         _check_stop()
 
@@ -2491,9 +2518,11 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # ── Secondary analyses ────────────────────────────────────────────────
         _log(f"\n── Secondary analyses ────────────")
         _prog(80, "Secondary analyses…")
-        # Subtract the SAME static localisation-error offset (4σ² = median MSD0) the
-        # MSD fit removed, so the JDD D's are localisation-error-corrected and agree
-        # with the MSD D instead of being inflated by σ²/Δt.
+        # Subtract the SAME static offset (median MSD0) the MSD fit removed, so
+        # the JDD D's are comparable with the MSD D instead of being inflated by
+        # sigma^2/dt.  Caveat worth keeping in mind when reading the number: that
+        # intercept also absorbs motion blur, so it is not a calibrated static
+        # noise variance — the JDD output labels itself accordingly.
         _loc_offset = 0.0
         if "MSD0" in diff_df.columns:
             _m = diff_df["MSD0"]
@@ -2996,7 +3025,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "max_lagtime":      int(p.get("max_lagtime", _POSTPROC_LINK_DEFAULTS["max_lagtime"])),
                     "n_fit":            int(p.get("n_fit", _POSTPROC_LINK_DEFAULTS["n_fit"])),
                     "gap_policy":       str(p.get("gap_policy", GapPolicy.ALL_PAIRS.value)),
-                    "metrics_schema_version": int(p.get("metrics_schema_version", 2)),
+                    "metrics_schema_version": int(p.get("metrics_schema_version", 3)),
                     "metric_contract": str(p.get(
                         "metric_contract", CURRENT_METRIC_CONTRACT)),
                     "step_definition":  STEP_DEFINITION,
@@ -3156,7 +3185,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # Computed defensively so a partial pipeline still returns a valid
         # payload (e.g. when filter-by-D produced an empty diff_df).
         summary = {
-            "metrics_schema_version": int(p.get("metrics_schema_version", 2)),
+            "metrics_schema_version": int(p.get("metrics_schema_version", 3)),
             "gap_policy":    str(p.get("gap_policy", GapPolicy.ALL_PAIRS.value)),
             "metric_contract": str(p.get(
                 "metric_contract", CURRENT_METRIC_CONTRACT)),
@@ -3224,17 +3253,16 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                             "n_below_resolution_excluded_by_d_filter"])
                 if "D" in diff_df.columns:
                     d_thresh = float(p.get("mobile_d_threshold", MOBILE_D_THRESHOLD_DEFAULT))
-                    # Match the canonical definition used by the mobile-fraction
-                    # panel and the mob/immob ratio (fa_diffusion): D >= threshold
-                    # over finite, positive D only.  The old `(D > thresh).mean()`
-                    # used strict `>` and counted NaN-D failed fits in the
-                    # denominator (NaN > t is False), so the headline number was
-                    # biased low and disagreed with its own panel.  (#9)
-                    _d = diff_df["D"].to_numpy(dtype=float)
-                    _valid = _np.isfinite(_d) & (_d > 0)
+                    # One shared definition for the headline number, the
+                    # mobile-fraction panel and the mob/immob ratio, so they
+                    # cannot disagree: see fa_diffusion.mobility_masks (a
+                    # non-positive MSD slope counts as immobile, not as a
+                    # dropped row).
+                    from firefly.analysis.fa_diffusion import mobility_masks
+                    _mob, _imm = mobility_masks(diff_df, d_thresh)
+                    _n = int(_mob.sum()) + int(_imm.sum())
                     summary["mobile_fraction"] = (
-                        float((_d[_valid] >= d_thresh).mean())
-                        if _valid.any() else None)
+                        float(int(_mob.sum()) / _n) if _n else None)
                 if "loc_sigma_nm" in diff_df.columns:
                     _ls = diff_df["loc_sigma_nm"].dropna()
                     if len(_ls):
@@ -3357,7 +3385,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             # QC read on how much stage/sample drift was present.  Only available
             # when drift correction ran.
             drift_total_nm = None
-            if drift_df is not None and len(drift_df) > 1:
+            if (drift_df is not None and len(drift_df) > 1
+                    and p.get("drift_diagnostics", {}).get("status") == "applied"):
                 try:
                     ddx = drift_df["dx"].to_numpy(dtype=float)
                     ddy = drift_df["dy"].to_numpy(dtype=float)
@@ -3376,10 +3405,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 "gap_fraction":        gap_frac,
                 "stuck_fraction":      stuck_frac,
                 "drift_total_nm":      drift_total_nm,
+                "drift_diagnostics":   p.get("drift_diagnostics"),
             })
 
             # Threshold-based flags — surface as warnings in the GUI
             flags: list[dict] = []
+            if p.get("drift_diagnostics", {}).get("status") == "skipped":
+                flags.append({"level": "warn", "msg": "Drift correction was not applied: " +
+                              p["drift_diagnostics"]["reason"] + ". Inspect the drift diagnostics."})
             if link_ratio is not None and link_ratio < 0.10:
                 flags.append({"level": "warn",
                     "msg": f"Only {link_ratio*100:.1f}% of localisations were "

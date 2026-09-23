@@ -1543,7 +1543,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         )
     contract_panel_families = {
         "diffusion": {"msd", "auc", "logd_dist", "mob_immob",
-                      "motion_classes", "vacf"},
+                      "motion_classes", "vacf", "jdd", "dwell_cdf"},
         "step": {"step", "speed", "linkstep", "linkspeed"},
         "link": {"linkstep", "linkspeed"},
     }
@@ -2182,7 +2182,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             ax.grid(True, axis="y", which="minor", color=pal["GRD"],
                     lw=0.4, alpha=0.30)
             ax.set_axisbelow(True)       # gridlines behind the markers
-            ax.set_title("JDD: per-population D  (marker size ∝ population fraction)")
+            ax.set_title("JDD: population D (apparent when uncalibrated; size ∝ fraction)")
             ax.legend(frameon=False, loc="best")
         else:
             ax.text(0.5, 0.5, "No JDD data\n(re-run analysis to generate)",

@@ -43,261 +43,381 @@ def align_frames_to_drift(frames, frame_indices, drift_df):
     return frames
 
 
+def _validate_reference(table):
+    required = {"frame", "x", "y"}
+    if not required <= set(table):
+        raise ValueError("Drift reference requires frame, x, y columns in camera pixels.")
+    values = table[["frame", "x", "y"]].to_numpy(dtype=float)
+    if not np.isfinite(values).all() or (values[:, 0] < 0).any() or (values[:, 0] % 1 != 0).any():
+        raise ValueError("Drift reference must contain finite coordinates and nonnegative integer frames.")
+
+
+def _segment_bounds(frames, n_frames, target, adaptive, min_locs, max_segments=64):
+    """Count-driven windows, bounded in time and number; never bridge empty time silently."""
+    target = max(1, int(target))
+    min_width = max(1, int(np.ceil(n_frames / max_segments)), target // 4 if adaptive else target)
+    if not adaptive:
+        return np.unique(np.r_[np.arange(0, n_frames, min_width), n_frames]).astype(int)
+    max_width = max(min_width, target * 4)
+    cumulative = np.r_[0, np.cumsum(np.bincount(frames, minlength=n_frames))]
+    bounds = [0]
+    while bounds[-1] < n_frames:
+        start = bounds[-1]
+        enough = int(np.searchsorted(cumulative, cumulative[start] + min_locs))
+        end = min(n_frames, start + max_width, max(start + min_width, enough))
+        bounds.append(end)
+    # Merge a short or underpopulated terminal segment, but not across an
+    # arbitrarily long missing interval.
+    if len(bounds) > 2 and bounds[-1] - bounds[-3] <= max_width:
+        if (bounds[-1] - bounds[-2] < min_width or
+                cumulative[bounds[-1]] - cumulative[bounds[-2]] < min_locs):
+            bounds.pop(-2)
+    return np.asarray(bounds, dtype=int)
+
+
+def _redundantly_connected(n, pairs):
+    """Every segment must be connected without relying on a single bridge edge."""
+    neighbours = [set() for _ in range(n)]
+    for p in pairs:
+        neighbours[p['i']].add(p['j']); neighbours[p['j']].add(p['i'])
+    discovered = [-1]*n
+    low = [0]*n
+    clock = 0
+    bridge = False
+
+    def visit(node, parent):
+        nonlocal clock, bridge
+        discovered[node] = low[node] = clock
+        clock += 1
+        for other in neighbours[node]:
+            if other == parent: continue
+            if discovered[other] < 0:
+                visit(other, node)
+                low[node] = min(low[node], low[other])
+                if low[other] > discovered[node]: bridge = True
+            else:
+                low[node] = min(low[node], discovered[other])
+    visit(0, -1)
+    return all(t >= 0 for t in discovered) and not bridge
+
+
+def _solve_pairs(n, pairs, tolerance, outlier_k):
+    """Weighted RCC graph solve; disconnected estimates must never be applied."""
+    active = [p for p in pairs if p['accepted']]
+    estimate = np.zeros((n, 2))
+    if n < 3 or not _redundantly_connected(n, active):
+        return estimate, False, 'Disconnected or nonredundant reference segments'
+    # A spanning tree alone has no redundant consistency evidence.
+    if len(active) < n:
+        return estimate, False, 'Insufficient redundant segment pairs'
+    for iteration in range(5):
+        A = np.zeros((len(active), n - 1))
+        b = np.array([[p['dx'], p['dy']] for p in active])
+        weights = np.sqrt([p['weight'] for p in active])
+        for row, p in enumerate(active):
+            if p['i']: A[row, p['i']-1] = -1
+            if p['j']: A[row, p['j']-1] = 1
+        estimate[1:] = np.linalg.lstsq(A*weights[:, None], b*weights[:, None], rcond=None)[0]
+        residual = np.array([np.linalg.norm(estimate[p['j']]-estimate[p['i']]-b[k])
+                             for k, p in enumerate(active)])
+        med = np.median(residual)
+        threshold = max(tolerance, outlier_k*1.4826*np.median(np.abs(residual-med)))
+        bad = residual > threshold
+        # One gross edge can spread its error across many least-squares
+        # residuals and inflate MAD. Remove the worst edge if the absolute
+        # consistency limit still fails, then re-solve/check connectivity.
+        if not bad.any() and residual.max() > tolerance*3:
+            bad[np.argmax(residual)] = True
+        for p, r in zip(active, residual): p['residual_px'] = float(r)
+        if not bad.any():
+            break
+        # At the iteration limit, don't return a curve before re-solving the
+        # rejected graph. Treat unresolved inconsistency as unsupported.
+        if iteration == 4:
+            return estimate, False, 'Pair rejection did not converge'
+        for p, reject in zip(active, bad):
+            if reject: p.update(accepted=False, reason='inconsistent_shift')
+        active = [p for p in active if p['accepted']]
+        if len(active) < n or not _redundantly_connected(n, active):
+            return estimate, False, 'Rejected shifts leave insufficient connected support'
+    if max(p['residual_px'] for p in active) > tolerance * 3:
+        return estimate, False, 'Large residual disagreement between references'
+    return estimate, True, 'Supported by connected redundant measurements'
+
+
+def _rcc_pairs(reference, bounds, scale, max_shift_frac, min_locs, min_correlation, min_psr, stop_event):
+    from scipy.fft import rfft2, irfft2, next_fast_len
+    from firefly.analysis.fa_constants import _Cancelled
+    xy = reference[['x', 'y']].to_numpy(float)
+    f = reference.frame.to_numpy(int)
+    origin = xy.min(axis=0) - 2
+    extent = np.ptp(xy, axis=0) + 5
+    # Bound memory independently of camera dimensions or long acquisitions.
+    scale = min(float(scale), 511.0 / max(extent))
+    W, H = np.maximum(16, np.ceil(extent*scale).astype(int) + 1)
+    shape = (next_fast_len(2*H-1), next_fast_len(2*W-1))
+    maps, norms, counts = [], [], []
+    for start, end in zip(bounds[:-1], bounds[1:]):
+        if stop_event is not None and stop_event.is_set(): raise _Cancelled()
+        sel = (f >= start) & (f < end)
+        counts.append(int(sel.sum()))
+        dm = np.zeros((H, W), np.float32)
+        coords = np.floor((xy[sel]-origin)*scale).astype(int)
+        np.add.at(dm, (coords[:, 1], coords[:, 0]), 1)
+        dm = gaussian_filter(dm, max(.5, scale*.7))
+        # Remove broad density gradients so a bright diffuse region cannot
+        # dominate the correlation solely by its total brightness.
+        dm -= gaussian_filter(dm, max(2., scale*4))
+        norms.append(float(np.linalg.norm(dm)))
+        maps.append(rfft2(dm, s=shape))
+    lag_y = np.fft.fftfreq(shape[0])*shape[0]
+    lag_x = np.fft.fftfreq(shape[1])*shape[1]
+    ry, rx = max(1, int(max_shift_frac*H)), max(1, int(max_shift_frac*W))
+    iy = np.flatnonzero(np.abs(lag_y) <= ry)
+    ix = np.flatnonzero(np.abs(lag_x) <= rx)
+    grid_y, grid_x = np.meshgrid(lag_y[iy], lag_x[ix], indexing='ij')
+
+    def measure(ij):
+        if stop_event is not None and stop_event.is_set(): raise _Cancelled()
+        i, j = ij
+        p = dict(i=i, j=j, dx=0., dy=0., weight=0., correlation=0., psr=0.,
+                 accepted=False, reason='sparse_segment', residual_px=None)
+        if min(counts[i], counts[j]) < min_locs or min(norms[i], norms[j]) <= 0: return p
+        cross = irfft2(maps[j]*maps[i].conj(), s=shape)
+        window = cross[np.ix_(iy, ix)]
+        py, px = np.unravel_index(np.argmax(window), window.shape)
+        y, x = int(iy[py]), int(ix[px])
+        ly, lx = float(grid_y[py, px]), float(grid_x[py, px])
+        peak = float(cross[y, x])
+        sidelobe = window[((grid_y-ly)**2+(grid_x-lx)**2) > max(2., 2*scale)**2]
+        if sidelobe.size < 10: p['reason'] = 'insufficient_peak_background'; return p
+        psr = (peak-float(sidelobe.mean())) / max(float(sidelobe.std()), 1e-20)
+        corr = peak / (norms[i]*norms[j])
+        uniqueness = peak / max(float(sidelobe.max()), 1e-20)
+        # Three-point parabolic refinement, in the full wrapped correlation.
+        def offset(a, b, c):
+            denom = a-2*b+c
+            return float(np.clip(.5*(a-c)/denom, -.5, .5)) if denom < 0 else 0.
+        subx = offset(cross[y, (x-1)%shape[1]], peak, cross[y, (x+1)%shape[1]])
+        suby = offset(cross[(y-1)%shape[0], x], peak, cross[(y+1)%shape[0], x])
+        reason = ('search_boundary' if abs(lx) >= rx or abs(ly) >= ry else
+                  'weak_peak' if corr < min_correlation or psr < min_psr else
+                  'ambiguous_peak' if uniqueness < 1.05 else 'accepted')
+        p.update(dx=(lx+subx)/scale, dy=(ly+suby)/scale,
+                 correlation=float(corr), psr=float(psr), peak_ratio=float(uniqueness),
+                 weight=max(1e-6, min(corr, 1)**2 * min(psr, 30)**2),
+                 accepted=reason == 'accepted', reason=reason)
+        return p
+
+    indices = [(i, j) for i in range(len(counts)) for j in range(i+1, len(counts))]
+    with ThreadPoolExecutor(max_workers=min(4, N_CPUS)) as pool:
+        pairs = list(pool.map(measure, indices))
+    return pairs, counts, scale
+
+
+def _fiducial_pairs(reference, bounds, min_fiducials, search_range, tolerance, stop_event=None):
+    """Match user-designated stationary markers; use robust common motion.
+
+    A particle column supplies identities. Otherwise Trackpy links the selected
+    reference detections. This cannot identify stationary beads biologically.
+    """
+    if 'particle' not in reference:
+        from firefly.analysis.fa_linking import _link_via_trackpy
+        reference = _link_via_trackpy(reference.sort_values('frame').copy(),
+                                     search_range=search_range, memory=2, stop_event=stop_event)
+    if reference.particle.isna().any() or reference.duplicated(['particle', 'frame']).any():
+        raise ValueError('Fiducials require unique particle/frame observations and nonmissing identities.')
+    segments, counts = [], []
+    from firefly.analysis.fa_constants import _Cancelled
+    for start, end in zip(bounds[:-1], bounds[1:]):
+        if stop_event is not None and stop_event.is_set(): raise _Cancelled()
+        sub = reference[(reference.frame >= start) & (reference.frame < end)]
+        counts.append(len(sub))
+        # All beads in a segment must sample the same drift epoch: require
+        # observations on both sides of the window center.
+        center = (start+end-1)/2
+        grouped = sub.groupby('particle')
+        spans = grouped.frame.agg(['min', 'max', 'count'])
+        ids = spans.index[(spans['min'] <= center) & (spans['max'] >= center) & (spans['count'] >= 3)]
+        # Interpolate each bead at the same segment center; medians at different
+        # observation times would bias drifting, asynchronously blinking beads.
+        positions = {}
+        for pid, g in sub[sub.particle.isin(ids)].groupby('particle'):
+            g = g.sort_values('frame')
+            if np.diff(g.frame).max(initial=0) > max(2, (end-start)/4): continue
+            positions[pid] = [np.interp(center, g.frame, g.x), np.interp(center, g.frame, g.y)]
+        segments.append(pd.DataFrame.from_dict(positions, orient='index', columns=['x','y']))
+    pairs = []
+    for i in range(len(segments)):
+        for j in range(i+1, len(segments)):
+            ids = segments[i].index.intersection(segments[j].index)
+            p = dict(i=i, j=j, dx=0., dy=0., weight=0., accepted=False,
+                     reason='too_few_shared_fiducials', n_fiducials=len(ids), residual_px=None)
+            if len(ids) >= min_fiducials:
+                shifts = (segments[j].loc[ids]-segments[i].loc[ids]).to_numpy()
+                median = np.median(shifts, axis=0)
+                good = np.linalg.norm(shifts-median, axis=1) <= tolerance
+                if good.sum() >= min_fiducials:
+                    median = np.median(shifts[good], axis=0)
+                    p.update(dx=float(median[0]), dy=float(median[1]), weight=float(good.sum()),
+                             accepted=True, reason='accepted', n_fiducials=int(good.sum()))
+                else: p['reason'] = 'fiducials_disagree'
+            pairs.append(p)
+    return pairs, counts
+
+
 def correct_drift(locs, n_seg_frames=200, upsampling=4, smooth_sigma=1.5,
-                  max_shift_frac=0.30, outlier_k=6.0, outlier_tol_px=6.0):
+                  max_shift_frac=0.30, outlier_k=6.0, outlier_tol_px=6.0, *,
+                  reference_locs=None, adaptive=True, min_locs=200,
+                  min_correlation=.2, min_psr=6., method='rcc', min_fiducials=3,
+                  fiducial_search_range=2., stop_event=None):
+    """Estimate and subtract supported 2D translation in camera pixels.
+
+    RCC uses quality-weighted redundant density correlations (Wang et al. 2014,
+    doi:10.1364/OE.22.015982), bounded count-adaptive windows and subpixel peaks.
+    Optional reference_locs are independent of the analysis ROI. Fiducials must
+    be user-designated stationary markers; particle identities can be supplied
+    or linked within this reference. No method distinguishes common biological
+    motion from stage drift without such a reference.
+
+    The returned dx/dy are the APPLIED shift. Unsupported estimates apply zero,
+    carry status='skipped', and preserve the reason in drift_df.attrs['diagnostics'].
+    Pair/segment quality scores are diagnostics, not calibrated uncertainties.
+    outlier_tol_px retains its historic upsampled-pixel units; internally all
+    solved shifts and reported residuals use camera pixels.
     """
-    Reference-free drift correction via cross-correlation of localization
-    density maps (simplified RCC approach; Wang et al. 2014,
-    Opt. Express 22(13):15982, DOI 10.1364/OE.22.015982).
+    from firefly.analysis.fa_constants import _Cancelled
+    if stop_event is not None and stop_event.is_set(): raise _Cancelled()
+    _validate_reference(locs)
+    reference = locs.copy() if reference_locs is None else reference_locs.copy()
+    _validate_reference(reference)
+    if method not in ('rcc', 'fiducials'): raise ValueError('Unknown drift method')
+    if (n_seg_frames < 1 or upsampling <= 0 or min_locs < 5 or smooth_sigma < 0
+            or not 0 < max_shift_frac < .5 or not 0 <= min_correlation <= 1
+            or min_psr <= 0 or min_fiducials < 1 or fiducial_search_range <= 0):
+        raise ValueError('Invalid drift estimation settings')
+    n_frames = int(locs.frame.max())+1 if len(locs) else 1
+    reference = reference[reference.frame < n_frames]
+    bounds = _segment_bounds(reference.frame.to_numpy(int), n_frames, n_seg_frames, adaptive, min_locs)
+    centers = (bounds[:-1]+bounds[1:]-1)/2
+    n = len(centers)
+    counts, pairs, scale = [0]*n, [], float(upsampling)
+    estimate, supported, reason = np.zeros((n, 2)), False, 'Too few reference localisations or time segments'
+    if len(reference) >= min_locs and n >= 3:
+        if method == 'rcc':
+            pairs, counts, scale = _rcc_pairs(reference, bounds, upsampling, max_shift_frac,
+                                            min_locs, min_correlation, min_psr, stop_event)
+        else:
+            pairs, counts = _fiducial_pairs(reference, bounds, min_fiducials,
+                                            fiducial_search_range, outlier_tol_px/upsampling, stop_event)
+        estimate, supported, reason = _solve_pairs(n, pairs, outlier_tol_px/upsampling, outlier_k)
+    frame_arr = np.arange(n_frames)
+    applied = np.zeros((n_frames, 2))
+    if supported:
+        # Smoothing on a UNIFORM time grid: adaptive segments are not equally
+        # spaced. Preserve a linear trend and avoid a time-dependent kernel.
+        grid = np.linspace(centers[0], centers[-1], max(n, 3))
+        for axis in range(2):
+            values = np.interp(grid, centers, estimate[:, axis])
+            trend = np.polyval(np.polyfit(grid, values, 1), grid)
+            if smooth_sigma > 0: values = trend + gaussian_filter1d(values-trend, smooth_sigma)
+            applied[:, axis] = interp1d(grid, values, bounds_error=False, fill_value='extrapolate')(frame_arr)
+        applied -= applied.mean(axis=0)
+    degree = np.zeros(n, int)
+    residuals = [[] for _ in range(n)]
+    for pair in pairs:
+        if pair['accepted']:
+            for k in (pair['i'], pair['j']):
+                degree[k] += 1
+                if pair.get('residual_px') is not None: residuals[k].append(pair['residual_px'])
+    diagnostics = dict(version=2, method=method, status='applied' if supported else 'skipped', reason=reason,
+                       settings=dict(target_segment_frames=n_seg_frames, min_locs=min_locs,
+                                     requested_upsampling=upsampling, smooth_sigma=smooth_sigma,
+                                     max_shift_frac=max_shift_frac, outlier_k=outlier_k,
+                                     residual_floor_camera_px=outlier_tol_px/upsampling,
+                                     min_fiducials=min_fiducials, fiducial_search_range=fiducial_search_range,
+                                     max_segments=64, min_peak_ratio=1.05),
+                       adaptive=bool(adaptive), effective_upsampling=scale, n_reference=len(reference),
+                       n_segments=n, n_pairs=len(pairs), n_accepted_pairs=sum(p['accepted'] for p in pairs),
+                       min_correlation=min_correlation, min_psr=min_psr,
+                       confidence_interpretation='Diagnostic support, not a calibrated probability',
+                       segments=[dict(start=int(bounds[i]), end=int(bounds[i+1]), center=float(centers[i]),
+                                      n_locs=int(counts[i]), accepted_pairs=int(degree[i]),
+                                      residual_px=float(np.median(residuals[i])) if residuals[i] else None,
+                                      estimate_dx=float(estimate[i,0]), estimate_dy=float(estimate[i,1])) for i in range(n)],
+                       pairs=pairs)
+    segment = np.clip(np.searchsorted(bounds[1:], frame_arr, side='right'), 0, n-1)
+    support = np.where(supported, degree[segment], 0)
+    status = diagnostics['status']
+    drift_df = pd.DataFrame(dict(frame=frame_arr, dx=applied[:,0], dy=applied[:,1],
+                                 support_pairs=support, status=status,
+                                 extrapolated=(frame_arr < centers[0]) | (frame_arr > centers[-1])))
+    drift_df.attrs['diagnostics'] = diagnostics
+    result = locs.copy()
+    fi = result.frame.to_numpy(int)
+    result['x'] = result.x.to_numpy()-applied[fi,0]
+    result['y'] = result.y.to_numpy()-applied[fi,1]
+    print(f"  Drift {status}: {reason} ({diagnostics['n_accepted_pairs']}/{len(pairs)} accepted pairs)")
+    return result, drift_df
 
-    The acquisition is divided into time segments.  A 2-D localization density
-    histogram is built for each segment at ``upsampling``× the raw pixel
-    resolution.  Consecutive histograms are cross-correlated (FFT) to measure
-    the inter-segment drift.  The cumulative, Gaussian-smoothed drift trajectory
-    is interpolated to per-frame resolution and subtracted from every
-    localization.
 
-    Applied *before* linking so that drift-corrected positions produce better
-    trajectories.
+def save_drift_diagnostic(drift_df, path, frame_interval=1.):
+    """Standalone curve and segment-support plot, including skipped corrections."""
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    d = drift_df.attrs['diagnostics']
+    fig = Figure(figsize=(9, 6), layout='constrained'); FigureCanvasAgg(fig)
+    ax, support = fig.subplots(2, 1)
+    t = drift_df.frame*frame_interval
+    ax.plot(t, drift_df.dx, label='Applied x'); ax.plot(t, drift_df.dy, label='Applied y')
+    ax.set(ylabel='Translation (camera px)', title=f"Drift {d['status']}: {d['reason']}")
+    ax.legend()
+    seg = d['segments']
+    times = [s['center']*frame_interval for s in seg]
+    support.plot(times, [s['accepted_pairs'] for s in seg], 'o-', label='Accepted pairs')
+    support.set(xlabel='Time (s)', ylabel='Supporting pairs per segment',
+                title='Support is a diagnostic, not calibrated uncertainty')
+    support.legend(); fig.savefig(path, dpi=150)
 
-    Parameters
-    ----------
-    locs          : DataFrame with 'x', 'y', 'frame' columns (in pixels)
-    n_seg_frames  : target number of frames per time segment (default 200).
-                    Smaller → finer time resolution but fewer localisations
-                    per segment (noisier cross-correlation).
-    upsampling    : density-map super-resolution factor.  upsampling=4 gives
-                    ~25 nm accuracy at 0.1 µm/px (default 4).
-    smooth_sigma  : Gaussian smoothing sigma in units of *segments* applied to
-                    the raw drift trajectory before interpolation (default 1.5).
-    max_shift_frac: cross-correlation peak search is restricted to inter-segment
-                    shifts within ``max_shift_frac`` of the density-map extent
-                    along each axis (default 0.30).  This rejects gross spurious
-                    / wrap-around correlation peaks on sparse or poorly-overlapping
-                    segments (which otherwise produce non-physical drifts like
-                    150 px on a 512 px frame) while leaving real drift — always
-                    far inside this window — untouched.  Scales with the data so
-                    larger structures permit larger absolute drift.
-    outlier_k     : robustness factor for inconsistent-pair rejection.  After the
-                    redundant cross-correlation least-squares solve, segment pairs
-                    whose measured shift disagrees with the global solution by more
-                    than ``max(outlier_tol_px, outlier_k · 1.4826 · MAD)``
-                    (in upsampled px) are dropped and the system is re-solved (one
-                    IRLS pass).  On clean data all residuals are tiny → nothing is
-                    dropped → the result is identical to the un-guarded solve.
-    outlier_tol_px: absolute residual floor (upsampled px) for the rejection rule,
-                    so clean data with near-zero MAD never rejects good pairs.
 
-    Returns
-    -------
-    locs_corrected : DataFrame with corrected 'x' and 'y'
-    drift_df       : DataFrame with columns ['frame', 'dx', 'dy'] (pixels)
-    """
-    if len(locs) == 0:
-        return locs.copy(), pd.DataFrame({"frame": [0], "dx": [0.0], "dy": [0.0]})
+def drift_reference_file_metadata(params):
+    """Content identity for replay and cache invalidation of an external reference."""
+    from pathlib import Path
+    import hashlib
+    movie = Path(params.get('file', ''))
+    requested = str(params.get('drift_reference_file', '')).strip()
+    if not requested: raise ValueError('Select a drift reference CSV first.')
+    path = Path(requested.replace('{stem}', movie.stem)).expanduser()
+    if not path.is_absolute(): path = movie.parent/path
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024*1024), b''): digest.update(block)
+    return dict(path=str(path.resolve()), sha256=digest.hexdigest(),
+                coordinates='camera pixels', frame_clock='same acquisition, zero-based')
 
-    x = locs["x"].values.astype(np.float64)
-    y = locs["y"].values.astype(np.float64)
-    f = locs["frame"].values.astype(int)
 
-    n_frames   = int(f.max()) + 1
-    n_segments = max(4, int(np.ceil(n_frames / n_seg_frames)))
-    n_segments = min(n_segments, max(2, len(locs) // 10))  # need ≥10 locs/seg
-
-    print(f"  Drift correction : {n_segments} segments "
-          f"(~{n_frames // n_segments} frames each, upsampling={upsampling})")
-
-    x_min, x_max = x.min(), x.max()
-    y_min, y_max = y.min(), y.max()
-    W = max(int((x_max - x_min) * upsampling) + 1, 16)
-    H = max(int((y_max - y_min) * upsampling) + 1, 16)
-
-    seg_bounds  = np.linspace(0, n_frames, n_segments + 1).astype(int)
-    seg_centers = (seg_bounds[:-1] + seg_bounds[1:]) / 2.0
-
-    # ── Build upsampled density maps ──────────────────────────────────────────
-    density_maps = []
-    seg_counts   = []
-    for i in range(n_segments):
-        sel = (f >= seg_bounds[i]) & (f < seg_bounds[i + 1])
-        seg_counts.append(int(sel.sum()))
-        dm  = np.zeros((H, W), dtype=np.float32)
-        if sel.sum() > 0:
-            xi = np.clip(((x[sel] - x_min) * upsampling).astype(int), 0, W - 1)
-            yi = np.clip(((y[sel] - y_min) * upsampling).astype(int), 0, H - 1)
-            np.add.at(dm, (yi, xi), 1.0)
-            dm = gaussian_filter(dm, sigma=upsampling * 0.7)   # spread spots
-        density_maps.append(dm)
-
-    print(f"  Localisations/segment: min {min(seg_counts):,}, "
-          f"max {max(seg_counts):,}")
-
-    # ── Cross-correlate ALL pairs (i, j) → solve cumulative drift ─────────────
-    # This is the redundant cross-correlation (RCC) algorithm of Wang et al.
-    # 2014 (Opt. Express 22(13):15982).  Instead of relying only on consecutive pairs, we
-    # measure the inter-segment shift Δ_{ij} for every pair (i, j) with i<j
-    # and then solve the over-determined linear system
-    #
-    #     drift[j] − drift[i] = Δ_{ij}      for all valid pairs
-    #
-    # by least-squares.  Drift[0] is fixed at zero (gauge fixing).  The
-    # redundancy averages out cross-correlation noise far better than the
-    # consecutive-only chain, and is robust to any single bad pair (e.g. a
-    # segment with too few localisations).
-    #
-    # Performance note:  scipy.signal.correlate(method="fft") re-FFTs both
-    # density maps on every pair call, so an N-segment run does ~N(N-1)
-    # FFTs.  We precompute rfft2 of each (zero-padded) map ONCE and just
-    # run an IFFT per pair — quadratic-cost FFT work collapses to linear,
-    # plus the IFFT loop parallelises trivially via threads.
-    from scipy.fft import rfft2 as _rfft2, irfft2 as _irfft2, \
-                          next_fast_len as _next_fast_len
-    pad_H = _next_fast_len(2 * H - 1)
-    pad_W = _next_fast_len(2 * W - 1)
-    fft_maps = [_rfft2(dm, s=(pad_H, pad_W)) for dm in density_maps]
-
-    pair_indices = [(i, j) for i in range(n_segments)
-                    for j in range(i + 1, n_segments)
-                    if seg_counts[i] >= 5 and seg_counts[j] >= 5]
-
-    # ── Plausible-shift search mask ───────────────────────────────────────────
-    # The cross-correlation lives on a (pad_H × pad_W) wrapped grid: index k on
-    # an axis of length L means lag k (k < L/2) or k−L (k ≥ L/2).  Restricting
-    # argmax to lags within ±(max_shift_frac · extent) per axis prevents a
-    # spurious / wrap-around peak on a sparse or poorly-overlapping segment from
-    # being selected as the drift (the root cause of 150 px artefacts).  Real
-    # drift sits far inside this window, so on well-behaved data the masked
-    # argmax returns the SAME index as the un-masked one — byte-identical output.
-    _lag0 = np.where(np.arange(pad_H) < pad_H // 2,
-                     np.arange(pad_H), np.arange(pad_H) - pad_H)
-    _lag1 = np.where(np.arange(pad_W) < pad_W // 2,
-                     np.arange(pad_W), np.arange(pad_W) - pad_W)
-    _R_y = max(1, int(round(max_shift_frac * H)))
-    _R_x = max(1, int(round(max_shift_frac * W)))
-    search_mask = ((np.abs(_lag0) <= _R_y)[:, None]
-                   & (np.abs(_lag1) <= _R_x)[None, :])
-
-    def _pair_shift(i, j):
-        # Cross-correlation r[τ] = Σ map_j[k+τ]·map_i[k]  via  IFFT(F_j · conj(F_i)).
-        # The peak τ is the shift of the LATER segment j's density relative to the
-        # EARLIER segment i — i.e. (drift_j − drift_i).  Combined with the row
-        # encoding `drift[j] − drift[i] = τ` and the gauge `drift[0]=0`, the solved
-        # `drift_cum` is then the TRUE sample drift, so `locs_out = x − drift`
-        # REMOVES the motion.
-        #
-        # SIGN BUG (fixed): the previous `IFFT(F_i · conj(F_j))` peaks at
-        # (drift_i − drift_j) = −τ, so the solver returned −(true drift) and the
-        # subtraction DOUBLED the drift instead of removing it.  The old test only
-        # checked the recovered range (max−min), which a sign flip also satisfies,
-        # so it slipped through — now locked by test_correct_drift_recovers_sign.
-        cross = _irfft2(fft_maps[j] * np.conj(fft_maps[i]),
-                        s=(pad_H, pad_W))
-        # Search only the plausible-shift window; everything else is masked to
-        # −∞ so it can never win the argmax.
-        peak = int(np.argmax(np.where(search_mask, cross, -np.inf)))
-        py, px = divmod(peak, pad_W)
-        if py >= pad_H // 2: py -= pad_H
-        if px >= pad_W // 2: px -= pad_W
-        return i, j, float(px), float(py)
-
-    pairs = []          # (i, j, dx, dy) in upsampled px
-    if pair_indices:
-        with ThreadPoolExecutor(max_workers=N_CPUS) as _exe:
-            for i, j, dx_pair, dy_pair in _exe.map(
-                    lambda ij: _pair_shift(*ij), pair_indices):
-                pairs.append((int(i), int(j), float(dx_pair), float(dy_pair)))
-
-    def _solve(pair_list):
-        """Gauge-fixed least-squares (drift[0]=0) over the given pair shifts."""
-        if not pair_list:
-            return np.zeros(n_segments), np.zeros(n_segments)
-        rows, bx, by = [], [], []
-        for (i, j, dx, dy) in pair_list:
-            row = np.zeros(n_segments)
-            row[i], row[j] = -1.0, 1.0
-            rows.append(row); bx.append(dx); by.append(dy)
-        gauge = np.zeros(n_segments); gauge[0] = 1.0
-        A  = np.vstack(rows + [gauge * 1e3])
-        bxv = np.append(np.array(bx), 0.0)
-        byv = np.append(np.array(by), 0.0)
-        dxc, *_ = np.linalg.lstsq(A, bxv, rcond=None)
-        dyc, *_ = np.linalg.lstsq(A, byv, rcond=None)
-        return dxc, dyc
-
-    dx_cum, dy_cum = _solve(pairs)
-
-    # ── Robust pair rejection (IRLS) ──────────────────────────────────────────
-    # Use the RCC redundancy: a good pair's measured shift agrees with the global
-    # solution (drift[j]−drift[i]).  Drop pairs whose residual exceeds
-    # max(outlier_tol_px, k·1.4826·MAD) and re-solve.  On clean data residuals
-    # are ~0 → threshold is the floor → nothing is dropped → identical curve.
-    n_rejected = 0
-    if len(pairs) > n_segments:
-        for _ in range(2):                 # at most two refinement passes
-            resid = np.array([
-                np.hypot((dx_cum[j] - dx_cum[i]) - dx,
-                         (dy_cum[j] - dy_cum[i]) - dy)
-                for (i, j, dx, dy) in pairs])
-            med = float(np.median(resid))
-            mad = float(np.median(np.abs(resid - med)))
-            thresh = max(float(outlier_tol_px), float(outlier_k) * 1.4826 * mad)
-            keep = resid <= thresh
-            if keep.all() or int(keep.sum()) < n_segments:
-                break
-            n_rejected += int((~keep).sum())
-            pairs = [p for p, k in zip(pairs, keep) if k]
-            dx_cum, dy_cum = _solve(pairs)
-    if n_rejected:
-        print(f"  Drift: rejected {n_rejected} inconsistent segment pair(s) "
-              f"(robust RCC)")
-
-    # ── Unconstrained-segment guard ───────────────────────────────────────────
-    # A segment that appears in NO surviving pair (too sparse to enter
-    # pair_indices, or all its pairs were rejected above) has an all-zero column
-    # in the design matrix, so lstsq leaves its drift at the min-norm 0.  The
-    # smoothing + interpolation below would then spread that as a spurious
-    # "drift snaps back to zero" spike around that segment's time.  Interpolate
-    # such segments from their nearest constrained neighbours instead (segment 0
-    # is the fixed gauge anchor, so it counts as constrained at 0).
-    constrained = np.zeros(n_segments, dtype=bool)
-    for (i, j, _dx, _dy) in pairs:
-        constrained[i] = True
-        constrained[j] = True
-    constrained[0] = True
-    if constrained.any() and not constrained.all():
-        seg_idx = np.arange(n_segments)
-        ci = seg_idx[constrained]
-        dx_cum = np.interp(seg_idx, ci, dx_cum[constrained])
-        dy_cum = np.interp(seg_idx, ci, dy_cum[constrained])
-        print(f"  Drift: interpolated {int((~constrained).sum())} "
-              f"unconstrained segment(s) from neighbours")
-
-    # Smooth then convert to localization pixels
-    dx_sm = gaussian_filter1d(dx_cum, sigma=smooth_sigma) / upsampling
-    dy_sm = gaussian_filter1d(dy_cum, sigma=smooth_sigma) / upsampling
-
-    # Zero-centre so overall position is preserved
-    dx_sm -= dx_sm.mean()
-    dy_sm -= dy_sm.mean()
-
-    rng_x, rng_y = float(np.ptp(dx_sm)), float(np.ptp(dy_sm))
-    print(f"  Drift range  x={rng_x:.3f} px  y={rng_y:.3f} px")
-
-    # ── Interpolate to every frame ────────────────────────────────────────────
-    frame_arr = np.arange(n_frames, dtype=float)
-    ix = interp1d(seg_centers, dx_sm, kind="linear",
-                  bounds_error=False, fill_value=(dx_sm[0], dx_sm[-1]))
-    iy = interp1d(seg_centers, dy_sm, kind="linear",
-                  bounds_error=False, fill_value=(dy_sm[0], dy_sm[-1]))
-    drift_x = ix(frame_arr)
-    drift_y = iy(frame_arr)
-
-    # ── Subtract from localisations ────────────────────────────────────────────
-    locs_out = locs.copy()
-    fi       = np.clip(f, 0, n_frames - 1)
-    locs_out["x"] = x - drift_x[fi]
-    locs_out["y"] = y - drift_y[fi]
-
-    drift_df = pd.DataFrame({"frame": frame_arr.astype(int),
-                             "dx": drift_x, "dy": drift_y})
-    return locs_out, drift_df
+def select_drift_reference(all_locs, analysis_locs, params, image_shape=None):
+    """Resolve a deliberately selected reference without inheriting the analysis ROI."""
+    mode = params.get('drift_reference', 'Analysis region')
+    source = {'mode': mode}
+    if params.get('drift_method', 'rcc') == 'fiducials' and mode == 'Analysis region':
+        raise ValueError('Fiducial drift requires a separate stationary-marker rectangle or reference CSV.')
+    if mode == 'Analysis region':
+        reference = analysis_locs
+    elif mode == 'Separate rectangle':
+        rect = np.asarray(params.get('drift_ref_rect', []), dtype=float)
+        if rect.shape != (4,) or not np.isfinite(rect).all() or (rect[:2] < 0).any() or (rect[2:] <= 0).any():
+            raise ValueError('Drift reference rectangle requires left, top, positive width and height in pixels.')
+        x, y, w, h = rect
+        if image_shape and (x+w > image_shape[1] or y+h > image_shape[0]):
+            raise ValueError('Drift reference rectangle extends beyond the movie frame.')
+        reference = all_locs[(all_locs.x >= x) & (all_locs.x < x+w) &
+                             (all_locs.y >= y) & (all_locs.y < y+h)]
+        source['rectangle_px'] = rect.tolist()
+    elif mode == 'Reference CSV':
+        source.update(drift_reference_file_metadata(params))
+        reference = pd.read_csv(source['path'])
+    else:
+        raise ValueError(f'Unknown drift reference: {mode}')
+    _validate_reference(reference)
+    return reference, source

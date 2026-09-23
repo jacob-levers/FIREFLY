@@ -1087,7 +1087,7 @@ def is_run_folder(folder: str) -> bool:
 # as an ordinary RunData.  Analyse-once: a byte-identical file + settings reuse
 # the cache instead of re-running.
 _EXTERNAL_LOC_EXTS = (".csv", ".txt", ".tsv")
-_EXTERNAL_CACHE_SCHEMA = 2
+_EXTERNAL_CACHE_SCHEMA = 3
 
 
 def is_external_loc_file(path: str) -> bool:
@@ -1164,16 +1164,36 @@ def analyse_external_file(path: str, settings, *, cache_root: str,
              f"{os.path.basename(path)}: {exc}")
         return None
 
+    # Adding a bare table in Analysis has no accompanying image or ROI editor.
+    # Do not inherit image-mask/contrast controls from the Process sidebar.
+    # Persist the effective choices so cache replay does not claim otherwise.
+    if p.get("roi_mode") != "none" or p.get("min_cnr", 0):
+        _log("  External table: image ROI and raw-contrast filtering are unavailable; "
+             "analysing the supplied localisations.")
+    p.update(roi_mode="none", roi_polygon=None, min_cnr=0.0,
+             raw_cnr_status="unavailable_external_table")
+    p.setdefault("widget_state", {}).update({"analysis/roi_mode": "None",
+                                             "analysis/min_cnr": 0.0})
+
     # Signature = the params that affect the NUMBERS (exclude per-run paths), so
     # the cache key changes iff the analysis would produce different results.
     _volatile = {"file", "out_dir", "stem_override", "widget_state",
                  "wrap_in_stem_folder"}
     signature_params = {k: v for k, v in sorted(p.items())
                         if k not in _volatile}
+    if p.get("drift_correct") and p.get("drift_reference") == "Reference CSV":
+        from firefly.analysis.fa_drift import drift_reference_file_metadata
+        try:
+            signature_params["drift_reference_content"] = drift_reference_file_metadata(p)
+        except (OSError, ValueError) as exc:
+            _log(f"  Cannot load drift reference: {exc}")
+            return None
     # Bump this only when the interpretation of an external table changes.
     # It prevents a cache made under an older calibration policy from being
     # treated as reproducible merely because its other parameters match.
+    from firefly.analysis.fa_diffusion import DIFFUSION_METRICS_SCHEMA_VERSION
     signature_payload = {"external_cache_schema": _EXTERNAL_CACHE_SCHEMA,
+                         "metrics_schema_version": DIFFUSION_METRICS_SCHEMA_VERSION,
                          "params": signature_params}
     try:
         sig = json.dumps(signature_payload, default=str, sort_keys=True)

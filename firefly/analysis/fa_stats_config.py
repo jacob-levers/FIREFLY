@@ -442,8 +442,8 @@ ANALYSIS_GLOSSARY = {
         "How many frames a particle may disappear (blink) and still be re-linked "
         "to the same track.",
     "min track length":
-        "Discard tracks shorter than this many frames — too short to fit a "
-        "reliable diffusion model.",
+        "Discard tracks with fewer than this many observations. Longer tracks "
+        "help estimation, but this cutoff alone does not validate a diffusion model.",
     "max track length":
         "Optionally cap track length (0 = off) to drop stuck or aggregated "
         "particles that linger in one spot.",
@@ -453,11 +453,12 @@ ANALYSIS_GLOSSARY = {
         "pairs separated by each lag. This sets the largest lag (in frames) "
         "included in that curve.",
     "n fit lags":
-        "How many of the first MSD points are used to fit the diffusion "
-        "coefficient — fewer points emphasise short-time (local) diffusion.",
+        "Number of initial MSD lags for the linear slope D (µm²/s). The anomalous "
+        "coefficient Kα and exponent α are fitted separately and are descriptive.",
     "alpha threshold":
-        "The anomalous exponent α from MSD ∝ τ^α; these cut-offs label each "
-        "track Immobile / Confined / Brownian (α≈1) / Directed (α>1).",
+        "Descriptive exponent bins, not confirmed transport states. Tracks with "
+        "fewer than 20 observations or unidentifiable α are unclassified. Even "
+        "longer tracks require validation against noise and motion blur.",
     "mobile-D threshold":
         "The diffusion coefficient below which a track is treated as immobile.",
     "JDD components":

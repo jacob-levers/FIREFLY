@@ -2,23 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleExecutable</key>
-	<string>launcher</string>
-	<key>CFBundleName</key>
-	<string>Launch FIREFLY</string>
 	<key>CFBundleDisplayName</key>
 	<string>Launch FIREFLY</string>
+	<key>CFBundleExecutable</key>
+	<string>launcher</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.jacoblevers.firefly.launcher</string>
-	<key>CFBundleVersion</key>
-	<string>5</string>
+	<key>CFBundleName</key>
+	<string>Launch FIREFLY</string>
 	<key>CFBundleShortVersionString</key>
 	<string>2.76.51</string>
+	<key>CFBundleVersion</key>
+	<string>6</string>
 	<key>FIREFLYReleaseVersion</key>
-	<string>2.76.51-rc.5</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
+	<string>2.76.51-rc.6</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
 </dict>
 </plist>
