@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.76.51-rc.10 — 24 Sep 2026
+
+### Fixed
+
+- **An empty red alert appeared above the detection preview.** The panel's
+  warning box used `visible: prof && prof.warning && prof.warning.length > 0`,
+  which evaluates to `undefined` before the first profile is taken. QML does not
+  fail loudly on that: it drops the binding and the property keeps its DEFAULT,
+  and for `visible` the default is TRUE — so the box appeared with nothing in
+  it. Wrapped in `!!`, and a test now asserts Qt reports no
+  "Unable to assign [undefined] to bool" while the ROI editor is exercised.
+- **The brush and eraser were unreachable unless the ROI mode was already
+  "Manual polygon".** That is the mode you get to BY drawing, so a file set to
+  "None" — the usual state — showed no drawing tools and no hint that they
+  existed. The tool row is now shown whenever an image is loaded, and picking
+  Polygon, Brush or Eraser switches the mode itself.
+
 ## v2.76.51-rc.9 — 23 Sep 2026
 
 ### Fixed

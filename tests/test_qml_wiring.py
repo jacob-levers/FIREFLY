@@ -31,7 +31,7 @@ pytest.importorskip("PySide6")
 
 # Reused verbatim: it isolates HOME + every QSettings domain, silences the
 # resource probes, and dismantles the window/controllers in the right order.
-from test_qml_smoke import qml_window  # noqa: F401
+from test_qml_smoke import _app, qml_window  # noqa: F401
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QML_DIR = os.path.join(ROOT, "firefly", "ui", "qml")
@@ -125,3 +125,48 @@ def test_the_keepalive_tuple_holds_every_registered_controller(qml_window):
         f"registered but not held in win._firefly_ctx: {absent} — these survive "
         f"only by luck (an image provider happening to hold a bound method) and "
         f"their timers are never stopped at teardown")
+
+
+# ── a binding that yields undefined silently shows the control ───────────────
+def test_the_roi_editor_binds_without_undefined_assignments(qml_window, tmp_path):
+    """`visible: obj && obj.msg && obj.msg.length > 0` evaluates to `undefined`
+    when `obj.msg` is missing.  QML does not fail loudly: it drops the binding
+    and the property keeps its DEFAULT, and for `visible` that default is TRUE —
+    so the control appears when it was meant to be hidden.  In the ROI panel
+    this rendered as an empty red error box above the detection preview.
+
+    Qt reports it as "Unable to assign [undefined] to bool", so assert on Qt's
+    own warning stream: that catches the whole class wherever it occurs, with
+    none of the false positives a static scan produces (most `a && b` bindings
+    here are QObject bool properties, which can never be undefined).
+
+    NB the QML disk cache must be off — a cached compile of an earlier revision
+    reports stale line numbers and masks the fix.
+    """
+    import numpy as np
+    import tifffile
+    from PySide6.QtCore import qInstallMessageHandler
+
+    messages = []
+    previous = qInstallMessageHandler(
+        lambda mode, ctx, msg: messages.append(str(msg)))
+    try:
+        win, qw = qml_window
+        roi = qw.rootContext().contextProperty("Roi")
+        path = tmp_path / "preview.tif"
+        frame = np.random.default_rng(3).normal(100, 1, (64, 64)).astype("float32")
+        tifffile.imwrite(path, np.repeat(frame[None], 3, axis=0),
+                         photometric="minisblack")
+        roi.editFile(str(path))
+        win.resize(1400, 950); win.show(); _app.processEvents()
+        roi.detectEnabled = True
+        _app.processEvents()
+        win.hide()
+    finally:
+        qInstallMessageHandler(previous)
+
+    offenders = [m for m in messages if "Unable to assign [undefined]" in m
+                 or "Unable to assign [null] to bool" in m]
+    assert not offenders, (
+        "a binding evaluated to undefined/null and fell back to the property's "
+        f"default (visible defaults to TRUE): {offenders[:4]}")

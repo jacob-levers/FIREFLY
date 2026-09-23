@@ -756,7 +756,7 @@ Item {
 
                             Text {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                visible: guide.prof && guide.prof.n_candidates > 0
+                                visible: !!(guide.prof && guide.prof.n_candidates > 0)
                                 text: {
                                     var p = guide.prof
                                     if (!p || !p.n_candidates) return ""
@@ -769,7 +769,7 @@ Item {
 
                             Text {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                visible: guide.prof && guide.prof.n_candidates > 0
+                                visible: !!(guide.prof && guide.prof.n_candidates > 0)
                                 text: {
                                     var p = guide.prof
                                     if (!p || !p.n_candidates) return ""
@@ -791,8 +791,12 @@ Item {
 
                             Alert {
                                 Layout.fillWidth: true
-                                visible: guide.prof && guide.prof.warning &&
-                                         guide.prof.warning.length > 0
+                                // !! is load-bearing: guide.prof starts as {},
+                                // so this chain yields `undefined`, the bool
+                                // binding fails, and `visible` falls back to its
+                                // default — TRUE — showing an empty red alert.
+                                visible: !!(guide.prof && guide.prof.warning &&
+                                            guide.prof.warning.length > 0)
                                 severity: (guide.prof && guide.prof.below_noise_floor) ? "danger" : "warn"
                                 text: (guide.prof && guide.prof.warning) ? guide.prof.warning : ""
                             }
@@ -859,9 +863,14 @@ Item {
                         }
 
                         // ── drawing tool: click-a-polygon vs paint ──────────
+                        // Shown whenever an image is loaded, NOT only in Manual
+                        // polygon mode: gating it on the mode meant a file set to
+                        // "None" (the common case) offered no drawing tools and no
+                        // hint that picking a tool is what reveals them.  Choosing
+                        // one switches the mode.
                         ColumnLayout {
                             Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp2
-                            visible: root.isPoly
+                            visible: Roi.hasImage && !Roi.runScoped
                             Text { text: "Drawing tool"; color: pal.TXT_MUTED
                                    font.pixelSize: sc.textXs }
                             RowLayout {
@@ -870,19 +879,22 @@ Item {
                                     Layout.fillWidth: true
                                     text: "Polygon"; icon: "waypoints"
                                     variant: Roi.tool === "polygon" ? "primary" : "secondary"
-                                    onClicked: Roi.setTool("polygon")
+                                    onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
+                                                   Roi.setTool("polygon") }
                                 }
                                 Button {
                                     Layout.fillWidth: true
                                     text: "Brush"; icon: "palette"
                                     variant: Roi.tool === "brush" ? "primary" : "secondary"
-                                    onClicked: Roi.setTool("brush")
+                                    onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
+                                                   Roi.setTool("brush") }
                                 }
                                 Button {
                                     Layout.fillWidth: true
                                     text: "Eraser"; icon: "x"
                                     variant: Roi.tool === "eraser" ? "primary" : "secondary"
-                                    onClicked: Roi.setTool("eraser")
+                                    onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
+                                                   Roi.setTool("eraser") }
                                 }
                             }
                             ColumnLayout {
