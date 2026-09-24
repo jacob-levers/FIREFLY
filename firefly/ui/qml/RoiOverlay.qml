@@ -791,9 +791,9 @@ Item {
                                     showValue: false
                                     from: 0; to: 50; step: 0.01; decimals: 3
                                     value: Roi.detectMinmass
-                                    onMoved: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                    onMoved: (v) => { Roi.detectMinmass = v; guide.refresh()
                                                       if (Roi.detectEnabled) spotsDebounce.restart() }
-                                    onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                    onCommitted: (v) => { Roi.detectMinmass = v; guide.refresh()
                                                           if (Roi.detectEnabled) Roi.refreshSpots() }
                                 }
                                 RowLayout {
@@ -806,7 +806,7 @@ Item {
                                         from: 0; to: 1000000; decimals: 4
                                         step: thrSection.nudge
                                         value: Roi.detectMinmass
-                                        onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                        onCommitted: (v) => { Roi.detectMinmass = v; guide.refresh()
                                                               if (Roi.detectEnabled) spotsDebounce.restart() }
                                     }
                                 }
@@ -860,6 +860,9 @@ Item {
                             // Detect once at minmass 0, then re-score any
                             // threshold instantly: the histogram and the
                             // readouts follow the slider with no detection.
+                            // refresh() is cheap because the harvest AND the
+                            // noise floor are cached per recording, so it is
+                            // safe on every slider move.
                             ColumnLayout {
                                 id: guide
                                 Layout.fillWidth: true; spacing: sc.sp1

@@ -146,3 +146,46 @@ def test_a_single_frame_file_stays_on_the_projection(roi, tmp_path):
     roi.editDetection(str(path))
     assert roi.nFrames <= 1
     assert roi.viewMode == "proj"
+
+
+# ── the panel must not block the UI ─────────────────────────────────────────
+def test_the_noise_floor_is_computed_once_per_recording(roi, movie, monkeypatch):
+    """`massProfile` is called on every slider move and every toggle, and it
+    re-ran `estimate_noise_floor` each time — three GaussianMixture fits, ~15 ms
+    on the GUI thread, measured as ~100% of the call's cost.  The floor depends
+    only on the harvested candidates, not on the threshold, so it belongs in the
+    same cache as the candidates.
+    """
+    from firefly.analysis import fa_localize
+
+    calls = []
+    real = fa_localize.estimate_noise_floor
+
+    def counted(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(fa_localize, "estimate_noise_floor", counted)
+
+    roi.editDetection(movie)
+    for _ in range(6):                      # as dragging the slider does
+        roi.massProfile()
+    assert len(calls) <= 1, (
+        f"the noise floor was refitted {len(calls)} times for one recording")
+
+
+def test_reprofiling_recomputes_the_floor(roi, movie, monkeypatch):
+    """Caching must not outlive the harvest it describes: asking for a fresh
+    profile has to refit, or the marker would describe discarded candidates."""
+    from firefly.analysis import fa_localize
+
+    calls = []
+    real = fa_localize.estimate_noise_floor
+    monkeypatch.setattr(fa_localize, "estimate_noise_floor",
+                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
+    roi.editDetection(movie)
+    roi.massProfile()
+    roi.invalidateMassProfile()
+    roi.massProfile()
+    assert len(calls) == 2

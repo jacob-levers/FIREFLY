@@ -126,3 +126,29 @@ def test_typing_then_moving_the_slider_no_longer_freezes_the_field(threshold):
     roi.detectMinmass = 0.8                   # as dragging the slider does
     _app.processEvents()
     assert spin.property("value") == pytest.approx(0.8, abs=1e-9)
+
+
+def test_changing_the_threshold_raises_no_qml_error(threshold):
+    """The commit handler called `guide.rescore()`, which was never defined.
+
+    QML aborts the rest of a handler when one throws, so the TypeError took the
+    whole arrow function with it: the mass histogram never re-scored against the
+    new threshold AND the detection overlay was never re-run.  Both are the
+    reason the panel exists, and neither failed loudly — the error went to the
+    Qt log and the UI simply did nothing.
+    """
+    from PySide6.QtCore import qInstallMessageHandler
+
+    _roi, spin = threshold
+    messages = []
+    previous = qInstallMessageHandler(
+        lambda mode, ctx, msg: messages.append(str(msg)))
+    try:
+        _step(spin, 1)                      # goes through the real onCommitted
+        _app.processEvents()
+    finally:
+        qInstallMessageHandler(previous)
+
+    offenders = [m for m in messages
+                 if "is not a function" in m or "TypeError" in m]
+    assert not offenders, f"the threshold handler threw: {offenders[:3]}"

@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.76.51-rc.13 — 24 Sep 2026
+
+### Fixed
+
+- **The detection threshold panel stalled on every interaction.** Each change —
+  moving the slider, typing a value, flipping "Use for this file only" — refitted
+  the noise floor from scratch: three GaussianMixture fits on the GUI thread,
+  measured at ~15 ms and ~100% of the cost of rebuilding the panel. The floor
+  describes the harvested candidates, not the threshold you are choosing, so it
+  is now fitted once per recording and cached alongside them. Rebuilding the
+  panel went from 14.2 ms to 0.3 ms, and the per-file toggle from ~16 ms to
+  ~0.6 ms. Pressing **Profile** still re-harvests and refits, because that is
+  what it is for.
+
+- **The mass histogram never followed the threshold.** Three handlers called
+  `guide.rescore()`, which was never defined. QML abandons the rest of a handler
+  when one throws, so the TypeError took the whole thing with it: the histogram
+  and the kept-count readouts never re-scored against the new threshold, and the
+  detection overlay was never re-run either. Both are the reason that panel
+  exists, and neither failed visibly — the error went to the Qt log and the UI
+  simply did nothing. Introduced in rc.8, present until now.
+
+### Known
+
+- Pressing **Profile** blocks the window for ~1.5 s while it detects across 16
+  frames at threshold zero. That is real work and it is button-initiated, but it
+  runs on the GUI thread and should not.
+
 ## v2.76.51-rc.12 — 24 Sep 2026
 
 ### Changed

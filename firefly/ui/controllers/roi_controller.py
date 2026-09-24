@@ -132,6 +132,7 @@ class RoiController(QObject):
         self._cand_key = None
         self._cand_n_frames = 0
         self._cand_per_frame = None
+        self._cand_floor = None         # (floor, status) — see _candidate_masses
         self._minmass_per_file = False   # write the threshold to THIS file only
         from firefly.ui.controllers.params.preview_loader import PREVIEW_CMAPS
         self._cmap = "Grayscale"
@@ -450,11 +451,19 @@ class RoiController(QObject):
             self._cand_masses = np.concatenate(pooled) if pooled else np.array([])
             self._cand_per_frame = capped
             self._cand_n_frames = used
+            # The floor is a property of the HARVEST, not of the threshold, so
+            # it is fitted here — once — rather than on every massProfile call.
+            # It costs three GaussianMixture fits (~15 ms, measured as ~100% of
+            # massProfile's cost), and massProfile runs on every slider move and
+            # every toggle, which is what made the panel feel sticky.
+            from firefly.analysis.fa_localize import estimate_noise_floor
+            self._cand_floor = estimate_noise_floor(capped, cap=self._HARVEST_CAP)
             self._cand_key = key
         except Exception as exc:
             self._cand_masses = None
             self._cand_key = None
             self._cand_n_frames = 0
+            self._cand_floor = None
             self.statusMessage.emit(f"Threshold guidance unavailable: {exc}")
             return None, 0
         return self._cand_masses, self._cand_n_frames
@@ -468,9 +477,7 @@ class RoiController(QObject):
         if masses is None or not len(masses):
             return {"n_candidates": 0, "edges": [], "counts": [],
                     "warning": "Open a recording to profile its detection threshold."}
-        from firefly.analysis.fa_localize import estimate_noise_floor
-        floor, status = estimate_noise_floor(self._cand_per_frame or [],
-                                             cap=self._HARVEST_CAP)
+        floor, status = self._cand_floor or (None, "")
         out = threshold_guidance(masses, float(self._minmass), n_frames=n_frames,
                                  noise_floor=floor, floor_status=status)
         out["n_frames_sampled"] = int(n_frames)
@@ -480,6 +487,7 @@ class RoiController(QObject):
     def invalidateMassProfile(self):
         self._cand_masses = None
         self._cand_key = None
+        self._cand_floor = None
 
     # ── brush / eraser ───────────────────────────────────────────────────
     # Design note: the brush is an INPUT METHOD for the existing polygon ROI,
