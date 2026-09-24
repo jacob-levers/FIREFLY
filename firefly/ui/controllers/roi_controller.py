@@ -137,8 +137,12 @@ class RoiController(QObject):
         self._apply_spec(self._default_spec())
         if settings is not None and hasattr(settings, "changed"):
             settings.changed.connect(self._spot_settings_changed)
-        self.polygonsChanged.connect(self._invalidate_spots)
-        self.roiSettingsChanged.connect(self._invalidate_spots)
+        # An ROI edit does not change what was DETECTED, only which candidates
+        # fall inside it — so re-label the cached spots instead of throwing them
+        # away.  Discarding them made the overlay empty on every brush stroke
+        # and every vertex move, which is precisely when you are looking at it.
+        self.polygonsChanged.connect(self._reclassify_spots)
+        self.roiSettingsChanged.connect(self._reclassify_spots)
 
 
     # ── default / effective ROI spec ──────────────────────────────────────
@@ -1474,6 +1478,56 @@ class RoiController(QObject):
         self._spots_token += 1
         self.spotsChanged.emit()
 
+    def _compose_spot_summary(self, summary, roi_note=""):
+        """One wording for both the detect and the re-label paths, so the panel
+        cannot say different things about the same overlay."""
+        g = self._s
+        backend = summary.get("backend") or "auto"
+        text = (f"{backend} · frame {self._frame_idx + 1} · minmass {self._minmass:g}\n"
+                f"{summary['candidates']} pass minmass · "
+                f"{summary['contrast_rejected']} contrast rejected · "
+                f"{summary['outside_roi']} outside ROI · {summary['passed']} pass "
+                + ("detection + ROI." if summary.get("roi_known")
+                   else f"detection. ROI NOT evaluated: {roi_note}.")
+                + " Final track retention is not evaluated.")
+        if g and g.get_bool("analysis/auto_minmass", False):
+            text += " Auto minmass is ON: the run will choose a different threshold."
+        return text
+
+    def _reclassify_spots(self, *args):
+        """Re-label the cached candidates against the current ROI — no detector.
+
+        Falls back to a full invalidation only when there is nothing cached to
+        re-label, or when the ROI cannot be resolved (an unclosed polygon, a
+        missing sister image), because then the labels really are unknown.
+        """
+        if not self._detect_on or self._spot_rows is None or self._raw_frame is None:
+            self._invalidate_spots()
+            return
+        try:
+            from firefly.analysis.fa_detection_preview import classify_candidates
+            g = self._s
+            cnr = float(g.get_float("analysis/min_cnr", 0)) if g else 0.
+            try:
+                mask, known = self._detection_roi(self._raw_frame.shape)
+                roi_note = ""
+            except ValueError as exc:
+                mask, known, roi_note = None, False, str(exc)
+            rows, summary = classify_candidates(
+                self._spot_rows, min_cnr=cnr, roi_mask=mask, roi_known=known,
+                shape=self._raw_frame.shape,
+                backend=(g.get_str("analysis/backend", "Auto") if g else "Auto"))
+            self._spot_rows = rows
+            self._spot_count = summary["passed"]
+            self._spots = self._spots_qimage(*self._raw_frame.shape,
+                                             rows.x, rows.y, rows.decision.tolist())
+            self._spots_stale = False
+            self._spot_summary = self._compose_spot_summary(summary, roi_note)
+            self._spots_token += 1
+            self.spotsChanged.emit()
+        except Exception:
+            self._invalidate_spots()
+
     def _spot_settings_changed(self, key):
         if str(key).startswith("analysis/"):
             if key == "analysis/minmass" and self._s is not None:
@@ -1573,13 +1627,7 @@ class RoiController(QObject):
             self._spot_count = summary['passed']
             self._spots = self._spots_qimage(*self._raw_frame.shape, rows.x, rows.y, rows.decision.tolist())
             self._spots_stale = False
-            self._spot_summary = (f"{backend} · frame {self._frame_idx+1} · minmass {self._minmass:g}\n"
-                f"{summary['candidates']} pass minmass · {summary['contrast_rejected']} contrast rejected · "
-                f"{summary['outside_roi']} outside ROI · {summary['passed']} pass "
-                + ("detection + ROI." if known else f"detection. ROI NOT evaluated: {roi_note}.")
-                + " Final track retention is not evaluated.")
-            if g and g.get_bool("analysis/auto_minmass", False):
-                self._spot_summary += " Auto minmass is ON: the run will choose a different threshold."
+            self._spot_summary = self._compose_spot_summary(summary, roi_note)
         except Exception as exc:
             self._spot_summary = f"Preview unavailable: {exc}"
             self.statusMessage.emit(self._spot_summary)

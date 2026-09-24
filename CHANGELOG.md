@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.76.51-rc.11 — 24 Sep 2026
+
+### Fixed
+
+- **Drawing an ROI blanked the detection dots.** Every polygon edit — a brush
+  stroke, a vertex drag — discarded the whole detection overlay and marked it
+  "outdated", so the spots vanished exactly while you were using them to judge
+  where to draw, and did not return until a refresh. An ROI edit does not change
+  what was DETECTED, only which candidates fall inside it, so the cached
+  candidates are now re-labelled in place: the dots stay on screen and their
+  green/red classification updates as you draw. Changing the threshold, frame,
+  diameter, background or backend still re-runs the detector, because those do
+  change what is found.
+
 ## v2.76.51-rc.10 — 24 Sep 2026
 
 ### Fixed

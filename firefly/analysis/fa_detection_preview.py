@@ -24,6 +24,22 @@ def preview_detections(frame, *, diameter=7, minmass=.45, bg_radius=10,
         workers=1, chunk_size=1)
     rows = measure_raw_contrast(locs, frame[None], diameter).reset_index(drop=True)
     rows['candidate_id'] = np.arange(len(rows))
+    return classify_candidates(rows, min_cnr=min_cnr, roi_mask=roi_mask,
+                               roi_known=roi_known, shape=frame.shape,
+                               backend=backend)
+
+
+def classify_candidates(rows, *, min_cnr=0., roi_mask=None, roi_known=True,
+                        shape=None, backend=''):
+    """Label already-detected candidates against a contrast cutoff and an ROI.
+
+    Split out from :func:`preview_detections` because editing an ROI does not
+    change what was DETECTED — only whether each candidate is inside it.  The
+    viewer re-labels the cached candidates instead of re-running the detector,
+    so the overlay survives a polygon edit or a brush stroke rather than
+    emptying and taking a second to come back.
+    """
+    rows = rows.copy()
     rows['passes_contrast'] = ((np.isfinite(rows.raw_cnr) & (rows.raw_cnr >= min_cnr))
                                 if min_cnr > 0 else True)
     rows['inside_roi'] = None
@@ -31,7 +47,7 @@ def preview_detections(frame, *, diameter=7, minmass=.45, bg_radius=10,
         if roi_mask is None:
             rows['inside_roi'] = True
         else:
-            if roi_mask.shape != frame.shape:
+            if shape is not None and roi_mask.shape != tuple(shape):
                 raise ValueError('ROI and raw frame have different shapes.')
             included = apply_roi_mask(rows, roi_mask).candidate_id
             rows['inside_roi'] = rows.candidate_id.isin(included)

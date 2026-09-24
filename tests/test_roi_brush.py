@@ -178,3 +178,93 @@ def test_the_roi_mode_never_changes(ctrl):
     ctrl.setTool("brush")
     ctrl.beginStroke(); ctrl.paintAt(30.0, 30.0); ctrl.endStroke()
     assert ctrl.roiMode == before
+
+
+# ── the detection overlay must survive ROI editing ──────────────────────────
+def _preview_ctrl(tmp_path):
+    """A controller with a real frame loaded and the detection preview on."""
+    pytest.importorskip("PySide6")
+    pytest.importorskip("tifffile")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import tifffile
+    from PySide6.QtWidgets import QApplication
+    from firefly.ui.controllers.roi_controller import RoiController
+    from firefly.ui.controllers.roi_store import RoiOverrideStore, RoiStore
+
+    class _S(dict):
+        def get_str(self, k, d=""): return dict.get(self, k, d)
+        def get_float(self, k, d=0.0): return float(dict.get(self, k, d))
+        def get_bool(self, k, d=False): return bool(dict.get(self, k, d))
+        def get(self, k, d=None): return dict.get(self, k, d)
+        def set(self, k, v): self[k] = v
+
+    app = QApplication.instance() or QApplication([])
+    y, x = np.mgrid[:64, :64]
+    frame = np.random.default_rng(7).normal(100, 1, (64, 64))
+    for cx, cy in ((20, 20), (30, 30), (45, 45), (50, 20)):
+        frame += 120 * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / 3)
+    path = tmp_path / "preview.tif"
+    tifffile.imwrite(path, np.repeat(frame[None].astype("float32"), 3, axis=0),
+                     photometric="minisblack")
+    settings = _S({"analysis/roi_mode": "Manual polygon",
+                   "analysis/backend": "Crocker–Grier — Trackpy (CPU)",
+                   "analysis/diameter": 7, "analysis/bg_radius": 10,
+                   "analysis/bg_method": "Uniform Filter", "analysis/min_cnr": 0.0,
+                   "analysis/minmass": 0.3, "analysis/auto_minmass": False})
+    c = RoiController(store=RoiStore(), settings=settings,
+                      override_store=RoiOverrideStore())
+    c.editFile(str(path))
+    c._roi_mode = "Manual polygon"
+    c.detectMinmass = 0.3
+    c.detectEnabled = True
+    return c, app
+
+
+def test_painting_keeps_the_detection_overlay_live(tmp_path):
+    """The reported bug: drawing an ROI blanked the spots, so you could not see
+    what the threshold was doing while you drew. An ROI edit changes only which
+    candidates are INSIDE it, so the overlay is re-labelled, never discarded."""
+    c, app = _preview_ctrl(tmp_path)
+    try:
+        c.setTool("brush"); c.brushRadius = 10.0
+        c.beginStroke(); c.paintAt(28.0, 28.0); c.endStroke()
+        assert not c.spotsStale, "the overlay went stale on a brush stroke"
+        first = c.spotCount
+
+        # a second stroke over another spot must bring it inside, live
+        c.beginStroke(); c.paintAt(45.0, 45.0); c.endStroke()
+        assert not c.spotsStale
+        assert c.spotCount > first, (
+            f"painting over another spot did not update the overlay "
+            f"({first} → {c.spotCount})")
+        assert c.hasSpots
+    finally:
+        c.deleteLater(); app.processEvents()
+
+
+def test_moving_a_vertex_also_relabels_without_re_detecting(tmp_path):
+    c, app = _preview_ctrl(tmp_path)
+    try:
+        c.setPolygons([[(10.0, 10.0), (10.0, 40.0), (40.0, 40.0), (40.0, 10.0)]])
+        assert not c.spotsStale
+        c.moveVertex(0, 0, 12.0, 12.0)
+        assert not c.spotsStale, "a vertex drag blanked the overlay"
+    finally:
+        c.deleteLater(); app.processEvents()
+
+
+def test_changing_the_threshold_still_re_detects(tmp_path):
+    """The complement: minmass DOES change what is detected, so that path must
+    still invalidate and re-run rather than re-labelling stale candidates."""
+    c, app = _preview_ctrl(tmp_path)
+    try:
+        c.setPolygons([[(0.0, 0.0), (0.0, 63.0), (63.0, 63.0), (63.0, 0.0)]])
+        c.refreshSpots()
+        low = c.spotCount
+        c.detectMinmass = 500.0          # far above every candidate
+        c.refreshSpots()
+        assert c.spotCount < low, (
+            f"raising minmass did not re-detect ({low} → {c.spotCount})")
+    finally:
+        c.deleteLater(); app.processEvents()
