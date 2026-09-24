@@ -1,5 +1,45 @@
 # Changelog
 
+## v2.76.51-rc.14 — 24 Sep 2026
+
+### Fixed
+
+- **A batch could write one folder's results into another folder.** Picking a
+  folder while the previous one was still being scanned — easy on an external
+  drive — skipped the new scan entirely. The old folder's recordings filled the
+  queue while the Source row named the new one, and with the default output
+  (`<source>/batch_results`) their results were written into the wrong folder.
+  Every scan now records which folder it was for; a superseded result is
+  discarded and the folder you actually chose is scanned.
+
+- **The Analysis tab ignored the Log-D clip range.** The setting is entered as
+  log₁₀D and runs have honoured it, but the Analysis tab still read the retired
+  linear keys, which nothing writes. It always clamped at 10⁻⁵…10 µm²/s whatever
+  the sidebar said, and changing the range never redrew it. It now reads the
+  same keys, converted the same way, as the runs.
+
+- **Stopping a HYPER-FLY batch reported the files it never started as failed.**
+  Stop a 12-file run after 3 and the status read "12 / 12 done · 9 failed",
+  nine queue rows turned red and nine dashboard tiles said "Failed" with no
+  reason. Files that never started are no longer counted as failures; the log
+  says how many were not started instead. A worker failure whose message is
+  empty — a MemoryError on a large recording, say — now names its cause rather
+  than showing a blank.
+
+- **Two script errors on every visit to the Import and Process tabs.** A badge
+  and the run-result card read a property of their own from inside their slide
+  transform, where it is not in scope, so the lookup threw and the slide-in never
+  played.
+
+### Tests
+
+- New permanent checks that fail if QML references a controller member, or a
+  member of a QML id, that does not exist; if code reads a settings key nothing
+  defines; or if any tab raises a script error while rendering. Each was
+  confirmed to fail against the real bug it guards — the id check catches the
+  `guide.rescore()` fault that disabled the threshold histogram from rc.8 to
+  rc.12.
+
 ## v2.76.51-rc.13 — 24 Sep 2026
 
 ### Fixed

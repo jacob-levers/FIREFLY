@@ -234,3 +234,185 @@ def test_the_two_roi_panels_show_only_their_own_controls(qml_window, tmp_path):
     # each screen names what its primary button saves
     assert "Save ROI" in drawing and "Save threshold" not in drawing
     assert "Save threshold" in threshold and "Save ROI" not in threshold
+
+
+def test_every_tab_renders_without_a_qml_script_error(qml_window):
+    """A binding that throws does not break the page — it silently keeps its
+    default and logs to a stream nobody reads.
+
+    Found this way: `present` declared on a Badge and a Card but read from
+    inside their `transform: Translate {}`.  A Translate is not an Item, so the
+    bare name does not resolve from it; every visit threw a ReferenceError and
+    the slide-in never ran.  Only a non-root object's properties have this
+    problem — a component root's are in scope for everything in the component —
+    which is why it looks fine until it isn't.
+
+    Asserting Qt's own message stream catches the whole class on every page.
+    """
+    from PySide6.QtCore import qInstallMessageHandler
+
+    win, qw = qml_window
+    app_ctrl = qw.rootContext().contextProperty("App")
+    importc = qw.rootContext().contextProperty("Import")
+    messages = []
+    previous = qInstallMessageHandler(
+        lambda mode, ctx, msg: messages.append(str(msg)))
+    try:
+        win.resize(1400, 950); win.show()
+        for batch in (False, True):
+            importc.setBatchMode(batch)
+            for tab in range(5):
+                app_ctrl.enterMain(tab)
+                for _ in range(6):
+                    _app.processEvents()
+        app_ctrl.goLanding()
+        _app.processEvents()
+    finally:
+        qInstallMessageHandler(previous)
+        win.hide()
+
+    errors = [m for m in messages
+              if any(k in m for k in ("ReferenceError", "TypeError",
+                                      "is not defined", "is not a function"))]
+    assert not errors, f"QML script errors while rendering the tabs: {errors[:4]}"
+
+
+# ── QML must only reference things that exist ───────────────────────────────
+# Neither of these fails loudly.  A missing controller member reads as
+# `undefined` (and a `visible:` bound to it falls back to TRUE); a missing
+# function on an id throws a TypeError that aborts the rest of its handler.
+# `guide.rescore()` did the latter from rc.8 to rc.12: the threshold histogram
+# never followed the slider and the detection overlay never re-ran.
+_CONTEXT = ["Theme", "App", "Settings", "Import", "Process", "Analysis", "Vis", "Roi",
+            "Postproc", "Embed", "Sidebar", "Preset", "Batch", "Hyperfly", "Updates", "Cuda"]
+
+
+def _meta_members(obj):
+    from PySide6.QtCore import QMetaMethod
+    mo = obj.metaObject()
+    props = {mo.property(i).name() for i in range(mo.propertyCount())}
+    writable = {mo.property(i).name() for i in range(mo.propertyCount())
+                if mo.property(i).isWritable()}
+    methods, signals = set(), set()
+    for i in range(mo.methodCount()):
+        m = mo.method(i)
+        name = bytes(m.name()).decode()
+        methods.add(name)
+        if m.methodType() == QMetaMethod.MethodType.Signal:
+            signals.add(name)
+    return props, writable, methods, signals
+
+
+def test_every_controller_member_qml_uses_exists(qml_window):
+    import pathlib
+    from _qml_source import block_end, strip_qml
+
+    _win, qw = qml_window
+    api = {}
+    for name in _CONTEXT:
+        obj = qw.rootContext().contextProperty(name)
+        assert obj is not None, f"{name} is null in QML"
+        api[name] = _meta_members(obj)
+
+    use = re.compile(r'\b(' + "|".join(_CONTEXT) + r')\.([A-Za-z_]\w*)')
+    assign = re.compile(r'\b(' + "|".join(_CONTEXT) + r')\.([A-Za-z_]\w*)\s*=(?!=)')
+    missing, readonly, handlers = [], [], []
+    for path in _qml_files():
+        clean = strip_qml(pathlib.Path(path).read_text(encoding="utf-8"))
+        rel = os.path.relpath(path, ROOT)
+        for ln, line in enumerate(clean.split("\n"), 1):
+            for ctx, member in use.findall(line):
+                props, _w, methods, _s = api[ctx]
+                if member not in props and member not in methods:
+                    missing.append(f"{rel}:{ln} {ctx}.{member}")
+            for ctx, member in assign.findall(line):
+                props, writable, _m, _s = api[ctx]
+                if member in props and member not in writable:
+                    readonly.append(f"{rel}:{ln} {ctx}.{member} = …")
+        for m in re.finditer(r'Connections\s*\{', clean):
+            block = clean[m.end():block_end(clean, m.end() - 1)]
+            t = re.search(r'target:\s*(\w+)', block)
+            if not t or t.group(1) not in api:
+                continue
+            for h in re.findall(r'function\s+on([A-Z]\w*)\s*\(', block):
+                if h[0].lower() + h[1:] not in api[t.group(1)][3]:
+                    handlers.append(f"{rel} Connections→{t.group(1)}: on{h}")
+
+    assert not missing, f"QML uses controller members that do not exist: {missing}"
+    assert not readonly, f"QML assigns read-only controller properties: {readonly}"
+    assert not handlers, f"Connections handlers for signals that do not exist: {handlers}"
+
+
+def test_every_member_qml_reads_off_an_id_exists(qml_window):
+    """`someId.member` must exist on that id's object: what its block declares,
+    or what its type provides — read from a real instance in the app's engine,
+    so built-ins (Timer, Canvas…) and our own components are both covered."""
+    import pathlib
+    from PySide6.QtCore import QUrl
+    from PySide6.QtQml import QQmlComponent
+    from _qml_source import block_end, strip_qml
+
+    _win, qw = qml_window
+    engine = qw.engine()
+    header = ('import QtQuick\nimport QtQuick.Layouts\nimport QtQuick.Controls as QQC\n'
+              'import QtQuick.Shapes\nimport "components"\nimport "."\n')
+    cache = {}
+
+    def type_members(tname):
+        if tname not in cache:
+            comp = QQmlComponent(engine)
+            comp.setData(f"{header}{tname} {{}}\n".encode(),
+                         QUrl.fromLocalFile(os.path.join(QML_DIR, "_probe.qml")))
+            obj = comp.create(qw.rootContext())
+            if obj is None:
+                cache[tname] = None
+            else:
+                props, _w, methods, _s = _meta_members(obj)
+                cache[tname] = props | methods
+                obj.deleteLater()
+        return cache[tname]
+
+    findings = []
+    for path in _qml_files():
+        clean = strip_qml(pathlib.Path(path).read_text(encoding="utf-8"))
+        ids = {}
+        for m in re.finditer(r'\b((?:QQC\.)?[A-Z]\w*)\s*\{', clean):
+            body = clean[m.end():block_end(clean, m.end() - 1)]
+            top, depth = [], 0                     # this block's direct members only
+            for ch in body:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                elif depth == 0:
+                    top.append(ch)
+            top = "".join(top)
+            idm = re.search(r'(?:^|[\s;])id\s*:\s*(\w+)', top)
+            if not idm:
+                continue
+            declared = set(re.findall(
+                r'\bproperty\s+(?:alias\s+|var\s+|[\w.<>]+\s+)?(\w+)\s*[:\n;]', top))
+            declared |= set(re.findall(r'\bfunction\s+(\w+)\s*\(', top))
+            declared |= set(re.findall(r'\bsignal\s+(\w+)', top))
+            # an id may recur in separate delegate scopes; any of them will do
+            ids.setdefault(idm.group(1), []).append((m.group(1), declared))
+        rel = os.path.relpath(path, ROOT)
+        for ln, line in enumerate(clean.split("\n"), 1):
+            for idn, member in re.findall(r'\b([a-z_]\w*)\.([A-Za-z_]\w*)', line):
+                if idn not in ids:
+                    continue
+                ok = unknown = False
+                for tname, declared in ids[idn]:
+                    if member in declared:
+                        ok = True
+                        break
+                    members = type_members(tname)
+                    if members is None:            # inline component: not probeable
+                        unknown = True
+                    elif member in members:
+                        ok = True
+                        break
+                if not ok and not unknown:
+                    findings.append(f"{rel}:{ln} {idn}.{member}")
+
+    assert not findings, f"QML reads members that do not exist on the id: {findings}"

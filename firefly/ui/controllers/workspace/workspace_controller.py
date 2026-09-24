@@ -1057,13 +1057,19 @@ class AnalysisWorkspaceController(QObject):
 
     def _dcoeff_clip(self):
         """(min, max) D-coefficient clip range (µm²/s) for the LogD graph, read
-        from the Diffusion-&-motion setting.  Defaults 1e-5…10 → log₁₀ −5…1."""
+        from the Diffusion-&-motion setting.  Defaults 1e-5…10 → log₁₀ −5…1.
+
+        The setting is entered as log₁₀D (``dcoeff_clip_logmin`` / ``logmax``)
+        and converted exactly as params_builder converts it for a run, so the
+        live comparison clamps where the runs did.  This used to read the
+        retired linear keys, which nothing writes, so it always sat at the
+        defaults whatever the sidebar said."""
         s = self._settings
         try:
-            lo = float(s.get("analysis/dcoeff_clip_min", 0.00001)) if s else 0.00001
-            hi = float(s.get("analysis/dcoeff_clip_max", 10.0)) if s else 10.0
+            lo = 10.0 ** float(s.get("analysis/dcoeff_clip_logmin", -5.0)) if s else 1e-5
+            hi = 10.0 ** float(s.get("analysis/dcoeff_clip_logmax", 1.0)) if s else 10.0
         except (TypeError, ValueError):
-            lo, hi = 0.00001, 10.0
+            lo, hi = 1e-5, 10.0
         return lo, hi
 
     def _fig_gen(self):
@@ -1654,7 +1660,7 @@ class AnalysisWorkspaceController(QObject):
             return
         if not (key.startswith("figures/")
                 or key in ("analysis/mobile_d",
-                           "analysis/dcoeff_clip_min", "analysis/dcoeff_clip_max")):
+                           "analysis/dcoeff_clip_logmin", "analysis/dcoeff_clip_logmax")):
             return
         if key == "figures/compare_panels":
             return

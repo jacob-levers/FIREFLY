@@ -63,13 +63,16 @@ Flickable {
                 }
                 // slides in from the right (+12px) + fades when the badge appears
                 Badge {
+                    id: rowBadge
                     readonly property bool present: infoRow.badgeText !== ""
                     visible: present || opacity > 0.001
                     text: infoRow.badgeText
                     tone: infoRow.badgeTone; Layout.alignment: Qt.AlignVCenter
                     opacity: present ? 1 : 0
+                    // Qualified, not bare: a Translate is not an Item, so a
+                    // property of this Badge is not in its scope chain.
                     transform: Translate {
-                        x: present ? 0 : 12
+                        x: rowBadge.present ? 0 : 12
                         Behavior on x { NumberAnimation { duration: Theme.reducedMotion ? 0 : 220; easing.type: Easing.OutCubic } }
                     }
                     Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 220; easing.type: Easing.OutCubic } }

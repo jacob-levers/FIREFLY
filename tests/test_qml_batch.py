@@ -258,3 +258,52 @@ def test_batch_flags_corrupt_localisation_table_but_keeps_it_selected(tmp_path):
     assert row["hasUnreadable"] is True
     assert row["parts"][0]["unreadable"] is True
     assert row["checked"] is True
+
+
+def test_picking_a_second_folder_mid_scan_queues_the_second_folder(tmp_path, monkeypatch):
+    """Pick folder A, then folder B before A's scan returns.
+
+    `rescan` bailed while a scan was in flight, and `_drain_scan` applied the
+    finished result without checking which folder it was for.  So B was never
+    scanned, the queue filled with A's recordings, and the Source row said B —
+    and with the default output (`<source>/batch_results`), A's results were
+    written into B's folder.  On an external drive a scan is slow enough to hit
+    this by just changing your mind.
+    """
+    import threading
+    from firefly.ui.controllers import batch_controller as bc
+    from firefly.ui.controllers.params import batch_scan
+
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir(); b.mkdir()
+    for n in ("a1.tif", "a2.tif"):
+        _touch(a / n)
+    for n in ("b1.tif", "b2.tif", "b3.tif"):
+        _touch(b / n)
+
+    release_a = threading.Event()
+    real = batch_scan.scan_series
+
+    def slow_for_a(folder, *args, **kw):
+        if os.path.basename(os.path.normpath(folder)) == "A":
+            release_a.wait(5)                 # A is on a slow drive
+        return real(folder, *args, **kw)
+
+    monkeypatch.setattr(bc.batch_scan, "scan_series", slow_for_a)
+
+    c = bc.BatchController(FakeSettings(), FakeImport())
+    c.scan(str(a))
+    _app.processEvents()
+    c.scan(str(b))                            # changed my mind, before A returns
+    release_a.set()
+    import time
+    t0 = time.time()                          # let A drain, then B's own scan
+    while time.time() - t0 < 5:
+        _app.processEvents(); time.sleep(0.01)
+        if not c.scanning and {s["key"] for s in c.series} == {"b1", "b2", "b3"}:
+            break
+
+    assert c.folder == str(b)
+    assert {s["key"] for s in c.series} == {"b1", "b2", "b3"}, (
+        "the queue holds another folder's recordings under this folder's name")
+    assert c._out_root().startswith(str(b))

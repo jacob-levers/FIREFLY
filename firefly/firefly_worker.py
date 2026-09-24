@@ -4373,6 +4373,27 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
                 "tb": traceback.format_exc(), "stem": stem}
 
 
+def _hf_future_outcome(fut):
+    """Classify one finished HYPER-FLY future: ``(kind, payload)``.
+
+    ``kind`` is ``"ok"``, ``"failed"`` or ``"cancelled"``.  Cancelled means Stop
+    reached this file before it started: it is not a failure and has no payload.
+    Checking ``cancelled()`` first matters, because ``result()`` on a cancelled
+    future raises ``CancelledError`` — an ``Exception`` whose ``str()`` is empty,
+    so a generic handler reports every unstarted file as FAILED with no reason.
+    """
+    if fut.cancelled():
+        return "cancelled", None
+    try:
+        payload = fut.result()
+    except Exception as exc:
+        # str() is '' for MemoryError() and friends; never report a blank reason
+        return "failed", {"ok": False,
+                          "error": str(exc) or type(exc).__name__,
+                          "tb": traceback.format_exc()}
+    return ("ok" if payload.get("ok") else "failed"), payload
+
+
 def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan):
     """Parallel multi-file engine.  Returns the `results` list, or None on a
     setup failure so the caller falls back to the serial loop.
@@ -4572,6 +4593,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         results = [None] * n
         done = 0
         cancelled = False
+        not_started = 0
         ctx = _mp.get_context("spawn")
         with ProcessPoolExecutor(
                 max_workers=safe_process_workers(K), mp_context=ctx,
@@ -4584,11 +4606,12 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
             }
             for fut in as_completed(fut_to_meta):
                 i, params = fut_to_meta[fut]
-                try:
-                    payload = fut.result()
-                except Exception as exc:
-                    payload = {"ok": False, "error": str(exc),
-                               "tb": traceback.format_exc()}
+                kind, payload = _hf_future_outcome(fut)
+                if kind == "cancelled":
+                    # Stopped before it started: no error to report, no tile to
+                    # paint red, and not counted as done.
+                    not_started += 1
+                    continue
                 _stem = (payload.get("stem")
                          or os.path.splitext(os.path.basename(params["file"]))[0])
                 done += 1
@@ -4633,6 +4656,10 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     cancelled = True
                     for f in fut_to_meta:          # stop un-started files
                         f.cancel()
+        if cancelled and not_started:
+            msg_queue.put((MsgKind.LOG,
+                f"  Stopped — {not_started} file(s) not started "
+                f"({done} of {n} processed)"))
         return [r for r in results if r is not None]
     except Exception:
         _log("  HYPER-FLY engine error:\n" + traceback.format_exc())

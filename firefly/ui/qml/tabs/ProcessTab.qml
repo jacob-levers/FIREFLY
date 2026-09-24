@@ -465,12 +465,15 @@ Flickable {
         // ── result summary ───────────────────────────────────────────────
         // Fades + rises in when a run finishes (the "done" cue), out when cleared.
         Card {
+            id: resultCard
             Layout.fillWidth: true
             readonly property bool present: Process.resultHeadline !== ""
             visible: present || opacity > 0.001
             opacity: present ? 1 : 0
+            // Qualified, not bare: a Translate is not an Item, so a property of
+            // this Card is not in its scope chain.
             transform: Translate {
-                y: present ? 0 : 8
+                y: resultCard.present ? 0 : 8
                 Behavior on y { NumberAnimation { duration: Theme.reducedMotion ? 0 : 220; easing.type: Easing.OutCubic } }
             }
             Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : 220; easing.type: Easing.OutCubic } }

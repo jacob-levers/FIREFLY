@@ -13,9 +13,9 @@
 	<key>CFBundleShortVersionString</key>
 	<string>2.76.51</string>
 	<key>CFBundleVersion</key>
-	<string>13</string>
+	<string>14</string>
 	<key>FIREFLYReleaseVersion</key>
-	<string>2.76.51-rc.13</string>
+	<string>2.76.51-rc.14</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>

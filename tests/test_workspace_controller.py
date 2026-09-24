@@ -386,8 +386,10 @@ def test_data_rev_split_style_vs_data(tmp_path):
     d0, e0 = c._data_rev, c._engfig_rev
 
     # pure render changes → engfig only, ReportData preserved
+    # the LIVE clip keys: this list once named the retired `dcoeff_clip_min`,
+    # which nothing writes, so it passed while the real redraw never fired
     for k in ("figures/theme", "figures/msd_style", "figures/logd_style",
-              "analysis/dcoeff_clip_min"):
+              "analysis/dcoeff_clip_logmin", "analysis/dcoeff_clip_logmax"):
         d, e = c._data_rev, c._engfig_rev
         c._on_figpref_changed(k)
         assert c._data_rev == d, f"{k} must NOT bump _data_rev"

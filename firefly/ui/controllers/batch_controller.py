@@ -134,6 +134,7 @@ class BatchController(QObject):
         self._model = BatchSeriesModel(self)
         self._scanning = False            # folder scan runs off-thread (it probes
         self._scan_result = None          # files, so it's I/O-bound)
+        self._rescan_pending = False      # a rescan asked for while one was in flight
         self._scan_poll = QTimer(self)    # drains the scan result on the GUI thread
         self._scan_poll.setInterval(30)
         self._scan_poll.timeout.connect(self._drain_scan)
@@ -199,7 +200,14 @@ class BatchController(QObject):
 
     @Slot()
     def rescan(self):
-        if self._scanning or not self._folder:
+        if not self._folder:
+            return
+        if self._scanning:
+            # The folder (or the subfolder switch) changed while a scan is still
+            # in flight.  Dropping this request meant the new folder was never
+            # scanned and the old one's files arrived under its name — so note
+            # it, and _drain_scan discards the stale result and scans again.
+            self._rescan_pending = True
             return
         folder, recursive = self._folder, self._recursive
         sfx = self._sister_suffix()
@@ -209,11 +217,13 @@ class BatchController(QObject):
         self._scan_poll.start()
 
         def _work():
+            # the result carries what it was a scan OF, so a superseded one can
+            # be recognised when it lands
             try:
                 self._scan_result = ("ok", batch_scan.scan_series(
-                    folder, recursive, sister_suffix=sfx))
+                    folder, recursive, sister_suffix=sfx), folder, recursive)
             except Exception as exc:
-                self._scan_result = ("err", str(exc))
+                self._scan_result = ("err", str(exc), folder, recursive)
         threading.Thread(target=_work, daemon=True).start()
 
     def _drain_scan(self):
@@ -224,11 +234,19 @@ class BatchController(QObject):
         self._scan_result = None
         self._scan_poll.stop()
         self._scanning = False
-        if r[0] == "err":
+        kind, payload, folder, recursive = r
+        if self._rescan_pending or (folder, recursive) != (self._folder, self._recursive):
+            # Superseded while in flight.  Applying it would queue one folder's
+            # recordings under another's name — and, with the default output
+            # (<source>/batch_results), write their results into the wrong folder.
+            self._rescan_pending = False
+            self.rescan()
+            return
+        if kind == "err":
             self._series = []
-            self.logLine.emit(f"Scan failed: {r[1]}")
+            self.logLine.emit(f"Scan failed: {payload}")
         else:
-            self._series = r[1]
+            self._series = payload
         self._reset_selection()
         self._series_status = {}
         self._model.reset()
