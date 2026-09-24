@@ -278,10 +278,20 @@ Flickable {
                     }
                     TapHandler { onTapped: Batch.setOpen(srow.item.key, !srow.item.open) }
                 }
-                Button {                        // Preview & ROI — left of the ×N/size meta
-                    variant: "secondary"; text: "Preview & ROI"; icon: "scan-search"
+                RowLayout {                     // ROI + Threshold — left of the ×N/size meta
+                    // Two buttons, deliberately: the viewer has a screen per job,
+                    // and one button for both meant that choosing a detection
+                    // threshold began by opening something labelled "ROI".
+                    spacing: sc.sp2
                     visible: srow.item.canPreview && (rowHov.hovered || srow.item.hasRoi || srow.st === "running")
-                    onClicked: Roi.editFile(srow.item.primaryPath)
+                    Button {
+                        variant: "secondary"; text: "ROI"; icon: "scan-search"
+                        onClicked: Roi.editFile(srow.item.primaryPath)
+                    }
+                    Button {
+                        variant: "secondary"; text: "Threshold"; icon: "sliders-horizontal"
+                        onClicked: Roi.editDetection(srow.item.primaryPath)
+                    }
                 }
                 Text { visible: srow.item.fileCount > 1; text: "×" + srow.item.fileCount
                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
@@ -704,17 +714,22 @@ Flickable {
                         Layout.fillWidth: true; spacing: sc.sp4
                         Text {
                             Layout.fillWidth: true; wrapMode: Text.WordWrap
-                            text: "A max-intensity projection of the recording. Open the "
-                                + "preview to see it at full size and draw a region of "
-                                + "interest before you run."
+                            text: "A max-intensity projection of the recording. Draw a "
+                                + "region of interest to restrict the analysis, or open the "
+                                + "detection threshold to choose which spots count."
                             color: pal.TXT_MUTED; font.pixelSize: sc.textSm
                         }
                         RowLayout {
                             spacing: sc.sp3
                             Button {
-                                variant: "secondary"; text: "Open preview & ROI"; icon: "scan-search"
+                                variant: "secondary"; text: "Draw ROI"; icon: "scan-search"
                                 enabled: Import.hasFile && !Import.isCsv && !Import.hasReadError
                                 onClicked: Roi.editFile(Import.filePath)
+                            }
+                            Button {
+                                variant: "secondary"; text: "Threshold"; icon: "sliders-horizontal"
+                                enabled: Import.hasFile && !Import.isCsv && !Import.hasReadError
+                                onClicked: Roi.editDetection(Import.filePath)
                             }
                             Button {
                                 variant: "secondary"; text: "Load run manifest"; icon: "rotate-ccw"

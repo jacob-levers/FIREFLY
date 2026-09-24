@@ -2257,9 +2257,9 @@ class AnalysisWorkspaceController(QObject):
                         except Exception:
                             pass
                     self._load_q.put((folder, run))
-                self._foldersLoaded.emit()
-            threading.Thread(target=_work, daemon=True,
-                             name="FIREFLY-CondLoad").start()
+                self._emit_folders_loaded()
+            self._track_loader(threading.Thread(
+                target=_work, daemon=True, name="FIREFLY-CondLoad"))
         if to_analyse:
             # External localisation FILES: analyse each into a run folder (using
             # the current sidebar settings so D/α match the FIREFLY replicates)
@@ -2283,12 +2283,59 @@ class AnalysisWorkspaceController(QObject):
                     except Exception:
                         run = None
                     self._load_q.put((folder, run))
-                self._foldersLoaded.emit()
-            threading.Thread(target=_analyse, daemon=True,
-                             name="FIREFLY-ExtAnalyse").start()
+                self._emit_folders_loaded()
+            self._track_loader(threading.Thread(
+                target=_analyse, daemon=True, name="FIREFLY-ExtAnalyse"))
         if flagged and not (staged or to_analyse):
             # only unrecognised (flagged) paths were added — no work needed
             self._changed(conditions=True)
+
+    def _track_loader(self, thread):
+        """Start a loader thread and keep a handle on it.
+
+        Anonymous threads left destruction to garbage-collection timing: the
+        controller could be collected while a loader was still reading sidecars
+        and emitting back into it.  A handle makes that waitable — see
+        :meth:`waitForLoaders`, which the tests use so a controller never
+        outlives its own workers.
+        """
+        self._loaders = [t for t in getattr(self, "_loaders", []) if t.is_alive()]
+        self._loaders.append(thread)
+        thread.start()
+        return thread
+
+    def waitForLoaders(self, timeout=20.0):
+        """Block until folder loading/analysis threads finish.  Returns True if
+        none remain."""
+        import time as _t
+        deadline = _t.time() + float(timeout)
+        for t in list(getattr(self, "_loaders", [])):
+            t.join(max(0.0, deadline - _t.time()))
+        self._loaders = [t for t in getattr(self, "_loaders", []) if t.is_alive()]
+        return not self._loaders
+
+    def _emit_folders_loaded(self):
+        """Signal the GUI that a loader thread has finished — but only if this
+        controller still exists.
+
+        The loaders run on plain threads and emit back into this object.  When
+        the object is destroyed while one is in flight — which is exactly what a
+        test does when its controller goes out of scope mid-load, and what the
+        app does if it quits during one — the queued emit is delivered into freed
+        memory and segfaults inside whatever ``processEvents()`` is running at
+        the time, so the crash lands far from its cause.  Checking the C++ side
+        is still alive first costs nothing and removes that failure entirely.
+        """
+        try:
+            from shiboken6 import isValid
+            if not isValid(self):
+                return
+        except Exception:
+            pass                      # shiboken absent: fall through and emit
+        try:
+            self._foldersLoaded.emit()
+        except RuntimeError:
+            pass                      # object went away between check and emit
 
     def _external_cache_root(self) -> str:
         """Per-user cache dir for analyses of dropped localisation files, so we

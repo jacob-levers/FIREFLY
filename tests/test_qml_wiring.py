@@ -170,3 +170,67 @@ def test_the_roi_editor_binds_without_undefined_assignments(qml_window, tmp_path
     assert not offenders, (
         "a binding evaluated to undefined/null and fell back to the property's "
         f"default (visible defaults to TRUE): {offenders[:4]}")
+
+
+def _visible_texts(item, out=None):
+    """Every effectively-visible `text` in an item subtree.
+
+    `isVisible()` accounts for ancestors, so a label inside a hidden panel is
+    correctly absent — which is the whole thing under test.
+    """
+    out = [] if out is None else out
+    for child in item.childItems():
+        try:
+            value = child.property("text")
+        except Exception:
+            value = None
+        if isinstance(value, str) and value and child.isVisible():
+            out.append(value)
+        _visible_texts(child, out)
+    return out
+
+
+def test_the_two_roi_panels_show_only_their_own_controls(qml_window, tmp_path):
+    """Drawing a region and picking a detection threshold are separate screens
+    of one viewer, reached by separate buttons (`editFile` / `editDetection`).
+
+    They were one scrolling column, so each visit scrolled past the other job's
+    controls.  Assert the split where it matters — what is actually on screen —
+    because `Roi.panel` being right while both panels still render would look
+    identical from Python.
+    """
+    import numpy as np
+    import tifffile
+
+    win, qw = qml_window
+    roi = qw.rootContext().contextProperty("Roi")
+    path = tmp_path / "panels.tif"
+    frame = np.random.default_rng(11).normal(100, 1, (64, 64)).astype("float32")
+    tifffile.imwrite(path, np.repeat(frame[None], 3, axis=0), photometric="minisblack")
+    win.resize(1400, 950); win.show()
+
+    try:
+        roi.editFile(str(path))
+        _app.processEvents()
+        drawing = _visible_texts(qw.rootObject())
+
+        roi.cancel(); _app.processEvents()
+        roi.editDetection(str(path))
+        _app.processEvents()
+        threshold = _visible_texts(qw.rootObject())
+    finally:
+        roi.cancel()
+        win.hide()
+        _app.processEvents()
+
+    assert "ROI MODE" in drawing and "Drawing tool" in drawing
+    assert "DETECTION THRESHOLD" not in drawing, \
+        "the ROI screen still carries the threshold controls"
+
+    assert "DETECTION THRESHOLD" in threshold
+    assert "ROI MODE" not in threshold and "Drawing tool" not in threshold, \
+        "the threshold screen still carries the ROI controls"
+
+    # each screen names what its primary button saves
+    assert "Save ROI" in drawing and "Save threshold" not in drawing
+    assert "Save threshold" in threshold and "Save ROI" not in threshold

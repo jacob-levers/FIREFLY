@@ -47,12 +47,18 @@ class RoiController(QObject):
     previewInvalidated = Signal()
     spotsChanged = Signal()             # detected-spot overlay
     brushChanged = Signal()             # brush tool / radius / painted preview
+    panelChanged = Signal()             # which screen of the viewer is showing
 
     def __init__(self, store=None, settings=None, override_store=None, parent=None):
         super().__init__(parent)
         self._editor = None
         self._polys: list = []          # list[list[(y, x)]]
         self._draft: list = []          # open polygon being drawn
+        # ── which screen of the viewer is showing ──────────────────────────
+        # Drawing a region and picking a detection threshold are separate jobs
+        # with separate entry points (editFile / editDetection).  One modal
+        # holding both meant every visit scrolled past the other job's controls.
+        self._panel = "roi"             # "roi" | "detect"
         # ── brush editing ─────────────────────────────────────────────────
         # A painted region is still stored as POLYGONS: the mask below is only
         # the editing buffer, converted back on every stroke end (exact — see
@@ -728,6 +734,10 @@ class RoiController(QObject):
     def editing(self):
         return self._editing
 
+    @Property(str, notify=panelChanged)
+    def panel(self):
+        return self._panel
+
     @Property(int, notify=imageChanged)
     def imageToken(self):
         return self._img_token
@@ -751,9 +761,26 @@ class RoiController(QObject):
 
     @Slot(str)
     def editFile(self, path):
-        """Open the viewer over ``path``'s projection, loading the file's ROI
+        """Open the ROI panel over ``path``'s projection, loading the file's ROI
         override (or the global default) + any stored polygon."""
+        self._open(path, "roi")
+
+    @Slot(str)
+    def editDetection(self, path):
+        """Open the detection-threshold panel over ``path``.
+
+        Same viewer, same file, different screen — and the spot overlay comes up
+        already on, because watching the dots answer the slider is the entire
+        reason to be here; arriving with it off puts a click between the user and
+        the evidence.
+        """
+        self._open(path, "detect", detect=True)
+
+    def _open(self, path, panel, detect=None):
         self._file = path or ""
+        self._panel = panel
+        if detect is not None:
+            self._detect_on = bool(detect)
         # effective spec = per-file override, else the global sidebar default
         spec = (self._ovr.get(self._file) if self._ovr else None) or self._default_spec()
         self._apply_spec(spec)
@@ -784,6 +811,14 @@ class RoiController(QObject):
         self.draftChanged.emit()
         self.editingChanged.emit()
         self.splitChanged.emit()
+        self.panelChanged.emit()
+        # Detection runs on acquired frames, so _recompute_spots draws nothing
+        # over a projection — it posts "Select Raw frames" instead.  The ROI
+        # panel wants the projection (every frame's signal at once, the right
+        # canvas for tracing a neuron); the threshold panel wants a real frame,
+        # or it opens with the overlay on, no dots, and a nag.
+        if panel == "detect" and self._n_frames > 1:
+            self.setViewMode("raw")
 
     @Slot(str, result=bool)
     def editRun(self, run_dir):
@@ -827,6 +862,9 @@ class RoiController(QObject):
         self._mask_proj_mode = ""
         self._green_path = ""                     # no companion image for a run
         self._detect_on = False                   # no live detection over a run
+        # A finished run's detections are already written, so a threshold panel
+        # here would offer a control that changes nothing.
+        self._panel = "roi"
         self._spots = None
         self._spots_token += 1
 
@@ -844,7 +882,7 @@ class RoiController(QObject):
         self._editing = True
         for sig in (self.roiSettingsChanged, self.viewChanged, self.polygonsChanged,
                     self.draftChanged, self.detectChanged, self.spotsChanged,
-                    self.editingChanged, self.splitChanged):
+                    self.editingChanged, self.splitChanged, self.panelChanged):
             sig.emit()
         return True
 

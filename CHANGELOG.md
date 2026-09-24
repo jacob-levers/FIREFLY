@@ -1,5 +1,54 @@
 # Changelog
 
+## v2.76.51-rc.12 — 24 Sep 2026
+
+### Changed
+
+- **Drawing an ROI and choosing a detection threshold are now two screens, with
+  a button each.** They shared one modal reached by one button, so picking a
+  threshold meant opening something labelled "ROI" and scrolling past the
+  polygon tools, and tracing a region meant scrolling past the mass histogram.
+  Every row in the batch queue now offers **ROI** and **Threshold** separately,
+  and so does the single-file preview card. Same viewer, same file, same saved
+  settings — it just opens on the screen you asked for, and the title says which
+  one you are on.
+
+- **The detection threshold has arrows.** A 0–50 slider and a text box were the
+  only ways to move a number that matters at the second decimal place: one
+  slider pixel is a large fraction of a working minmass of ~0.45, and trying
+  0.46 meant retyping the whole value. The exact field now has **−** and **+**
+  either side of it — hold to repeat, or use ↑/↓ in the field — and a **Nudge
+  by** row picks the increment (0.001 / 0.01 / 0.1 / 1). One fixed increment
+  could not serve every case: mass is in the selected detector's own units, so a
+  sensible step on trackpy is the wrong order of magnitude elsewhere.
+
+### Fixed
+
+- **The detection threshold screen opens on raw frames.** Detection runs on
+  acquired frames, so the overlay draws nothing over a max projection — it posts
+  "Select Raw frames" instead. Opening the threshold screen on the projection
+  therefore showed the overlay switched on, no dots, and a nag, which is the
+  opposite of its purpose. It now opens on frame 1 with the spots already drawn.
+  The ROI screen still opens on the projection, which is the right canvas for
+  tracing a region.
+
+- **A typed number stopped following what it displays.** The numeric field
+  assigned its own value on commit, which destroyed the binding to its source.
+  So after typing a detection threshold, dragging the slider no longer moved the
+  number in the box: it sat frozen at what had been typed while the real
+  threshold changed underneath it. The field now only reports the new value and
+  lets its owner write back, exactly as the sliders already did. This affects
+  every numeric field in the app, not only this one.
+
+- **A folder-loading thread could emit into a destroyed controller.** The
+  Analysis tab's loaders run on plain threads and signal back into the
+  controller that started them. If that controller was destroyed while a load
+  was still in flight, the queued signal was delivered into freed memory and
+  crashed inside whatever event loop happened to be running — far from the
+  cause. The loaders are now tracked and the emit checks the object is still
+  alive first. This removes one known contributor to the intermittent crash; it
+  is not a claim that every cause is now gone.
+
 ## v2.76.51-rc.11 — 24 Sep 2026
 
 ### Fixed

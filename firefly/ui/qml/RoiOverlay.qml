@@ -23,6 +23,10 @@ Item {
     readonly property bool isThresh: isAuto || isManual
     readonly property bool isSister: Roi.roiMode === "Sister TIFF"
 
+    // Which screen is showing.  See the panel comments in the controls column.
+    readonly property bool isDetect:   Roi.panel === "detect"
+    readonly property bool isRoiPanel: !isDetect
+
     // small uppercase section label used throughout the control panel
     component PanelLabel: Text {
         color: Theme.palette.TXT_MUTED; font.pixelSize: 10
@@ -125,8 +129,10 @@ Item {
                 Layout.fillWidth: true
                 Layout.margins: sc.sp4
                 spacing: sc.sp3
-                Icon { name: "scan-search"; size: 15; color: pal.ACC }
-                Text { text: "Preview & ROI"; color: pal.TXT; font.pixelSize: sc.textMd; font.bold: true }
+                Icon { name: root.isDetect ? "sliders-horizontal" : "scan-search"
+                       size: 15; color: pal.ACC }
+                Text { text: root.isDetect ? "Detection threshold" : "Preview & ROI"
+                       color: pal.TXT; font.pixelSize: sc.textMd; font.bold: true }
                 Text { text: Roi.fileName; color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                        font.family: "Menlo"; elide: Text.ElideMiddle
                        Layout.fillWidth: true; Layout.preferredWidth: 0 }
@@ -531,82 +537,6 @@ Item {
                             }
                         }
 
-                        PanelLabel { text: "ROI MODE"; Layout.topMargin: sc.sp1 }
-                        Select {
-                            Layout.fillWidth: true
-                            model: Roi.roiModes
-                            currentIndex: Math.max(0, Roi.roiModes.indexOf(Roi.roiMode))
-                            onPicked: (t) => Roi.roiMode = t
-                        }
-                        Text {
-                            Layout.fillWidth: true; wrapMode: Text.WordWrap
-                            color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
-                            text: root.isPoly
-                                  ? "Click the image to trace a region (Close shape for more). Saved for THIS file only."
-                                  : root.isThresh
-                                  ? "Green mask = the threshold ROI. Scrub raw frames to see which particles it keeps. Saved for THIS file only."
-                                  : root.isSister
-                                  ? (Roi.hasMask
-                                     ? "Green mask = the sister-image ROI FIREFLY will keep.  " + Roi.sisterStatus
-                                     : (Roi.sisterStatus || "Looking for a companion ROI image…")
-                                       + "  The whole frame is analysed unless a sister image is found.")
-                                  : Roi.roiMode === "None"
-                                  ? "Analyse the whole frame for this file (no region)."
-                                  : "ROI loaded from a companion file for this file."
-                        }
-
-                        // auto-threshold method
-                        ColumnLayout {
-                            visible: root.isAuto
-                            Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
-                            PanelLabel { text: "AUTO METHOD" }
-                            Select {
-                                Layout.fillWidth: true
-                                model: Roi.autoMethods
-                                currentIndex: Math.max(0, Roi.autoMethods.indexOf(Roi.autoMethod))
-                                onPicked: (t) => Roi.autoMethod = t
-                            }
-                        }
-
-                        // manual-threshold slider
-                        ColumnLayout {
-                            visible: root.isManual
-                            Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
-                            PanelLabel { text: "THRESHOLD" }
-                            Slider {
-                                Layout.fillWidth: true
-                                from: 0; to: 1; step: 0.005; decimals: 3
-                                value: Roi.threshold
-                                onMoved: (v) => { Roi.threshold = v; maskDebounce.restart() }
-                                onCommitted: (v) => { Roi.threshold = v; Roi.refreshMask() }
-                            }
-                        }
-
-                        // mask mode + background sigma (both threshold modes)
-                        ColumnLayout {
-                            visible: root.isThresh
-                            Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
-                            PanelLabel { text: "MASK MODE" }
-                            Select {
-                                Layout.fillWidth: true
-                                model: Roi.maskModes
-                                currentIndex: Math.max(0, Roi.maskModes.indexOf(Roi.maskMode))
-                                onPicked: (t) => Roi.maskMode = t
-                            }
-                        }
-                        ColumnLayout {
-                            visible: root.isThresh
-                            Layout.fillWidth: true; spacing: sc.sp2
-                            PanelLabel { text: "BACKGROUND σ" }
-                            Slider {
-                                Layout.fillWidth: true
-                                from: 0; to: 100; step: 1; decimals: 1
-                                value: Roi.bgSigma
-                                onMoved: (v) => { Roi.bgSigma = v; maskDebounce.restart() }
-                                onCommitted: (v) => { Roi.bgSigma = v; Roi.refreshMask() }
-                            }
-                        }
-
                         // colour map
                         PanelLabel { text: "COLOUR"; Layout.topMargin: sc.sp1 }
                         Select {
@@ -616,369 +546,486 @@ Item {
                             onPicked: (t) => Roi.cmap = t
                         }
 
-                        // ── DETECTION THRESHOLD ─────────────────────────
-                        // Its own section, deliberately: choosing the number is
-                        // a separate job from drawing spots on the image, and it
-                        // needs no overlay — the profile reads frames directly.
-                        // Previously this evidence was only reachable by first
-                        // switching the preview on.
+                        // ── ROI: WHERE to analyse ───────────────────────────────────
+                        // Two screens of one viewer, not one screen doing two jobs:
+                        // `Roi.editFile` opens this panel and `Roi.editDetection` the
+                        // one below.  They were a single scrolling column, so every
+                        // visit scrolled past the other job's controls to reach its own.
                         ColumnLayout {
-                            visible: !Roi.runScoped
-                            Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp2
-                            RowLayout {
+                            visible: root.isRoiPanel
+                            Layout.fillWidth: true; spacing: sc.sp3
+
+                            PanelLabel { text: "ROI MODE"; Layout.topMargin: sc.sp1 }
+                            Select {
                                 Layout.fillWidth: true
-                                PanelLabel { text: "DETECTION THRESHOLD" }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    text: Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
-                                    color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
-                                }
-                            }
-                            Slider {
-                                Layout.fillWidth: true
-                                showValue: false
-                                from: 0; to: 50; step: 0.01; decimals: 3
-                                value: Roi.detectMinmass
-                                onMoved: (v) => { Roi.detectMinmass = v; guide.rescore()
-                                                  if (Roi.detectEnabled) spotsDebounce.restart() }
-                                onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
-                                                      if (Roi.detectEnabled) Roi.refreshSpots() }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: sc.sp2
-                                Text { text: "Exact"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
-                                SpinBox {
-                                    Layout.fillWidth: true
-                                    from: 0; to: 1000000; step: 0.01; decimals: 4
-                                    value: Roi.detectMinmass
-                                    onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
-                                                          if (Roi.detectEnabled) spotsDebounce.restart() }
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: sc.sp3
-                                ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 1
-                                    Text { text: "Use for this file only"; color: pal.TXT
-                                           font.pixelSize: sc.textSm }
-                                    Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                           text: "Saves the threshold with this file's ROI, so a batch can " +
-                                                 "run one recording at a different value. Off, the slider sets " +
-                                                 "the shared sidebar threshold every file uses."
-                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
-                                }
-                                Switch {
-                                    checked: Roi.minmassPerFile
-                                    onToggled: (c) => Roi.setMinmassPerFile(c)
-                                }
-                            }
-                            Alert {
-                                Layout.fillWidth: true
-                                visible: Roi.minmassPerFile
-                                severity: "warn"
-                                text: "Per-file thresholds are not comparable by default: mass is " +
-                                      "file-relative, and tuning each recording until the counts agree is " +
-                                      "how a detection difference gets manufactured. Use a stated rule, " +
-                                      "apply it to every condition, and report it."
+                                model: Roi.roiModes
+                                currentIndex: Math.max(0, Roi.roiModes.indexOf(Roi.roiMode))
+                                onPicked: (t) => Roi.roiMode = t
                             }
                             Text {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                text: "Sets the sidebar's Threshold (minmass) and turns Auto minmass off. " +
-                                      "Mass is in the selected detector's own units and is file-relative — " +
-                                      "a value from another backend or recording does not carry over."
                                 color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
-                            }
-                        // ── threshold guidance ──────────────────
-                        // Detect once at minmass 0, then re-score any
-                        // threshold instantly: the histogram and the
-                        // readouts follow the slider with no detection.
-                        ColumnLayout {
-                            id: guide
-                            Layout.fillWidth: true; spacing: sc.sp1
-                            property var prof: ({})
-                            function refresh() { prof = Roi.massProfile(); massHist.requestPaint() }
-
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: sc.sp2
-                                Text { text: "Mass distribution"; color: pal.TXT
-                                       font.pixelSize: sc.textSm }
-                                Item { Layout.fillWidth: true }
-                                Button {
-                                    variant: "secondary"; text: "Profile"; icon: "chart-spline"
-                                    onClicked: { Roi.invalidateMassProfile(); guide.refresh() }
-                                }
+                                text: root.isPoly
+                                      ? "Click the image to trace a region (Close shape for more). Saved for THIS file only."
+                                      : root.isThresh
+                                      ? "Green mask = the threshold ROI. Scrub raw frames to see which particles it keeps. Saved for THIS file only."
+                                      : root.isSister
+                                      ? (Roi.hasMask
+                                         ? "Green mask = the sister-image ROI FIREFLY will keep.  " + Roi.sisterStatus
+                                         : (Roi.sisterStatus || "Looking for a companion ROI image…")
+                                           + "  The whole frame is analysed unless a sister image is found.")
+                                      : Roi.roiMode === "None"
+                                      ? "Analyse the whole frame for this file (no region)."
+                                      : "ROI loaded from a companion file for this file."
                             }
 
-                            Canvas {
-                                id: massHist
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 92
-                                onPaint: {
-                                    var ctx = getContext("2d"); ctx.reset()
-                                    ctx.clearRect(0, 0, width, height)
-                                    var p = guide.prof
-                                    if (!p || !p.counts || p.counts.length === 0) return
-                                    var e = p.edges, c = p.counts
-                                    var lo = e[0], hi = e[e.length - 1]
-                                    var span = (hi - lo) || 1
-                                    var mx = 0
-                                    for (var i = 0; i < c.length; ++i) mx = Math.max(mx, c[i])
-                                    if (mx <= 0) return
-                                    var toX = function (log10m) {
-                                        return (log10m - lo) / span * width }
-                                    // bars, split at the threshold so the
-                                    // kept fraction is visible, not inferred
-                                    var cut = Math.log(p.minmass) / Math.LN10
-                                    var bw = width / c.length
-                                    for (i = 0; i < c.length; ++i) {
-                                        var h = c[i] / mx * (height - 14)
-                                        var mid = (e[i] + e[i + 1]) / 2
-                                        ctx.fillStyle = (mid >= cut) ? pal.SUCCESS : pal.TXT_MUTED
-                                        ctx.globalAlpha = (mid >= cut) ? 0.85 : 0.30
-                                        ctx.fillRect(i * bw, height - 14 - h, Math.max(1, bw - 1), h)
-                                    }
-                                    ctx.globalAlpha = 1
-                                    // markers
-                                    var mark = function (v, colour, dash) {
-                                        if (!v) return
-                                        var x = toX(Math.log(v) / Math.LN10)
-                                        if (x < 0 || x > width) return
-                                        ctx.beginPath(); ctx.setLineDash(dash)
-                                        ctx.moveTo(x, 0); ctx.lineTo(x, height - 14)
-                                        ctx.strokeStyle = colour; ctx.lineWidth = 1.5
-                                        ctx.stroke(); ctx.setLineDash([])
-                                    }
-                                    mark(p.knee, pal.WARN || "#e0a33a", [4, 3])
-                                    mark(p.noise_floor, pal.DANGER, [2, 2])
-                                    mark(p.minmass, pal.TXT, [])
-                                }
-                            }
-
-                            Text {
-                                Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                visible: !!(guide.prof && guide.prof.n_candidates > 0)
-                                text: {
-                                    var p = guide.prof
-                                    if (!p || !p.n_candidates) return ""
-                                    return "— threshold · " +
-                                        (p.knee ? "– – knee " + p.knee.toFixed(3) + " · " : "") +
-                                        (p.noise_floor ? "· · noise floor " + p.noise_floor.toFixed(3) : "no noise floor")
-                                }
-                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs
-                            }
-
-                            Text {
-                                Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                visible: !!(guide.prof && guide.prof.n_candidates > 0)
-                                text: {
-                                    var p = guide.prof
-                                    if (!p || !p.n_candidates) return ""
-                                    return p.per_frame_kept.toFixed(1) + " spots/frame kept of " +
-                                           p.per_frame_all.toFixed(0) + " candidates (" +
-                                           (p.kept_fraction * 100).toFixed(1) + "%), from " +
-                                           p.n_frames_sampled + " frames across the recording."
-                                }
-                                color: pal.TXT; font.pixelSize: sc.textXs
-                            }
-
-                            Text {
-                                Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                visible: text.length > 0
-                                text: (guide.prof && guide.prof.floor_status &&
-                                       !guide.prof.noise_floor) ? guide.prof.floor_status : ""
-                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
-                            }
-
-                            Alert {
-                                Layout.fillWidth: true
-                                // !! is load-bearing: guide.prof starts as {},
-                                // so this chain yields `undefined`, the bool
-                                // binding fails, and `visible` falls back to its
-                                // default — TRUE — showing an empty red alert.
-                                visible: !!(guide.prof && guide.prof.warning &&
-                                            guide.prof.warning.length > 0)
-                                severity: (guide.prof && guide.prof.below_noise_floor) ? "danger" : "warn"
-                                text: (guide.prof && guide.prof.warning) ? guide.prof.warning : ""
-                            }
-
-                            Connections {
-                                target: Roi
-                                function onDetectChanged() { if (Roi.detectEnabled) guide.refresh() }
-                            }
-                        }
-                        }
-
-                        // detection-threshold (minmass) preview + slider
-                        ColumnLayout {
-                            visible: !Roi.runScoped
-                            Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
-                            RowLayout {
-                                Layout.fillWidth: true
-                                PanelLabel { text: "DETECTION PREVIEW" }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    visible: Roi.detectEnabled
-                                    text: Roi.spotsStale ? "outdated" : Roi.spotCount + " pass"
-                                    color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
-                                }
-                                Switch {
-                                    checked: Roi.detectEnabled
-                                    onToggled: (c) => { Roi.detectEnabled = c }
-                                }
-                            }
-                            // explicitly labelled so it's clear this is the minmass
-                            // overlay controls only — the threshold itself lives
-                            // in its own section above
+                            // auto-threshold method
                             ColumnLayout {
-                                visible: Roi.detectEnabled
-                                Layout.fillWidth: true; spacing: 2
-                                Button {
-                                    text: "Refresh overlay"
+                                visible: root.isAuto
+                                Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
+                                PanelLabel { text: "AUTO METHOD" }
+                                Select {
                                     Layout.fillWidth: true
-                                    onClicked: { spotsDebounce.stop(); Roi.refreshSpots() }
+                                    model: Roi.autoMethods
+                                    currentIndex: Math.max(0, Roi.autoMethods.indexOf(Roi.autoMethod))
+                                    onPicked: (t) => Roi.autoMethod = t
+                                }
+                            }
+
+                            // manual-threshold slider
+                            ColumnLayout {
+                                visible: root.isManual
+                                Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
+                                PanelLabel { text: "THRESHOLD" }
+                                Slider {
+                                    Layout.fillWidth: true
+                                    from: 0; to: 1; step: 0.005; decimals: 3
+                                    value: Roi.threshold
+                                    onMoved: (v) => { Roi.threshold = v; maskDebounce.restart() }
+                                    onCommitted: (v) => { Roi.threshold = v; Roi.refreshMask() }
+                                }
+                            }
+
+                            // mask mode + background sigma (both threshold modes)
+                            ColumnLayout {
+                                visible: root.isThresh
+                                Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
+                                PanelLabel { text: "MASK MODE" }
+                                Select {
+                                    Layout.fillWidth: true
+                                    model: Roi.maskModes
+                                    currentIndex: Math.max(0, Roi.maskModes.indexOf(Roi.maskMode))
+                                    onPicked: (t) => Roi.maskMode = t
+                                }
+                            }
+                            ColumnLayout {
+                                visible: root.isThresh
+                                Layout.fillWidth: true; spacing: sc.sp2
+                                PanelLabel { text: "BACKGROUND σ" }
+                                Slider {
+                                    Layout.fillWidth: true
+                                    from: 0; to: 100; step: 1; decimals: 1
+                                    value: Roi.bgSigma
+                                    onMoved: (v) => { Roi.bgSigma = v; maskDebounce.restart() }
+                                    onCommitted: (v) => { Roi.bgSigma = v; Roi.refreshMask() }
+                                }
+                            }
+
+                            // ── drawing tool: click-a-polygon vs paint ──────────
+                            // Shown whenever an image is loaded, NOT only in Manual
+                            // polygon mode: gating it on the mode meant a file set to
+                            // "None" (the common case) offered no drawing tools and no
+                            // hint that picking a tool is what reveals them.  Choosing
+                            // one switches the mode.
+                            ColumnLayout {
+                                Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp2
+                                visible: Roi.hasImage && !Roi.runScoped
+                                Text { text: "Drawing tool"; color: pal.TXT_MUTED
+                                       font.pixelSize: sc.textXs }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Button {
+                                        Layout.fillWidth: true
+                                        text: "Polygon"; icon: "waypoints"
+                                        variant: Roi.tool === "polygon" ? "primary" : "secondary"
+                                        onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
+                                                       Roi.setTool("polygon") }
+                                    }
+                                    Button {
+                                        Layout.fillWidth: true
+                                        text: "Brush"; icon: "palette"
+                                        variant: Roi.tool === "brush" ? "primary" : "secondary"
+                                        onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
+                                                       Roi.setTool("brush") }
+                                    }
+                                    Button {
+                                        Layout.fillWidth: true
+                                        text: "Eraser"; icon: "x"
+                                        variant: Roi.tool === "eraser" ? "primary" : "secondary"
+                                        onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
+                                                       Roi.setTool("eraser") }
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp1
+                                    visible: Roi.brushActive
+                                    RowLayout {
+                                        Layout.fillWidth: true; spacing: sc.sp2
+                                        Text { text: "Brush size"; color: pal.TXT
+                                               font.pixelSize: sc.textSm }
+                                        Item { Layout.fillWidth: true }
+                                        Text { text: (Roi.brushRadius * 2).toFixed(0) + " px"
+                                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                                    }
+                                    Slider {
+                                        Layout.fillWidth: true
+                                        showValue: false
+                                        from: 1; to: 60; step: 0.5; decimals: 1
+                                        value: Roi.brushRadius
+                                        onMoved: (v) => Roi.brushRadius = v
+                                        onCommitted: (v) => Roi.brushRadius = v
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true; spacing: sc.sp2
+                                        Button {
+                                            Layout.fillWidth: true
+                                            variant: "secondary"; text: "Undo stroke"; icon: "rotate-ccw"
+                                            enabled: Roi.canUndoStroke
+                                            onClicked: Roi.undoStroke()
+                                        }
+                                        Button {
+                                            Layout.fillWidth: true
+                                            variant: "secondary"; text: "Erase all"; icon: "x"
+                                            onClicked: Roi.clearBrush()
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                        text: "Drag to paint the region; the eraser trims it. " +
+                                              "Painted shapes are stored as ordinary ROI outlines, " +
+                                              "so everything downstream is unchanged."
+                                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                                    }
+                                }
+                            }
+
+                            // polygon count + close shape
+                            RowLayout {
+                                Layout.fillWidth: true; Layout.topMargin: sc.sp1; spacing: sc.sp3
+                                visible: root.isPoly
+                                Badge { text: Roi.polygonCount + (Roi.polygonCount === 1 ? " region" : " regions")
+                                        tone: Roi.polygonCount > 0 ? pal.SUCCESS : pal.TXT_MUTED }
+                                Item { Layout.fillWidth: true }
+                                Button { variant: "secondary"; text: "Close shape"; icon: "check"
+                                         enabled: Roi.canClose; onClicked: Roi.closeDraft() }
+                            }
+
+                            // Multiple ROIs → analyse each as its own replicate.
+                            ColumnLayout {
+                                Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp2
+                                visible: root.isPoly && Roi.polygonCount > 1
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp3
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 1
+                                        Text { text: "Analyse each ROI separately"; color: pal.TXT
+                                               font.pixelSize: sc.textSm }
+                                        Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                               text: "Individual replicates — one output per ROI, so the cells don't skew each other's D-values."
+                                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
+                                    }
+                                    Switch { checked: Roi.splitReplicates
+                                             onToggled: (c) => Roi.splitReplicates = c }
+                                }
+                                Repeater {
+                                    model: Roi.splitReplicates ? Roi.roiLabels.length : 0
+                                    RowLayout {
+                                        Layout.fillWidth: true; spacing: sc.sp2
+                                        Text { text: "ROI " + (index + 1); color: pal.TXT_MUTED
+                                               font.pixelSize: sc.textXs; Layout.preferredWidth: 44 }
+                                        FieldInput {
+                                            Layout.fillWidth: true
+                                            placeholderText: "cell" + (index + 1)
+                                            text: Roi.roiLabels[index]
+                                            onEditingFinished: Roi.setRoiLabel(index, text)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── DETECTION: WHICH spots to keep ──────────────────────────
+                        // Needs no ROI: the mass profile reads frames directly, which is
+                        // why this is reachable without drawing anything first.
+                        ColumnLayout {
+                            visible: root.isDetect
+                            Layout.fillWidth: true; spacing: sc.sp3
+
+                            // ── DETECTION THRESHOLD ─────────────────────────
+                            // Its own section, deliberately: choosing the number is
+                            // a separate job from drawing spots on the image, and it
+                            // needs no overlay — the profile reads frames directly.
+                            // Previously this evidence was only reachable by first
+                            // switching the preview on.
+                            ColumnLayout {
+                                id: thrSection
+                                // How much one arrow press moves the threshold.  A
+                                // fixed increment cannot serve both ends: a working
+                                // minmass is ~0.45 on trackpy and orders of magnitude
+                                // larger on another backend, because mass is in the
+                                // detector's own units.
+                                property real nudge: 0.01
+                                visible: !Roi.runScoped
+                                Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp2
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    PanelLabel { text: "DETECTION THRESHOLD" }
+                                    Item { Layout.fillWidth: true }
+                                    Text {
+                                        text: Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
+                                        color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
+                                    }
+                                }
+                                Slider {
+                                    Layout.fillWidth: true
+                                    showValue: false
+                                    from: 0; to: 50; step: 0.01; decimals: 3
+                                    value: Roi.detectMinmass
+                                    onMoved: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                                      if (Roi.detectEnabled) spotsDebounce.restart() }
+                                    onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                                          if (Roi.detectEnabled) Roi.refreshSpots() }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Text { text: "Exact"; color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
+                                    SpinBox {
+                                        objectName: "minmassSpin"
+                                        Layout.fillWidth: true
+                                        steppers: true                  // − / + , hold to repeat, ↑↓ keys
+                                        from: 0; to: 1000000; decimals: 4
+                                        step: thrSection.nudge
+                                        value: Roi.detectMinmass
+                                        onCommitted: (v) => { Roi.detectMinmass = v; guide.rescore()
+                                                              if (Roi.detectEnabled) spotsDebounce.restart() }
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Text { text: "Nudge by"; color: pal.TXT_MUTED
+                                           font.pixelSize: sc.textXs }
+                                    Segmented {
+                                        objectName: "minmassStepPick"
+                                        Layout.fillWidth: true
+                                        options: [{ v: "0.001", t: "0.001" }, { v: "0.01", t: "0.01" },
+                                                  { v: "0.1", t: "0.1" }, { v: "1", t: "1" }]
+                                        value: thrSection.nudge.toString()
+                                        onPicked: (v) => thrSection.nudge = parseFloat(v)
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp3
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 1
+                                        Text { text: "Use for this file only"; color: pal.TXT
+                                               font.pixelSize: sc.textSm }
+                                        Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                               text: "Saves the threshold with this file's ROI, so a batch can " +
+                                                     "run one recording at a different value. Off, the slider sets " +
+                                                     "the shared sidebar threshold every file uses."
+                                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
+                                    }
+                                    Switch {
+                                        checked: Roi.minmassPerFile
+                                        onToggled: (c) => Roi.setMinmassPerFile(c)
+                                    }
+                                }
+                                Alert {
+                                    Layout.fillWidth: true
+                                    visible: Roi.minmassPerFile
+                                    severity: "warn"
+                                    text: "Per-file thresholds are not comparable by default: mass is " +
+                                          "file-relative, and tuning each recording until the counts agree is " +
+                                          "how a detection difference gets manufactured. Use a stated rule, " +
+                                          "apply it to every condition, and report it."
                                 }
                                 Text {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: "Green: detection + ROI. Orange: contrast rejected. Red: outside ROI. Blue: ROI unchecked."
+                                    text: "Sets the sidebar's Threshold (minmass) and turns Auto minmass off. " +
+                                          "Mass is in the selected detector's own units and is file-relative — " +
+                                          "a value from another backend or recording does not carry over."
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                                }
+                            // ── threshold guidance ──────────────────
+                            // Detect once at minmass 0, then re-score any
+                            // threshold instantly: the histogram and the
+                            // readouts follow the slider with no detection.
+                            ColumnLayout {
+                                id: guide
+                                Layout.fillWidth: true; spacing: sc.sp1
+                                property var prof: ({})
+                                function refresh() { prof = Roi.massProfile(); massHist.requestPaint() }
+
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Text { text: "Mass distribution"; color: pal.TXT
+                                           font.pixelSize: sc.textSm }
+                                    Item { Layout.fillWidth: true }
+                                    Button {
+                                        variant: "secondary"; text: "Profile"; icon: "chart-spline"
+                                        onClicked: { Roi.invalidateMassProfile(); guide.refresh() }
+                                    }
+                                }
+
+                                Canvas {
+                                    id: massHist
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 92
+                                    onPaint: {
+                                        var ctx = getContext("2d"); ctx.reset()
+                                        ctx.clearRect(0, 0, width, height)
+                                        var p = guide.prof
+                                        if (!p || !p.counts || p.counts.length === 0) return
+                                        var e = p.edges, c = p.counts
+                                        var lo = e[0], hi = e[e.length - 1]
+                                        var span = (hi - lo) || 1
+                                        var mx = 0
+                                        for (var i = 0; i < c.length; ++i) mx = Math.max(mx, c[i])
+                                        if (mx <= 0) return
+                                        var toX = function (log10m) {
+                                            return (log10m - lo) / span * width }
+                                        // bars, split at the threshold so the
+                                        // kept fraction is visible, not inferred
+                                        var cut = Math.log(p.minmass) / Math.LN10
+                                        var bw = width / c.length
+                                        for (i = 0; i < c.length; ++i) {
+                                            var h = c[i] / mx * (height - 14)
+                                            var mid = (e[i] + e[i + 1]) / 2
+                                            ctx.fillStyle = (mid >= cut) ? pal.SUCCESS : pal.TXT_MUTED
+                                            ctx.globalAlpha = (mid >= cut) ? 0.85 : 0.30
+                                            ctx.fillRect(i * bw, height - 14 - h, Math.max(1, bw - 1), h)
+                                        }
+                                        ctx.globalAlpha = 1
+                                        // markers
+                                        var mark = function (v, colour, dash) {
+                                            if (!v) return
+                                            var x = toX(Math.log(v) / Math.LN10)
+                                            if (x < 0 || x > width) return
+                                            ctx.beginPath(); ctx.setLineDash(dash)
+                                            ctx.moveTo(x, 0); ctx.lineTo(x, height - 14)
+                                            ctx.strokeStyle = colour; ctx.lineWidth = 1.5
+                                            ctx.stroke(); ctx.setLineDash([])
+                                        }
+                                        mark(p.knee, pal.WARN || "#e0a33a", [4, 3])
+                                        mark(p.noise_floor, pal.DANGER, [2, 2])
+                                        mark(p.minmass, pal.TXT, [])
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    visible: !!(guide.prof && guide.prof.n_candidates > 0)
+                                    text: {
+                                        var p = guide.prof
+                                        if (!p || !p.n_candidates) return ""
+                                        return "— threshold · " +
+                                            (p.knee ? "– – knee " + p.knee.toFixed(3) + " · " : "") +
+                                            (p.noise_floor ? "· · noise floor " + p.noise_floor.toFixed(3) : "no noise floor")
+                                    }
                                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                                 }
+
                                 Text {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: "Click a spot to inspect (Ctrl-click in polygon mode). Set the threshold under Detection threshold above. Save ROI to apply edits."
-                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs
-                                }
-                                Text {
-                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: Roi.spotInspection
-                                    visible: text.length > 0
+                                    visible: !!(guide.prof && guide.prof.n_candidates > 0)
+                                    text: {
+                                        var p = guide.prof
+                                        if (!p || !p.n_candidates) return ""
+                                        return p.per_frame_kept.toFixed(1) + " spots/frame kept of " +
+                                               p.per_frame_all.toFixed(0) + " candidates (" +
+                                               (p.kept_fraction * 100).toFixed(1) + "%), from " +
+                                               p.n_frames_sampled + " frames across the recording."
+                                    }
                                     color: pal.TXT; font.pixelSize: sc.textXs
                                 }
 
                                 Text {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: Roi.spotSummary
+                                    visible: text.length > 0
+                                    text: (guide.prof && guide.prof.floor_status &&
+                                           !guide.prof.noise_floor) ? guide.prof.floor_status : ""
                                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
-                            }
-                        }
 
-                        // ── drawing tool: click-a-polygon vs paint ──────────
-                        // Shown whenever an image is loaded, NOT only in Manual
-                        // polygon mode: gating it on the mode meant a file set to
-                        // "None" (the common case) offered no drawing tools and no
-                        // hint that picking a tool is what reveals them.  Choosing
-                        // one switches the mode.
-                        ColumnLayout {
-                            Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp2
-                            visible: Roi.hasImage && !Roi.runScoped
-                            Text { text: "Drawing tool"; color: pal.TXT_MUTED
-                                   font.pixelSize: sc.textXs }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: sc.sp2
-                                Button {
+                                Alert {
                                     Layout.fillWidth: true
-                                    text: "Polygon"; icon: "waypoints"
-                                    variant: Roi.tool === "polygon" ? "primary" : "secondary"
-                                    onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
-                                                   Roi.setTool("polygon") }
+                                    // !! is load-bearing: guide.prof starts as {},
+                                    // so this chain yields `undefined`, the bool
+                                    // binding fails, and `visible` falls back to its
+                                    // default — TRUE — showing an empty red alert.
+                                    visible: !!(guide.prof && guide.prof.warning &&
+                                                guide.prof.warning.length > 0)
+                                    severity: (guide.prof && guide.prof.below_noise_floor) ? "danger" : "warn"
+                                    text: (guide.prof && guide.prof.warning) ? guide.prof.warning : ""
                                 }
-                                Button {
-                                    Layout.fillWidth: true
-                                    text: "Brush"; icon: "palette"
-                                    variant: Roi.tool === "brush" ? "primary" : "secondary"
-                                    onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
-                                                   Roi.setTool("brush") }
-                                }
-                                Button {
-                                    Layout.fillWidth: true
-                                    text: "Eraser"; icon: "x"
-                                    variant: Roi.tool === "eraser" ? "primary" : "secondary"
-                                    onClicked: { if (!root.isPoly) Roi.roiMode = "Manual polygon"
-                                                   Roi.setTool("eraser") }
+
+                                Connections {
+                                    target: Roi
+                                    function onDetectChanged() { if (Roi.detectEnabled) guide.refresh() }
                                 }
                             }
+                            }
+
+                            // detection-threshold (minmass) preview + slider
                             ColumnLayout {
-                                Layout.fillWidth: true; spacing: sc.sp1
-                                visible: Roi.brushActive
+                                visible: !Roi.runScoped
+                                Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp1
                                 RowLayout {
-                                    Layout.fillWidth: true; spacing: sc.sp2
-                                    Text { text: "Brush size"; color: pal.TXT
-                                           font.pixelSize: sc.textSm }
-                                    Item { Layout.fillWidth: true }
-                                    Text { text: (Roi.brushRadius * 2).toFixed(0) + " px"
-                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs }
-                                }
-                                Slider {
                                     Layout.fillWidth: true
-                                    showValue: false
-                                    from: 1; to: 60; step: 0.5; decimals: 1
-                                    value: Roi.brushRadius
-                                    onMoved: (v) => Roi.brushRadius = v
-                                    onCommitted: (v) => Roi.brushRadius = v
-                                }
-                                RowLayout {
-                                    Layout.fillWidth: true; spacing: sc.sp2
-                                    Button {
-                                        Layout.fillWidth: true
-                                        variant: "secondary"; text: "Undo stroke"; icon: "rotate-ccw"
-                                        enabled: Roi.canUndoStroke
-                                        onClicked: Roi.undoStroke()
+                                    PanelLabel { text: "DETECTION PREVIEW" }
+                                    Item { Layout.fillWidth: true }
+                                    Text {
+                                        visible: Roi.detectEnabled
+                                        text: Roi.spotsStale ? "outdated" : Roi.spotCount + " pass"
+                                        color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
                                     }
-                                    Button {
-                                        Layout.fillWidth: true
-                                        variant: "secondary"; text: "Erase all"; icon: "x"
-                                        onClicked: Roi.clearBrush()
+                                    Switch {
+                                        checked: Roi.detectEnabled
+                                        onToggled: (c) => { Roi.detectEnabled = c }
                                     }
                                 }
-                                Text {
-                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: "Drag to paint the region; the eraser trims it. " +
-                                          "Painted shapes are stored as ordinary ROI outlines, " +
-                                          "so everything downstream is unchanged."
-                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
-                                }
-                            }
-                        }
-
-                        // polygon count + close shape
-                        RowLayout {
-                            Layout.fillWidth: true; Layout.topMargin: sc.sp1; spacing: sc.sp3
-                            visible: root.isPoly
-                            Badge { text: Roi.polygonCount + (Roi.polygonCount === 1 ? " region" : " regions")
-                                    tone: Roi.polygonCount > 0 ? pal.SUCCESS : pal.TXT_MUTED }
-                            Item { Layout.fillWidth: true }
-                            Button { variant: "secondary"; text: "Close shape"; icon: "check"
-                                     enabled: Roi.canClose; onClicked: Roi.closeDraft() }
-                        }
-
-                        // Multiple ROIs → analyse each as its own replicate.
-                        ColumnLayout {
-                            Layout.fillWidth: true; Layout.topMargin: sc.sp2; spacing: sc.sp2
-                            visible: root.isPoly && Roi.polygonCount > 1
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: sc.sp3
+                                // explicitly labelled so it's clear this is the minmass
+                                // overlay controls only — the threshold itself lives
+                                // in its own section above
                                 ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 1
-                                    Text { text: "Analyse each ROI separately"; color: pal.TXT
-                                           font.pixelSize: sc.textSm }
-                                    Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                           text: "Individual replicates — one output per ROI, so the cells don't skew each other's D-values."
-                                           color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
-                                }
-                                Switch { checked: Roi.splitReplicates
-                                         onToggled: (c) => Roi.splitReplicates = c }
-                            }
-                            Repeater {
-                                model: Roi.splitReplicates ? Roi.roiLabels.length : 0
-                                RowLayout {
-                                    Layout.fillWidth: true; spacing: sc.sp2
-                                    Text { text: "ROI " + (index + 1); color: pal.TXT_MUTED
-                                           font.pixelSize: sc.textXs; Layout.preferredWidth: 44 }
-                                    FieldInput {
+                                    visible: Roi.detectEnabled
+                                    Layout.fillWidth: true; spacing: 2
+                                    Button {
+                                        text: "Refresh overlay"
                                         Layout.fillWidth: true
-                                        placeholderText: "cell" + (index + 1)
-                                        text: Roi.roiLabels[index]
-                                        onEditingFinished: Roi.setRoiLabel(index, text)
+                                        onClicked: { spotsDebounce.stop(); Roi.refreshSpots() }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                        text: "Green: detection + ROI. Orange: contrast rejected. Red: outside ROI. Blue: ROI unchecked."
+                                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                        text: "Click a spot to inspect. The slider above sets the threshold; Save threshold to keep it."
+                                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                        text: Roi.spotInspection
+                                        visible: text.length > 0
+                                        color: pal.TXT; font.pixelSize: sc.textXs
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                        text: Roi.spotSummary
+                                        color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                     }
                                 }
                             }
@@ -990,13 +1037,14 @@ Item {
                             Layout.fillWidth: true; spacing: sc.sp3
                             Button {
                                 Layout.fillWidth: true
-                                visible: root.isPoly
+                                visible: root.isRoiPanel && root.isPoly
                                 variant: "secondary"; text: "Clear"; icon: "rotate-ccw"
                                 onClicked: Roi.clearPolygons()
                             }
                             Button {
                                 Layout.fillWidth: true
-                                variant: "primary"; text: "Save ROI"; icon: "check"
+                                variant: "primary"; icon: "check"
+                                text: root.isDetect ? "Save threshold" : "Save ROI"
                                 onClicked: root.saveRoi()
                             }
                         }
