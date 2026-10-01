@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from firefly.analysis.fa_constants import (DEFAULT_PIXEL_SIZE_UM,
                                            DEFAULT_FRAME_INTERVAL_S)
-from firefly.analysis.fa_diffusion import (compute_msd_and_fit, compute_jdd,
+from firefly.analysis.fa_diffusion import (compute_msd_and_fit, compute_jdd, median_d, D_FLOOR,
                           compute_dwell_times, compute_turning_angles,
                           compute_mobile_fraction_over_time,
                           MOBILE_D_THRESHOLD_DEFAULT)
@@ -478,7 +478,7 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True,
                 "frames":          int(n_frames),
                 "n_tracks":        int(diff_df.shape[0]),
                 "n_locs":          int(len(locs)),
-                "median_d":        (float(_d.median()) if _d.notna().any() else None),
+                "median_d":        (lambda m: None if m != m else m)(median_d(diff_df)),
                 "median_alpha":    (float(_a.median()) if _a.notna().any() else None),
                 "mobile_fraction": _mobile,
                 "motion_counts":   {str(k): int(v) for k, v in
@@ -813,6 +813,21 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
         _lo = _np.log10(logd_clip_min) if logd_clip_min > 0 else -5.0
         _hi = _np.log10(logd_clip_max) if logd_clip_max > 0 else 1.0
         logD_arr = _np.clip(logD_arr, _lo, _hi)   # NaN stays NaN
+    # Non-moving tracks (non-positive MSD slope → D = NaN) are written the way
+    # PALMTracer writes them: D pinned at the floor, LogD at log₁₀(floor).  The
+    # clip above leaves NaN as NaN, so they used to go out BLANK and anything
+    # reading this file the PALMTracer way lost them — ~15% of tracks, every one
+    # immobile.  Unmeasurable rows (too few lags, below resolution) stay blank:
+    # that is not evidence of immobility.  The Mobile/Immobile ratio below is
+    # computed from the UNPINNED values on purpose — PALMTracer's rule leaves
+    # pinned tracks out of it.
+    _floor = (logd_clip_min if (logd_clip_min is not None and logd_clip_min > 0)
+              else D_FLOOR)
+    _still = (diff_df["fit_status"].to_numpy() == "nonpositive_slope"
+              if "fit_status" in diff_df.columns
+              else _np.zeros(len(diff_df), dtype=bool))
+    D_out = _np.where(_still, _floor, D_arr)
+    logD_arr = _np.where(_still, _np.log10(_floor), logD_arr)
     _valid_D = _np.isfinite(D_arr) & (D_arr > 0)
     mobile_n  = int(_np.sum(_valid_D & (D_arr >= mobile_D_threshold)))
     immob_n   = int(_np.sum(_valid_D & (D_arr < mobile_D_threshold)))
@@ -830,7 +845,7 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
         for i, pid in enumerate(pid_order):
             new_id = pid_to_new[int(pid)]
             row = [1, new_id,
-                   float(D_arr[i]) if _np.isfinite(D_arr[i]) else "",
+                   float(D_out[i]) if _np.isfinite(D_out[i]) else "",
                    float(msd0_arr[i]) if _np.isfinite(msd0_arr[i]) else "",
                    float(mse_arr[i]) if _np.isfinite(mse_arr[i]) else "",
                    float(logD_arr[i]) if _np.isfinite(logD_arr[i]) else "",
@@ -851,7 +866,7 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
         for i, pid in enumerate(pid_order):
             new_id = pid_to_new[int(pid)]
             w.writerow([1, new_id,
-                        float(D_arr[i]) if _np.isfinite(D_arr[i]) else "",
+                        float(D_out[i]) if _np.isfinite(D_out[i]) else "",
                         float(msd0_arr[i]) if _np.isfinite(msd0_arr[i]) else "",
                         float(mse_arr[i]) if _np.isfinite(mse_arr[i]) else ""])
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.76.51-rc.15 — 1 Oct 2026
+
+### Changed
+
+- **Median D now counts the molecules that did not move.** A track whose MSD
+  does not rise gets a non-positive slope and no measurable D. The mobile
+  fraction has counted those tracks as immobile since rc.6, but median D skipped
+  them, so it described only the molecules that moved and read high — 0.128 vs
+  0.088 µm²/s on a PC12 recording also analysed in PALMTracer, the largest
+  single reason the two programs' medians disagreed. They now count at
+  1e-5 µm²/s, the floor PALMTracer uses, everywhere median D is reported: the
+  run summary, the comparison report and PALMTracer imports. Tracks with too few
+  lags or below resolution stay out, as they do in the mobile fraction.
+  **Median D will be lower than before** for any recording with non-moving
+  tracks; re-run comparisons to pick it up.
+
+### Fixed
+
+- **The PALMTracer-format D files wrote non-moving tracks blank.** PALMTracer
+  pins them at D = 1e-5 and LogD = −5 and keeps the row; FIREFLY left both
+  columns empty (the LogD clamp leaves NaN as NaN, despite the exporter's own
+  comment that immobile tracks "pile at the floor"), so anything reading the
+  file the PALMTracer way lost about 15% of tracks, all immobile. They are now
+  written as PALMTracer writes them. The file's Mobile/Immobile ratio is
+  unchanged: it follows PALMTracer's rule, which leaves those tracks out.
+
 ## v2.76.51-rc.14 — 24 Sep 2026
 
 ### Fixed

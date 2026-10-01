@@ -3232,7 +3232,9 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         try:
             if diff_df is not None and len(diff_df):
                 if "D" in diff_df.columns:
-                    summary["median_d"] = float(diff_df["D"].median())
+                    # non-moving tracks counted, as in the mobile fraction
+                    from firefly.analysis.fa_diffusion import median_d
+                    summary["median_d"] = median_d(diff_df)
                 if "alpha" in diff_df.columns:
                     summary["median_alpha"] = float(diff_df["alpha"].median())
                 if "motion" in diff_df.columns:

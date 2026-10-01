@@ -1200,6 +1200,37 @@ def _msd_auc(emsd_df, frame_interval):
     return float(_trap(y[order], t[order]))
 
 
+# PALMTracer's lower bound on D (µm²/s): it pins every D ≤ 1e-5 here and keeps
+# the track.  Also FIREFLY's default Log-D clip floor (log₁₀ D = −5).
+D_FLOOR = 1e-5
+
+
+def median_d(diff_df, floor=D_FLOOR):
+    """Median D over the SAME tracks the mobile fraction counts.
+
+    Non-moving tracks (``fit_status == "nonpositive_slope"``, D = NaN) are
+    included at ``floor`` — they rank below every track that moved, which is
+    all a median needs.  Measured values below ``floor`` are pinned to it, as
+    PALMTracer does.  Unmeasurable rows (below resolution, too few lags) stay
+    out, exactly as in :func:`mobility_masks`.
+
+    Skipping the non-moving tracks — what ``Series.median()`` does with NaN —
+    describes only the molecules that moved and biases the median upward:
+    0.128 vs 0.088 µm²/s on a PC12 recording, the largest single reason
+    FIREFLY's median disagreed with PALMTracer's on the same data.
+    """
+    if diff_df is None or "D" not in getattr(diff_df, "columns", ()):
+        return float("nan")
+    d = pd.to_numeric(diff_df["D"], errors="coerce").to_numpy(dtype=float)
+    vals = d[np.isfinite(d) & (d > 0)]
+    if "fit_status" in diff_df.columns:
+        n_still = int(np.sum(diff_df["fit_status"].to_numpy() == "nonpositive_slope"))
+        vals = np.concatenate([vals, np.full(n_still, float(floor))])
+    if not vals.size:
+        return float("nan")
+    return float(np.median(np.maximum(vals, float(floor))))
+
+
 def mobility_masks(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
     """``(mobile, immobile)`` boolean masks over ``diff_df``'s rows.
 

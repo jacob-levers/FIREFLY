@@ -1165,6 +1165,14 @@ def _col_median_from(d, col, *, positive=False):
     return float(np.median(v)) if v.size else float("nan")
 
 
+def _replicate_median_d(d):
+    """Per-replicate median D — the shared rule, so the report, the run summary
+    and the mobile fraction all describe the same tracks (non-moving ones
+    included at the floor; see ``fa_diffusion.median_d``)."""
+    from firefly.analysis.fa_diffusion import median_d
+    return median_d(d)
+
+
 def comparison_grid(n):
     """(rows, cols) the comparison figure packs `n` panels into — the single
     source of truth shared with the UI panel-picker's live grid count."""
@@ -1367,7 +1375,7 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             "auc_msd":          _msd_auc(summary["ensemble_msd"], fi),
             "spot_intensity":   _spot_intensity(summary),
             "mob_immob_ratio":  _mob_immob_ratio(d, mobile_d_threshold),
-            "median_D":         _col_median_from(d, "D", positive=True),
+            "median_D":         _replicate_median_d(d),
             "median_alpha":     _col_median_from(d, "alpha"),
             "radius_of_gyration": _col_median_from(d, "radius_of_gyration_um"),
             "net_displacement":   _col_median_from(d, "net_displacement_um"),
