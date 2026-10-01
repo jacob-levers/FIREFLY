@@ -84,7 +84,8 @@ class SidebarController(QObject):
             return int(round(self._s.get_float(key, default)))
         if kind == "double":
             return self._s.get_float(key, default)
-        return self._s.get_str(key, default)        # combo
+        v = self._s.get_str(key, default)            # combo
+        return S.LEGACY_COMBO_VALUES.get(key, {}).get(v, v)   # retired choice → its replacement
 
     def _write(self, key, v) -> bool:
         """Coerce + clamp + persist one key; no signal. Returns True on write."""
@@ -102,6 +103,7 @@ class SidebarController(QObject):
             except (TypeError, ValueError): return False
         else:
             cv = str(v)
+            cv = S.LEGACY_COMBO_VALUES.get(key, {}).get(cv, cv)   # e.g. an old manifest
         if kind in ("int", "double", "logdrange"):
             if f["min"] is not None:
                 cv = max(f["min"], cv)

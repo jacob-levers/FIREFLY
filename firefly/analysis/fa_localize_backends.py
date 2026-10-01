@@ -1043,9 +1043,7 @@ class TorchBackend(LocaliserBackend):
         the trackpy-compatible iterative centroid-of-mass refiner (on ``signal``);
         subclasses (GaussianMle / RadialSymmetry) override this to swap ONLY the
         sub-pixel step while reusing detection, chunking, the minmass filter, the
-        disk-mask geometry and the preview emission unchanged — exactly how
-        ``AtrousWaveletBackend`` overrides only ``_detection_map`` /
-        ``_detection_threshold``.
+        disk-mask geometry and the preview emission unchanged.
 
         ``raw`` is supplied so a fit-based refiner can work on the un-bandpassed
         image under the correct (Poisson) noise model — the bandpass is a matched
@@ -1843,105 +1841,132 @@ class TorchBackend(LocaliserBackend):
         return df
 
 
-class AtrousWaveletBackend(TorchBackend):
-    """À trous (undecimated B3-spline) wavelet spot detector.
+# ── palmTRACER-style wavelet detection ─────────────────────────────────────
+# Reverse-engineered from palmTRACER's own output on 11 PC12 recordings (12,150
+# spots on 660 frames): 99.4 % of its spots reproduced at identical positions
+# and identical "Integrated_Intensity", and 99.7 % of these detections are
+# palmTRACER's.  The method is Izeddin et al., Opt. Express 20:2081 (2012) as
+# palmTRACER configures it.  This is a clean-room reimplementation from the
+# published method plus palmTRACER's output files; no palmTRACER code is used.
+_B3_SPLINE = np.array([1.0, 4.0, 6.0, 4.0, 1.0]) / 16.0
 
-    A classic low-SNR single-molecule detector (Olivo-Marin et al. 2002):
-    smooth the frame with a B3-spline kernel at successive dilations ("holes"),
-    take successive-smoothing differences as wavelet planes, and detect spots as
-    local maxima of the PRODUCT of the first few planes — which reinforces
-    spot-sized structure while suppressing noise uncorrelated across scales.
 
-    Implemented as a thin override of TorchBackend: ONLY the detection map and
-    its threshold change.  Device handling, chunking, max-pool maxima, sub-pixel
-    centroid refinement and mass all reuse TorchBackend unchanged — refinement
-    and mass run on the bandpassed ``signal``, so the ``mass`` column stays on
-    the trackpy scale and ``minmass`` means the same thing across all backends.
+def _b3_smooth(a, level):
+    """One à trous smoothing step: the B3 kernel dilated by 2**level, applied
+    separably, with nearest-pixel edges (the edge rule that reproduced
+    palmTRACER exactly; mirror/reflect differ by a few spots per frame)."""
+    from scipy import ndimage as ndi
+    k = np.zeros(4 * 2 ** level + 1)
+    k[:: 2 ** level] = _B3_SPLINE
+    return ndi.convolve1d(ndi.convolve1d(a, k, axis=0, mode="nearest"),
+                          k, axis=1, mode="nearest")
 
-    NOTE (deviation from canonical Olivo-Marin): the wavelet transform here runs
-    on the already-bandpassed ``signal`` (the raw frame ``x`` is available but
-    intentionally unused), not the raw image.  This double-filters slightly, but
-    keeps detection on the same bandpassed image the refiner/mass use so the
-    cross-backend mass-scale parity above holds; ``_ATROUS_K_SIGMA`` was
-    calibrated in exactly this configuration.
 
-    ``_ATROUS_K_SIGMA`` (detection sensitivity) is calibrated for count parity
-    against the Crocker–Grier detectors on synthetic ground truth — see the
-    constant's provenance comment below.
+def palmtracer_w2(frame):
+    """The second à trous wavelet plane W2 = A1 − A2 of a RAW frame — the image
+    palmTRACER thresholds.  It removes any constant (camera offset, flat
+    background) but keeps the raw counts' absolute scale."""
+    a1 = _b3_smooth(np.asarray(frame, dtype=np.float64), 0)
+    return a1 - _b3_smooth(a1, 1)
+
+
+class PalmTracerWaveletBackend(LocaliserBackend):
+    """palmTRACER-style detection: absolute threshold on W2, watershed, ≥5 px.
+
+    Per frame:
+      * W2 of the RAW frame (see :func:`palmtracer_w2`);
+      * pixels with W2 > ``wavelet_threshold`` — the number palmTRACER calls
+        "Wavelet threshold", in the same units, so a palmTRACER setting carries
+        over unchanged;
+      * 8-connected regions, split by watershed between local maxima;
+      * regions under ``MIN_PIXELS`` pixels are dropped;
+      * position = W2-weighted centroid, ``mass`` = sum of W2 over the region
+        (palmTRACER's Integrated_Intensity).
+
+    ``needs_raw``: the threshold is absolute, so this detector must see raw
+    camera frames.  The normal pipeline hands detectors background-subtracted
+    frames rescaled so the brightest pixel is 1, on which any palmTRACER
+    threshold would match nothing — the dispatcher honours this flag.
+    ``minmass`` does not apply and is ignored.
     """
-    name = "atrous"
+    name = "palmtracer"
+    needs_raw = True
+    MIN_PIXELS = 5
+    DEFAULT_THRESHOLD = 250.0
 
-    # Number of à trous wavelet planes whose significant parts form the map.
-    _ATROUS_N_SCALES = 3
-    # Detection sensitivity: per wavelet plane, keep coefficients above
-    # ``median + _ATROUS_K_SIGMA · σ`` (σ = 1.4826·MAD of the plane), then
-    # multiply the significant planes.  Calibrated against synthetic ground
-    # truth (scripts/calibrate_atrous.py, 2026-06-15): k=2.0 maximised mean F1
-    # = 0.86 (recall 0.80, precision 0.95) over SNR 2–8 × density 20/60 spots —
-    # markedly more precise than trackpy (F1 0.41) on the same noisy stacks.
-    # Higher k → higher precision, lower recall.  RE-VALIDATE on real data.
-    _ATROUS_K_SIGMA = 2.0
-    # B3-spline à trous kernel (1D; applied separably as rows then columns).
-    _B3_KERNEL = (1 / 16, 4 / 16, 6 / 16, 4 / 16, 1 / 16)
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            import scipy.ndimage            # noqa: F401
+            import skimage.segmentation     # noqa: F401
+            return True
+        except Exception:
+            return False
 
-    def _detection_map(self, x, signal, diameter, device, dtype):
-        """Product of the first ``_ATROUS_N_SCALES`` à trous wavelet planes,
-        each thresholded at its OWN per-frame noise floor.
+    @classmethod
+    def detect_frame(cls, frame, threshold, min_pixels=None):
+        """``(x, y, mass, n_pixels)`` arrays for one raw frame."""
+        from scipy import ndimage as ndi
+        from skimage.segmentation import watershed
+        min_pixels = cls.MIN_PIXELS if min_pixels is None else int(min_pixels)
+        empty = (np.empty(0),) * 4
+        w2 = palmtracer_w2(frame)
+        mask = w2 > float(threshold)
+        if not mask.any():
+            return empty
+        conn8 = np.ones((3, 3), dtype=bool)
+        peaks = mask & (w2 == ndi.maximum_filter(w2, footprint=conn8))
+        markers, n_peaks = ndi.label(peaks, structure=conn8)
+        if not n_peaks:
+            return empty
+        lab = watershed(-w2, markers, mask=mask, connectivity=2)
+        idx = np.arange(1, int(lab.max()) + 1)
+        weights = np.where(mask, w2, 0.0)
+        size = ndi.sum(mask, lab, idx)
+        total = ndi.sum(weights, lab, idx)
+        keep = (size >= min_pixels) & (total > 0)
+        if not keep.any():
+            return empty
+        yy, xx = np.indices(w2.shape)
+        cx = ndi.sum(weights * xx, lab, idx)[keep] / total[keep]
+        cy = ndi.sum(weights * yy, lab, idx)[keep] / total[keep]
+        return cx, cy, total[keep], size[keep]
 
-        Each wavelet plane ``W_i = A_i − A_{i+1}`` is dense (signed), so a robust
-        per-frame ``σ = 1.4826·MAD(W_i)`` is a well-defined noise estimate — the
-        RAW product's MAD is degenerate (it's mostly exact zeros, so median and
-        MAD are both 0 and the threshold can't depend on k).  Keeping only
-        coefficients above ``k·σ`` per plane, then multiplying, suppresses noise
-        (uncorrelated across scales) and reinforces spot-sized structure;
-        ``_ATROUS_K_SIGMA`` is the detection sensitivity."""
-        import torch
-        import torch.nn.functional as F
-        kvec = torch.tensor(self._B3_KERNEL, device=device, dtype=dtype)
-        kx = kvec.view(1, 1, 1, -1)
-        ky = kvec.view(1, 1, -1, 1)
+    def localise(self, stack, *, diameter=7, minmass=0.1, percentile=64,
+                 workers=None, chunk_size=500, preview_cb=None,
+                 wavelet_threshold=None, min_pixels=None, quiet=False, **kwargs):
+        from concurrent.futures import ThreadPoolExecutor
+        T = float(self.DEFAULT_THRESHOLD if wavelet_threshold is None else wavelet_threshold)
+        n = len(stack)
+        if not quiet:
+            print(f"  palmTRACER-style wavelet detection: threshold {T:g} on the "
+                  f"raw second wavelet plane, regions ≥ "
+                  f"{self.MIN_PIXELS if min_pixels is None else int(min_pixels)} px "
+                  f"(minmass not used)")
+        workers = max(1, int(workers or N_CPUS))
 
-        def _smooth(img, level):
-            d = 2 ** level                  # à trous dilation ("holes")
-            pad = 2 * d                     # kernel radius (2) × dilation
-            img = F.conv2d(img, kx, padding=(0, pad), dilation=(1, d))
-            img = F.conv2d(img, ky, padding=(pad, 0), dilation=(d, 1))
-            return img
+        def one(i):
+            return i, self.detect_frame(np.asarray(stack[i], dtype=np.float64), T, min_pixels)
 
-        a = signal
-        corr = None
-        for level in range(self._ATROUS_N_SCALES):
-            a_next = _smooth(a, level)
-            plane = a - a_next                          # wavelet plane (dense, ±)
-            flat = plane.reshape(plane.shape[0], -1)    # per-frame robust stats
-            med = flat.median(dim=1, keepdim=True).values
-            mad = (flat - med).abs().median(dim=1, keepdim=True).values
-            thr = (med + self._ATROUS_K_SIGMA * (1.4826 * mad)).view(-1, 1, 1, 1)
-            sig = F.relu(plane - thr)                   # significant positive part
-            corr = sig if corr is None else corr * sig
-            a = a_next
-        return corr
-
-    def _detection_threshold(self, dmap, percentile):
-        """The wavelet planes are already significance-thresholded per scale in
-        ``_detection_map`` (that is where ``_ATROUS_K_SIGMA`` acts), so any
-        positive product pixel is a candidate and the shared max-pool picks the
-        local maxima.  ``percentile`` is unused for this backend."""
-        return dmap.new_tensor(0.0)
-
-    def localise(self, stack, **kwargs):
-        """TorchBackend.localise with the shared coincident-duplicate guard — the
-        wavelet-product map flat-tops on perfectly symmetric spots, so two tied
-        maxima can refine to the same point (see
-        ``_drop_coincident_duplicates``)."""
-        return self._drop_coincident_duplicates(super().localise(stack, **kwargs))
-
-    def _localise_cpu_parallel(self, *args, **kwargs):
-        # The torch-CPU multi-process worker (`_torch_localise_block_mp`)
-        # hard-codes ``TorchBackend()``, so it would run TORCH detection, not à
-        # trous.  Force the (correct) serial path on CPU until a backend-aware MP
-        # worker exists; the GPU path is single-process and unaffected.
-        return None
+        if workers > 1 and n > 1:
+            with ThreadPoolExecutor(max_workers=min(workers, n)) as ex:
+                results = list(ex.map(one, range(n)))
+        else:
+            results = [one(i) for i in range(n)]
+        frames, xs, ys, ms, ns = [], [], [], [], []
+        for i, (cx, cy, m, sz) in results:
+            if len(cx):
+                frames.append(np.full(len(cx), i, dtype=np.int64))
+                xs.append(cx); ys.append(cy); ms.append(m); ns.append(sz)
+        if not frames:
+            return pd.DataFrame(columns=["y", "x", "mass", "size", "frame"])
+        return pd.DataFrame({
+            "y": np.concatenate(ys).astype(np.float64),
+            "x": np.concatenate(xs).astype(np.float64),
+            "mass": np.concatenate(ms).astype(np.float64),
+            "size": np.concatenate(ns).astype(np.float64),
+            "frame": np.concatenate(frames),
+        })
 
 
 class GaussianMleBackend(TorchBackend):

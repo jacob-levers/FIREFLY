@@ -48,8 +48,8 @@ except Exception:
 from firefly.analysis.fa_localize_backends import (  # noqa: F401
     _localise_chunk, _localise_chunk_mp, _localise_chunk_mmap_mp,
     _torch_localise_block_mp, LocaliserBackend, _emit_trackpy_chunk_preview,
-    TrackpyBackend, TorchBackend, AtrousWaveletBackend,
-    GaussianMleBackend, RadialSymmetryBackend,
+    TrackpyBackend, TorchBackend,
+    GaussianMleBackend, RadialSymmetryBackend, PalmTracerWaveletBackend,
 )
 
 
@@ -237,8 +237,10 @@ def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile
     # regardless of which RAM strategy we end up taking (the FAST path goes
     # through localise_particles which re-prints; the STREAM path bypasses it
     # entirely, so we need this line here too).
+    _needs_raw = False
     try:
         _impl = _resolve_backend(backend)
+        _needs_raw = bool(getattr(_impl, "needs_raw", False))
         print(f"  Backend   : {_impl.name}  (requested: {backend})")
     except Exception as _e:
         print(f"  Backend   : (resolution failed: {_e})")
@@ -252,6 +254,13 @@ def preprocess_and_localise_adaptive(stack, diameter=7, minmass=None, percentile
     # bounded slices.
     if getattr(stack, "_is_lazy_stack", False) and use_fast:
         print("  RAM strategy : forcing STREAM (lazy on-demand stack)")
+        use_fast = False
+    # A detector that thresholds RAW frames (palmTRACER-style) must never see
+    # the FAST path's preprocessed stack: those frames are rescaled to a max of
+    # 1, so an absolute threshold would match nothing.  STREAM keeps the raw
+    # chunk alongside the preprocessed one and hands the raw one over.
+    if _needs_raw and use_fast:
+        print("  RAM strategy : forcing STREAM (detector works on raw frames)")
         use_fast = False
 
     if use_fast:
@@ -374,6 +383,7 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     # than 1500-frame chunks.  Per-frame throughput dropped ~3× when we
     # tried the bigger chunks.  Sticking with the caller's chunk_size now.
     _impl = _resolve_backend(backend)
+    _raw_mode = bool(getattr(_impl, "needs_raw", False))
     # NOTE: the backend name + requested device are already printed by
     # preprocess_and_localise_adaptive (the only production caller) — don't
     # repeat them here.
@@ -434,7 +444,10 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     first_end  = min(chunk_size, n_frames)
     first_pp = _preprocess_block(0, first_end)
 
-    if minmass is None:
+    if _raw_mode:
+        print(f"  Detection : raw frames, wavelet threshold "
+              f"{backend_kwargs.get('wavelet_threshold', 'default')} (minmass not used)")
+    elif minmass is None:
         # Auto-detect minmass.  trackpy's "mass" is *integrated* intensity
         # over a (diameter × diameter) spot patch, not a single-pixel value.
         # The old formula `peak × 0.4` was a per-pixel threshold and under-
@@ -515,6 +528,7 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     # ── GPU-batch accumulator: localise preprocessed sub-chunks in groups of
     # ~gpu_batch frames instead of one backend call per sub-chunk. ─────────────
     _buf = []                 # pending preprocessed sub-chunk arrays
+    _buf_raw = []             # the same frames RAW, for detectors that need them
     _buf_start = [None]       # global frame index of _buf[0]  (mutable cell)
     _gpu_batch_cur = [int(gpu_batch)]
 
@@ -549,7 +563,11 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
             return
         base = _buf_start[0]
         batch = _buf[0] if len(_buf) == 1 else np.concatenate(_buf, axis=0)
-        locs = _localise_buffer(batch)
+        if _raw_mode:
+            raw = _buf_raw[0] if len(_buf_raw) == 1 else np.concatenate(_buf_raw, axis=0)
+            locs = _localise_buffer(raw)          # detect on raw; preview shows pp
+        else:
+            locs = _localise_buffer(batch)
         if len(locs) > 0:
             locs = locs.copy()
             locs["frame"] += base
@@ -558,12 +576,14 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
                 try:    mass_cb(np.asarray(locs["mass"].values, dtype=np.float32))
                 except Exception: pass
         _emit_chunk_previews(batch, locs, frame_offset=base)
-        _buf.clear(); _buf_start[0] = None
+        _buf.clear(); _buf_raw.clear(); _buf_start[0] = None
 
     def _add(pp, start):
         if _buf_start[0] is None:
             _buf_start[0] = start
         _buf.append(pp)
+        if _raw_mode:
+            _buf_raw.append(np.asarray(stack[start:start + len(pp)], dtype=np.float32))
         if sum(len(b) for b in _buf) >= _gpu_batch_cur[0]:
             _flush()
 
@@ -664,9 +684,14 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
 
 
 _BACKEND_REGISTRY: list[type[LocaliserBackend]] = [
-    TrackpyBackend, TorchBackend, AtrousWaveletBackend,
-    GaussianMleBackend, RadialSymmetryBackend,
+    TrackpyBackend, TorchBackend,
+    GaussianMleBackend, RadialSymmetryBackend, PalmTracerWaveletBackend,
 ]
+
+# Retired backend names → their replacement.  The original à trous engine was
+# replaced by the palmTRACER-style one; old run manifests (and the verification
+# app) still say "atrous", and must reach the wavelet engine rather than fail.
+_BACKEND_ALIASES = {"atrous": "palmtracer"}
 
 
 def list_available_backends() -> list[str]:
@@ -712,6 +737,11 @@ def _resolve_backend(name: str | None):
     pre-set the device on the returned instance — used for benchmarking
     and to let users force a specific device path.
     """
+    if isinstance(name, str) and name.strip().lower() in _BACKEND_ALIASES:
+        new = _BACKEND_ALIASES[name.strip().lower()]
+        print(f"  Backend   : '{name}' was retired — using its replacement, '{new}' "
+              f"(palmTRACER-style wavelet).")
+        name = new
     if name in (None, "", "auto"):
         # Smart-auto: Torch-first.  Order is CUDA → MPS → torch-CPU, with
         # trackpy reached only when PyTorch is absent entirely.

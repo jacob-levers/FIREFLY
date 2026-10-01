@@ -107,14 +107,18 @@ class Backend(Enum):
     TORCH_CPU = "torch-cpu"
     TORCH_CUDA = "torch-cuda"
     TORCH_MPS = "torch-mps"
-    ATROUS = "atrous"          # à trous wavelet detector (auto-device, like torch)
     GAUSSIAN_MLE = "gaussian-mle"      # Crocker–Grier + Gaussian-MLE refiner (auto-device)
     RADIAL_SYMMETRY = "radial-symmetry"  # Crocker–Grier + radial-symmetry refiner (auto-device)
+    PALMTRACER = "palmtracer"  # palmTRACER-style wavelet detection on raw frames (CPU)
 
     @classmethod
     def parse(cls, value, *, log=None) -> "Backend":
         s = str(value if value is not None else "auto").strip().lower()
         s = s.split(":", 1)[0]                 # drop a ":device-index" suffix
+        if s == "atrous":                      # retired engine → its replacement
+            _warn(log, "  NOTE: the original à trous wavelet engine was replaced by "
+                       "the palmTRACER-style wavelet detector — using that.")
+            return cls.PALMTRACER
         for m in cls:
             if s == m.value:
                 return m

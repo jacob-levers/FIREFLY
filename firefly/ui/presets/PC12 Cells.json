@@ -13,6 +13,7 @@
   "analysis/auto_minmass": true,
   "analysis/min_cnr": 0.0,
   "analysis/minmass": 1.35,
+  "analysis/wavelet_threshold": 250.0,
   "analysis/minmass_mode": "Linkability",
   "analysis/minmass_target_density": 25.0,
   "analysis/minmass_sensitivity": "Balanced",

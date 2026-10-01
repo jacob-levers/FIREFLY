@@ -1173,6 +1173,55 @@ def _replicate_median_d(d):
     return median_d(d)
 
 
+def _detection_threshold(params):
+    """``(kind, value)`` — the detection threshold one run actually used.
+
+    The palmTRACER-style detector ignores minmass (recorded as 0) and uses an
+    absolute wavelet threshold, so reading minmass there would hide every
+    difference.  Otherwise: the auto-resolved minmass, else the manual one.
+    """
+    params = params or {}
+    if str(params.get("backend", "")).lower() == "palmtracer":
+        v = params.get("wavelet_threshold")
+        return ("wavelet", float(v)) if v is not None else (None, None)
+    v = params.get("resolved_minmass")
+    if v is None:
+        v = params.get("minmass")
+    return ("minmass", float(v)) if v is not None else (None, None)
+
+
+def _threshold_warnings(labels, all_summaries):
+    """Warnings for detection thresholds that differ WITHIN a group, or BETWEEN
+    groups that are each internally uniform.
+
+    The second case is the dangerous one a per-group check cannot see: every
+    control on one threshold and every treated recording on another changes
+    what counts as a spot exactly along the comparison being made.  (The 2015
+    palmTRACER analysis of the PC12 recordings set its threshold per cell, from
+    150 to 380.)
+    """
+    out, per_group = [], []
+    for label, summaries in zip(labels, all_summaries):
+        vals = set()
+        for s in summaries:
+            kind, v = _detection_threshold((s or {}).get("params"))
+            if kind is not None:
+                vals.add((kind, round(v, 6)))
+        per_group.append((label, vals))
+        if len({v for _, v in vals}) > 1:
+            out.append(f"'{label}' mixes detection thresholds "
+                       f"({', '.join(f'{v:g}' for _, v in sorted(vals))}) across its runs, "
+                       f"so what counts as a spot changes between replicates; state the "
+                       f"rule that set them or re-run the group on one threshold.")
+    uniform = [(label, next(iter(vals))) for label, vals in per_group if len(vals) == 1]
+    if len({v for _, v in uniform}) > 1:
+        out.append("groups were detected on different thresholds ("
+                   + "; ".join(f"'{label}': {v[1]:g}" for label, v in uniform)
+                   + ") — differences between them may come from detection rather "
+                   "than biology; re-run every group on one threshold.")
+    return out
+
+
 def comparison_grid(n):
     """(rows, cols) the comparison figure packs `n` panels into — the single
     source of truth shared with the UI panel-picker's live grid count."""
@@ -1289,26 +1338,11 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
 
     compatibility_warnings, metric_contract_labels, legacy_only = (
         _comparison_metric_contracts(all_summaries))
-    # Detection thresholds that differ WITHIN a group are a live way to
-    # manufacture a difference: mass is file-relative, so a per-file minmass is
-    # legitimate only under a stated rule applied to every condition.  Say so
-    # loudly here rather than letting it pass silently into a p-value.
-    for _label, _summaries in zip(labels, all_summaries):
-        _vals = []
-        for _s in _summaries:
-            _p = _s.get("params") or {}
-            _v = _p.get("resolved_minmass")
-            if _v is None:
-                _v = _p.get("minmass")
-            if _v is not None:
-                _vals.append(round(float(_v), 6))
-        _uniq = sorted(set(_vals))
-        if len(_uniq) > 1:
-            print(f"  Compare WARNING: '{_label}' mixes detection thresholds "
-                  f"({', '.join(f'{v:g}' for v in _uniq)}) across its runs. "
-                  f"Mass is file-relative, so this changes what counts as a "
-                  f"spot between replicates; state the rule that set them or "
-                  f"re-run the group on one threshold.")
+    # Detection thresholds that differ — within a group or between groups — are
+    # a live way to manufacture a difference.  Say so loudly here rather than
+    # letting it pass silently into a p-value.
+    for _w in _threshold_warnings(labels, all_summaries):
+        print(f"  Compare WARNING: {_w}")
     for warning in compatibility_warnings.values():
         print(f"  Compare WARNING: {warning}")
     if legacy_only:

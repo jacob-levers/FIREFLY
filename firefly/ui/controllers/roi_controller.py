@@ -134,6 +134,10 @@ class RoiController(QObject):
         self._cand_per_frame = None
         self._cand_floor = None         # (floor, status) — see _candidate_masses
         self._minmass_per_file = False   # write the threshold to THIS file only
+        # The palmTRACER-style detector's threshold — same per-file mechanism.
+        self._wavelet = (float(settings.get_float("analysis/wavelet_threshold", 250.0))
+                         if settings is not None else 250.0)
+        self._wavelet_per_file = False
         from firefly.ui.controllers.params.preview_loader import PREVIEW_CMAPS
         self._cmap = "Grayscale"
         if settings is not None:
@@ -181,6 +185,11 @@ class RoiController(QObject):
             self._minmass = float(spec["minmass"])
         else:
             self._minmass_per_file = False
+        if spec.get("wavelet_threshold") is not None:
+            self._wavelet_per_file = True
+            self._wavelet = float(spec["wavelet_threshold"])
+        else:
+            self._wavelet_per_file = False
 
     def _current_spec(self):
         spec = {"roi_mode": self._roi_mode, "roi_auto_method": self._auto_method,
@@ -193,6 +202,8 @@ class RoiController(QObject):
         if self._minmass_per_file:
             spec["minmass"] = float(self._minmass)
             spec["auto_minmass"] = False
+        if self._wavelet_per_file:
+            spec["wavelet_threshold"] = float(self._wavelet)
         return spec
 
     @staticmethod
@@ -392,7 +403,8 @@ class RoiController(QObject):
                 int(round(g.get_float("analysis/bg_radius", 10))),
                 g.get_str("analysis/bg_method", "Uniform Filter"),
                 g.get_str("analysis/backend", "Auto"),
-                int(round(g.get_float("analysis/channel", 0))))
+                int(round(g.get_float("analysis/channel", 0))),
+                float(self._wavelet))
 
     def _candidate_masses(self):
         """Candidate masses with the threshold at ZERO, pooled over a spread of
@@ -426,7 +438,8 @@ class RoiController(QObject):
                     "uniform_filter"),
                 backend=BACKEND_LABEL_TO_VALUE.get(
                     g.get_str("analysis/backend", "Auto"), "auto"),
-                min_cnr=0.0, roi_mask=None, roi_known=False)
+                min_cnr=0.0, roi_mask=None, roi_known=False,
+                **self._detector_kwargs())
             channel = int(round(g.get_float("analysis/channel", 0)))
             total = int(self._n_frames or 0)
             if total > 1:
@@ -482,6 +495,70 @@ class RoiController(QObject):
                                  noise_floor=floor, floor_status=status)
         out["n_frames_sampled"] = int(n_frames)
         return out
+
+    def _is_palmtracer_detector(self):
+        if self._s is None:
+            return False
+        from firefly.ui.controllers.params.params_builder import BACKEND_LABEL_TO_VALUE
+        return BACKEND_LABEL_TO_VALUE.get(self._s.get_str("analysis/backend", "Auto"), "auto") == "palmtracer"
+
+    def _detector_kwargs(self):
+        """Extra detector options for the preview: the palmTRACER-style detector
+        thresholds on its own wavelet value, not minmass."""
+        if not self._is_palmtracer_detector():
+            return {}
+        return {"wavelet_threshold": float(self._wavelet)}
+
+    @Property(float, notify=detectChanged)
+    def waveletThreshold(self):
+        return self._wavelet
+
+    @waveletThreshold.setter
+    def waveletThreshold(self, v):
+        v = max(0.0, float(v))
+        if abs(v - self._wavelet) < 1e-9:
+            return
+        self._wavelet = v
+        self.invalidateMassProfile()
+        self._invalidate_spots()
+        # Same rule as minmass: off per-file, the panel moves the shared value
+        # every file uses; on, the value belongs to this file and is saved with it.
+        if self._s is not None and not self._run_scoped and not self._wavelet_per_file:
+            self._s.set("analysis/wavelet_threshold", v)
+        self.detectChanged.emit()
+
+    @Property(bool, notify=detectChanged)
+    def thresholdPerFile(self):
+        """Per-file for whichever threshold the selected detector uses."""
+        return self._wavelet_per_file if self._is_palmtracer_detector() else self._minmass_per_file
+
+    @Slot(bool)
+    def setThresholdPerFile(self, on):
+        if not self._is_palmtracer_detector():
+            self.setMinmassPerFile(on)
+            return
+        on = bool(on)
+        if on == self._wavelet_per_file or self._run_scoped:
+            return
+        self._wavelet_per_file = on
+        if not on:
+            # the file goes back to the shared value — show and use that
+            if self._s is not None:
+                self._wavelet = float(self._s.get_float("analysis/wavelet_threshold", self._wavelet))
+            if self._ovr is not None and self._file:
+                spec = self._ovr.get(self._file)
+                if spec and "wavelet_threshold" in spec:
+                    spec = dict(spec); spec.pop("wavelet_threshold", None)
+                    self._ovr.set(self._file, spec)
+            self.invalidateMassProfile()
+            self._invalidate_spots()
+        self.detectChanged.emit()
+
+    @Property(bool, notify=detectChanged)
+    def minmassApplies(self):
+        """False for the palmTRACER-style detector, which ignores minmass — the
+        threshold slider would otherwise move and change nothing."""
+        return not self._is_palmtracer_detector()
 
     @Slot()
     def invalidateMassProfile(self):
@@ -800,8 +877,15 @@ class RoiController(QObject):
         self._detect_green(self._file)        # offer the companion image as a view
         self._load_background(self._file)     # sets self._proj + n_frames, renders proj
         self._recompute_mask()
-        if self._s is not None:               # pick up the latest sidebar minmass
-            self._minmass = float(self._s.get_float("analysis/minmass", self._minmass))
+        # Pick up the latest SIDEBAR thresholds — unless this file carries its
+        # own.  Re-reading the sidebar unconditionally (as this used to) showed a
+        # reopened file at the wrong threshold, and the next Save then wrote the
+        # sidebar's value over the file's own.
+        if self._s is not None:
+            if not self._minmass_per_file:
+                self._minmass = float(self._s.get_float("analysis/minmass", self._minmass))
+            if not self._wavelet_per_file:
+                self._wavelet = float(self._s.get_float("analysis/wavelet_threshold", self._wavelet))
         self._spots = None
         self._spots_token += 1
         if self._detect_on:
@@ -1576,9 +1660,14 @@ class RoiController(QObject):
 
     def _spot_settings_changed(self, key):
         if str(key).startswith("analysis/"):
-            if key == "analysis/minmass" and self._s is not None:
+            if key == "analysis/minmass" and self._s is not None and not self._minmass_per_file:
                 self._minmass = float(self._s.get_float(key, self._minmass))
                 self.detectChanged.emit()
+            if key == "analysis/wavelet_threshold" and self._s is not None and not self._wavelet_per_file:
+                self._wavelet = float(self._s.get_float(key, self._wavelet))
+            if key in ("analysis/backend", "analysis/wavelet_threshold"):
+                self.invalidateMassProfile()
+                self.detectChanged.emit()           # minmassApplies may have flipped
             if key == "analysis/channel":
                 self._raw_frame = None
                 if self._view_mode == "raw":
@@ -1668,7 +1757,8 @@ class RoiController(QObject):
                 roi_note = f"{exc}; fix/save the ROI before running"
             rows, summary = preview_detections(self._raw_frame, diameter=diameter,
                 minmass=self._minmass, bg_radius=radius, bg_method=bg, backend=backend,
-                min_cnr=cnr, roi_mask=mask, roi_known=known)
+                min_cnr=cnr, roi_mask=mask, roi_known=known,
+                **self._detector_kwargs())
             self._spot_rows = rows
             self._spot_count = summary['passed']
             self._spots = self._spots_qimage(*self._raw_frame.shape, rows.x, rows.y, rows.decision.tolist())
@@ -1705,7 +1795,8 @@ class RoiController(QObject):
             custom = (self._spec_differs(spec, self._default_spec())
                       or (is_poly and bool(self._polys))
                       or self._split_replicates or any(self._roi_labels)
-                      or spec.get("minmass") is not None)
+                      or spec.get("minmass") is not None
+                      or spec.get("wavelet_threshold") is not None)
             if custom:
                 self._ovr.set(self._file, spec)
             else:

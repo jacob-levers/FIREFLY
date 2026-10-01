@@ -7,7 +7,7 @@ from firefly.analysis.fa_roi import apply_roi_mask
 
 def preview_detections(frame, *, diameter=7, minmass=.45, bg_radius=10,
                        bg_method='uniform_filter', backend='auto', min_cnr=0.,
-                       roi_mask=None, roi_known=True):
+                       roi_mask=None, roi_known=True, wavelet_threshold=None):
     """Candidates have passed the detector's mass test AND duplicate suppression.
 
     This never emulates a detector by filtering another detector's mass values.
@@ -21,7 +21,9 @@ def preview_detections(frame, *, diameter=7, minmass=.45, bg_radius=10,
     locs, _, _, _, _ = preprocess_and_localise_adaptive(
         frame[None], diameter=diameter, minmass=float(minmass), percentile=64,
         bg_radius=bg_radius, bg_method=bg_method, backend=backend,
-        workers=1, chunk_size=1)
+        workers=1, chunk_size=1,
+        **({'wavelet_threshold': float(wavelet_threshold)}
+           if wavelet_threshold is not None else {}))
     rows = measure_raw_contrast(locs, frame[None], diameter).reset_index(drop=True)
     rows['candidate_id'] = np.arange(len(rows))
     return classify_candidates(rows, min_cnr=min_cnr, roi_mask=roi_mask,

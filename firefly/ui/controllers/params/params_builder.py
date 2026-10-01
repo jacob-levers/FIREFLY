@@ -46,9 +46,11 @@ BACKEND_LABEL_TO_VALUE = {
     "Auto":                              "auto",
     "Crocker–Grier — Trackpy (CPU)":     "trackpy",
     "Crocker–Grier — PyTorch (GPU)":     "torch",
-    "À trous wavelet — PyTorch (GPU)":   "atrous",
     "Gaussian MLE — PyTorch (GPU)":      "gaussian-mle",
     "Radial symmetry — PyTorch (GPU)":   "radial-symmetry",
+    "Wavelet — palmTRACER-style (CPU)":   "palmtracer",
+    # retired: the original à trous engine was replaced by the one above
+    "À trous wavelet — PyTorch (GPU)":   "palmtracer",
 }
 LINKER_LABEL_TO_VALUE = {
     "Kalman filter — TrackMate (Linear Motion)":   "kalman",
@@ -78,6 +80,7 @@ _DEFAULTS = {
     "diameter":              7,
     "auto_minmass":          True,
     "minmass":               1.0,
+    "wavelet_threshold":     250.0,     # palmTRACER-style detector only
     "minmass_sensitivity":   "Balanced",
     "minmass_mode":          "Linkability",
     "minmass_target_density": 25.0,
@@ -206,6 +209,12 @@ def build_params(settings, importc, fpath: str | None = None,
         minmass_val = float(ovr["minmass"])
         auto_minmass_val = bool(ovr.get("auto_minmass", False))
         minmass_is_per_file = True
+    # The palmTRACER-style detector's threshold, per file the same way.
+    wavelet_val = g.get_float("analysis/wavelet_threshold", _DEFAULTS["wavelet_threshold"])
+    wavelet_is_per_file = False
+    if ovr and ovr.get("wavelet_threshold") is not None:
+        wavelet_val = float(ovr["wavelet_threshold"])
+        wavelet_is_per_file = True
     # Multiple drawn ROIs → treat each as its own replicate (separate output).
     # Per-file, set in the ROI viewer (flag + optional per-ROI labels).
     roi_split_replicates = bool(ovr.get("roi_split_replicates", False)) if ovr else False
@@ -240,6 +249,8 @@ def build_params(settings, importc, fpath: str | None = None,
         # rather than inherited — Compare reads it to warn about mixed groups.
         "minmass_per_file": minmass_is_per_file,
         "min_cnr":        g.get_float("analysis/min_cnr", 0.0),
+        "wavelet_threshold": wavelet_val,
+        "wavelet_threshold_per_file": wavelet_is_per_file,
         "minmass_sensitivity": g.get_str(
             "analysis/minmass_sensitivity", _DEFAULTS["minmass_sensitivity"]).lower(),
         "minmass_mode": ("density"
@@ -365,6 +376,7 @@ def _widget_state_snapshot(g, importc) -> dict:
     keys_num = [
         "analysis/bg_radius", "analysis/camera_gain", "analysis/camera_qe",
         "analysis/camera_bg_photons", "analysis/diameter", "analysis/minmass", "analysis/min_cnr",
+        "analysis/wavelet_threshold",
         "analysis/minmass_max_false_track_rate", "analysis/search_range",
         "analysis/memory", "analysis/min_track_len", "analysis/max_track_len",
         "analysis/max_lagtime", "analysis/n_fit", "analysis/alpha_immobile",

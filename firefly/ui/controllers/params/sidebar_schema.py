@@ -68,6 +68,7 @@ _TOOLTIPS = {
     # Detection
     "analysis/diameter": "Expected spot diameter in pixels (odd) — roughly the PSF size. Too small splits spots, too large merges them.",
     "analysis/auto_minmass": "Auto-pick the detection threshold per file. Turn off to set a fixed minmass below.",
+    "analysis/wavelet_threshold": "For the palmTRACER-style detector only: the absolute threshold on the second wavelet plane of the raw image, in camera counts — the same number palmTRACER calls 'Wavelet threshold', so a palmTRACER setting carries over unchanged. Spots need at least 5 pixels above it. Because it is absolute, the same value means the same brightness in every recording; use ONE value for every condition you compare.",
     "analysis/minmass": "Minimum integrated brightness for a detection. Higher = fewer, brighter spots. Preview it in the ROI viewer.",
     "analysis/minmass_mode": "How the auto threshold is chosen. Linkability tunes each file on its own. Density-matched targets the same detections per frame; it does not equalize signal quality and should not be used to compare molecular abundance.",
     "analysis/minmass_target_density": "Detections per frame to aim for in Density-matched mode. A file that can't reach it is flagged rather than silently included.",
@@ -164,6 +165,11 @@ FIELDS = [
     _f("detection", "analysis/minmass", "double", "Threshold (minmass)", 1.0,
        min=0.0, max=100.0, step=0.05, decimals=2,
        enable={"key": "analysis/auto_minmass", "truthy": False}),
+    # palmTRACER's own "Wavelet threshold", same units: only the palmTRACER-
+    # style detector reads it (minmass does not apply to that detector).
+    _f("detection", "analysis/wavelet_threshold", "double", "Wavelet threshold (palmTRACER)",
+       250.0, min=0.0, max=100000.0, step=10.0, decimals=0,
+       enable={"key": "analysis/backend", "eq": "Wavelet — palmTRACER-style (CPU)"}),
     _f("detection", "analysis/minmass_mode", "combo", "Auto method",
        "Linkability", items=["Linkability", "Density-matched"],
        enable={"key": "analysis/auto_minmass", "truthy": True}),
@@ -297,8 +303,8 @@ FIELDS = [
     # ── Performance ──────────────────────────────────────────────────────
     _f("performance", "analysis/backend", "combo", "Detection backend", "Auto",
        items=["Auto", "Crocker–Grier — Trackpy (CPU)", "Crocker–Grier — PyTorch (GPU)",
-              "À trous wavelet — PyTorch (GPU)", "Gaussian MLE — PyTorch (GPU)",
-              "Radial symmetry — PyTorch (GPU)"]),
+              "Gaussian MLE — PyTorch (GPU)",
+              "Radial symmetry — PyTorch (GPU)", "Wavelet — palmTRACER-style (CPU)"]),
     _f("performance", "analysis/workers", "int", "Workers", _N_CPUS,
        min=1, max=_N_CPUS, step=1),
     _f("performance", "analysis/chunk_size", "int", "Chunk size (frames)", 500,
@@ -320,6 +326,12 @@ FIELDS = [
 ]
 
 # index by key for O(1) lookup — a logdrange field is reachable by both bounds
+# Retired combo choices → what they became.  A saved setting or an old run
+# manifest can still hold one; showing it as-is would leave the dropdown blank.
+LEGACY_COMBO_VALUES = {
+    "analysis/backend": {"À trous wavelet — PyTorch (GPU)": "Wavelet — palmTRACER-style (CPU)"},
+}
+
 BY_KEY = {}
 for _fld in FIELDS:
     BY_KEY[_fld["key"]] = _fld

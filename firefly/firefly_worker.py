@@ -1616,8 +1616,19 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     # threshold; otherwise use the manual value.  CSV inputs have no image to
     # threshold.
     mm_diag = None
+    # palmTRACER-style detection thresholds the raw wavelet plane at an absolute
+    # value; minmass does not apply, and the auto-minmass search (which runs a
+    # different detector on rescaled frames) must not run or be recorded.
+    _pt_detector = str(p.get("backend", "")).lower() == "palmtracer"
+    _det_kwargs = ({"wavelet_threshold": float(p.get("wavelet_threshold", 250.0))}
+                   if _pt_detector else {})
     if external_csv:
         minmass_arg = None
+    elif _pt_detector:
+        minmass_arg = 0.0
+        _log(f"  palmTRACER-style detector: wavelet threshold "
+             f"{_det_kwargs['wavelet_threshold']:g} on raw frames"
+             + ("  (auto-minmass does not apply — skipped)" if p.get("auto_minmass") else ""))
     elif p.get("auto_minmass", False):
         from firefly.analysis.fa_localize import estimate_minmass
         _mftr = p.get("minmass_max_false_track_rate")
@@ -1839,7 +1850,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 stop_event=cancel_event,
                 mass_cb=_mass_cb,
                 preview_cb=_preview_cb,
-                backend=p["backend"])
+                backend=p["backend"],
+                **_det_kwargs)
         finally:
             # Stop the preview pump and let it drain whatever's left
             _preview_stop.set()
@@ -3065,10 +3077,13 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     "roi_labels":       list(p.get("roi_labels") or []),
                     "source":           "firefly",
                     # Detection threshold actually used (per-file when auto).
-                    "auto_minmass":     bool(p.get("auto_minmass", False)),
+                    "auto_minmass":     bool(p.get("auto_minmass", False)) and not _pt_detector,
                     "minmass_used":     (float(minmass_arg)
                                          if minmass_arg is not None else None),
-                    "minmass_method":   (mm_diag.get("method") if mm_diag else "manual"),
+                    "minmass_method":   ("palmtracer wavelet threshold" if _pt_detector
+                                         else (mm_diag.get("method") if mm_diag else "manual")),
+                    "wavelet_threshold": (float(p.get("wavelet_threshold", 250.0))
+                                          if _pt_detector else None),
                     "minmass_sensitivity": (mm_diag.get("sensitivity") if mm_diag else None),
                     "minmass_n_candidates": (mm_diag.get("n_candidates") if mm_diag else None),
                     # Density-matched diagnostics: the achieved spots/frame and,
@@ -3172,7 +3187,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             manifest_path = _write_run_manifest(
                 out_dir=out_dir, stem=stem, fpath=fpath, params=p,
                 resolved_minmass=(float(minmass_arg)
-                                  if (p.get("auto_minmass", False)
+                                  if (p.get("auto_minmass", False) and not _pt_detector
                                       and minmass_arg is not None) else None))
             _log(f"  Saved (root): {os.path.basename(manifest_path)}")
         except Exception as e:

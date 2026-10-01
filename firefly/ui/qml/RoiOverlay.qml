@@ -775,6 +775,16 @@ Item {
                                 // larger on another backend, because mass is in the
                                 // detector's own units.
                                 property real nudge: 0.01
+                                property real nudgeWavelet: 10
+                                // The palmTRACER-style detector thresholds on its own
+                                // wavelet value (raw counts); every other detector on
+                                // minmass.  The same controls drive whichever applies.
+                                readonly property bool wav: !Roi.minmassApplies
+                                function setThreshold(v, final) {
+                                    if (wav) Roi.waveletThreshold = v
+                                    else { Roi.detectMinmass = v; guide.refresh() }
+                                    if (Roi.detectEnabled) { if (final) Roi.refreshSpots(); else spotsDebounce.restart() }
+                                }
                                 visible: !Roi.runScoped
                                 Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp2
                                 RowLayout {
@@ -782,19 +792,29 @@ Item {
                                     PanelLabel { text: "DETECTION THRESHOLD" }
                                     Item { Layout.fillWidth: true }
                                     Text {
-                                        text: Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
+                                        text: thrSection.wav
+                                              ? Roi.waveletThreshold.toLocaleString(Qt.locale(), "f", 0)
+                                              : Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
                                         color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
                                     }
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    visible: thrSection.wav
+                                    text: "Wavelet threshold, in palmTRACER's units — raw camera counts on the " +
+                                          "second wavelet plane. A palmTRACER value carries over unchanged."
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
                                 Slider {
                                     Layout.fillWidth: true
                                     showValue: false
-                                    from: 0; to: 50; step: 0.01; decimals: 3
-                                    value: Roi.detectMinmass
-                                    onMoved: (v) => { Roi.detectMinmass = v; guide.refresh()
-                                                      if (Roi.detectEnabled) spotsDebounce.restart() }
-                                    onCommitted: (v) => { Roi.detectMinmass = v; guide.refresh()
-                                                          if (Roi.detectEnabled) Roi.refreshSpots() }
+                                    from: 0
+                                    to: thrSection.wav ? 1000 : 50
+                                    step: thrSection.wav ? 1 : 0.01
+                                    decimals: thrSection.wav ? 0 : 3
+                                    value: thrSection.wav ? Roi.waveletThreshold : Roi.detectMinmass
+                                    onMoved: (v) => thrSection.setThreshold(v, false)
+                                    onCommitted: (v) => thrSection.setThreshold(v, true)
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: sc.sp2
@@ -803,11 +823,11 @@ Item {
                                         objectName: "minmassSpin"
                                         Layout.fillWidth: true
                                         steppers: true                  // − / + , hold to repeat, ↑↓ keys
-                                        from: 0; to: 1000000; decimals: 4
-                                        step: thrSection.nudge
-                                        value: Roi.detectMinmass
-                                        onCommitted: (v) => { Roi.detectMinmass = v; guide.refresh()
-                                                              if (Roi.detectEnabled) spotsDebounce.restart() }
+                                        from: 0; to: 1000000
+                                        decimals: thrSection.wav ? 0 : 4
+                                        step: thrSection.wav ? thrSection.nudgeWavelet : thrSection.nudge
+                                        value: thrSection.wav ? Roi.waveletThreshold : Roi.detectMinmass
+                                        onCommitted: (v) => thrSection.setThreshold(v, false)
                                     }
                                 }
                                 RowLayout {
@@ -817,10 +837,14 @@ Item {
                                     Segmented {
                                         objectName: "minmassStepPick"
                                         Layout.fillWidth: true
-                                        options: [{ v: "0.001", t: "0.001" }, { v: "0.01", t: "0.01" },
-                                                  { v: "0.1", t: "0.1" }, { v: "1", t: "1" }]
-                                        value: thrSection.nudge.toString()
-                                        onPicked: (v) => thrSection.nudge = parseFloat(v)
+                                        options: thrSection.wav
+                                                 ? [{ v: "1", t: "1" }, { v: "5", t: "5" },
+                                                    { v: "10", t: "10" }, { v: "50", t: "50" }]
+                                                 : [{ v: "0.001", t: "0.001" }, { v: "0.01", t: "0.01" },
+                                                    { v: "0.1", t: "0.1" }, { v: "1", t: "1" }]
+                                        value: (thrSection.wav ? thrSection.nudgeWavelet : thrSection.nudge).toString()
+                                        onPicked: (v) => { if (thrSection.wav) thrSection.nudgeWavelet = parseFloat(v)
+                                                           else thrSection.nudge = parseFloat(v) }
                                     }
                                 }
                                 RowLayout {
@@ -836,24 +860,29 @@ Item {
                                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
                                     }
                                     Switch {
-                                        checked: Roi.minmassPerFile
-                                        onToggled: (c) => Roi.setMinmassPerFile(c)
+                                        checked: Roi.thresholdPerFile
+                                        onToggled: (c) => Roi.setThresholdPerFile(c)
                                     }
                                 }
                                 Alert {
                                     Layout.fillWidth: true
-                                    visible: Roi.minmassPerFile
+                                    visible: Roi.thresholdPerFile
                                     severity: "warn"
-                                    text: "Per-file thresholds are not comparable by default: mass is " +
-                                          "file-relative, and tuning each recording until the counts agree is " +
-                                          "how a detection difference gets manufactured. Use a stated rule, " +
-                                          "apply it to every condition, and report it."
+                                    text: (thrSection.wav
+                                           ? "A per-file threshold changes what counts as a spot between recordings: "
+                                           : "Per-file thresholds are not comparable by default: mass is file-relative, and ") +
+                                          "tuning each recording until the counts agree is how a detection difference " +
+                                          "gets manufactured. Use a stated rule, apply it to every condition, and report " +
+                                          "it — the comparison report warns when conditions end up on different thresholds."
                                 }
                                 Text {
                                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: "Sets the sidebar's Threshold (minmass) and turns Auto minmass off. " +
-                                          "Mass is in the selected detector's own units and is file-relative — " +
-                                          "a value from another backend or recording does not carry over."
+                                    text: thrSection.wav
+                                          ? "Sets the sidebar's Wavelet threshold. It is absolute — the same value " +
+                                            "means the same brightness in every recording."
+                                          : "Sets the sidebar's Threshold (minmass) and turns Auto minmass off. " +
+                                            "Mass is in the selected detector's own units and is file-relative — " +
+                                            "a value from another backend or recording does not carry over."
                                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
                             // ── threshold guidance ──────────────────
@@ -865,6 +894,7 @@ Item {
                             // safe on every slider move.
                             ColumnLayout {
                                 id: guide
+                                visible: Roi.minmassApplies          // a minmass histogram; not this detector's scale
                                 Layout.fillWidth: true; spacing: sc.sp1
                                 property var prof: ({})
                                 function refresh() { prof = Roi.massProfile(); massHist.requestPaint() }

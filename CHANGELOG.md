@@ -1,5 +1,49 @@
 # Changelog
 
+## v2.76.51-rc.16 — 1 Oct 2026
+
+### Changed
+
+- **The wavelet detector now reproduces PALMTracer's.** The à trous wavelet
+  engine is replaced by **Wavelet — palmTRACER-style (CPU)**, a reconstruction
+  of PALMTracer's wavelet detection. It works on the raw frames and takes
+  PALMTracer's own wavelet threshold, so a value from a PALMTracer analysis
+  carries over unchanged. On the 2015 PC12 recordings analysed in PALMTracer it
+  finds the same spots (98–99.9%), the same tracks (94–99.5%) and the same
+  median D in every region, where the old engine shared 28–53% of tracks. On
+  two datasets never used to build it, every spot matched. Tracking is close but
+  not identical: FIREFLY links with its own linker, so a long track through a
+  close encounter between molecules can split differently. Settings and run
+  manifests that name the old engine now use the new one. Set the threshold in
+  the sidebar (**Wavelet threshold (palmTRACER)**) or the Threshold panel;
+  minmass and auto-minmass do not apply to this detector.
+
+### Added
+
+- **A wavelet threshold for one file in a batch.** With the palmTRACER-style
+  detector selected, the Threshold panel sets the wavelet threshold, and
+  **Use for this file only** saves it with that file, as minmass already could.
+  This is what reproducing an analysis that set its threshold cell by cell needs
+  — the PC12 one ranged from 150 to 380.
+
+- **The comparison log warns when groups were detected on different
+  thresholds.** It already warned when one group mixed thresholds. It now also
+  warns when every group is uniform but the groups differ — all controls on one
+  threshold, all treated recordings on another — which changes what counts as a
+  spot exactly along the comparison being made. Wavelet thresholds are checked
+  as well as minmass.
+
+### Fixed
+
+- **Reopening a file that has its own threshold showed the shared one.** The
+  Threshold panel re-read the sidebar's minmass on open, so the file's own value
+  was replaced on screen, and the next Save wrote the sidebar's value over it.
+  Present since rc.8.
+
+- **A change to the shared minmass replaced the open file's own threshold.**
+  While the Threshold panel was open on a file with its own value, any change to
+  the sidebar minmass was copied into it.
+
 ## v2.76.51-rc.15 — 1 Oct 2026
 
 ### Changed
