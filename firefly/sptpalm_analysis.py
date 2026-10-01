@@ -11,414 +11,6 @@ import os
 # ║  for CI builds.                                                           ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 from firefly.release import __version__
-# v2.76.45-rc.10 — Correctness + release hardening: true-frame MSD/MSS/VACF
-#           semantics, schema-2 metric contracts, below-resolution handling,
-#           authoritative external calibration, homogeneous collision-safe
-#           batches, wheel resources/python -m launch, and gated arm64 releases.
-# v2.76.45-rc.9 — Step distance & Step speed are now MEASURED (per-track mean of
-#           the straight-line frame-to-frame steps, and that ÷ Δt) instead of the
-#           old √(2·D·Δt) approximation derived from the diffusion coefficient.
-#           Both are shown as metric + panel; new per-track column mean_step_um.
-# v2.76.45-rc.8 — Analysis tab: added Net displacement, Path length, Directionality
-#           ratio, Track duration and Number-of-localisations comparison graphs
-#           (metric + panel each).  Net displacement is now the true first→last
-#           straight-line distance (was mislabelled — it computed mean radial
-#           displacement).  Fluorescence intensity is now per-track mean (Σ a
-#           track's intensities ÷ its localisations), matching the stated
-#           definition.  New per-track columns path_length_um /
-#           net_displacement_um / directionality_ratio in the diffusion table.
-# v2.76.45-rc.7 — Analysis tab: new Radius-of-gyration comparison panel (after
-#           Track length).  Per-replicate median R_g (the diffusion table's
-#           radius_of_gyration_um), matching the existing 'Radius of gyration'
-#           metric; selectable as a metric AND shown as a panel with a per-graph
-#           style; joins the two-way ANOVA + across-metric family.
-# v2.76.45-rc.6 — Analysis tab: new Fluorescence comparison panel next to MSD AUC.
-#           Per-replicate spot intensity (the localisations' `mass` column =
-#           palmTRACER's Integrated_Intensity), the same value as the existing
-#           'Spot intensity' metric, so panel and metric agree.  Selectable as a
-#           metric AND shown as a panel (with a per-graph style in Preferences);
-#           joins the two-way ANOVA + across-metric family as `spot_intensity`.
-# v2.76.45-rc.5 — Updater: fix "100% then stuck for ages".  hdiutil imageinfo (the
-#           macOS DMG check that runs after the download completes) had no
-#           timeout, so a hung hdiutil froze verification forever; it now times
-#           out and fails closed.  The post-download verify + finalise steps also
-#           announce themselves ("Verifying download…" / "Finishing update…") so
-#           the progress line no longer looks frozen at 100%.
-# v2.76.45-rc.4 — Manual-polygon ROI: you can now draw vertices OFF the image (a
-#           margin is kept around it) to comfortably enclose samples pressed
-#           against an edge; on close the shape is clipped (Sutherland–Hodgman)
-#           to the image rectangle, so any part drawn past an edge runs along
-#           that edge.
-# v2.76.45-rc.3 — Analysis tab: drop an external localisation file (palmTRACER /
-#           ThunderSTORM / Picasso / TrackMate .csv/.txt/.tsv) straight onto a
-#           condition and it's analysed on the fly — with your current sidebar
-#           settings, so D/α match the FIREFLY replicates — into a cached run
-#           folder that pools as an ordinary replicate.  Auto-detected, analysed
-#           once (cached), shown with an "analysing…" chip.
-# v2.76.45-rc.2 — ROI viewer: removed the dormant "individual replicates?" save-time
-#           popup (and its now-unused splitDecided plumbing).  Multiple-ROI
-#           splitting is chosen with the inline "Analyse each ROI separately"
-#           toggle, which is the single, reliable path.
-# v2.76.45-rc.1 — ROI viewer: view a recording's companion "green" image.  When a
-#           …_green.tif sits beside the file, a third VIEW segment appears next to
-#           Max proj / Raw frames, so you can see the cell the ROI threshold is
-#           meant to cover.  Viewer and analysis now share ONE loader
-#           (fa_roi.load_sister_image), which also puts the companion on the
-#           recording's pixel grid so the mask overlay + drawn ROIs line up.
-# v2.76.44 — STABLE.  Consolidates the 2.76.44-rc.1 … rc.20 pre-release series.
-#           Headline changes since 2.76.43: the Visualiser loads big/awkward runs
-#           without freezing (and drift-corrects its max projection); Preferences →
-#           Figures gained per-graph styles; the Analysis tab's live figures got a
-#           compute/render split that makes restyling ~30× faster (and fixed a
-#           report-blocking crash + panels showing the wrong graph); the updater no
-#           longer downloads twice; and multiple ROIs on one movie can be analysed
-#           as individual replicates — localised once, one output per cell.
-#           Detail:
-#           (1) FIX Visualise: loading a run/tracks whose params.json or CSV held
-#           a non-UTF-8 byte (a ° / µ from a palmTRACER or Excel export) aborted
-#           with "'utf-8' codec can't decode byte 0xb0".  The loaders now fall back
-#           to cp1252 → latin-1, so those files load.  (2) FIX updater progress
-#           could exceed 100% then jump to 0%: the parallel downloader double-
-#           counted a segment that resumed after a proxy ignored its Range request.
-#           Progress is now the bytes actually on disk, capped at 100%, and a
-#           range-ignoring 200 falls back cleanly to single-stream.  (3) FIX the
-#           Analysis "Conditions" tab froze while data was added: each dropped run
-#           was read on the GUI thread.  Folders now show a loading chip and their
-#           (potentially large) sidecars are read off-thread, so the tab stays
-#           responsive and more folders can be dropped while others load.
-#           (4) CHANGE the "update available" card renders its release notes as
-#           Markdown (bold, code spans, bullets) instead of the raw ## / ** /
-#           backtick source, and drops the redundant version heading.  (5) FIX
-#           Visualise: a run whose params.json was empty or BOM-prefixed aborted
-#           with "Expecting value: line 1 column 1 (char 0)".  The JSON loader is
-#           now BOM/empty-tolerant, and a run loads its tracks + diffusion even
-#           when params.json is unreadable (only the recorded stack is skipped).
-#           (6) FIX Visualise on exFAT / SMB drives: macOS AppleDouble "._<name>"
-#           sidecars were picked instead of the real CSV/JSON (this is the true
-#           cause of both "CSV missing columns" and the "char 0" JSON error).
-#           The run loader now skips dotfiles.  Also hardened the CSV reader to
-#           strip a UTF-8 BOM (utf-8-sig).  (7) FIX Visualise froze / had to be
-#           force-quit loading a run with a large movie: a multi-GB .czi (worse
-#           over USB/SMB) was decoded on the GUI thread.  The movie now decodes
-#           on a worker thread behind a blocking "Loading movie…" popup (with a
-#           Skip option) so the window never looks crashed, and playback is only
-#           reached once the movie is fully loaded — smooth right away instead of
-#           stuttering while the decode competes for the CPU.  (8) PERF the
-#           Visualiser loads the movie in native uint16 (not float32) with a
-#           smaller RAM reserve, so it stays in RAM instead of a disk memmap:
-#           a 16k-frame .czi went ~200 s → ~1 s to load.  (9) NEW "Clear" button
-#           resets the Visualise tab (drops every run / movie / cluster / super-
-#           res layer) back to empty, with a confirmation.  (10) FIX Import fills
-#           the sidebar's pixel-size / frame-interval from the picked file's
-#           embedded metadata (unless you Override), so they show the file's real
-#           values.  (11) FIX with drift correction on, the figure's max-
-#           projection background is re-aligned by the same per-frame drift, so
-#           it's sharp and matches the corrected tracks instead of staying
-#           smeared.  (12) UI more padding above the update card's Download button.
-#           (13) FIX theme really persists across updates now.  The prior fix
-#           moved it to a QSettings domain (jacoblevers/FIREFLY →
-#           com.jacoblevers.FIREFLY) that still didn't match the app bundle id
-#           (com.jacoblevers.firefly) — cfprefsd treated them as different
-#           case-sensitive domains, so the bundled app's write wasn't read back
-#           after an update (reverted to AMOLED).  The theme is now stored in a
-#           plain JSON file in the app-data dir, which cfprefsd never touches, so
-#           a deliberate choice (incl. AMOLED/Light) is durable — NOT forced Dark.
-#           (14) NEW Preferences → Figures "Graph styles" for MSD curves, group
-#           comparison, track-length and MSD-AUC change (each drives the live tab
-#           + report, like Log-D); new shared renderers in fa_group_figures; new
-#           metrics spot intensity / Rg / net displacement / speed.  Stats (test,
-#           error) stay on the Analysis tab.  (15) NEW the live Analysis scalar
-#           figure honours the "Grouped by timepoint" style: it splits each
-#           condition by name × timepoint (pre/post) side by side — the between-
-#           dish view — instead of pooling or flattening, with the condition
-#           palette and a Kruskal–Wallis label.  Other styles are unchanged.
-#           (16) FIX the faceted MSD comparison drew every facet in the same
-#           blue when the comparison collapsed to one-way (e.g. two cards that
-#           differ only by time point): each facet is now coloured by its own
-#           condition colour when there's no within-facet time split.  (17) FIX
-#           the live Analysis figure could keep showing the OLD graph after a
-#           settings or graph-type change even though it read "LIVE" — you had
-#           to flick between graph types to force it.  Async figure renders are
-#           now generation-tagged, so a slower render for a superseded state can
-#           no longer overwrite (or cache-poison) the current one; only the
-#           render matching what you're looking at is ever shown.  (18) FIX the
-#           updater downloaded the whole installer TWICE (0→100 %, then 0→100 %
-#           again) on some networks: a CDN/proxy that honours a byte-range's
-#           start but ignores its end streams each parallel segment to EOF, so
-#           the assembled file overshot its size and the parallel path fell back
-#           to a full single-stream re-download.  Each segment now reads only its
-#           own byte span and assembly copies exactly that span, so it downloads
-#           once.  (19) FIX + PERF Analysis figures.  FIX a graph-styles regression
-#           where the MSD/AUC panels clobbered the theme value, crashing the
-#           motion-classes panel — so the default full report + the all-panels live
-#           render had been failing (the live tab hid it behind slow per-panel
-#           re-renders).  PERF the comparison engine is split into compute
-#           (load + scalars + stats, cached) and render (draw), so changing a graph
-#           style or theme is now a pure redraw instead of a full recompute: a live
-#           panel restyle went ~960 ms → ~30 ms, and the effect-size confidence
-#           intervals were vectorised so a first render / full report is ~2× faster.
-#           Output is unchanged (byte-identical stats/figures; only the wide
-#           small-n bootstrap CI bounds shift within Monte-Carlo noise).
-#           (20) FIX the live comparison scroller showed the WRONG graph for some
-#           panels (e.g. "Track count" drew the Diffusion-D scatter) and MSD graph-
-#           style changes appeared to do nothing — both because a panel was really
-#           displaying a different panel.  The rc.12 crash fix exposed a latent
-#           slice-mapping bug (the live tab used to render the whole grid once and
-#           crop each panel out by grid position, which mis-mapped the panels that
-#           re-lay-out their axes — MSD/AUC/logD facets, polar radial).  Now that
-#           per-panel compute is cached, each panel is rendered as its own figure —
-#           correct by construction; the exported report still draws the full grid.
-#           (21) FIX the "Group comparison" graph style (box + points / violin /
-#           bar) never reached the scalar comparison panels (AUC, mobile fraction,
-#           track count, α₂, VACF) — the engine hard-drew a bar, so picking "box"
-#           did nothing.  It now drives every scalar panel in both the live tab and
-#           the report; the default is box + points (its long-standing setting
-#           default) — pick "bar" for the old look.  Stats/dots/annotation
-#           unchanged.  (22) CHANGE Preferences → Figures now has a SEPARATE format
-#           control for each scalar comparison graph (MSD-AUC, mobile fraction,
-#           track count, non-Gaussian α₂, VACF) instead of one catch-all "Group
-#           comparison" whose description even listed metrics not in the comparison
-#           tab.  Each graph's box/violin/bar is chosen + stored independently
-#           (figures/style_<panel>), in the live tab and the report.  (23) NEW
-#           Preferences → Figures → "Trajectory background image" toggle: turn off
-#           the raw microscope image behind the Trajectories / Trajectories-by-D
-#           panels so the tracks sit on a plain background.  Feeds the existing
-#           fig_traj_bg render flag; applies to figures generated from then on.
-#           (24) FIX/CHANGE the MSD-AUC graph had TWO confusing style controls (a
-#           per-condition box/violin/bar AND a separate paired/Δ "change") — and on
-#           a non-two-factor design the paired vs Δ choice did nothing (both fell
-#           back to the same bar), while the bar option looked "removed".  Now ONE
-#           "MSD-AUC" control offers box+points / violin / bar / paired lines / Δ
-#           box: each is a distinct graph, paired/Δ apply to group×timepoint designs
-#           (else they fall back to box), and every option works.  (25) FIX the
-#           Visualiser's "Max projection" background was built from the RAW movie,
-#           so it stayed smeared by drift while the loaded tracks are drift-
-#           corrected.  It now loads the run's <stem>_drift.csv and builds the
-#           projection from a drift-aligned subsample (same alignment the report
-#           figure uses), so it's sharp and matches the tracks.  Falls back to the
-#           raw projection when a run has no drift file / no drift correction.
-#           (26) NEW analyse multiple cells on one movie as separate replicates:
-#           draw >1 ROI in the viewer and, on Save, FIREFLY asks whether they're
-#           individual replicates (or a persistent "Analyse each ROI separately"
-#           toggle).  If yes, each ROI runs as its OWN single-ROI analysis to its
-#           own output folder (<stem>_cell1/2… or an optional per-ROI label), so
-#           two cells never pool into each other's D-values — they land as separate
-#           replicates in the Analysis tab.  Off / single-ROI keeps the old
-#           union-into-one-region behaviour.  (27) FIX the multi-ROI prompt never
-#           appeared: "already decided" was inferred from a key `commit()` ALWAYS
-#           writes, so any file that had ever saved an ROI was silently marked as
-#           answered.  The choice is now recorded explicitly.  (28) PERF a movie
-#           with several ROIs is decoded + localised ONCE instead of once per cell:
-#           the worker splits internally (`_roi_replicate_jobs`) and loops only the
-#           per-ROI half (mask → drift → link → analyse → outputs), so each cell
-#           still gets a fully independent output.  Verified byte-identical on the
-#           single-ROI path, and two ROIs partition the localisations exactly.
-# v2.76.43 — STABLE.  Consolidates the 2.76.39–2.76.42 pre-release series and adds
-#           a new Log-D clip range.  Highlights since the last stable (2.76.38):
-#           (1) a regular (non-HYPER-FLY) batch runs on the Process screen with a
-#           live pip-grid queue; (2) the Log-D graph style + figure theme actually
-#           re-render the Analysis figures (moved to a "Graph styles" Preferences
-#           section); (3) update channel: correct pre-release ordering + a
-#           "return to stable" prompt; (4) the app theme no longer reverts to
-#           AMOLED on macOS updates; (5) NEW palmTRACER-style Log-D clip range
-#           (Diffusion & motion → entered in log₁₀D) that clamps the LogD graph,
-#           the palmTRACER export's LogD column, and a new clamped logD column in
-#           firefly_extras — raw D and all statistics are untouched.
-# v2.76.42-rc.1 — PRE-RELEASE.  Batch-queue pip grid polish: the running tile's
-#           animation no longer overlaps its neighbours (each tile sits in a 24px
-#           box that fully contains its 20px square + inset 2px ring, with more
-#           spacing), and the running tile now "breathes" its intensity
-#           (1.0 ↔ 0.4 over 1.4 s, ease-in-out) — a faithful match to the design
-#           mockup, replacing the expanding ring that caused the overlap.
-# v2.76.41-rc.1 — PRE-RELEASE.  FIX the app theme reverting (typically to AMOLED)
-#           on every macOS update: the theme + accent were stored in a QSettings
-#           domain (FIREFLY/sptPALM) that matched neither the app's org/app name
-#           nor its bundle id, so cfprefsd didn't reliably flush those writes when
-#           the .app was replaced.  Both now live in the primary jacoblevers/
-#           FIREFLY store (like every other setting), with a one-time migration:
-#           a stuck AMOLED normalises to Dark (the default), a deliberate Light is
-#           kept, and AMOLED stays selectable + persists if actually chosen.
-# v2.76.40-rc.1 — PRE-RELEASE.  (1) The regular-batch → Process screen work now
-#           shows a compact pip-grid "Batch queue" above the console (one tile per
-#           series, running one ringed) with a "Now" caption.  (2) FIX Analysis:
-#           the log-D graph style (and figure theme / mobile-D) now actually
-#           re-render the live Analysis figures — they were served from a cache
-#           keyed only by data, so preference changes never reached the tab; the
-#           style pickers moved to a new "Graph styles" Preferences section.
-#           (3) FIX updates: pre-release versions now order correctly (rc.1 < rc.2
-#           < final) and switching back to the Stable channel from a beta build
-#           offers a "return to the stable release" instead of staying silent.
-# v2.76.39-rc.1 — PRE-RELEASE.  A regular (non-HYPER-FLY) batch now moves to the
-#           Process screen while it runs — mirroring that cockpit's live detection
-#           preview, pipeline stepper, resource meters and in-depth console — with
-#           a compact "Batch queue" above the console.  HYPER-FLY batches still
-#           route to their own dashboard.
-# v2.76.38 — FIX in-app update "downloads twice": the parallel (4-connection)
-#           installer download discarded the whole attempt and re-downloaded the
-#           entire file single-stream when ANY one connection dropped (common on
-#           proxied / AV university networks).  Each segment now retries + resumes
-#           from the bytes already on disk, so a drop re-fetches only its tail and
-#           the parallel download succeeds — no full re-download.
-# v2.76.37 — FIX Analysis: live figure was blank for EVERY metric when two
-#           conditions shared a name but differed by time point (e.g. "Munc 18"
-#           Pre-drug vs Post-drug) — the engine read it as a 1-group × 2-time
-#           interaction, dropped all unpaired cells and drew nothing.  Now folds
-#           to a plain one-way comparison of the cells.  Also FIX report crash
-#           ('charmap' can't encode '≥'): the two-way-ANOVA status *print()* hit
-#           Windows' cp1252 stdout — hardened stdout/stderr to UTF-8 at startup.
-# v2.76.36 — FIX Compare/Analysis: MSD AUC was blank (empty figure + dashed
-#           stats) — _msd_auc used np.trapz, removed in numpy 2 → np.trapezoid;
-#           and the report crashed on Windows ('charmap' codec can't encode '≥')
-#           because two stats-CSV writers lacked encoding="utf-8".
-# v2.76.19 — Visualise load/export failures no longer fail silently — a broken
-#           run folder, corrupt cluster map, or failed export now shows an error
-#           toast (Vis.warn was emitted into the void).  Found by an error-handling
-#           audit; the rest of the unhappy paths were already robust.  Also a big
-#           internal dead-code sweep (orphaned Compare/Results controllers).
-# v2.76.18 — Async loading polish: super-resolution render and batch folder-scan
-#           now run off the GUI thread, so the UI no longer freezes on a big
-#           render / large or network folder.  The Render button shows a spinning
-#           "Rendering…"; the Import queue shows "Scanning folder…" + shimmer.
-# v2.76.17 — Atomic CSV writes extended across the analysis core (per-run extras,
-#           CLI, circular stats, PALM-Tracer export) so an interrupted write can't
-#           leave a truncated file; a failed HYPER-FLY tile now opens the full,
-#           selectable error on click (was truncated to 300 chars).
-# v2.76.16 — Polish & hardening pass: keyboard shortcuts (⌘1–5 tabs, ⌘↵ run);
-#           Analysis tab collapses to one column on narrow windows; the accent
-#           picker now recolours every hover/pill/drag-fill (33 hardcoded-blue
-#           literals fixed); confirm before removing a condition / timepoint;
-#           colour-blind-safe HYPER-FLY status + significance stars; stronger
-#           input focus rings; atomic output-CSV writes (no truncated files on
-#           disk-full).  Plus: fixed 2 stale tests, removed dead CompareTab,
-#           numba floor bumped to 0.61.
-# v2.76.15 — HYPER-FLY: remove the sweeping-scanner tile animation; load stagger
-#           is now format-aware — uncompressed TIF loads 1-at-a-time (read-bound:
-#           one full-speed read pins a gigabit/RDM link + each file processes
-#           ASAP), compressed CZI loads 2 (fills JPEG-XR decode stalls).  Override
-#           with FIREFLY_HYPERFLY_LOAD_SLOTS.
-# v2.76.14 — Analysis tab: actually expose the 12-condition cap to the UI — the
-#           "Add condition" button + counter were hardcoded to 6 in QML (so the
-#           v2.76.13 cap raise had no visible effect); both now bind to
-#           Analysis.maxConditions, and the landing card reads "2–12".
-# v2.76.13 — Analysis tab: raise the condition cap 6 → 12 (restores the legacy
-#           Compare limit for group × time-point designs) + extend the swatch
-#           palette to 12 distinct hues.
-# v2.76.12 — UI: the update pill jumps to Preferences ▸ Updates; a restart prompt
-#           pops after a CUDA install; CUDA section padding; the landing screen is
-#           just the glow (no animation).  Cluster map, round 3: clicking a dot
-#           prefers a real cluster over noise and the click target scales with the
-#           dot size; the eps=500 crash is fixed (recluster realigns to the
-#           sub-sampled coords); a level-of-detail scatter caps the per-repaint
-#           work (~130 ms → <10 ms zoomed-in); a standalone cluster map pulls its
-#           motion data WITHOUT a track overlay (no stray track tails on zoom-in).
-# v2.76.11 — Cluster map, round 2: opening a cluster map on its own now auto-loads
-#           the sibling tracks/diffusion (hidden) so colour-by-motion actually
-#           shows Immobile/Confined/etc. instead of all three modes looking the
-#           same; navigation is genuinely smooth now (the scatter culls to the
-#           visible viewport — zoomed-in repaints ~130ms → <10ms).
-# v2.76.10 — Visualise cluster-map fixes: colour-by-motion now works (per-loc
-#           motion is re-derived from the loaded tracks when the analysis column
-#           is wholesale "Unmatched"); a cluster map opens standalone without
-#           loading trajectories; pan/zoom is no longer laggy (scatter AA off);
-#           the cluster-info popup wraps instead of running off-screen.
-# v2.76.9 — FIX the auto-updater in frozen builds (no CA store → HTTPS silently
-#           failed → always 'Up to date'); failed checks now say 'Couldn't check'.
-#           Settings UX: parameter tooltips restored (all 52); the Figures preview
-#           is actually live; font-size + interface-density now scale the UI; a
-#           colour-blind motion palette is selectable; the AMOLED theme applies
-#           to the media wells (new WELL token); ROI detection threshold syncs to
-#           the sidebar.  FIRST build with a working in-app updater.
-# v2.76.8 — Visualise: close the DBSCAN cluster overlay (LAYERS toggle) + a
-#           "Cluster motion" colour mode (tint each cluster by dominant motion).
-#           Preview/ROI viewer: a detection-threshold (minmass) preview — toggle
-#           + slider overlays trackpy-detected spots, written through to the run.
-#           Also first release of: accent-tracking live-detection dots, the
-#           in-app CUDA installer (Preferences ▸ GPU), and the HYPER-FLY console.
-# v2.76.7 — HYPER-FLY audit fixes: (HIGH) a memory-watchdog abort mid-wave no
-#           longer cancels the whole parallel batch + mislabels it "stopped by
-#           user" — completed files are kept, the events cleared, batch_done
-#           emitted (mirrors the serial path); failed tiles keep their error text
-#           visible; the tile max-projection no longer double-reads the file the
-#           worker is decoding; projection cache eviction + idempotency + a
-#           done-tile progress-regression guard + a drain race fix.
-# v2.76.6 — UI: post-analysis run-summary stats panel (animated); HYPER-FLY tiles
-#           show each file's max projection + a sweeping scanner; FIX Process log
-#           + minmass histogram never populating (wrong signal target); brighter
-#           green live-detection markers.
-# v2.76.5 — UI: real in-app update install + header update pill + auto-check on
-#           launch; clean-slate startup (no preloaded file); Analysis design card
-#           + HYPER-FLY tile error reporting.
-# v2.76.4 — packaging: drop bundled `*.tests.*` trees (~2,300 modules across
-#   pandas/scipy/sklearn/statsmodels/numpy) from the onefile via a no-tests
-#   collect_submodules filter — smaller .exe + faster build, no runtime change.
-# v2.76.3 — CRITICAL frozen-build fix: bundle scipy's vendored scipy._external
-#   (array_api_compat/.numpy.fft etc.) so the analysis worker no longer dies on
-#   `import sptpalm_analysis` with ModuleNotFoundError the instant a run starts;
-#   + durable worker crash logging (firefly_worker.log/faulthandler) + super-res
-#   `np`→`_np` NameError fix.  See sptpalm.spec / CHANGELOG.
-# v2.76.0 — napari REMOVED: the interactive viewers (Visualise tab + ROI editor)
-#   are now bespoke Qt-only widgets (QGraphicsView/QImage/QPainter + numpy) —
-#   no napari, no pyqtgraph, no vispy.  Drops napari + its dependency tree and
-#   moves the stack to numpy 2 / Python 3.13.
-# v2.75.0 — interactive Track explorer on the Visualise tab: filter the loaded
-#   trajectories by D / α / motion-class / length in a sortable table, click a
-#   row to centre the viewer + populate the inspector, and export the filtered
-#   subset to CSV.
-# v2.74.0 — super-resolution reconstruction: every run saves a *_superres.png
-#   (Gaussian/histogram render of the localisation cloud), plus an interactive
-#   live-tunable layer on the Visualise tab (overlaid on the raw image).
-# v2.73.0 — hardening: regression tests for the figure-defaults code; QC flags
-#   surfacing the DBSCAN sub-sample / skipped-ROI / dense-field auto-threshold
-#   caveats; figure-preview polish (dead proj-cmap trigger removed, shared grid).
-# v2.72.1 — new FIREFLY app icon (Windows .ico + macOS .icns + runtime PNG).
-# v2.72.0 — Figure-defaults reorg (sub-tabs), panel pickers for both figures,
-#   single-sample combined figure is now panel-selectable, real-data preview;
-#   FIX: reflow var `_pos` clashed with the van Hove panel → crashed real runs.
-# v2.71.0 — Compare figure: quick-glance per-group summary band (trajectory
-#   count, median D, median α) at the top; the redundant bottom legend is
-#   removed (the band is now the colour/number/n key).
-# v2.70.0 — review remediation: CRITICAL drift-correction sign fix (RCC was
-#   DOUBLING drift, not removing it; now locked by a synthetic-drift sign test);
-#   JDD now subtracts the MSD localisation-error offset so D_JDD agrees with the
-#   offset-corrected MSD D; dwell-time τ uses a right-censored exponential MLE;
-#   turning-angle & MSS now use frame-contiguous steps (no gap mis-counting);
-#   Prism CSV honours underpowered-blanking + configured α; two-way ANOVA no
-#   longer drops metrics on cross-group cell-name collisions; SA-linker cycle
-#   guard; bounded gap-closing matrix; uint16 preprocess underflow guard.
-# v2.69.3 — gaussian-mle / radial-symmetry refiners run their numerics on CPU
-#   when the device is MPS (Apple GPUs silently mis-compute the linalg/conv ops,
-#   intermittently mis-localising spots); detection stays GPU-accelerated.
-# v2.69.2 — linker-dispatch audit fixes: SA linker no longer crashes from the GUI
-#   (merge/split kwargs leaked into link_trajectories_sa); nn is canonical
-#   frame-to-frame (max_gap=1); unified DEFAULT_LINKER="kalman" forward default;
-#   feature-penalty relabelled FIREFLY-specific; MPS bandpass phantom fix;
-#   doc-vs-code cleanups; tests/test_linker_dispatch.py.
-# v2.69.1 — disambiguate the Simple LAP linker label → "Jaqaman LAP — TrackMate
-#   (simple)" (vs "(merge/split)"); settings-migration keeps saved prefs.
-# v2.68.0 — TrackMate & palmTRACER linkers (NN, Simple/Full LAP, simulated
-#   annealing) via a linker registry; opt-in auto search-range; simplified
-#   GPU backend dropdown; Torch CG auto-threshold decoupled from trackpy.
-# v2.67.1 — fix: palmTRACER motion classification was blanked when D was taken
-# from palmTRACER's native -D file (use_native); now FIREFLY's alpha/motion are
-# kept (native D only overrides the D/MSD family), and a blanked cache self-heals
-# on load.  No effect on FIREFLY-localised runs.
-# TAG: an annotated `v2.67.0` tag is created on the release-prep commit (the one
-# that adds the CHANGELOG v2.67.0 section).  The in-app updater compares this
-# string against the latest *GitHub* tag, so it will not offer an update until
-# that tag is PUSHED / a GitHub release is published — the remaining manual
-# release step.  If this branch is squash-merged into main, re-create the tag on
-# the resulting commit so it lands on main's history.  (R3-3)
-# v2.67.0 — hostile-review remediation. NOTE: this release changes some
-# scientific OUTPUTS vs 2.66.x, so a re-analysis of old data may differ:
-#   • mobile fraction is now (finite, positive D) >= threshold (was D > threshold
-#     over all rows incl. failed NaN fits) — matches the panel; None for an
-#     all-immobile dataset (was 0.0).
-#   • short (3-lag) tracks with an unmeasurable anomalous exponent are now
-#     "Unknown" (were sometimes mislabelled Directed/Immobile).
-#   • a 3-component JDD that yields a negative population falls back to 2.
-#   • assumed pixel-size/frame-interval defaults are now unified at 0.106 µm /
-#     0.02 s everywhere (post-process was 0.03 s, Compare/CLI 0.05 s).
-# Plus many robustness/GUI/security fixes that don't change numbers.
 
 # Fix macOS multiprocessing crashes — must be set before any other imports
 if sys.platform == "darwin":
@@ -477,9 +69,6 @@ All options:
 """
 
 import argparse
-import multiprocessing
-import os
-import sys
 import time
 import warnings
 import xml.etree.ElementTree as ET
@@ -533,12 +122,11 @@ from tqdm import tqdm
 import io as _io
 
 # Shared constants + leaf helpers now live in fa_constants and are
-# re-exported here so existing `sptpalm_analysis.N_CPUS` / `_Cancelled` /
-# `_tqdm` / `_dim_size` call sites keep working unchanged.
-from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm, _dim_size,
-                                           safe_process_workers,
-                                           DEFAULT_PIXEL_SIZE_UM,
-                                           DEFAULT_FRAME_INTERVAL_S)
+# re-exported here so existing `sptpalm_analysis.N_CPUS` / `_Cancelled`
+# call sites keep working unchanged.
+from firefly.analysis.fa_constants import (
+    N_CPUS, _Cancelled, DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S,
+)
 from firefly.analysis.fa_io import atomic_to_csv
 
 
@@ -551,42 +139,13 @@ tp.quiet()
 
 # CZI/TIF/external loaders now live in fa_loaders; re-exported here so
 # existing `sptpalm_analysis.load_file(...)` etc. call sites keep working.
-from firefly.analysis.fa_loaders import (
-    load_file, load_czi, load_tif, load_external_locs, load_projection_fast,
-    _parse_czi_metadata, _parse_ome_metadata, _find_czi_series,
-    _find_tif_series, _load_single_czi, _load_single_tif,
-    _probe_tif_shape_and_count, _tif_series_nat_key, _autodetect_csv_preset,
-    HAS_AICS, HAS_CZIFILE, HAS_TIFFFILE,
-)
-
-
-
-
-
-
-
-
-
-
-
-
-
+from firefly.analysis.fa_loaders import load_file, load_external_locs
 
 
 # Memory / temp-stack management lives in fa_memory; re-exported here so
 # existing call sites (and firefly_worker's cleanup_temp_stack_paths
 # import) keep working unchanged.
-from firefly.analysis.fa_memory import (
-    set_temp_stack_dir, _resolve_temp_stack_dir, _register_temp_stack_path,
-    cleanup_temp_stack_paths, _cleanup_temp_stack_paths,
-    _alloc_or_memmap_stack, _user_ram_reserve_gb,
-)
-
-
-
-
-
-
+from firefly.analysis.fa_memory import set_temp_stack_dir, cleanup_temp_stack_paths
 
 
 # ── External-localisations loader ─────────────────────────────────────────────
@@ -595,42 +154,22 @@ from firefly.analysis.fa_memory import (
 # (-1 for 1-indexed tools); units lets us convert nm → px on the fly.
 
 
-
-
-
-
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  PREPROCESSING  (fast path + parallel)
 # ══════════════════════════════════════════════════════════════════════════════
 
 # preprocess / drift / roi now live in fa_preprocess, fa_drift, fa_roi;
 # re-exported here so existing call sites keep working.
-from firefly.analysis.fa_preprocess import (_preprocess_fast, _preprocess_rolling,
-                           preprocess_stack, auto_threshold)
+from firefly.analysis.fa_preprocess import preprocess_stack
 from firefly.analysis.fa_drift import correct_drift
-from firefly.analysis.fa_roi import (build_roi_mask_mean, build_roi_mask_perframe,
-                    build_roi_mask, build_roi_mask_advanced, apply_roi_mask,
-                    find_sister_roi_path, build_sister_roi_mask)
-
-
-
-
-
-
+from firefly.analysis.fa_roi import (
+    build_roi_mask, build_roi_mask_advanced, apply_roi_mask,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ROI  —  simple intensity threshold
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-
-
-
-
-
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -654,11 +193,9 @@ from firefly.analysis.fa_roi import (build_roi_mask_mean, build_roi_mask_perfram
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  DRIFT CORRECTION
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -667,27 +204,9 @@ from firefly.analysis.fa_roi import (build_roi_mask_mean, build_roi_mask_perfram
 
 # fa_localize extracted; re-exported here so call sites keep working.
 from firefly.analysis.fa_localize import (
-    _ram_strategy, _adaptive_chunk_and_workers,
-    _fast_preprocess_and_localise, preprocess_and_localise_adaptive,
-    preprocess_and_localise_stream, _localise_chunk, _localise_chunk_mp,
-    _localise_chunk_mmap_mp, LocaliserBackend, _emit_trackpy_chunk_preview,
-    TrackpyBackend, TorchBackend, list_available_backends,
-    _resolve_backend, localise_particles, _BACKEND_REGISTRY,
+    preprocess_and_localise_adaptive, TrackpyBackend, TorchBackend,
+    list_available_backends, localise_particles,
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -708,13 +227,6 @@ from firefly.analysis.fa_localize import (
 # Phase A3: device selection (MPS / CUDA) inside TorchBackend.
 
 
-
-
-
-
-
-
-
 # Order matters: `backend="auto"` resolves to the first available entry.
 # TorchBackend stays AFTER TrackpyBackend so "auto" picks trackpy (the
 # peer-reviewed reference) by default; users opt into the GPU path by
@@ -722,22 +234,12 @@ from firefly.analysis.fa_localize import (
 # two detection engines — both Crocker-Grier-family centroid detectors.
 
 
-
-
-
-
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  LINKING
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_linking extracted; re-exported here.
-from firefly.analysis.fa_linking import (
-    link_trajectories, _link_via_trackpy,
-)
-
-
+from firefly.analysis.fa_linking import link_trajectories
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -746,12 +248,9 @@ from firefly.analysis.fa_linking import (
 
 # fa_diffusion extracted; re-exported here.
 from firefly.analysis.fa_diffusion import (
-    msd_linear, classify_motion, _msd_and_fit_one, compute_msd_and_fit,
-    compute_jdd, compute_turning_angles, compute_van_hove, compute_vacf,
-    compute_mobile_fraction_over_time,
-    compute_dwell_times, compute_mss, _msd_auc, _mob_immob_ratio,
-    _motion_fractions, _track_lengths, track_elapsed_durations,
-    ALPHA_THRESHOLDS_DEFAULT, MOBILE_D_THRESHOLD_DEFAULT,
+    classify_motion, compute_msd_and_fit, compute_jdd, compute_turning_angles,
+    compute_van_hove, compute_vacf, compute_mobile_fraction_over_time,
+    compute_dwell_times, compute_mss, ALPHA_THRESHOLDS_DEFAULT,
     DIFFUSION_METRICS_SCHEMA_VERSION,
 )
 
@@ -768,16 +267,9 @@ from firefly.analysis.fa_diffusion import (
 # it as a default argument (Python evaluates defaults at definition time).
 
 
-
-
-
-
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  JUMP DISTANCE DISTRIBUTION
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -786,54 +278,17 @@ from firefly.analysis.fa_diffusion import (
 
 # fa_circular extracted; re-exported here.
 from firefly.analysis.fa_circular import (
-    compute_circular_statistics, _circ_watson_williams,
-    _circ_mardia_watson_wheeler, _circ_wallraff_ktest,
-    _circ_kuiper_two_sample, _circ_lin_correlation,
-    compute_per_track_mean_angle, _watson_williams_mu_per_replicate,
-    compute_circular_comparison_tests, _p_stars,
-    save_circular_statistics_pdf, save_comparison_circular_statistics,
-    _write_single_group_page,
+    compute_circular_statistics, _circ_lin_correlation, compute_per_track_mean_angle,
+    save_circular_statistics_pdf,
 )
 
 
 # fa_theme extracted; re-exported here.
-from firefly.analysis.fa_theme import (
-    _theme_palette, _THEME_REQUIRED_KEYS,
-)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MOBILE FRACTION OVER TIME
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -851,11 +306,9 @@ from firefly.analysis.fa_clustering import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  MOMENT SCALING SPECTRUM  (MSS)
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -863,13 +316,7 @@ from firefly.analysis.fa_clustering import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 # fa_figure extracted; re-exported here.
-from firefly.analysis.fa_figure import (
-    _draw_track, make_figure, MC, MORD,
-)
-
-
-
-
+from firefly.analysis.fa_figure import make_figure, MORD
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1004,7 +451,6 @@ def main():
     use_roi  = (args.roi_threshold is not None) or args.roi_auto
     if use_roi:
         manual_thresh = args.roi_threshold  # None = auto
-        auto_method   = args.roi_auto_method if args.roi_auto else None
         if manual_thresh is not None:
             mode_str = f"threshold={manual_thresh}, mode={args.roi_mode}"
         else:
@@ -1114,36 +560,11 @@ def main():
 # fractions, track length distribution, JDD, dwell time CDF, turning angles.
 
 # fa_palmtracer extracted; re-exported here.
-from firefly.analysis.fa_palmtracer import (
-    _find_stem, _is_palmtracer_folder, _read_palmtracer_table,
-    load_summary_from_palmtracer, load_summary_from_folder,
-    save_palmtracer_csvs, aggregate_run_summaries,
-)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+from firefly.analysis.fa_palmtracer import save_palmtracer_csvs, aggregate_run_summaries
 
 
 # fa_compare extracted; re-exported here.
-from firefly.analysis.fa_compare import (
-    _stat_test, _stat_test_n, _bar_with_dots_n, compare_groups,
-    _write_pdf_report,
-)
+from firefly.analysis.fa_compare import compare_groups
 
 
 # NOTE: the canonical `_theme_palette` definition lives near
@@ -1156,14 +577,6 @@ from firefly.analysis.fa_compare import (
 # `save_circular_statistics_pdf` (which uses those keys).  The
 # canonical version above now also exports the BAR_FILL/SIG keys
 # `compare_groups` consumes here, so the duplicate is safe to remove.
-
-
-
-
-
-
-
-
 
 
 if __name__ == "__main__":

@@ -262,7 +262,6 @@ class VisualiseController(QObject):
         """Load a complete run: stack (if recorded) + trajectories + diffusion
         summary from ``firefly_extras/``.  Ports VisualiseMixin._ws_load_run_
         folder's headless resolution (descends a single-run parent folder)."""
-        import json
         self._field_px = None            # reset; set again only if this run has a stack
         try:
             extras = os.path.join(run_dir, "firefly_extras")
@@ -911,7 +910,6 @@ class VisualiseController(QObject):
                 pass
         try:
             if self._cl_motion is not None and self._cl_labels is not None:
-                import numpy as np
                 from collections import Counter
                 motions = self._cl_motion[self._cl_labels == cid]
                 if motions.size:
@@ -1007,12 +1005,6 @@ class VisualiseController(QObject):
     def inspectorVisible(self):
         return self._inspector_visible
 
-    @Slot()
-    def clearInspector(self):
-        self._inspector = {"mode": "none"}
-        self._inspector_visible = False
-        self.inspectorChanged.emit()
-
     # ═════════════════════════════════════════════════════════════════════
     #  Clusters — ported from VisualiseMixin (load / recluster / suggest-eps)
     # ═════════════════════════════════════════════════════════════════════
@@ -1031,10 +1023,6 @@ class VisualiseController(QObject):
     @Property(bool, notify=clusterChanged)
     def noClustersBanner(self):
         return self._cl_present and self._cl_count == 0
-
-    @Property(bool, notify=clusterChanged)
-    def clusterMotionAvailable(self):
-        return self._cl_motion is not None
 
     @Property(int, notify=clusterChanged)
     def clusterEpsNm(self):
@@ -1170,11 +1158,6 @@ class VisualiseController(QObject):
         runs = self.editableRuns
         return runs[0]["dir"] if runs else ""
 
-    @Property(str, notify=dataChanged)
-    def openRunName(self):
-        d = self.openRunDir
-        return os.path.basename(d.rstrip(os.sep)) if d else ""
-
     @Property(bool, notify=dataChanged)
     def openRunHasClusters(self):
         """Drives the 'this run' button — false when nothing is loaded, when the
@@ -1214,10 +1197,8 @@ class VisualiseController(QObject):
 
     @Slot(str, result=bool)
     def loadClustersFolder(self, run_dir: str) -> bool:
-        import json
         try:
             import numpy as np
-            import pandas as pd
             extras = os.path.join(run_dir, "firefly_extras")
             if not os.path.isdir(extras):
                 raise FileNotFoundError("No firefly_extras/ subfolder")
@@ -1437,7 +1418,6 @@ class VisualiseController(QObject):
             self.warn.emit("Cluster overlay failed", str(exc))
 
     def _update_cluster_counts(self):
-        import numpy as np
         lab = self._cl_labels
         if lab is None or lab.size == 0:
             self._cl_count = 0

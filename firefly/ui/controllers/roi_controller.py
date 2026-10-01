@@ -51,7 +51,6 @@ class RoiController(QObject):
 
     def __init__(self, store=None, settings=None, override_store=None, parent=None):
         super().__init__(parent)
-        self._editor = None
         self._polys: list = []          # list[list[(y, x)]]
         self._draft: list = []          # open polygon being drawn
         # ── which screen of the viewer is showing ──────────────────────────
@@ -215,32 +214,6 @@ class RoiController(QObject):
         if abs(float(a["roi_bg_sigma"]) - float(b["roi_bg_sigma"])) > 1e-6:   return True
         return False
 
-    # ── editor lifecycle (legacy widget island) ──────────────────────────
-    def ensureEditor(self):
-        if self._editor is not None:
-            return self._editor
-        from firefly.ui.roi_editor import RoiEditor
-        ed = RoiEditor()
-        ed.polygonsChanged.connect(self._on_editor_changed)
-        ed.frameChanged.connect(self.frameChanged)
-        if self._polys:
-            ed.set_polygons(self._polys)
-        self._editor = ed
-        return ed
-
-    def editorWidget(self):
-        return self.ensureEditor()
-
-    def _on_editor_changed(self):
-        if self._editor is not None:
-            self._polys = [[(float(y), float(x)) for y, x in poly]
-                           for poly in self._editor.polygons()]
-            self.polygonsChanged.emit()
-
-    def _push_to_editor(self):
-        if self._editor is not None:
-            self._editor.set_polygons(self._polys)
-
     # ── headless polygon model ───────────────────────────────────────────
     @Slot(float, float)
     def addVertex(self, y: float, x: float):
@@ -262,7 +235,6 @@ class RoiController(QObject):
             return False
         self._polys.append([(float(y), float(x)) for y, x in poly])
         self._draft = []
-        self._push_to_editor()
         self.draftChanged.emit()
         self.polygonsChanged.emit()
         return True
@@ -321,7 +293,6 @@ class RoiController(QObject):
             del self._polys[idx]
             if idx < len(self._roi_labels):
                 del self._roi_labels[idx]        # keep labels aligned to polygons
-            self._push_to_editor()
             self.polygonsChanged.emit()
             self.splitChanged.emit()
 
@@ -333,7 +304,6 @@ class RoiController(QObject):
                 del poly[vert_idx]
                 if len(poly) < 3:
                     del self._polys[poly_idx]
-                self._push_to_editor()
                 self.polygonsChanged.emit()
 
     @Slot(int, int, float, float)
@@ -342,7 +312,6 @@ class RoiController(QObject):
             poly = self._polys[poly_idx]
             if 0 <= vert_idx < len(poly):
                 poly[vert_idx] = (float(y), float(x))
-                self._push_to_editor()
                 self.polygonsChanged.emit()
 
     @Slot()
@@ -350,8 +319,6 @@ class RoiController(QObject):
         self._polys = []
         self._draft = []
         self._roi_labels = []
-        if self._editor is not None:
-            self._editor.clear_polygons()
         self.polygonsChanged.emit()
         self.draftChanged.emit()
         self.splitChanged.emit()
@@ -359,7 +326,6 @@ class RoiController(QObject):
     @Slot("QVariantList")
     def setPolygons(self, polys):
         self._polys = [[(float(p[0]), float(p[1])) for p in poly] for poly in polys]
-        self._push_to_editor()
         self.polygonsChanged.emit()
 
     # ── per-file detection threshold ─────────────────────────────────────
@@ -627,7 +593,6 @@ class RoiController(QObject):
     def _begin_brush_session(self):
         """Seed the paint buffer from the polygons already drawn, so the brush
         EXTENDS an existing ROI instead of starting from blank."""
-        import numpy as np
         H, W = int(self._img_h), int(self._img_w)
         if H <= 0 or W <= 0:
             self._brush_mask = None
@@ -729,7 +694,6 @@ class RoiController(QObject):
         self._polys = [[(float(pt[0]), float(pt[1])) for pt in poly]
                        for poly in polys]
         del self._roi_labels[len(self._polys):]
-        self._push_to_editor()
         self.polygonsChanged.emit()
         self.splitChanged.emit()
         if holes and not self._brush_holes_warned:
@@ -750,7 +714,6 @@ class RoiController(QObject):
 
     @Slot()
     def clearBrush(self):
-        import numpy as np
         if self._brush_mask is None:
             return
         self.beginStroke()
@@ -1192,7 +1155,6 @@ class RoiController(QObject):
         self.viewChanged.emit()
 
     def _load_frame(self, i):
-        from firefly.ui.controllers.params.preview_loader import sampled_frame
         try:
             from firefly.ui.controllers.params.preview_loader import detection_frame
             channel = int(round(self._s.get_float("analysis/channel", 0))) if self._s else 0
@@ -1392,15 +1354,6 @@ class RoiController(QObject):
         return self._mask
 
     # ── sister-TIFF ROI status (drives the viewer caption in Sister mode) ──
-    @Property(bool, notify=maskChanged)
-    def sisterFound(self):
-        return bool(self._sister_path)
-
-    @Property(str, notify=maskChanged)
-    def sisterName(self):
-        import os
-        return os.path.basename(self._sister_path) if self._sister_path else ""
-
     @Property(str, notify=maskChanged)
     def sisterStatus(self):
         return self._sister_status
@@ -1771,10 +1724,6 @@ class RoiController(QObject):
         self.spotsChanged.emit()
 
     # ── per-file override indicator ───────────────────────────────────────
-    @Slot(str, result=bool)
-    def fileHasOverride(self, path):
-        return bool(self._ovr and self._ovr.has(path))
-
     @Slot(str, result=bool)
     def fileHasRoi(self, path):
         return bool((self._store and self._store.has(path))

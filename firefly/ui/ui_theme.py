@@ -9,7 +9,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore
 
 
 _THEMES = {
@@ -795,46 +795,3 @@ QMenu::item:selected {{
 }}
 """.format(**_THEME)
 
-
-def _apply_firefly_theme(app: QtWidgets.QApplication):
-    """Apply the FIREFLY dark theme: QPalette + comprehensive QSS.
-
-    Also nudge the platform style toward "Fusion" — macOS's native style
-    ignores most QSS properties (background colours, borders), so without
-    Fusion the stylesheet would only partially apply.  Fusion respects
-    everything in our QSS and renders identically on macOS / Windows /
-    Linux, which is what we want for a cohesive look.
-    """
-    # Fusion style — required on macOS for our QSS to actually take effect.
-    # Without this, the system style overrides background-color etc.
-    app.setStyle("Fusion")
-
-    # QPalette — mostly redundant alongside QSS but covers the few widgets
-    # that don't read QSS (some native dialogs, scroll bars on some
-    # platforms).  Keeps us looking consistent everywhere.
-    pal = QtGui.QPalette()
-    bg     = QtGui.QColor(_THEME["BG"])
-    panel  = QtGui.QColor(_THEME["PANEL"])
-    txt    = QtGui.QColor(_THEME["TXT"])
-    muted  = QtGui.QColor(_THEME["TXT_MUTED"])
-    acc    = QtGui.QColor(_THEME["ACC"])
-    border = QtGui.QColor(_THEME["BORDER"])
-    pal.setColor(QtGui.QPalette.ColorRole.Window,          bg)
-    pal.setColor(QtGui.QPalette.ColorRole.WindowText,      txt)
-    pal.setColor(QtGui.QPalette.ColorRole.Base,            panel)
-    pal.setColor(QtGui.QPalette.ColorRole.AlternateBase,   bg)
-    pal.setColor(QtGui.QPalette.ColorRole.ToolTipBase,     panel)
-    pal.setColor(QtGui.QPalette.ColorRole.ToolTipText,     txt)
-    pal.setColor(QtGui.QPalette.ColorRole.Text,            txt)
-    pal.setColor(QtGui.QPalette.ColorRole.PlaceholderText, muted)
-    pal.setColor(QtGui.QPalette.ColorRole.Button,          panel)
-    pal.setColor(QtGui.QPalette.ColorRole.ButtonText,      txt)
-    pal.setColor(QtGui.QPalette.ColorRole.Highlight,       acc)
-    pal.setColor(QtGui.QPalette.ColorRole.HighlightedText, QtGui.QColor(_THEME["ACC_FG"]))
-    pal.setColor(QtGui.QPalette.ColorRole.Link,            acc)
-    pal.setColor(QtGui.QPalette.ColorRole.Mid,             border)
-    pal.setColor(QtGui.QPalette.ColorRole.Dark,            bg)
-    pal.setColor(QtGui.QPalette.ColorRole.Shadow,          bg)
-    app.setPalette(pal)
-
-    app.setStyleSheet(_FIREFLY_QSS)

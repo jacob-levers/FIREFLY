@@ -720,7 +720,6 @@ def save_palmtracer_csvs(out_dir, stem, locs, tracks, diff_df, imsd_df,
     """
     import csv as _csv
     import numpy as _np
-    import pandas as _pd
     import os as _os
 
     if mobile_D_threshold is None:

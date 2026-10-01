@@ -141,33 +141,6 @@ def sampled_max_projection(path, cap: int = DEFAULT_CAP):
     return sampled_projection(path, "max", cap)
 
 
-def sampled_frame(path, idx: int):
-    """Read a single raw frame ``idx`` (clamped) of a .tif/.czi recording as a
-    2D float32 ndarray — one page/plane read, so scrubbing stays responsive.
-    Returns None if unreadable."""
-    if not (path and os.path.isfile(path)):
-        return None
-    ext = os.path.splitext(path)[1].lower()
-    try:
-        if ext in (".tif", ".tiff"):
-            import tifffile
-            with tifffile.TiffFile(path) as t:
-                n = len(t.pages)
-                i = max(0, min(int(idx), n - 1))
-                return _squeeze2d(t.pages[i].asarray())
-        if ext == ".czi":
-            import numpy as np
-            from aicspylibczi import CziFile
-            czi = CziFile(path)
-            dims = czi.dims
-            n = int(czi.size[dims.index("T")]) if "T" in dims else 1
-            i = max(0, min(int(idx), n - 1))
-            return _squeeze2d(np.squeeze(czi.read_image(T=i, C=0)[0]))
-    except Exception:
-        return None
-    return None
-
-
 def detection_frame(path, idx, channel=0):
     """Read an exact raw plane for detection; never collapse unknown dimensions.
 

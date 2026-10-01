@@ -19,7 +19,7 @@ import numpy as np
 
 from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
 from . import workspace_data as _wd
-from .workspace_data import Metric, MOTION_CLASSES, MOTION_COLORS
+from .workspace_data import Metric, MOTION_COLORS
 
 # design mat / ink
 _MAT = "#0a0d12"

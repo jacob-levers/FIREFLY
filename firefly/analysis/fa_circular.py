@@ -10,10 +10,7 @@ from firefly.analysis.fa_io import atomic_to_csv
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-from scipy import stats as _stats
-from firefly.analysis.fa_theme import _theme_palette, _THEME_REQUIRED_KEYS
+from firefly.analysis.fa_theme import _theme_palette
 from firefly.analysis.fa_figure_common import (
     fmt_stat_value, style_table_cells, render_polar_histogram,
     rcparams_for_theme)
@@ -572,172 +569,6 @@ def _circ_watson_williams(samples_deg):
     }
 
 
-def _circ_mardia_watson_wheeler(samples_deg):
-    """Mardia-Watson-Wheeler (uniform-scores) non-parametric k-sample
-    test for equal CIRCULAR DISTRIBUTIONS across k≥2 groups (Mardia &
-    Jupp 2000 §7.6.1).  Unlike Watson-Williams it makes no assumption
-    about concentration, so it's the safe fallback when κ < 2 or when
-    you suspect groups differ in spread rather than only in mean
-    direction.
-
-    Returns None if fewer than 2 valid samples, else dict with:
-      W, df, p, n_per_group, n_total, k
-    """
-    rad = [np.radians(np.asarray(s, dtype=float).ravel())
-           for s in samples_deg]
-    rad = [r[np.isfinite(r)] for r in rad]
-    rad = [r for r in rad if r.size >= 1]
-    k = len(rad)
-    if k < 2:
-        return None
-    pooled = np.concatenate(rad)
-    N = int(pooled.size)
-    try:
-        from scipy.stats import rankdata, chi2
-    except Exception:
-        return None
-    ranks = rankdata(pooled, method="average")
-    # Convert ranks → uniform circular scores in [0, 2π).
-    beta = 2.0 * np.pi * ranks / N
-    # Sample-wise C/S sums, then W = 2 · Σ (C² + S²) / n_j.
-    W_stat = 0.0
-    cursor = 0
-    for r in rad:
-        n_j = int(r.size)
-        end = cursor + n_j
-        b = beta[cursor:end]
-        Cj = float(np.cos(b).sum())
-        Sj = float(np.sin(b).sum())
-        W_stat += (Cj * Cj + Sj * Sj) / n_j
-        cursor = end
-    W = 2.0 * W_stat
-    df = int(2 * (k - 1))
-    try:
-        # logsf for numerical stability — chi2.sf(3.4e3, 2) underflows
-        # to 0.0 in float64 but chi2.logsf returns the actual log p.
-        log_p = float(chi2.logsf(W, df))
-        p = 1e-300 if log_p < -700.0 else float(np.exp(log_p))
-    except Exception:
-        p = float("nan")
-    return {
-        "W": float(W), "df": df, "p": p,
-        "n_per_group": [int(r.size) for r in rad],
-        "n_total": N, "k": int(k),
-    }
-
-
-def _circ_wallraff_ktest(samples_deg):
-    """Wallraff k-sample test for equality of circular concentrations.
-
-    H₀ = all samples share the same concentration κ.  Implementation
-    follows Mardia & Jupp (2000) §7.5.5: convert each angle to its
-    deviation from its own sample's mean direction (mapped to [0, π]),
-    then run a rank-sum test on those deviations across groups.
-
-    For k = 2 we use the Mann-Whitney U test; for k > 2 we use the
-    Kruskal-Wallis H test.  Returns None if fewer than 2 valid samples.
-
-    Returned dict:
-      H or U   : test statistic (key name depends on k)
-      df       : degrees of freedom (Kruskal-Wallis only)
-      p        : p-value
-      n_per_group, n_total, k
-    """
-    rad = [np.radians(np.asarray(s, dtype=float).ravel())
-           for s in samples_deg]
-    rad = [r[np.isfinite(r)] for r in rad]
-    rad = [r for r in rad if r.size >= 2]
-    k = len(rad)
-    if k < 2:
-        return None
-    # Per-sample angular deviation from its OWN mean direction,
-    # mapped to [0, π] (the circular distance).
-    deviations = []
-    for r in rad:
-        mu = np.arctan2(np.sin(r).mean(), np.cos(r).mean())
-        d  = np.abs(r - mu)
-        d  = np.minimum(d, 2.0 * np.pi - d)
-        deviations.append(d)
-    n_per = [int(d.size) for d in deviations]
-    try:
-        if k == 2:
-            from scipy.stats import mannwhitneyu
-            stat, p = mannwhitneyu(deviations[0], deviations[1],
-                                   alternative="two-sided")
-            return {
-                "U": float(stat), "p": float(p), "k": 2,
-                "n_per_group": n_per, "n_total": int(sum(n_per)),
-            }
-        else:
-            from scipy.stats import kruskal
-            stat, p = kruskal(*deviations)
-            return {
-                "H": float(stat), "df": int(k - 1),
-                "p": float(p), "k": int(k),
-                "n_per_group": n_per, "n_total": int(sum(n_per)),
-            }
-    except Exception:
-        return None
-
-
-def _circ_kuiper_two_sample(a_deg, b_deg):
-    """Kuiper two-sample test for equality of circular distributions.
-
-    Non-parametric, distribution-free analogue of the Kolmogorov-Smirnov
-    test, adapted for circular data.  Sensitive to differences anywhere
-    in the distribution (not just shifts in mean), and unlike the KS
-    statistic the Kuiper statistic V = D⁺ + D⁻ is invariant to the
-    choice of origin on the circle — a property that matters because
-    "where you put 0°" is arbitrary for circular data.
-
-    Returns None if either sample is < 2 elements, else dict:
-      V       : Kuiper statistic
-      p       : asymptotic p-value (Stephens 1965 series approximation)
-      n1, n2  : sample sizes
-    """
-    a = np.sort(np.mod(np.radians(np.asarray(a_deg, dtype=float).ravel()),
-                       2.0 * np.pi))
-    b = np.sort(np.mod(np.radians(np.asarray(b_deg, dtype=float).ravel()),
-                       2.0 * np.pi))
-    a = a[np.isfinite(a)]; b = b[np.isfinite(b)]
-    n1, n2 = int(a.size), int(b.size)
-    if n1 < 2 or n2 < 2:
-        return None
-
-    # Empirical CDFs evaluated at every observation in the combined
-    # sample.  V = max(F1 - F2) + max(F2 - F1).
-    combined = np.sort(np.concatenate([a, b]))
-    F1 = np.searchsorted(a, combined, side="right") / n1
-    F2 = np.searchsorted(b, combined, side="right") / n2
-    D_plus  = float((F1 - F2).max())
-    D_minus = float((F2 - F1).max())
-    V = D_plus + D_minus
-
-    # Stephens (1965) asymptotic p-value: λ = (√n_eff + 0.155 + 0.24/√n_eff)·V.
-    n_eff = n1 * n2 / (n1 + n2)
-    lam = (np.sqrt(n_eff) + 0.155 + 0.24 / np.sqrt(n_eff)) * V
-    if lam <= 0:
-        p = 1.0
-    else:
-        # Convergent series in j; cap at j=100 (terms decay
-        # exponentially in j²).
-        s_terms = 0.0
-        l2 = lam * lam
-        for j in range(1, 101):
-            j2 = j * j
-            term = 2.0 * (4.0 * j2 * l2 - 1.0) * np.exp(-2.0 * j2 * l2)
-            s_terms += term
-            if abs(term) < 1e-18:
-                break
-        p = float(np.clip(s_terms, 0.0, 1.0))
-    if p > 0.0 and p <= 1e-300:
-        p = 1e-300
-    return {
-        "V": float(V), "p": float(p),
-        "n1": n1, "n2": n2,
-    }
-
-
 def _circ_lin_correlation(theta_deg, x):
     """Circular-linear correlation (Mardia 1976; Mardia & Jupp 2000
     §6.5.1).
@@ -891,23 +722,17 @@ def compute_circular_comparison_tests(groups, *, track_angle_d_pairs=None,
     Returns
     -------
     dict with keys:
-      omnibus_ww   : Watson-Williams F-test (equal mean directions)
-      omnibus_mww  : Mardia-Watson-Wheeler W-test (equal distributions)
-      omnibus_wallraff
-                   : Wallraff k-sample test (equal concentrations);
-                     directly addresses "is one group more tightly
-                     clustered than the other?".
-      pairwise     : list, one entry per (i, j) with i<j, each with
-                     keys label_a, label_b, ww, mww, wallraff, kuiper
-                     (Kuiper two-sample test for equal distributions).
-      circ_lin_per_group
-                   : list aligned with `groups`, dict per group with
-                     keys label and result (the _circ_lin_correlation
-                     dict, or None if not enough data).  Only populated
-                     when track_angle_d_pairs is provided.
+      per_replicate_kappa_test, per_replicate_rbar_test, per_replicate_mu_ww,
+      per_replicate_scalars
+                   : the per-replicate tests (each replicate = one data
+                     point); None when there are too few replicates.
+      omnibus_ww, omnibus_mww, omnibus_wallraff (always None),
+      pairwise, circ_lin_per_group (always [])
+                   : the pooled-angle tests, deliberately not computed —
+                     see the comment below.  The keys stay so the CSV and
+                     PDF writers' guards skip them.
     """
     labels = [g[0] for g in groups]
-    samples = [g[1] for g in groups]
     from firefly.analysis.fa_stats_config import (
         normalize_stats_config, correct_pvalues, stars_for)
     cfg = normalize_stats_config(stats_config)
@@ -1378,9 +1203,6 @@ def save_comparison_circular_statistics(groups_angles, *,
             # ~10^5 pooled localisations they are always ~0 and convey
             # nothing — R̄ and κ already quantify how concentrated each
             # group's turning-angle distribution is.
-            cols = ["group", "n", "mean_direction_deg",
-                    "mean_resultant_length", "circular_std_deg",
-                    "concentration_kappa"]
             col_labels = ["Group", "n (angles)", "μ (°)", "R̄",
                           "σ_circ (°)", "κ"]
             cell = []
@@ -1807,8 +1629,6 @@ def _write_single_group_page(pdf, angles_deg, stats, label, pal,
 
     # Compact "Top stats" box for the right side.
     ax_top = fig.add_axes([0.48, 0.61, 0.46, 0.25]); ax_top.axis("off")
-    R = stats.get("mean_resultant_length")
-    p = stats.get("rayleigh_p")
     lines = [
         f"Mean direction μ:        {_fmt(stats.get('mean_direction_deg'), 4)}°",
         f"Resultant length R̄:      {_fmt(stats.get('mean_resultant_length'), 4)}",
@@ -1940,32 +1760,6 @@ def _anova_3plus(arrs, mode="welch"):
     return (float(f_oneway(*arrs).pvalue),
             "One-way ANOVA (Welch undefined — equal/zero variance)")
 
-
-def _stat_test(a, b, stats_config=None):
-    """Two-sample test on per-experiment scalars.  Welch's t by default,
-    Mann-Whitney as fallback for non-normal data.  Returns (p, label).
-
-    `stats_config` (see fa_stats_config) controls alpha and the parametric
-    strategy; None reproduces the legacy auto/α=0.05 behaviour."""
-    from firefly.analysis.fa_stats_config import normalize_stats_config, stars_for
-    cfg = normalize_stats_config(stats_config)
-    a = np.asarray(a, dtype=float)
-    b = np.asarray(b, dtype=float)
-    a = a[np.isfinite(a)]
-    b = b[np.isfinite(b)]
-    if len(a) < 2 or len(b) < 2:
-        return (np.nan, "")
-    try:
-        from scipy.stats import ttest_ind
-        if _decide_parametric((a, b), cfg["parametric_strategy"], cfg["alpha"]):
-            p = ttest_ind(a, b, equal_var=False).pvalue
-        else:
-            p, _ = _two_group_nonparametric(a, b, cfg["nonparametric_test"])
-        if not np.isfinite(p):
-            return (np.nan, "")
-        return (float(p), stars_for(p, cfg["alpha"]))
-    except Exception:
-        return (np.nan, "")
 
 def _cohens_d_pooled(a, b):
     """Pooled-SD Cohen's d for two 1-D arrays.  None if either group has
@@ -2452,7 +2246,7 @@ def _stat_test_n(arrays, labels, stats_config=None):
 
     # Pairwise comparisons
     try:
-        from scipy.stats import ttest_ind, mannwhitneyu
+        from scipy.stats import ttest_ind
         for i in range(len(arrs)):
             for j in range(i + 1, len(arrs)):
                 a, b = arrs[i], arrs[j]

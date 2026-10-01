@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.76.51-rc.17 — 1 Oct 2026
+
+### Fixed
+
+- **The CUDA installer now says why it couldn't reach the PyTorch index.** A
+  failed index fetch was meant to be reported under "Last probe error", but the
+  message was dropped on the way, so the failure appeared with no reason given.
+
+### Changed
+
+- **About 3,000 lines of unused code removed.** The retired pre-QML viewer and
+  ROI editor, napari-era interface helpers, an unused GPU refinement path in the
+  PyTorch detector, an abandoned "CUDA declined" setting, interface properties no
+  screen used, and unused imports. Nothing you use changes; the code that runs
+  your analyses is now easier to follow and to check.
+
 ## v2.76.51-rc.16 — 1 Oct 2026
 
 ### Changed

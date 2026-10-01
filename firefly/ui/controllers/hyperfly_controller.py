@@ -123,9 +123,6 @@ class HyperflyController(QObject):
     def workerModel(self):
         return self._model
 
-    def worker_frame_image(self, slot):
-        return self._frames.get(int(slot))
-
     def _idle_slot(self):
         return {"file": None, "stem": "", "state": "idle", "pct": 0,
                 "stage": "", "locs": 0, "tracks": 0, "frame_token": 0, "error": "",

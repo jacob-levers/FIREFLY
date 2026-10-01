@@ -22,24 +22,15 @@ from __future__ import annotations
 import numpy as np
 
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, QPointF, QRectF, QLineF, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
 
 # Pure rendering/picking logic shared with the in-scene FireflyPaintedItem
 # (Phase 8) — no behaviour fork, one place to test.
 from firefly.ui._viewer_core import (
     _qcolor, _robust_levels, _gray_qimage, _lut_qimage, _order_classes,
-    build_class_model, tail_window, df_to_class_trajs, group_points_by_color,
-    head_xy_for_frame, pick_at as _pick_at_core)
-
-
-class _AdditivePixmapItem(QtWidgets.QGraphicsPixmapItem):
-    """A pixmap item that blends additively (Plus) over what's beneath it —
-    the bespoke equivalent of napari's "additive" image blending, used for the
-    super-resolution overlay so it glows over the raw frame."""
-    def paint(self, painter, option, widget=None):
-        painter.setCompositionMode(
-            QtGui.QPainter.CompositionMode.CompositionMode_Plus)
-        super().paint(painter, option, widget)
+    build_class_model, tail_window, df_to_class_trajs, head_xy_for_frame, pick_at as
+    _pick_at_core,
+)
 
 
 _SCATTER_CAP = 40_000          # max dots drawn per repaint (LOD; see _PointsItem)
@@ -744,18 +735,6 @@ class FireflyViewer(QtWidgets.QWidget):
         self._track_pick[cls] = (model["pick_xy"], model["pick_pid"])
         self._track_frames[cls] = model["pick_fr"]
 
-    def set_tracks(self, tracks_by_class: dict, colors: dict, *, width=1.5):
-        """Render per-class trajectories.  ``tracks_by_class``:
-        ``{class: [traj, ...]}`` with each ``traj`` an ``(N, 2)`` array of
-        ``(y, x)``; the trajectory index is used as the pick id."""
-        self.clear_tracks()
-        for cls, trajs in tracks_by_class.items():
-            self._add_track_item(
-                cls, [(i, tr, None) for i, tr in enumerate(trajs)],
-                colors.get(cls, colors.get("Unknown", "#888")),
-                self._width_spin.value())
-        self._update_time_axis()
-
     def set_tracks_from_df(self, df, motion_map: dict, colors: dict, *,
                            min_len: int = 1, width=1.5):
         """Build per-class trajectories from a tracks DataFrame
@@ -821,11 +800,6 @@ class FireflyViewer(QtWidgets.QWidget):
             self._head_item.set_points([], [])
             self._head_item.setVisible(False)
         self._update_time_axis()
-
-    def recolor_tracks(self, colors: dict, *, width=None):
-        w = self._width_spin.value() if width is None else width
-        for cls, item in self._track_items.items():
-            item.set_color(colors.get(cls, colors.get("Unknown", "#888")), w)
 
     # ─────────────────────────────────────────────────────────────────────
     # Points (DBSCAN clusters)

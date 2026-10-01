@@ -160,10 +160,6 @@ class UpdatesController(QObject):
         return self._body
 
     @Property(str, notify=changed)
-    def releaseUrl(self):
-        return self._url
-
-    @Property(str, notify=changed)
     def lastChecked(self):
         return self._last_checked
 
@@ -179,10 +175,6 @@ class UpdatesController(QObject):
     @Property(str, notify=changed)
     def prereleaseTag(self):
         return self._pre_tag
-
-    @Property(str, notify=changed)
-    def prereleaseUrl(self):
-        return self._pre_url
 
     # ── background pre-fetch: a verified installer is staged & ready ───────
     @Property(bool, notify=downloadedChanged)
@@ -518,10 +510,6 @@ class UpdatesController(QObject):
                 self._inst_state = "error"
 
         self._track_worker(threading.Thread(target=_work, daemon=True))
-
-    @Slot()
-    def cancelInstall(self):
-        self._inst_cancel = True
 
     def _drain_install(self):
         # The worker thread mutates progress/status without signalling, so this

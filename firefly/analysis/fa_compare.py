@@ -11,9 +11,9 @@ import copy
 import hashlib
 import threading
 from dataclasses import dataclass, field
-from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
-                                           motion_class_colors, label_text_color,
-                                           DEFAULT_FRAME_INTERVAL_S)
+from firefly.analysis.fa_constants import (
+    MOTION_CLASS_ORDER, motion_class_colors, label_text_color, DEFAULT_FRAME_INTERVAL_S,
+)
 from firefly.analysis.fa_theme import _theme_palette, style_axes
 from firefly.analysis.fa_palmtracer import load_summary_from_folder, _win_long_path
 
@@ -21,17 +21,12 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-from scipy import stats as _stats
 from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_THRESHOLD_DEFAULT,
                           _motion_fractions, _track_lengths,
                           compute_van_hove, compute_vacf)
-from firefly.analysis.fa_circular import (save_comparison_circular_statistics,
-                         _stat_test, _stat_test_n, _hedges_g_ci,
-                         _paired_test, _paired_hedges_g,
-                         _p_stars, compute_per_track_mean_angle,
-                         compute_circular_comparison_tests)
+from firefly.analysis.fa_circular import (
+    save_comparison_circular_statistics, _stat_test_n, _paired_test, _paired_hedges_g,
+)
 
 
 from firefly.analysis import fa_twoway
@@ -156,8 +151,6 @@ class CompareInputError(Exception):
     """A user-input problem with a comparison (no valid folders, <2 groups,
     inaccessible paths).  The worker turns this into a friendly popup instead of
     a crash report — it is an expected condition, not a bug."""
-
-
 
 
 def _replicate_colors(k):
@@ -950,83 +943,6 @@ LOGD_STYLE_DESCRIPTIONS = {
 }
 
 
-def _example_logd_data(rng=None):
-    """Small illustrative synthetic LogD data for the Preferences preview:
-    two 'drugs' A/B × PRE/POST, where drug B immobilises (shifts left) at POST.
-    Returns (per_card, facets) matching the render helpers' shapes."""
-    rng = rng or np.random.default_rng(7)
-    cols = {("A", "PRE"): "#4c8edb", ("A", "POST"): "#e0922f",
-            ("B", "PRE"): "#3fa45b", ("B", "POST"): "#d8534f"}
-
-    def _pool(centers, weights, n=900, sd=0.32):
-        c = np.array(centers)
-        comp = rng.choice(len(centers), size=n, p=weights)
-        return np.clip(rng.normal(c[comp], sd), -5.0, 1.0)
-
-    def _meds(center, n=6, sd=0.13):
-        return list(np.clip(rng.normal(center, sd, n), -5.0, 1.0))
-
-    specs = {
-        ("A", "PRE"):  ([-1.0], [1.0], -1.0),
-        ("A", "POST"): ([-1.05], [1.0], -1.05),
-        ("B", "PRE"):  ([-1.0], [1.0], -1.0),
-        ("B", "POST"): ([-2.2, -1.0], [0.65, 0.35], -1.9),   # immobilised shift
-    }
-    per_card, facets_map = [], {"A": [], "B": []}
-    for (drug, tp), (centers, weights, mc) in specs.items():
-        pooled = _pool(centers, weights)
-        meds = _meds(mc)
-        col = cols[(drug, tp)]
-        per_card.append((f"{drug} / {tp}", col, pooled, meds))
-        facets_map[drug].append((col, pooled, meds, tp, tp == "POST"))
-    grp_col = {"A": "#4c8edb", "B": "#3fa45b"}
-    facets = [(d, grp_col[d], facets_map[d]) for d in ("A", "B")]
-    return per_card, facets
-
-
-def render_logd_preview(fig, style, theme="Dark"):
-    """Render a small illustrative example of a LogD-distribution `style` into
-    `fig` (used by the Preferences preview).  UI-free; safe to call repeatedly."""
-    import matplotlib.pyplot as _plt
-    if style not in ("faceted", "ridgeline", "overlaid", "violin"):
-        style = "overlaid"
-    pal = _theme_palette(theme)
-    fig.clear()
-    fig.set_facecolor(pal["BG"])
-    per_card, facets = _example_logd_data()
-    thr = float(np.log10(0.05))
-    thr_lbl = "D = 0.05 µm²/s"
-    mut = pal.get("MUT", "#9aa4b2")
-    with _plt.rc_context({
-            "font.size": 6.5, "axes.titlesize": 8, "axes.labelsize": 7,
-            "xtick.labelsize": 6, "ytick.labelsize": 6,
-            "axes.facecolor": pal["PNL"], "figure.facecolor": pal["BG"],
-            "text.color": pal["TXT"], "axes.labelcolor": pal["TXT"],
-            "axes.edgecolor": pal["GRD"], "xtick.color": mut,
-            "ytick.color": mut, "axes.titlecolor": pal["TXT"]}):
-        if style == "ridgeline":
-            _render_logd_ridgeline(fig.add_subplot(111), per_card, thr, pal, 0.05)
-        elif style == "violin":
-            _render_logd_violin(fig.add_subplot(111), per_card, thr, pal, 0.05)
-        elif style == "faceted":
-            _render_logd_facets(fig, fig.add_gridspec(1, 1)[0], facets, thr, pal,
-                                "LogD distribution", threshold_label=thr_lbl)
-        else:
-            _render_logd_overlaid(fig.add_subplot(111), per_card, thr, pal,
-                                  MOBILE_D_THRESHOLD_DEFAULT)
-        # Tidy small previews: drop axes legends for the non-faceted styles
-        # (the faceted strip legend is part of its layout).
-        if style != "faceted":
-            for _ax in fig.axes:
-                _lg = _ax.get_legend()
-                if _lg is not None:
-                    _lg.remove()
-    try:
-        fig.tight_layout(pad=0.4)
-    except Exception:
-        pass
-
-
 def _spot_intensity(summary):
     """Per-replicate fluorescence intensity (a.u.): the median over tracks of each
     track's MEAN spot intensity (Σ its localisation intensities ÷ its number of
@@ -1052,12 +968,6 @@ def _track_durations(tracks, frame_interval):
     span = tracks.groupby("particle")["frame"].agg(["min", "max"])
     return ((span["max"].to_numpy(dtype=float) - span["min"].to_numpy(dtype=float))
             * float(frame_interval))
-
-
-def _track_duration_median(tracks, frame_interval):
-    """Per-replicate median elapsed track duration in seconds."""
-    durations = _track_durations(tracks, frame_interval)
-    return float(np.median(durations)) if durations.size else float("nan")
 
 
 def _track_observed_times(tracks, frame_interval):
@@ -1144,14 +1054,6 @@ def _comparison_metric_contracts(all_summaries):
         )
     legacy_only = bool(contracts) and all(c["schema"] < 2 for c in contracts)
     return warnings, labels, legacy_only
-
-
-def _col_mean_from(d, col):
-    if d is None or col not in getattr(d, "columns", []):
-        return float("nan")
-    values = pd.to_numeric(d[col], errors="coerce").to_numpy(dtype=float)
-    values = values[np.isfinite(values)]
-    return float(np.mean(values)) if values.size else float("nan")
 
 
 def _col_median_from(d, col, *, positive=False):
@@ -1246,9 +1148,6 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
     # warning entirely, and stale stems would linger for the whole session (R4-3).
     _FI_DEFAULT_WARNED.clear()
     cfg = normalize_stats_config(stats_config)
-    # Bar-panel annotation handles, so the optional across-metric correction
-    # post-pass can update the on-figure stars to agree with the CSV.
-    panel_annots = {}
 
     if len(groups) < 2:
         raise CompareInputError(
@@ -1474,8 +1373,6 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
     many_groups = n_groups > 4
     bar_xticks = [str(i + 1) for i in range(n_groups)] if many_groups else labels
 
-    # Per-metric statistics dict — populated as panels render
-    stats_records = {}
 
     # Two-way mixed ANOVA computed UP FRONT (paired: between=group,
     # within=timepoint, subject=cell) so the interaction panels can show the
@@ -1567,13 +1464,10 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     group_factor = rd.group_factor
     timepoints_per_card = rd.timepoints_per_card
     timepoint_tokens = rd.timepoint_tokens
-    distinct_tp = rd.distinct_tp
     two_factor = rd.two_factor
     labels = rd.labels
     colors = rd.colors
-    folder_lists = rd.folder_lists
     all_summaries = rd.all_summaries
-    skipped = rd.skipped
     summary_df = rd.summary_df
     group_order = rd.group_order
     tp_order = rd.tp_order

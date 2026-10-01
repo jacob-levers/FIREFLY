@@ -44,10 +44,6 @@ class SidebarController(QObject):
     def sections(self):
         return list(S.SECTIONS)
 
-    @Property(bool, constant=True)
-    def hyperflyEligible(self):
-        return S.hyperfly_machine_eligible()
-
     @Slot(str, result="QVariantList")
     def fields(self, section_key):
         """Static field specs for a section (value/enabled fetched separately).
@@ -265,15 +261,6 @@ class SidebarController(QObject):
         return True
 
     # ── reset ────────────────────────────────────────────────────────────
-    @Slot(str)
-    def resetSection(self, section_key):
-        for f in S.FIELDS:
-            if f["section"] == section_key:
-                self._s.set(f["key"], f["default"])
-                if f.get("key2"):
-                    self._s.set(f["key2"], f["default2"])
-        self._bump("")
-
     @Slot()
     def resetAll(self):
         for f in S.FIELDS:

@@ -18,24 +18,14 @@ except Exception:
     def _threadpool_limits(limits=None, user_api=None):
         yield
 
-import contextlib
-import io
 import multiprocessing
 import os
-import sys
 import time
-import warnings
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import trackpy as tp
-from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm,
-                                           safe_process_workers, _cpu_core_budget)
-from firefly.analysis.fa_linking import _link_via_trackpy
-from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
-                       _resolve_temp_stack_dir, _user_ram_reserve_gb)
-from firefly.analysis.fa_preprocess import (preprocess_stack, _preprocess_fast,
-                           _preprocess_rolling)
+from firefly.analysis.fa_constants import N_CPUS, _tqdm, safe_process_workers, _cpu_core_budget
 
 # Silence trackpy's per-frame INFO chatter at module import so it's quiet in
 # BOTH the main process and any spawned sweep-worker processes (which import
@@ -736,114 +726,6 @@ class TorchBackend(LocaliserBackend):
         x = F.conv2d(x, kh, padding=(0, radius))
         x = F.conv2d(x, kv, padding=(radius, 0))
         return x
-
-    @staticmethod
-    def _build_gaussian_design_matrix(dy_grid, dx_grid):
-        """Precompute the (k², 4) design matrix and its pseudo-inverse for the
-        log-Gaussian linear least-squares fit.
-
-        Model:   log(I) = a + b·x + c·y + p·(x² + y²)
-                 where  p = -1/(2σ²),  b = -2·x₀·p,  c = -2·y₀·p
-                 ⇒    x₀ = -b/(2p),   y₀ = -c/(2p)
-
-        M is identical for every spot (only depends on the patch geometry),
-        so we precompute its pseudo-inverse once and reuse it as a batched
-        matrix-multiply per chunk.  Cost: a single (N, k²) @ (k², 4) gemm.
-        """
-        import torch
-        x_flat = dx_grid.reshape(-1)
-        y_flat = dy_grid.reshape(-1)
-        ones   = torch.ones_like(x_flat)
-        M = torch.stack([ones, x_flat, y_flat, x_flat**2 + y_flat**2], dim=1)
-        # Pseudoinverse: M_pinv = (MᵀM)⁻¹Mᵀ  — shape (4, k²)
-        M_pinv = torch.linalg.pinv(M)
-        return M, M_pinv
-
-    @staticmethod
-    def _gaussian_lstsq_refine(patches, dy_grid, dx_grid, M):
-        """Batched analytical 2D-Gaussian fit on patches via the *normal
-        equations* of a weighted log-linearisation.
-
-        Why normal equations and not `torch.linalg.lstsq`?
-        --------------------------------------------------
-        `torch.linalg.lstsq` is NOT implemented on the MPS device in current
-        PyTorch builds (it raises NotImplementedError for `aten::linalg_lstsq.out`).
-        `torch.linalg.solve` is — and for full-rank weighted least-squares,
-        solving the 4×4 normal equations `(MᵀWᵀWM) b = MᵀWᵀW y` gives the
-        identical answer.  The reformulation buys us cross-device support
-        (CPU, CUDA, MPS) at the cost of a slightly higher condition number,
-        which is irrelevant for the well-posed 4-parameter Gaussian fit.
-
-        Why weighted?
-        -------------
-        Unweighted log-space LSQ gives every pixel — including dim, noisy
-        edge pixels — equal influence on the centroid.  This inflates per-
-        spot variance, which manifests as a depressed MSD α (because
-        MSD = MSD_true + 4σ²_loc; higher σ_loc flattens the apparent log-log
-        slope at short lags).  Weighting each pixel by √I (Poisson-likelihood
-        weighting in log-space) means bright spot-centre pixels dominate the
-        fit, restoring centroid-of-mass-like noise behaviour while preserving
-        the unbiased mean-position accuracy of the Gaussian fit.
-
-        Math
-        ----
-        Model:    log(I) = a + b·x + c·y + p·(x² + y²)            (linear in params)
-        Weights:  w² = I       ⇒  weighted residual = √I · (a + b·x + c·y + p·(x²+y²) − log(I))
-        Normal eq: A b = v,   A = MᵀWᵀWM = Σᵢ Iᵢ·MᵢMᵢᵀ,   v = MᵀWᵀWy = Σᵢ Iᵢ·log(Iᵢ)·Mᵢ
-        Recover:  x₀ = −b/(2p),   y₀ = −c/(2p),   σ² = −1/(2p)
-
-        Inputs
-        ------
-        patches : (N, k, k) float tensor — non-negative pixel intensities
-        dy_grid : (k, k)    float tensor — y offsets relative to patch centre
-        dx_grid : (k, k)    float tensor — x offsets relative to patch centre
-        M       : (k², 4)   float tensor — design matrix [1, x, y, x²+y²]
-
-        Returns (dy_sub, dx_sub, ok) where:
-          dy_sub, dx_sub : (N,) sub-pixel offsets relative to the patch centre
-          ok             : (N,) bool mask — True for spots whose fit is valid
-        """
-        import torch
-        N, k, _ = patches.shape
-        eps = 1e-6
-        I_flat = patches.clamp(min=eps).reshape(N, k * k)          # (N, k²)
-        Y_log  = torch.log(I_flat)                                  # (N, k²)
-
-        # Normal equations: per-spot A is (4, 4); per-spot v is (4,)
-        # A[n, j, k] = Σᵢ I[n, i] · M[i, j] · M[i, k]
-        # v[n, j]    = Σᵢ I[n, i] · log(I[n, i]) · M[i, j]
-        A = torch.einsum('ni,ij,ik->njk', I_flat, M, M)             # (N, 4, 4)
-        v = torch.einsum('ni,ij->nj', I_flat * Y_log, M)            # (N, 4)
-
-        # Tikhonov-style ridge for numerical conditioning on near-flat patches.
-        # 1e-6 * trace(A) per spot is small enough not to bias real spots but
-        # keeps degenerate ones from blowing up the solver.
-        ridge = 1e-6 * torch.diagonal(A, dim1=1, dim2=2).mean(dim=1)
-        eye   = torch.eye(4, device=A.device, dtype=A.dtype)
-        A = A + ridge.view(-1, 1, 1) * eye.unsqueeze(0)
-
-        # Solve N independent 4×4 systems.  `torch.linalg.solve` is supported
-        # on CPU / CUDA / MPS — unlike `lstsq` which lacks MPS coverage.
-        try:
-            sol = torch.linalg.solve(A, v.unsqueeze(-1)).squeeze(-1)   # (N, 4)
-        except (NotImplementedError, RuntimeError) as exc:
-            # Final belt-and-braces fallback: shuttle to CPU.  Should never
-            # trigger in normal operation, but it means a single missing
-            # kernel won't kill the run.
-            print(f"  [TorchBackend] linalg.solve fallback to CPU: {exc}")
-            sol = torch.linalg.solve(A.cpu(),
-                                     v.unsqueeze(-1).cpu()).squeeze(-1).to(A.device)
-
-        a, b, c, p = sol.unbind(dim=1)
-        # Guard against degenerate fits: p must be negative (peak, not pit)
-        safe_p = torch.where(p < -1e-8, p, torch.full_like(p, -1e-8))
-        dx_sub = -b / (2.0 * safe_p)
-        dy_sub = -c / (2.0 * safe_p)
-        # Reject fits whose centroid lies well outside the patch — clamping to
-        # ≤ 1.5 px keeps spurious "edge wins" from leaking through.  A real
-        # spot's Gaussian fit lands within ±0.5 px of the integer maximum.
-        ok = (p < -1e-8) & (dx_sub.abs() <= 1.5) & (dy_sub.abs() <= 1.5)
-        return dy_sub, dx_sub, ok
 
     # ── Trackpy-compatibility constants ───────────────────────────────────
     # These knobs are calibrated to make the Torch backend reproduce
@@ -1570,7 +1452,6 @@ class TorchBackend(LocaliserBackend):
             # arrays are cheap reads from the existing CPU buffers.
             if preview_cb is not None and len(chunk_np) > 0:
                 try:
-                    import numpy as _np
                     t_np      = loc["frame"] - chunk_start
                     x_sub_np  = loc["x"]
                     y_sub_np  = loc["y"]

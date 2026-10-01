@@ -326,47 +326,6 @@ def installed_torch_version() -> Optional[str]:
     return None
 
 
-# ── User-declined flag ────────────────────────────────────────────────────────
-def settings_path() -> str:
-    return os.path.join(sidecar_dir(), "state.json")
-
-
-def _read_state() -> dict:
-    try:
-        with open(settings_path(), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {}
-
-
-def _write_state(state: dict) -> None:
-    try:
-        os.makedirs(os.path.dirname(settings_path()), exist_ok=True)
-        with open(settings_path(), "w", encoding="utf-8") as fh:
-            json.dump(state, fh)
-    except Exception:
-        pass
-
-
-def user_declined() -> bool:
-    return bool(_read_state().get("declined", False))
-
-
-def mark_declined() -> None:
-    state = _read_state()
-    state["declined"] = True
-    _write_state(state)
-
-
-def clear_declined() -> None:
-    state = _read_state()
-    state.pop("declined", None)
-    _write_state(state)
-
-
 # ── Torch version / URL building ──────────────────────────────────────────────
 def bundled_torch_version() -> Optional[str]:
     """Return the base version of the currently-imported torch (e.g. '2.5.1'),
@@ -476,6 +435,7 @@ def _http_get_text(url: str, timeout: float = 10.0) -> Optional[str]:
     holder = {"text": None, "done": False}
 
     def _do():
+        global _last_probe_error         # the outer `global` doesn't reach in here
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": "FIREFLY-CUDA-installer/1.0"})

@@ -5,9 +5,8 @@ Extracted from sptpalm_analysis.py (#7); re-exported there for compatibility.
 """
 from __future__ import annotations
 
-import multiprocessing
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit

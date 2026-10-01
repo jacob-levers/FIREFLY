@@ -159,11 +159,6 @@ _LINKER_REGISTRY = {
 }
 
 
-def list_linkers() -> list[str]:
-    """Canonical linker tokens, excluding aliases (UI / bench enumeration)."""
-    return [m.value for m in Linker]
-
-
 def _resolve_linker(name) -> LinkerBackend:
     """Return the adapter for ``name``.  The unknown-token fallback lives in
     :meth:`Linker.parse` (it maps any unknown value to ``trackpy`` with a logged

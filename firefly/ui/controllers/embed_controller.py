@@ -102,10 +102,6 @@ class EmbedController(QObject):
         except Exception:
             pass
 
-    @Property("QRectF", notify=anchorChanged)
-    def anchorRect(self):
-        return self._anchor
-
     # ── single-island management ─────────────────────────────────────────
     @Property(str, notify=activeIslandChanged)
     def activeIsland(self):

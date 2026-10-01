@@ -54,20 +54,6 @@ def _fmt_p(p):
     return f"{p:.2e}" if p < 1e-3 else f"{p:.3f}"
 
 
-def _fmt_num(v, fmt="{:.4g}"):
-    if v is None:
-        return "—"
-    if _isfinite(v):
-        return fmt.format(float(v))
-    return str(v)
-
-
-def _pretty_metric(key):
-    if key.startswith("motion_frac_"):
-        return f"{key[len('motion_frac_'):]} fraction"
-    return key.replace("_", " ")
-
-
 def _mag_bucket(x, thresholds):
     a = abs(x)
     names = ["negligible", "small", "medium", "large"]
@@ -147,14 +133,3 @@ def _verdict_for_metric(disp, rec, n_groups):
             f"({test}, p = {_fmt_p(p)}){es_txt}. See details for the pairwise "
             f"comparisons.", False)
 
-
-def ordered_metrics(stats):
-    """[(key, display)] — the 8 known metrics present (fixed order), then any
-    extra ``stats`` keys with pretty names appended."""
-    stats = stats or {}
-    out = [(k, d) for k, d in METRIC_DISPLAY if k in stats]
-    seen = {k for k, _ in METRIC_DISPLAY}
-    for k in stats:
-        if k not in seen:
-            out.append((k, _pretty_metric(k)))
-    return out

@@ -687,8 +687,6 @@ class AnalysisWorkspaceController(QObject):
         has_metric = self._has_metric()
 
         if has_metric and n_cond >= 2 and not self._contract_issue:
-            all_vals = np.concatenate([g["values"] for g in groups if len(g["values"])]) \
-                if any(len(g["values"]) for g in groups) else np.array([])
             means = [float(np.mean(g["values"])) if len(g["values"]) else float("nan")
                      for g in groups]
             ntot = int(sum(g_run_n(g) for g in groups))
@@ -1325,10 +1323,6 @@ class AnalysisWorkspaceController(QObject):
     @Property(str, notify=reportChanged)
     def reportStatus(self):
         return self._report_status
-
-    @Property(str, notify=reportChanged)
-    def lastReportDir(self):
-        return self._last_report_dir
 
     @Property(str, notify=cfgChanged)
     def outputDir(self):
@@ -2052,7 +2046,6 @@ class AnalysisWorkspaceController(QObject):
 
     @Property(str, notify=resultsChanged)
     def figureTitle(self):
-        m = self._metric_obj()
         return ("Paired comparison — across timepoints" if self._paired
                 else "Live comparison figure")
 
@@ -2065,7 +2058,6 @@ class AnalysisWorkspaceController(QObject):
         label = wd.PANEL_LABEL.get(self._metric, self._metric)
         if not self._has_metric():
             return f"{label} · exact export panel"
-        m = self._metric_obj()
         if self._paired:
             return f"paired · {label}"
         return f"{label} · exact export panel · {self._cfg['err']}"
@@ -2562,12 +2554,6 @@ class AnalysisWorkspaceController(QObject):
         self.cfgChanged.emit()
         self._recompute()
         self.toast.emit("Recommended settings applied")
-
-    @Property(str, notify=resultsChanged)
-    def recommendWhy(self):
-        shown = self._shown()
-        multi = any(len(c.active()) > 2 for c in shown)
-        return wd.recommend_config(max(2, len(self._cg)), self._paired, multi)["why"]
 
     @Slot()
     def savePreset(self):

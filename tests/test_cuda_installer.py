@@ -165,3 +165,15 @@ def test_cuda_tags_are_newest_first():
     nums = [int(t[2:]) for t in tags]
     assert nums == sorted(nums, reverse=True)
     assert tags[0] == "cu130"
+
+
+def test_a_failed_index_fetch_records_why(monkeypatch):
+    """The fetch runs in a nested worker function, where assigning the module's
+    _last_probe_error made a throwaway local instead — the `global` sat in the
+    outer function — so 'Last probe error' never explained an index failure."""
+    def refuse(*_a, **_k):
+        raise ConnectionRefusedError("index host refused the connection")
+    monkeypatch.setattr(cu.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(cu, "_last_probe_error", None)
+    assert cu._http_get_text("https://download.pytorch.org/whl/cu124/torch/", timeout=1) is None
+    assert cu._last_probe_error == "ConnectionRefusedError: index host refused the connection"

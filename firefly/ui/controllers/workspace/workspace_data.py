@@ -177,11 +177,6 @@ class RunData:
                 return "warn"
         return "ok"
 
-    @property
-    def qc_messages(self) -> list[str]:
-        flags = (self.summary.get("qc") or {}).get("flags") or []
-        return [f.get("msg", "") for f in flags if isinstance(f, dict)]
-
     # -- lazy CSV access ---------------------------------------------------
     def _read_csv(self, suffix: str) -> Optional[pd.DataFrame]:
         key = ("csv", suffix)

@@ -10,8 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from firefly.analysis.fa_constants import N_CPUS, _tqdm
 
 import numpy as np
-from scipy.ndimage import uniform_filter, gaussian_filter, gaussian_filter1d
-from skimage import filters, exposure
+from scipy.ndimage import uniform_filter
+from skimage import filters
 
 
 def filter_raw_contrast(locs, stack, diameter=7, min_cnr=0.0, stop_event=None):
@@ -24,7 +24,6 @@ def filter_raw_contrast(locs, stack, diameter=7, min_cnr=0.0, stop_event=None):
     undefined/zero-noise measurements fail an enabled gate. Off preserves rows.
     """
     import numpy as np
-    from firefly.analysis.fa_constants import _Cancelled
     if not np.isfinite(min_cnr) or min_cnr < 0:
         raise ValueError("min_cnr must be finite and nonnegative")
     if min_cnr == 0:

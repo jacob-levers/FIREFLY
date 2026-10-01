@@ -299,10 +299,6 @@ class ImportController(QObject):
     # ── preview colormap ──────────────────────────────────────────────────
     # The colour is chosen in the ROI editor and shared via 'ui/preview_cmap';
     # the Import thumbnail just reflects it.
-    @Property(str, notify=previewCmapChanged)
-    def previewCmap(self):
-        return self._preview_cmap
-
     @Slot()
     def refreshPreviewColour(self):
         """Re-render the cached projection after the ROI editor changed the
@@ -386,16 +382,6 @@ class ImportController(QObject):
             self.pixelSize = float(self._meta_px or DEFAULT_PIXEL_SIZE_UM)
         if fi and not self.overrideFi:
             self.frameInterval = float(self._meta_fi or DEFAULT_FRAME_INTERVAL_S)
-
-    # Detected-from-file values (None when the file carries no metadata), so the
-    # UI can label the fields "from file" vs "default/manual" if it wants to.
-    @Property(float, notify=probeChanged)
-    def metaPixelSize(self):
-        return float(self._meta_px) if self._meta_px else 0.0
-
-    @Property(float, notify=probeChanged)
-    def metaFrameInterval(self):
-        return float(self._meta_fi) if self._meta_fi else 0.0
 
     # ── multi-file series (single analysis auto-combines siblings) ────────
     def _probe_series(self, path, is_csv):

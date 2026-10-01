@@ -8,7 +8,7 @@ import time
 import numpy as np
 import pandas as pd
 import trackpy as tp
-from firefly.analysis.fa_constants import _Cancelled, _tqdm
+from firefly.analysis.fa_constants import _Cancelled
 from firefly.analysis.fa_enums import DEFAULT_LINKER
 
 

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.cluster import DBSCAN
 
 
 def suggest_eps_nm(xy_um, min_samples=8, max_locs=50_000):

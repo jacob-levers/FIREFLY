@@ -16,9 +16,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
-from firefly.analysis.fa_theme import (_theme_palette, _THEME_REQUIRED_KEYS,
-                                       style_axes)
-from firefly.analysis.fa_diffusion import classify_motion, msd_linear
+from firefly.analysis.fa_theme import style_axes
+from firefly.analysis.fa_diffusion import msd_linear
 from firefly.analysis.fa_constants import (MOTION_CLASS_COLORS, MOTION_CLASS_ORDER,
                                            motion_class_colors)
 

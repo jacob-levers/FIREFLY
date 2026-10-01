@@ -20,7 +20,6 @@ The analysis core is untouched; this only relays its existing queue protocol.
 from __future__ import annotations
 
 import multiprocessing
-import os
 import queue
 import sys
 import time
@@ -176,10 +175,6 @@ class AnalysisController(QObject):
     @Property(str, notify=progressChanged)
     def progressText(self):
         return self._progress_text
-
-    @Property(str, notify=progressChanged)
-    def stageLabel(self):
-        return self._stage_label
 
     @Property(str, notify=elapsedChanged)
     def elapsed(self):

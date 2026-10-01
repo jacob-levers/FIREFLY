@@ -36,7 +36,7 @@ import traceback
 # block since it pulls in no torch.  MsgKind is the one source of truth for the
 # worker→GUI message-queue kinds emitted throughout this module.
 from firefly.analysis.fa_enums import MsgKind, GapPolicy
-from firefly.analysis.fa_io import atomic_to_csv, atomic_write   # stdlib-only
+from firefly.analysis.fa_io import atomic_to_csv   # stdlib-only
 from firefly.analysis.fa_constants import (
     DEFAULT_PIXEL_SIZE_UM, DEFAULT_FRAME_INTERVAL_S, MOBILE_D_THRESHOLD_DEFAULT)
 
@@ -558,7 +558,6 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
     """
     import datetime as _dt
     import hashlib
-    import json
     import platform
     import socket
     import subprocess
@@ -2367,7 +2366,6 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             _log(f"  Input CSV already has TRACK_ID — using upstream "
                  f"linker's tracks directly.")
             _prog(50, "Using pre-linked tracks from CSV…")
-            import pandas as _pd
             # Densify particle IDs to 0..N-1 so downstream code that
             # assumes integer-indexable particles (some clustering /
             # MSD paths) doesn't choke on TrackMate's wide ID space.
@@ -4053,7 +4051,7 @@ def run_comparison(comparison_params: dict, msg_queue, cancel_event):
         pdf_report = bool(p.get("pdf_report", True))
         mob_d     = float(p.get("mobile_d_threshold", MOBILE_D_THRESHOLD_DEFAULT))
         from firefly.analysis.fa_stats_config import (
-            normalize_stats_config, describe_test_label, correction_display)
+            normalize_stats_config, describe_test_label)
         stats_config = normalize_stats_config(p.get("stats_config"))
         _log(f"  Statistics : {describe_test_label('test=' + stats_config['parametric_strategy'], stats_config['correction'], stats_config['across_metric_correction'])}; "
              f"alpha={stats_config['alpha']:g}; 3+ groups={stats_config['anova3plus']}")

@@ -16,20 +16,16 @@ except Exception:
 
 import contextlib
 import io
-import multiprocessing
 import os
-import sys
 import time
-import warnings
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import numpy as np
 import pandas as pd
 import trackpy as tp
 from firefly.analysis.fa_constants import (N_CPUS, _Cancelled, _tqdm,
                                            safe_process_workers, _cpu_core_budget)
 from firefly.analysis.fa_linking import _link_via_trackpy
-from firefly.analysis.fa_memory import (_alloc_or_memmap_stack, _register_temp_stack_path,
-                       _resolve_temp_stack_dir, _user_ram_reserve_gb)
+from firefly.analysis.fa_memory import _user_ram_reserve_gb
 from firefly.analysis.fa_preprocess import (preprocess_stack, _preprocess_fast,
                            _preprocess_rolling)
 
@@ -46,9 +42,7 @@ except Exception:
 # Re-imported here so `from firefly.analysis.fa_localize import TorchBackend` and the
 # sptpalm_analysis re-exports keep resolving unchanged.
 from firefly.analysis.fa_localize_backends import (  # noqa: F401
-    _localise_chunk, _localise_chunk_mp, _localise_chunk_mmap_mp,
-    _torch_localise_block_mp, LocaliserBackend, _emit_trackpy_chunk_preview,
-    TrackpyBackend, TorchBackend,
+    LocaliserBackend, TrackpyBackend, TorchBackend,
     GaussianMleBackend, RadialSymmetryBackend, PalmTracerWaveletBackend,
 )
 
@@ -679,8 +673,6 @@ def preprocess_and_localise_stream(stack, diameter=7, minmass=None, percentile=6
     # preview.  Old callers that unpack the 3-tuple need updating —
     # firefly_worker is the only one.
     return result, mean_proj, max_proj, blink_proj, minmass
-
-
 
 
 _BACKEND_REGISTRY: list[type[LocaliserBackend]] = [
@@ -1592,75 +1584,6 @@ def _static_minmass(masses, sensitivity, diag, log_fn):
             diag["knee_floor_applied"] = True
             diag["static_method"] = (diag.get("static_method") or "") + "+knee_floor"
     return mm
-
-
-def _audit_mass_scale(stack, windows, H, diameter, percentile,
-                      bg_radius, bg_method, workers, backend, log_cb=None,
-                      pp0=None):
-    """Self-audit the trackpy↔Torch mass calibration.
-
-    LEGACY / no longer wired into `estimate_minmass`: the auto-threshold harvest
-    now runs through the run's OWN backend (see `_harvest_windows`), so the
-    chosen minmass is already in that backend's native mass units and there is
-    no trackpy→Torch `_TP_MASS_SCALE` transfer left to audit.  Retained (and
-    still unit-tested) for its defensive no-op behaviour and in case a
-    cross-backend transfer is ever reintroduced.
-
-    Re-localises a few frames of the first window with the Torch backend and
-    reports the empirical Torch/Trackpy bright-tail mass ratio (target ≈ 1.0).
-    Best-effort: returns the ratio (float) or None, and never raises except on
-    cancellation.  No-op on the trackpy backend.
-    """
-    _log = log_cb or print
-    try:
-        impl = _resolve_backend(backend)
-        if getattr(impl, "name", "") != "torch" or not len(H) or not windows:
-            return None
-        s0, e0 = windows[0]
-        e0 = min(e0, s0 + 32)                 # a handful of frames → robust median
-        cap = e0 - s0
-        # Reuse window 0's preprocessed frames from the harvest when available —
-        # preprocessing is per-frame independent, so pp0[:cap] is bit-identical
-        # to preprocessing stack[s0:e0] afresh (just without the redundant work).
-        if pp0 is not None and len(pp0) >= cap:
-            pp = np.asarray(pp0[:cap])
-        else:
-            blk = np.asarray(stack[s0:e0])
-            if blk.size == 0:
-                return None
-            pp = preprocess_stack(blk, bg_radius=bg_radius,
-                                  bg_method=bg_method, workers=workers,
-                                  quiet=True)
-        tdf = impl.localise(pp, diameter=diameter, minmass=0.0,
-                            percentile=percentile, workers=workers,
-                            chunk_size=len(pp), quiet=True)
-        tm = np.asarray(tdf["mass"].values, dtype=float)
-        tm = tm[np.isfinite(tm) & (tm > 0)]
-        # Trackpy masses from the SAME physical frames (window 0, frame < cap).
-        h0 = H[(H["window_id"] == 0) & (H["frame"] < (e0 - s0))]
-        hm = np.asarray(h0["mass"].values, dtype=float)
-        hm = hm[np.isfinite(hm) & (hm > 0)]
-        if tm.size < 30 or hm.size < 30:
-            return None
-        # Compare the BRIGHT tail (p90), not the median: the detectors find
-        # different numbers of noise blips at minmass=0, which skews the median,
-        # whereas the upper tail is dominated by real spots in both — the
-        # population the _TP_MASS_SCALE calibration actually targets.  This is a
-        # coarse population-level sanity check, not a per-spot calibration.
-        ratio = float(np.percentile(tm, 90) / np.percentile(hm, 90))
-        # Only flag EGREGIOUS drift (>2x either way); modest deviation is normal
-        # population variation and shouldn't cry wolf.
-        egregious = not (0.5 <= ratio <= 2.0)
-        _log(f"  Mass-scale check (Torch vs Trackpy, coarse): bright-tail ratio "
-             f"= {ratio:.2f}  (≈1.0 = calibration holds)" +
-             ("  — WARNING: large mismatch; auto minmass may transfer poorly to "
-              "the Torch run — sanity-check detection or set minmass manually"
-              if egregious else ""))
-        return ratio
-    except _Cancelled:
-        raise
-    except Exception:
-        return None
 
 
 def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",

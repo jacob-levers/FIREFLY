@@ -441,15 +441,6 @@ class BatchController(QObject):
     def allExpanded(self):
         return bool(self._series) and all(s["key"] in self._open for s in self._series)
 
-    @Property(int, notify=seriesChanged)
-    def queueDone(self):
-        return sum(1 for v in self._series_status.values() if v in ("done", "error"))
-
-    @Property(int, notify=seriesChanged)
-    def queuePending(self):
-        return sum(1 for k in self._selected_keys()
-                   if self._series_status.get(k, "queued") in ("queued", "running"))
-
     @Property(str, notify=seriesChanged)
     def summary(self):
         n = len(self._series)

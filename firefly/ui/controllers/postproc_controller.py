@@ -102,10 +102,6 @@ class PostprocController(QObject):
     def status(self):
         return self._status
 
-    @Property(str, notify=runningChanged)
-    def lastOutputDir(self):
-        return self._out_dir
-
     # ── the guard ────────────────────────────────────────────────────────
     @Slot(str, "QVariantList", result="QVariantMap")
     def canApply(self, run_dir, polygons):
