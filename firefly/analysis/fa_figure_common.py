@@ -175,3 +175,56 @@ def render_polar_histogram(ax, a, stats, pal, *, color=None, tick_fontsize=8):
     ax.set_yticklabels([])
     ax.tick_params(colors=pal["TXT"], labelsize=tick_fontsize)
     ax.grid(True, ls=":", alpha=0.4)
+
+
+# ── Pairwise p-value brackets ────────────────────────────────────────────────
+# Every comparison panel (the report's and the live Analysis tab's) labels its
+# groups the same way: a bracket between each compared pair with that pair's
+# p-value over it, stacked above the data so nothing overlaps the points.
+BRACKET_ALL_PAIRS_MAX_GROUPS = 4     # up to 6 brackets; beyond, significant pairs only
+
+
+def select_bracket_pairs(pairs, n_groups, alpha=0.05):
+    """Which pairs get a bracket.  `pairs` is ``[(i, j, p)]``.  Untestable pairs
+    (p not finite — e.g. a one-replicate group) never do.  Up to
+    BRACKET_ALL_PAIRS_MAX_GROUPS groups every testable pair is shown; with more,
+    only the significant ones, since 10+ brackets would bury the data."""
+    ok = [(int(i), int(j), float(p)) for i, j, p in pairs
+          if p is not None and np.isfinite(p)]
+    if n_groups > BRACKET_ALL_PAIRS_MAX_GROUPS:
+        ok = [t for t in ok if t[2] < alpha]
+    return ok
+
+
+def draw_pvalue_brackets(ax, pairs, *, color, fontsize=8, data_top=None,
+                         data_bottom=None):
+    """Draw a bracket + label for each ``(x_i, x_j, label)`` above the data and
+    extend the y-limit to fit.  Brackets that would overlap go on separate
+    levels (shortest spans lowest).  Returns the label Text artists in the order
+    given.  Works for positive and signed data; `data_top` / `data_bottom`
+    default to the current y-limits."""
+    lo0, hi0 = ax.get_ylim()
+    top = float(hi0 if data_top is None else data_top)
+    bottom = float(lo0 if data_bottom is None else data_bottom)
+    rng = (top - bottom) or (abs(top) or 1.0)
+    order = sorted(range(len(pairs)), key=lambda k: (abs(pairs[k][1] - pairs[k][0]), min(pairs[k][:2])))
+    levels, placed = {}, []                      # placed: (level, a, b)
+    for k in order:
+        a, b = sorted(pairs[k][:2])
+        lvl = 0
+        while any(L == lvl and not (b < a2 or a > b2) for L, a2, b2 in placed):
+            lvl += 1
+        placed.append((lvl, a, b)); levels[k] = lvl
+    texts = [None] * len(pairs)
+    tick, gap, step = rng * 0.025, rng * 0.06, rng * 0.12
+    for k, (xi, xj, label) in enumerate(pairs):
+        y = top + gap + levels[k] * step
+        a, b = sorted((xi, xj))
+        ax.plot([a, a, b, b], [y, y + tick, y + tick, y], color=color, lw=0.8,
+                clip_on=False, zorder=5)
+        texts[k] = ax.text((a + b) / 2.0, y + tick * 1.15, label, ha="center",
+                           va="bottom", fontsize=fontsize, color=color, zorder=5)
+    n_levels = (max(levels.values()) + 1) if levels else 0
+    if n_levels:
+        ax.set_ylim(min(lo0, bottom), top + gap + (n_levels - 1) * step + rng * 0.10)
+    return texts

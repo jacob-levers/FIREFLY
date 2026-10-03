@@ -15,6 +15,8 @@ dots, which is the honest visualisation for a replicate-level quantity.
 """
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 
 from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
@@ -187,7 +189,18 @@ def _safe_log_bins(values, n):
     return np.logspace(np.log10(lo), np.log10(hi), max(int(n), 2))
 
 
+# Per-render options that every renderer's rasterise step honours (the render
+# jobs run on worker threads, so this is thread-local rather than global).
+_RENDER = threading.local()
+
+
 def _qimage_from_figure(fig):
+    if getattr(_RENDER, "minimal", False):       # Preferences → Minimal figures
+        for _ax in fig.axes:
+            if _ax.get_legend() is not None:
+                _ax.get_legend().remove()
+        for _lg in list(fig.legends):
+            _lg.remove()
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from PySide6.QtGui import QImage
     canvas = FigureCanvasAgg(fig)
@@ -262,10 +275,37 @@ def _gf_theme():
     return {"bg": _MAT, "fg": _INK, "grid": _GRID, "spine": _GRID, "muted": _MUTED}
 
 
+def _engine_stats(arrs, labels, stats_config):
+    """(pairs, omnibus_p) from the SAME statistics engine and settings as the
+    report and the Analysis tab's stats cards.  ``pairs`` is ``[(i, j, p)]`` with
+    p corrected within the metric when the settings say so — the number the
+    report's brackets show."""
+    from firefly.analysis import fa_circular as _fc
+    from firefly.analysis import fa_stats_config as _fsc
+    sc = _fsc.normalize_stats_config(stats_config or {})
+    omnibus, pw = _fc._stat_test_n(list(arrs), list(labels), sc)
+    free = [k for k, r in enumerate(pw) if not r.get("self_corrected")]
+    adj = dict(zip(free, _fsc.correct_pvalues([pw[k].get("p") for k in free],
+                                              sc.get("correction", "holm"))))
+    use_corr = sc.get("figure_stars_use_corrected", True)
+    pairs = [(int(r["i"]), int(r["j"]),
+              (adj.get(k, r.get("p")) if use_corr else r.get("p"))) for k, r in enumerate(pw)]
+    return pairs, (omnibus or {}).get("p"), sc
+
+
+def _engine_p_label(arrs, labels, stats_config):
+    """'p = …' for two groups (the pairwise test) or more (the omnibus) — kept for
+    callers that want one number; the figure itself brackets each pair."""
+    from firefly.analysis.fa_compare import format_p
+    pairs, omni_p, _sc = _engine_stats(arrs, labels, stats_config)
+    pv = pairs[0][2] if (len(arrs) == 2 and pairs) else omni_p
+    return format_p(pv) or ""
+
+
 def _render_group_comparison(groups, metric, style, err, width_px, height_px, dpi,
-                             grouped_data=None):
+                             grouped_data=None, stats_config=None):
     """Scalar-metric group comparison via the shared renderer (Preferences
-    figures/group_style): box+points / grouped / violin / bar, with a KW label.
+    figures/group_style): box+points / grouped / violin / bar, with the p-value.
 
     For ``grouped`` we prefer ``grouped_data`` (per condition-NAME × timepoint,
     the "between-dish variability" split); it falls back to one series per group.
@@ -291,17 +331,25 @@ def _render_group_comparison(groups, metric, style, err, width_px, height_px, dp
                 continue
             order.append(g["label"]); values[g["label"]] = {"": v}
             gcolors[g["label"]] = g.get("color")
-    stat_label = ""
-    arrs = [np.concatenate(list(values[l].values())) for l in order if values[l]]
+    stat_label, pairs = "", None
+    names = [l for l in order if values[l]]
+    arrs = [np.concatenate(list(values[l].values())) for l in names]
     if len(arrs) >= 2 and all(len(a) >= 1 for a in arrs):
         try:
-            from scipy.stats import kruskal
-            stat_label = f"Kruskal–Wallis, p = {kruskal(*arrs).pvalue:.3g}"
+            from firefly.analysis.fa_compare import format_p
+            from firefly.analysis.fa_figure_common import select_bracket_pairs
+            raw, omni_p, sc = _engine_stats(arrs, names, stats_config)
+            pos = {nm: order.index(nm) for nm in names}       # x position of each group
+            chosen = select_bracket_pairs(raw, len(arrs), sc.get("alpha", 0.05))
+            pairs = [(pos[names[i]], pos[names[j]], format_p(p)) for i, j, p in chosen] or None
+            if not pairs and len(arrs) > 2:
+                stat_label = format_p(omni_p) or ""
         except Exception:
             pass
     fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
     _gf.draw_group_comparison(fig, fig.add_gridspec(1, 1)[0], order, values, style=style,
-                              stat_label=stat_label, group_colors=gcolors, tp_order=tp_order,
+                              stat_label=stat_label, pairs=pairs, group_colors=gcolors,
+                              tp_order=tp_order,
                               theme=_gf_theme(), ylabel=metric.axis, err=err)
     fig.tight_layout(pad=1.1)
     return _qimage_from_figure(fig)
@@ -334,12 +382,28 @@ def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
                   mobile_d: float = MOBILE_D_THRESHOLD_DEFAULT,
                   logd_clip: tuple = (0.00001, 10.0),
                   group_style: str = "box_points", length_style: str = "density",
-                  grouped_data=None):
+                  grouped_data=None, stats_config=None, minimal: bool = False):
     """Render one metric across ``groups`` → detached ``QImage``.
 
     ``groups``: ``[{"label", "color", "values": ndarray(per-folder scalars),
-    "dist": ndarray|None (pooled per-track)}]``.
+    "dist": ndarray|None (pooled per-track)}]``.  ``minimal`` drops every in-figure
+    legend (Preferences → Figures → Minimal figures); ``stats_config`` is the
+    engine statistics config the p-value label uses.
     """
+    _RENDER.minimal = bool(minimal)
+    try:
+        return _render_metric(groups, metric, plot=plot, err=err, log_x=log_x,
+                              width_px=width_px, height_px=height_px, dpi=dpi,
+                              logd_style=logd_style, mobile_d=mobile_d, logd_clip=logd_clip,
+                              group_style=group_style, length_style=length_style,
+                              grouped_data=grouped_data, stats_config=stats_config)
+    finally:
+        _RENDER.minimal = False
+
+
+def _render_metric(groups, metric, *, plot, err, log_x, width_px, height_px, dpi,
+                   logd_style, mobile_d, logd_clip, group_style, length_style,
+                   grouped_data, stats_config):
     if metric.id == "motion":
         return _render_motion(groups, width_px, height_px, dpi)
     # Diffusion D → the engine's own LogD-distribution panel, so the live preview
@@ -367,7 +431,8 @@ def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
         try:
             return _render_group_comparison(groups, metric, group_style, err,
                                             width_px, height_px, dpi,
-                                            grouped_data=grouped_data)
+                                            grouped_data=grouped_data,
+                                            stats_config=stats_config)
         except Exception:
             pass   # fall through to the legacy renderer
     fig, ax = _new_axes(width_px, height_px, dpi)

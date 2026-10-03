@@ -681,17 +681,26 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 color="#8b949e", alpha=0.45, edgecolor="none",
                 label=f"Observed  (n={jdd['n_jumps']:,})")
 
+        from firefly.analysis.fa_diffusion import jdd_fit_at_limit
+        _jdd_failed = jdd_fit_at_limit(jdd)
         _comp_labels = ["Slow", "Medium", "Fast"]
         for k, (pdf_k, D_k, f_k) in enumerate(
                 zip(jdd["pdfs"], jdd["D_values"], jdd["fractions"])):
+            if _jdd_failed:
+                break                     # a fit on its bounds is no population estimate
             d_label = ("apparent D" if jdd.get("diffusion_interpretation") == "apparent_uncorrected" else "D")
             lbl = (f"{_comp_labels[k]}  {d_label}={D_k:.4f} µm²/s  "
                    f"({f_k*100:.1f}%)")
             ax.plot(jdd["r_range"], pdf_k,
                     color=_jdd_colors[k], lw=2, label=lbl)
 
-        ax.plot(jdd["r_range"], jdd["pdf_total"],
-                color=TXT, lw=2.5, ls="--", label="Total fit")
+        if _jdd_failed:
+            ax.text(0.98, 0.62, "Population fit stopped at a parameter limit —\n"
+                    "no D estimate shown", transform=ax.transAxes, ha="right",
+                    va="top", color=TXT, fontsize=8.5)
+        else:
+            ax.plot(jdd["r_range"], jdd["pdf_total"],
+                    color=TXT, lw=2.5, ls="--", label="Total fit")
         ax.set_xlabel("Jump distance  (µm)", fontsize=9)
         ax.set_ylabel("Probability density", fontsize=9)
         ax.set_xlim(0, r_max_plot)

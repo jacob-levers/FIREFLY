@@ -1,5 +1,43 @@
 # Changelog
 
+## v2.76.51-rc.18 — 3 Oct 2026
+
+### Fixed
+
+- **JDD population fits no longer stick to their limits.** The jump-distance
+  fit was given the median MSD intercept as its localisation-error offset. That
+  intercept also holds the plateau of confined tracks and motion blur, and on
+  fly recordings it was larger than most jumps, so every fit ended on its bounds
+  (D = 10⁻⁶ and 100 µm²/s) and the comparison panel plotted those as
+  populations. The offset now comes only from per-localisation precision when
+  the detector provides it; otherwise the JDD reports apparent D, labelled as
+  such. A fit that still ends on a limit is marked and never plotted, including
+  in runs saved by older versions — re-run those to refit. **JDD values will
+  differ from earlier runs.**
+
+- **The Analysis tab's quick graphs ran their own Kruskal–Wallis test**, so one
+  comparison could carry two different p-values. They now use the same
+  statistics as the report and the stats cards.
+
+- **A p-value too small to compute showed as "p = 0.00e+00".** It now reads
+  "p < 1e-300".
+
+### Changed
+
+- **Comparison graphs show a p-value for every pair of groups**, each on a
+  bracket above the data, and nothing else: the test, effect sizes and
+  correction are in the statistics CSV. With up to four groups every testable
+  pair is bracketed; with more, only the significant pairs. A group with a
+  single replicate cannot be tested, so it gets no bracket.
+
+- **Replicate dots are drawn in their group's colour**, and slightly smaller.
+
+### Added
+
+- **Minimal figures** (Preferences → Figures → Graph styles): comparison
+  figures without legends, title or the group-summary band, for figures whose
+  legend goes in the caption. The p-values stay.
+
 ## v2.76.51-rc.17 — 1 Oct 2026
 
 ### Fixed

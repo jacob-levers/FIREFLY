@@ -106,6 +106,7 @@ Item {
         Settings.setValue("figures/save_pdf", true)
         Settings.setValue("figures/per_panel", false)
         Settings.setValue("figures/logd_style", "overlaid")
+        Settings.setValue("figures/minimal", false)
         Settings.setValue("updates/auto_check", true)
         Settings.setValue("updates/channel", "Stable")
         Settings.setValue("updates/auto_download", false)
@@ -592,6 +593,13 @@ Item {
                 Group {
                     title: "Graph styles"
                     desc: "How individual graphs are drawn, in both the live Analysis tab and the exported report. More graphs will become customisable here over time."
+                    PrefRow {
+                        label: "Minimal figures"
+                        desc: "No legends, title or group-summary band inside the figure — for a figure whose legend goes in the caption. The p-value above each graph stays."
+                        Switch { objectName: "minimalFiguresSwitch"
+                                 checked: (root.rev, Settings.getBool("figures/minimal", false))
+                                 onToggled: (c) => Settings.setValue("figures/minimal", c) }
+                    }
                     PrefRow {
                         label: "Log-D distribution"
                         desc: "How the per-condition log₁₀(D) distributions are plotted."

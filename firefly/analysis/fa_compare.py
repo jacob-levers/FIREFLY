@@ -23,7 +23,7 @@ import matplotlib
 matplotlib.use("Agg")
 from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_THRESHOLD_DEFAULT,
                           _motion_fractions, _track_lengths,
-                          compute_van_hove, compute_vacf)
+                          compute_van_hove, compute_vacf, jdd_fit_at_limit)
 from firefly.analysis.fa_circular import (
     save_comparison_circular_statistics, _stat_test_n, _paired_test, _paired_hedges_g,
 )
@@ -153,16 +153,6 @@ class CompareInputError(Exception):
     a crash report — it is an expected condition, not a bug."""
 
 
-def _replicate_colors(k):
-    """k visually distinct colours for per-replicate SuperPlot dots.  Uses
-    tab10 for ≤10 replicates, tab20 beyond that (cycling if even larger)."""
-    if k <= 0:
-        return []
-    import matplotlib.pyplot as plt
-    cmap = plt.get_cmap("tab10" if k <= 10 else "tab20")
-    return [cmap(i % cmap.N) for i in range(k)]
-
-
 def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                      ylabel="", record_stats=None, metric_name="",
                      xtick_labels=None, stats_config=None, annot_sink=None,
@@ -172,11 +162,11 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     backdrop mark: ``box_points`` (box + median/IQR, the default) / ``violin`` /
     ``bar`` (mean ± SEM).  ``grouped`` falls back to the box here (the grouped-by-
     timepoint layout is a separate two-factor renderer).  The per-replicate dots
-    and the full stats annotation are identical across styles.
+    and the p-value label are identical across styles.
 
-    For 2 groups: shows pairwise stars on a bracket (matches lab style).
-    For 3+ groups: shows omnibus ANOVA / Kruskal p-value as a panel
-    annotation; full pairwise comparisons go to record_stats[metric_name].
+    For 2 groups: the pairwise p-value over a bracket above the data.
+    For 3+ groups: the omnibus p-value in a band cleared above the data; full
+    pairwise comparisons go to record_stats[metric_name].
 
     `xtick_labels` overrides the x-axis tick text (display only — `labels`
     still drives the statistics); used to put short tokens on the axis when
@@ -203,8 +193,8 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     x = np.arange(n)
     # Bar = mean across REPLICATES; error = SEM across replicates.  The dots
     # are the per-replicate values the stats are actually computed on — a
-    # SuperPlot (Lord et al. 2020): each replicate gets its own colour so the
-    # reader sees the true unit of replication, not pooled localisations.
+    # SuperPlot (Lord et al. 2020): one dot per replicate, in its group's colour,
+    # so the reader sees the true unit of replication, not pooled localisations.
     # SuperPlot styling: the bar is just a faint backdrop for the mean — the
     # per-replicate DOTS and the mean±SEM error bar carry the information.  So
     # the bar face is a very pale wash (blended 88% toward the background) at low
@@ -241,13 +231,11 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         for md in bp["medians"]:
             md.set_color(sig_col); md.set_linewidth(1.8)
     rng = np.random.default_rng(0)
-    max_rep = max((len(a) for a in arrs), default=0)
-    rep_colors = _replicate_colors(max_rep)
-    for i, a in enumerate(arrs):
+    for i, a in enumerate(arrs):                 # replicate dots in their group's colour
         if len(a):
-            ax.scatter(i + rng.uniform(-0.15, 0.15, len(a)), a,
-                       c=[rep_colors[k] for k in range(len(a))],
-                       s=34, zorder=3, edgecolors=colors[i], linewidths=0.6)
+            ax.scatter(i + rng.uniform(-0.15, 0.15, len(a)), a, color=colors[i],
+                       s=22, zorder=3, edgecolors=palette.get("BG", "#ffffff"),
+                       linewidths=0.6)
     ax.set_xticks(x)
     disp = list(xtick_labels) if xtick_labels is not None else list(labels)
     _short = all(len(str(t)) <= 6 for t in disp)
@@ -256,12 +244,11 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                        fontsize=8 if n > 6 else 9)
     ax.set_ylabel(ylabel)
 
-    # Stats — config-driven; the displayed star uses the chosen multiple-
-    # comparison correction so the figure agrees with the CSV (no "* on the
-    # figure / ns in the table" mismatch).  The panel also NAMES the test and
-    # correction, so it is self-describing.
+    # Stats — config-driven; the displayed p uses the chosen multiple-comparison
+    # correction so the figure agrees with the CSV.  Only the p-value is drawn;
+    # the test, effect sizes and correction live in the statistics CSV/report.
     from firefly.analysis.fa_stats_config import (
-        normalize_stats_config, correct_pvalues, stars_for, describe_test_label)
+        normalize_stats_config, correct_pvalues, stars_for)
     cfg = normalize_stats_config(stats_config)
     omnibus, pairwise = _STN(arrs, labels, cfg)
     # Within-metric correction onto the pairwise list (also done centrally for
@@ -282,84 +269,14 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     if record_stats is not None and metric_name:
         record_stats[metric_name] = {"omnibus": omnibus, "pairwise": pairwise}
 
-    def _g_ci_str(rec):
-        """'g = -1.20 [95% CI -2.10, -0.30]' or '' if g unavailable."""
-        g = rec.get("hedges_g")
-        if g is None or not np.isfinite(g):
-            return ""
-        lo, hi = rec.get("hedges_g_ci_low"), rec.get("hedges_g_ci_high")
-        if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
-            return f"g = {g:.2f} [95% CI {lo:.2f}, {hi:.2f}]"
-        return f"g = {g:.2f}"
-
-    def _delta_str(rec):
-        """Cliff's delta line: 'δ = 0.62 [0.20, 0.90]' or '' if unavailable."""
-        d = rec.get("cliffs_delta")
-        if d is None or not np.isfinite(d):
-            return ""
-        lo, hi = rec.get("cliffs_delta_ci_low"), rec.get("cliffs_delta_ci_high")
-        if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
-            return f"δ = {d:.2f} [{lo:.2f}, {hi:.2f}]"
-        return f"δ = {d:.2f}"
-
-    def _tost_str(rec):
-        """Equivalence verdict line (only when TOST is on)."""
-        if not cfg["equivalence_tost"]:
-            return ""
-        teq = rec.get("tost_equivalent")
-        if teq is None:
-            return ""
-        tp = rec.get("tost_p")
-        tail = (f" (TOST p={tp:.3f})"
-                if (tp is not None and np.isfinite(tp)) else "")
-        verdict = "equivalent" if teq else "not equivalent"
-        return f"±{cfg['tost_margin']:g} SD: {verdict}{tail}"
-
     use_corr = cfg["figure_stars_use_corrected"]
-    corr_caption = describe_test_label("", cfg["correction"],
-                                       cfg["across_metric_correction"])
 
-    def _annot_text(which="within"):
-        """Build the panel's stats annotation. `which` ∈ {'within','across'}
-        selects which corrected star to show (the post-pass switches to
-        'across' when across-metric correction is on)."""
-        if n == 2 and pairwise:
-            pair = pairwise[0]
-            if not np.isfinite(pair.get("p", np.nan)):
-                return None
-            if use_corr:
-                pv = pair.get(f"p_{which}", pair.get("p_within", pair["p"]))
-                st = pair.get(f"stars_{which}", pair.get("stars_within", ""))
-            else:
-                pv, st = pair["p"], pair["stars"]
-            p_str = f"p = {pv:.2e}" if pv < 0.001 else f"p = {pv:.3f}"
-            lines = [pair.get("test", ""), f"{p_str}  {st}".rstrip()]
-            g_str = _g_ci_str(pair)
-            if g_str:
-                lines.append(g_str)
-            d_str = _delta_str(pair)
-            if d_str:
-                lines.append(d_str)
-            t_str = _tost_str(pair)
-            if t_str:
-                lines.append(t_str)
-            lines.append(corr_caption)
-            if pair.get("note"):
-                lines.append(pair["note"])
-            return "\n".join([ln for ln in lines if ln])
-        if n > 2 and omnibus:
-            pv = omnibus["p"]
-            p_str = f"p = {pv:.2e}" if pv < 0.001 else f"p = {pv:.3f}"
-            lines = [omnibus["test"], f"{p_str}   {omnibus['stars']}"]
-            es = omnibus.get("effect_size")
-            if es is not None and np.isfinite(es):
-                sym = "η²" if omnibus.get("effect_size_kind") == "eta_sq" else "ε²"
-                lines.append(f"{sym} = {es:.3f}")
-            lines.append(f"pairwise: {corr_caption}")
-            if omnibus.get("note"):
-                lines.append(omnibus["note"])
-            return "\n".join(lines)
-        return None
+    def _pair_p(pair, which="within"):
+        """The p-value drawn for one pair: corrected (within- or across-metric)
+        when the settings say so, else raw — the same number as the CSV."""
+        if use_corr:
+            return pair.get(f"p_{which}", pair.get("p_within", pair.get("p")))
+        return pair.get("p")
 
     # Data extent — INCLUDING negatives.  Most metrics (D, mobile fraction,
     # α, …) are ≥ 0, but signed metrics such as the VACF lag-1 persistence can
@@ -372,52 +289,36 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
              if _have else np.array([0.0]))
     dmin, dmax = float(_allv.min()), float(_allv.max())
     has_neg = dmin < 0.0
-
-    # A 0 reference line so a downward bar reads as a sign, not an error.
-    if has_neg:
+    if has_neg:                                  # 0 reference: a downward bar is a sign
         ax.axhline(0.0, color=palette.get("GRD", "#cccccc"), lw=0.8, zorder=1)
-
-    txt = None
-    text = _annot_text("within")
-    if not has_neg:
-        # ── all-positive metric: original layout (unchanged) ──────────────
-        top_data = max([a.max() if len(a) else 0 for a in arrs]
-                       + [max(means) * 1.2 if max(means) > 0 else 1])
-        if text is not None and n == 2:
-            top = top_data * 1.05
-            ax.plot([0, 0, 1, 1], [top, top * 1.03, top * 1.03, top],
-                    color=sig_col, lw=0.8)
-            txt = ax.text(0.5, top * 1.05, text, ha="center", va="bottom",
-                          fontsize=7.5, color=sig_col)
-            ax.set_ylim(0, top * 1.62)
-        elif text is not None and n > 2:
-            txt = ax.text(0.02, 0.98, text, transform=ax.transAxes,
-                          ha="left", va="top", fontsize=7.5, color=sig_col,
-                          bbox=dict(facecolor=palette["PNL"], edgecolor="none",
-                                    alpha=0.7, pad=3))
-    else:
-        # ── signed metric: span-aware limits, brackets above the max ──────
         lo, hi = min(0.0, dmin), max(0.0, dmax)
-        span = (hi - lo) or 1.0
-        if text is not None and n == 2:
-            bracket = hi + span * 0.06
-            ax.plot([0, 0, 1, 1],
-                    [bracket, bracket + span * 0.03,
-                     bracket + span * 0.03, bracket],
-                    color=sig_col, lw=0.8)
-            txt = ax.text(0.5, bracket + span * 0.05, text,
-                          ha="center", va="bottom",
-                          fontsize=7.5, color=sig_col)
-            ax.set_ylim(lo - span * 0.08, bracket + span * 0.55)
-        else:
-            ax.set_ylim(lo - span * 0.08, hi + span * 0.30)
-            if text is not None and n > 2:
-                txt = ax.text(0.02, 0.98, text, transform=ax.transAxes,
-                              ha="left", va="top", fontsize=7.5, color=sig_col,
-                              bbox=dict(facecolor=palette["PNL"],
-                                        edgecolor="none", alpha=0.7, pad=3))
-    if txt is not None and annot_sink is not None and metric_name:
-        annot_sink[metric_name] = (txt, _annot_text)
+        ax.set_ylim(lo - (hi - lo or 1.0) * 0.08, hi + (hi - lo or 1.0) * 0.08)
+    top_data = (max(dmax, max(means) if means else dmax) if not has_neg else max(0.0, dmax))
+
+    # A bracket + p-value over every compared pair (every testable pair up to
+    # four groups; only significant pairs beyond), stacked above the data.
+    from firefly.analysis.fa_figure_common import (select_bracket_pairs,
+                                                   draw_pvalue_brackets)
+    by_ij = {(int(pw["i"]), int(pw["j"])): pw for pw in pairwise}
+    chosen = select_bracket_pairs([(pw["i"], pw["j"], _pair_p(pw)) for pw in pairwise],
+                                  n, cfg.get("alpha", 0.05))
+    entries = []
+    if chosen:
+        texts = draw_pvalue_brackets(
+            ax, [(i, j, format_p(p)) for i, j, p in chosen], color=sig_col,
+            fontsize=7.5, data_top=top_data)
+        for (i, j, _p), txt in zip(chosen, texts):
+            pw = by_ij[(i, j)]
+            entries.append((txt, (lambda which, pw=pw: format_p(_pair_p(pw, which)))))
+    elif n > 2 and omnibus and format_p(omnibus.get("p")):
+        # Nothing to bracket (all pairs untestable, or none significant with many
+        # groups) → the overall p-value in a band cleared above the data.
+        lo_, hi_ = ax.get_ylim()
+        ax.set_ylim(lo_, top_data + (top_data - lo_) * 0.22)
+        ax.text(0.5, 0.985, format_p(omnibus.get("p")), transform=ax.transAxes,
+                ha="center", va="top", fontsize=8, color=sig_col)
+    if entries and annot_sink is not None and metric_name:
+        annot_sink[metric_name] = entries
 
 
 def _maybe_end_labels(ax, ends, colors, labels, *,
@@ -1124,6 +1025,17 @@ def _threshold_warnings(labels, all_summaries):
     return out
 
 
+def format_p(pv):
+    """The figure's p-value label: 'p = 0.031', 'p = 4.20e-05', or 'p < 1e-300'
+    when the test underflows (a very large difference); None if not computable.
+    Shared by the report panels and the live Analysis tab."""
+    if pv is None or not np.isfinite(pv):
+        return None
+    if pv < 1e-300:
+        return "p < 1e-300"
+    return f"p = {pv:.2e}" if pv < 0.001 else f"p = {pv:.3f}"
+
+
 def comparison_grid(n):
     """(rows, cols) the comparison figure packs `n` panels into — the single
     source of truth shared with the UI panel-picker's live grid count."""
@@ -1423,7 +1335,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  logd_plot_style="overlaid", msd_plot_style="mean_faceted",
                  msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                  panel_styles=None,
-                 logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
+                 logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
+                 minimal=False):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
 
@@ -1547,6 +1460,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     band_fs = 9 if n_groups <= 8 else 8
     band_row_in = 0.26                       # inches per band row
     band_h_in = band_nrow * band_row_in + 0.46   # band + gap under the suptitle
+    if minimal:
+        band_h_in = 0.12                     # no title, no band — just a top margin
     base_h = nrows * 3.6
 
     pal = _theme_palette(theme)
@@ -1940,8 +1855,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                            fontsize=8 if n_groups <= 6 else 7)
         # Headroom above the full (=1.0) stacks for an in-axes legend, so
         # tight_layout reserves space for it (a below-axis legend would not be
-        # accounted for and could overlap the panel beneath).
-        ax.set_ylim(0, 1.42)
+        # accounted for and could overlap the panel beneath).  Minimal mode has
+        # no legend, so no headroom.
+        ax.set_ylim(0, 1.02 if minimal else 1.42)
         ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
         ax.set_ylabel("Fraction of tracks")
         ax.set_title("Motion Class Fractions")
@@ -2075,6 +1991,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         any_data = False
         max_pop_overall = 0
         all_D = []                       # every plotted D, for y-axis tick choice
+        n_stuck = 0                      # fits left on a parameter bound — not populations
         # Spread groups across ±0.18 around each population index
         if n_groups > 1:
             offsets = np.linspace(-0.18, 0.18, n_groups)
@@ -2085,6 +2002,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             for s in summaries:
                 jd = s.get("jdd")
                 if not jd or "D_values" not in jd: continue
+                if jdd_fit_at_limit(jd):
+                    n_stuck += 1
+                    continue
                 D = np.asarray(jd["D_values"], dtype=float)
                 f = np.asarray(jd.get("fractions", np.ones_like(D)), dtype=float)
                 if D.size == 0: continue
@@ -2140,10 +2060,19 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             ax.set_axisbelow(True)       # gridlines behind the markers
             ax.set_title("JDD: population D (apparent when uncalibrated; size ∝ fraction)")
             ax.legend(frameon=False, loc="best")
+            if n_stuck:
+                ax.text(0.02, 0.02, f"{n_stuck} fit(s) stopped at a parameter limit — not shown",
+                        transform=ax.transAxes, ha="left", va="bottom",
+                        color=pal["GRD"], fontsize=7.5)
         else:
-            ax.text(0.5, 0.5, "No JDD data\n(re-run analysis to generate)",
+            msg = ("No JDD data\n(re-run analysis to generate)" if not n_stuck else
+                   f"All {n_stuck} JDD fits stopped at a\n"
+                   "parameter limit — no estimate to show.\n"
+                   "Re-run the analysis to refit.")
+            ax.text(0.5, 0.5, msg,
                     ha="center", va="center", transform=ax.transAxes,
-                    color=pal["GRD"], fontsize=9)
+                    color=(pal.get("MUT", pal["TXT"]) if n_stuck else pal["GRD"]),
+                    fontsize=8.5)
             ax.set_xticks([]); ax.set_yticks([])
             ax.set_title("Jump Distance Distribution")
 
@@ -2362,11 +2291,16 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # count / median D / median alpha — so a separate bottom legend would only
     # duplicate it.  When the bars use short numeric x-tick tokens (>4 groups),
     # the band entries are numbered to match (see the band loop below).
-    for ax in axes[:n_plots]:
-        if getattr(ax, "_firefly_keep_legend", False):
+    # Minimal mode (Preferences → Figures) drops EVERY in-figure key, including
+    # the panels that normally keep their own — the legend goes in the caption.
+    for ax in (fig.axes if minimal else axes[:n_plots]):
+        if getattr(ax, "_firefly_keep_legend", False) and not minimal:
             continue  # panel carries its own colour key (e.g. motion classes)
         _lg = ax.get_legend()
         if _lg is not None:
+            _lg.remove()
+    if minimal:
+        for _lg in list(fig.legends):
             _lg.remove()
     legend_rows = 0   # no reserved bottom strip — the band replaces the legend
 
@@ -2385,8 +2319,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     if rd.legacy_only:
         suptitle += "  [legacy metrics schema 1]"
     fig_h = base_h + band_h_in
-    fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"],
-                 y=1.0 - 0.16 / fig_h)
+    if not minimal:
+        fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"],
+                     y=1.0 - 0.16 / fig_h)
     for ax in axes[:n_plots]:
         ax.set_facecolor(pal["PNL"])
         # Modern look: drop the top/right spines, thin the rest (polar +
@@ -2438,7 +2373,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     band_top = 1.0 - 0.52 / fig_h            # first band row, below the suptitle
     row_step = band_row_in / fig_h
     col_xs = [(c + 0.5) / band_ncol for c in range(band_ncol)]
-    for i in range(n_groups):
+    for i in range(0 if minimal else n_groups):
         r, c = divmod(i, band_ncol)
         n_cells, n_trk, med_D, med_a, n_below = _card_summary(i)
         # When the bar panels use numeric x-tick tokens (>4 groups), number the
@@ -2623,13 +2558,14 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # on-figure stars to the across-metric-corrected value so the figure agrees
     # with the CSV.  (Within-metric correction was already drawn at panel time.)
     if cfg["figure_stars_use_corrected"] and cfg["across_metric_correction"]:
-        for _metric, (txt, build) in panel_annots.items():
-            try:
-                new = build("across")
-                if new:
-                    txt.set_text(new)
-            except Exception:
-                pass
+        for _metric, _entries in panel_annots.items():
+            for txt, build in _entries:          # one label per bracketed pair
+                try:
+                    new = build("across")
+                    if new:
+                        txt.set_text(new)
+                except Exception:
+                    pass
 
     # ── Two-factor (group × time point) mixed ANOVA ───────────────────────────
     # Paired design: between=group, within=timepoint, subject=cell.  Scalars run
@@ -2842,7 +2778,8 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
                   logd_plot_style="overlaid", msd_plot_style="mean_faceted",
                   msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                   panel_styles=None,
-                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None):
+                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
+                  minimal=False):
     """Draw (+ optionally save) a comparison from a precomputed `ReportData`.
     Only theme / graph style / panel selection vary here, so this is the cheap
     part to re-run for a live style change on cached data.  Points the memo cache
@@ -2857,7 +2794,7 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
             msd_err=msd_err, auc_plot_style=auc_plot_style, group_style=group_style,
             panel_styles=panel_styles,
             logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
-            progress_cb=progress_cb)
+            progress_cb=progress_cb, minimal=minimal)
     finally:
         _TL.stat_cache = None
 
@@ -2870,7 +2807,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
                    panel_styles=None,
                    logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
                    progress_cb=None, stats_config=None, use_native=False,
-                   report_data=None):
+                   report_data=None, minimal=False):
     """Compare N>=2 groups of analysis-output folders -> multi-panel figure,
     summary CSV, statistics CSV and combined PDF report.  Thin wrapper: computes a
     `ReportData` (unless one is supplied via ``report_data``) then renders it, so
@@ -2887,7 +2824,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
         msd_plot_style=msd_plot_style, msd_err=msd_err, auc_plot_style=auc_plot_style,
         group_style=group_style, panel_styles=panel_styles,
         logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
-        progress_cb=progress_cb)
+        progress_cb=progress_cb, minimal=minimal)
 
 
 def _json_safe(obj):

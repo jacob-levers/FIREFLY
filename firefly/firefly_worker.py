@@ -2528,17 +2528,13 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         # ── Secondary analyses ────────────────────────────────────────────────
         _log(f"\n── Secondary analyses ────────────")
         _prog(80, "Secondary analyses…")
-        # Subtract the SAME static offset (median MSD0) the MSD fit removed, so
-        # the JDD D's are comparable with the MSD D instead of being inflated by
-        # sigma^2/dt.  Caveat worth keeping in mind when reading the number: that
-        # intercept also absorbs motion blur, so it is not a calibrated static
-        # noise variance — the JDD output labels itself accordingly.
-        _loc_offset = 0.0
-        if "MSD0" in diff_df.columns:
-            _m = diff_df["MSD0"]
-            _m = _m[_m.notna() & (_m > 0)]
-            if len(_m):
-                _loc_offset = float(_m.median())
+        # The JDD's static offset must be an independently known precision (the
+        # detector's per-localisation sigma).  The median MSD intercept used to
+        # stand in for it, but it carries the plateau of confined tracks and
+        # motion blur: on fly recordings it exceeded the jump spread and pinned
+        # every fit to its bounds.  No precision → apparent D, labelled so.
+        from firefly.analysis.fa_diffusion import jdd_static_offset_um2
+        _loc_offset = jdd_static_offset_um2(tracks)
         jdd = compute_jdd(tracks, px, fi,
                           n_components=int(p.get("jdd_components", 2)),
                           loc_offset_um2=_loc_offset)

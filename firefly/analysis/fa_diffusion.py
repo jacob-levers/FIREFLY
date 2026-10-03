@@ -565,6 +565,65 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     return imsd_df, emsd_series, diff_df
 
 
+# Start values and bounds per component count: (D1, …, f1, …).  Shared by the
+# fit and by `jdd_fit_at_limit`, which recognises a result left on these bounds.
+_JDD_FIT_SETUP = {
+    1: ([0.05], ([1e-6], [100.0])),
+    2: ([0.005, 0.3, 0.4], ([1e-6, 1e-5, 0.01], [10.0, 100.0, 0.99])),
+    3: ([0.003, 0.05, 0.5, 0.3, 0.35],
+        ([1e-6, 1e-5, 1e-4, 0.01, 0.01], [1.0, 10.0, 100.0, 0.97, 0.97])),
+}
+
+
+def jdd_fit_at_limit(jdd):
+    """True when a JDD result is a fit that stopped on a parameter bound.
+
+    Results from this version carry ``fit_status``.  Older saved results don't,
+    so their D values and fractions are checked against the bounds of their
+    component count — a value sitting on a bound is the box edge, not a
+    population."""
+    if not jdd:
+        return False
+    if "fit_status" in jdd:
+        return jdd["fit_status"] == "at_limit"
+    n = int(jdd.get("n_components") or len(jdd.get("D_values") or []))
+    if n not in _JDD_FIT_SETUP:
+        return False
+    _p0, (lb, ub) = _JDD_FIT_SETUP[n]
+    edges = np.asarray(list(lb) + list(ub), dtype=float)
+    d_edges = edges if n == 1 else np.concatenate([edges[:n], edges[len(lb):len(lb) + n]])
+    vals = np.asarray(jdd.get("D_values") or [], dtype=float)
+    if vals.size and np.any(np.isclose(vals[:, None], d_edges[None, :], rtol=1e-4, atol=0)):
+        return True
+    if n > 1:
+        f_edges = np.concatenate([edges[n:len(lb)], edges[len(lb) + n:]])
+        fr = np.asarray(jdd.get("fractions") or [], dtype=float)
+        if fr.size and np.any(np.isclose(fr[:, None], f_edges[None, :], rtol=0, atol=1e-6)):
+            return True
+    return False
+
+
+def jdd_static_offset_um2(tracks):
+    """The static localisation-error offset 4σ² (µm²) for `compute_jdd`, or None.
+
+    Only an independently known precision qualifies — the per-localisation
+    ``loc_sigma_x_nm`` / ``loc_sigma_y_nm`` a detector supplies (Gaussian-MLE
+    CRLB, or a calibrated camera model).  An MSD intercept does not: it carries
+    the plateau of confined tracks and motion blur, and on real data it
+    exceeded the jump spread itself, pinning every fit to its bounds.  With no
+    precision the JDD reports apparent D, labelled as such."""
+    cols = ("loc_sigma_x_nm", "loc_sigma_y_nm")
+    if tracks is None or not all(c in getattr(tracks, "columns", ()) for c in cols):
+        return None
+    sx = tracks[cols[0]].to_numpy(dtype=float) / 1000.0
+    sy = tracks[cols[1]].to_numpy(dtype=float) / 1000.0
+    s2 = 0.5 * (sx ** 2 + sy ** 2)                      # per-axis variance, µm²
+    ok = np.isfinite(s2) & (s2 > 0)
+    if ok.sum() < max(30, 0.5 * len(s2)):               # mostly unavailable → don't guess
+        return None
+    return float(4.0 * np.median(s2[ok]))
+
+
 def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
                 loc_offset_um2=None):
     """
@@ -648,20 +707,22 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
                     - f2 * np.exp(-r**2 / (4*D2*dt + _ofs))
                     - f3 * np.exp(-r**2 / (4*D3*dt + _ofs)))
 
-    configs = {
-        1: (_cdf1, [0.05],                   ([1e-6],        [100.0])),
-        2: (_cdf2, [0.005, 0.3, 0.4],        ([1e-6, 1e-5, 0.01], [10.0, 100.0, 0.99])),
-        3: (_cdf3, [0.003, 0.05, 0.5, 0.3, 0.35],
-                                              ([1e-6, 1e-5, 1e-4, 0.01, 0.01],
-                                               [1.0, 10.0, 100.0, 0.97, 0.97])),
-    }
-
-    model, p0, (lb, ub) = configs[n_components]
+    models = {1: _cdf1, 2: _cdf2, 3: _cdf3}
+    model = models[n_components]
+    p0, (lb, ub) = _JDD_FIT_SETUP[n_components]
     try:
         popt, _ = curve_fit(model, r_sorted, cdf_emp,
                             p0=p0, bounds=(lb, ub), maxfev=20000)
     except Exception:
         return None
+    # A parameter left ON a bound is a fit that wanted to go further — no
+    # population, just the box edge.  Report it instead of passing it off as D.
+    at_limit = bool(np.any(np.isclose(popt, lb, rtol=1e-4, atol=0)
+                           | np.isclose(popt, ub, rtol=1e-4, atol=0)))
+    if at_limit:
+        print("  WARN: JDD fit stopped at a parameter limit — not a population "
+              "estimate" + (" (the supplied localisation offset may exceed the "
+                            "jump spread)" if correction_known else ""))
 
     # ── Extract sorted (D, fraction) pairs ───────────────────────────────────
     if n_components == 1:
@@ -745,6 +806,7 @@ def compute_jdd(tracks, pixel_size_um, frame_interval_s, n_components=2,
         "aic":           aic,
         "bic":           bic,
         "n_params":      k,
+        "fit_status":    "at_limit" if at_limit else "ok",
         "diffusion_interpretation": "static_offset_corrected_instantaneous" if correction_known else "apparent_uncorrected",
         "precision_status": "supplied_static_offset" if correction_known else "unknown",
         "sigma_loc_um":  sigma_loc_um if correction_known else np.nan,    # 1-D localisation precision √(s2/4)

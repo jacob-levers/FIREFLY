@@ -53,8 +53,12 @@ def test_grouped_uses_name_by_timepoint(monkeypatch):
     assert list(seen["values"]["KCl"]["post"]) == [0.30, 0.28, 0.31]
     assert seen["kw"]["tp_order"] == ["pre", "post"]
     assert seen["kw"]["group_colors"]["KCl"] == "#f78166"
-    # KW label is computed across all pooled per-name values
-    assert "Kruskal" in seen["kw"]["stat_label"]
+    # One bracket between the two names, labelled with the p-value alone from the
+    # report's statistics engine on the pooled per-name values.
+    from firefly.ui.controllers.workspace.workspace_figures import _engine_p_label
+    pooled = [np.concatenate(list(grouped["data"][n].values())) for n in ("Control", "KCl")]
+    assert seen["kw"]["pairs"] == [(0, 1, _engine_p_label(pooled, ["Control", "KCl"], None))]
+    assert seen["kw"]["pairs"][0][2].startswith("p ")
 
 
 def test_grouped_without_payload_falls_back_to_one_series(monkeypatch):

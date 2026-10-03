@@ -105,6 +105,8 @@ class _FigureJob(threading.Thread):
                     group_style=self._cfg.get("_group_style", "box_points"),
                     length_style=self._cfg.get("_length_style", "density"),
                     grouped_data=self._cfg.get("_grouped_data"),
+                    stats_config=self._cfg.get("_stats_config"),
+                    minimal=bool(self._cfg.get("_minimal", False)),
                     width_px=w, height_px=h, dpi=110)
         except Exception:
             img = None
@@ -997,7 +999,8 @@ class AnalysisWorkspaceController(QObject):
             auc_plot_style=(s.getStr("figures/auc_style", "box_points") if s else "box_points"),
             group_style=(s.getStr("figures/group_style", "box_points") if s else "box_points"),
             panel_styles=self._panel_styles(),
-            logd_clip_d_min=dlo, logd_clip_d_max=dhi)
+            logd_clip_d_min=dlo, logd_clip_d_max=dhi,
+            minimal=(s.getBool("figures/minimal", False) if s else False))
 
     # Comparison panels drawn as a scalar bar/box/violin — each gets its OWN
     # format in Preferences (figures/style_<key>).  AUC is NOT here: its single
@@ -1163,11 +1166,16 @@ class AnalysisWorkspaceController(QObject):
                 c._deliver_figure(gen, img)
 
         cfg = dict(self._cfg)
+        try:
+            cfg["_stats_config"] = self._stats_config()
+        except Exception:
+            cfg["_stats_config"] = None
         s = self._settings
         if s is not None:
             cfg["_logd_style"] = s.getStr("figures/logd_style", "overlaid")
             cfg["_group_style"] = s.getStr("figures/group_style", "box_points")
             cfg["_length_style"] = s.getStr("figures/length_style", "density")
+            cfg["_minimal"] = s.getBool("figures/minimal", False)
             try:
                 cfg["_mobile_d"] = float(s.get("analysis/mobile_d", MOBILE_D_THRESHOLD_DEFAULT))
             except (TypeError, ValueError):

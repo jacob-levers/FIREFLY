@@ -188,7 +188,7 @@ def render_msd(groups, data, lags_s, *, style="mean_faceted", err="SEM",
 
 # ── group comparison (scalar metrics): box+points / grouped / violin / bar ───
 def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points",
-                          stat_label="", tp_order=None, tp_colors=None,
+                          stat_label="", pairs=None, tp_order=None, tp_colors=None,
                           group_colors=None, theme=None, ylabel="",
                           err="SEM"):
     """Draw a scalar-metric group comparison into ``subplotspec``.
@@ -197,7 +197,10 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
              the unit).  ``box_points`` / ``violin`` / ``bar`` pool timepoints;
              ``grouped`` splits each group into its timepoints.
     style  : ``'box_points'`` | ``'grouped'`` | ``'violin'`` | ``'bar'``.
-    stat_label : annotation (e.g. "Kruskal–Wallis, p = 0.013"), from the caller.
+    stat_label : the p-value label (e.g. "p = 0.013"), drawn above the axes when
+                 there are no `pairs` to bracket.
+    pairs      : ``[(i, j, "p = …")]`` — a bracket with that label is drawn between
+                 groups i and j, above the data.
     """
     from matplotlib.lines import Line2D
 
@@ -245,7 +248,8 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
                 v = np.asarray(v, float); pos = i + (j - (len(tp_order) - 1) / 2) * w
                 _box(ax, [v], [pos], w * 0.9, [tpc[tp]])
                 ax.scatter(np.full(len(v), pos) + rng.uniform(-0.04, 0.04, len(v)),
-                           v, color=th["fg"], s=11, zorder=3)
+                           v, color=tpc[tp], s=9, zorder=3, edgecolors=th["bg"],
+                           linewidths=0.5)
         _style(ax)
         if len(tp_order) > 1:
             ax.legend([Line2D([0], [0], color=tpc[tp], lw=8) for tp in tp_order],
@@ -262,7 +266,8 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
             for i in idx:
                 d = data[i]
                 ax.scatter(np.full(len(d), i) + rng.uniform(-0.09, 0.09, len(d)),
-                           d, color=th["fg"], s=14, zorder=3)
+                           d, color=gc[groups[i]], s=11, zorder=3, edgecolors=th["bg"],
+                           linewidths=0.5)
         _style(ax)
     elif style == "bar":
         means = [float(np.mean(_pool(g))) if len(_pool(g)) else 0.0 for g in groups]
@@ -279,12 +284,17 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
             for i in idx:
                 d = data[i]
                 ax.scatter(np.full(len(d), i) + rng.uniform(-0.12, 0.12, len(d)),
-                           d, color=th["fg"], s=15, zorder=4)
+                           d, color=gc[groups[i]], s=12, zorder=4, edgecolors=th["bg"],
+                           linewidths=0.5)
         _style(ax)
 
-    if stat_label:
-        ax.text(0.02, 0.97, stat_label, transform=ax.transAxes, va="top",
-                fontsize=10, color=th["fg"])
+    if pairs:                             # a bracket + p-value per compared pair
+        from firefly.analysis.fa_figure_common import draw_pvalue_brackets
+        top = max((np.nanmax(_pool(g)) for g in groups if len(_pool(g))), default=None)
+        draw_pvalue_brackets(ax, list(pairs), color=th["fg"], fontsize=9, data_top=top)
+    elif stat_label:                      # above the plot, clear of the data
+        ax.text(0.5, 1.02, stat_label, transform=ax.transAxes, ha="center",
+                va="bottom", fontsize=10, color=th["fg"])
     return ax
 
 
