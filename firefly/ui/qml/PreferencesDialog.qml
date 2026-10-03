@@ -58,7 +58,7 @@ Item {
         { n: "Immobile", c: "#e05252" }, { n: "Confined", c: "#f5a623" },
         { n: "Brownian", c: "#4a90d9" }, { n: "Directed", c: "#7ed321" }]
     readonly property var motionCb: [
-        { n: "Immobile", c: "#d55e00" }, { n: "Confined", c: "#e69f00" },
+        { n: "Immobile", c: "#d55e00" }, { n: "Confined", c: "#f0e442" },
         { n: "Brownian", c: "#0072b2" }, { n: "Directed", c: "#009e73" }]
     readonly property var cmapStops: ({
         "Inferno": ["#000004", "#420a68", "#932667", "#dd513a", "#fca50a", "#fcffa4"],
@@ -605,7 +605,7 @@ Item {
                     }
                     PrefRow {
                         label: "Distribution curves"
-                        desc: "Log D, track length, dwell time and turning angles. Per recording: each recording's curve, averaged, so every recording counts once, with the SEM across recordings shaded (as in Bademosi et al. 2017). Pooled tracks: one curve of all a group's tracks, so recordings with more tracks count for more."
+                        desc: "Log D, track length, dwell time and turning angles. Per recording: each recording's curve, averaged, so every recording counts once, with the SEM across recordings shaded (as in the lab's published figures). Pooled tracks: one curve of all a group's tracks, so recordings with more tracks count for more."
                         Select { objectName: "curveWeightingSelect"; implicitWidth: 170; model: root.curveLabels
                                  currentIndex: (root.rev, Math.max(0, root.curveValues.indexOf(Settings.getStr("figures/curve_weighting", "recording"))))
                                  onPicked: (t) => { var i = root.curveLabels.indexOf(t)

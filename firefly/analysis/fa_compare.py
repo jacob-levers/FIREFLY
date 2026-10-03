@@ -13,6 +13,7 @@ import threading
 from dataclasses import dataclass, field
 from firefly.analysis.fa_constants import (
     MOTION_CLASS_ORDER, motion_class_colors, label_text_color, DEFAULT_FRAME_INTERVAL_S,
+    DEFAULT_PIXEL_SIZE_UM,
 )
 from firefly.analysis.fa_theme import _theme_palette, style_axes
 from firefly.analysis.fa_figure_common import (group_curve, draw_sem_band,
@@ -194,6 +195,30 @@ def _day_label(day, all_days):
     return d.strftime("%-d %b %Y" if len(years) > 1 else "%-d %b")
 
 
+def _scalar_stats(arrs, labels, stats_config):
+    """``(cfg, omnibus, pairwise)`` for one per-replicate scalar across groups,
+    with the within-metric correction applied onto each pair (``p_within``,
+    ``stars_within``) — also done centrally for the CSV, here so a panel's first
+    draw is already correct.  Self-correcting post-hocs (Games-Howell / Tukey /
+    Dunnett) already control their own family and are not corrected again."""
+    from firefly.analysis.fa_stats_config import (
+        normalize_stats_config, correct_pvalues, stars_for)
+    cfg = normalize_stats_config(stats_config)
+    omnibus, pairwise = _STN(arrs, labels, cfg)
+    _corr_idx = [k for k, pw in enumerate(pairwise)
+                 if not pw.get("self_corrected")]
+    _wp = correct_pvalues([pairwise[k]["p"] for k in _corr_idx], cfg["correction"])
+    _wmap = dict(zip(_corr_idx, _wp))
+    for k, pw in enumerate(pairwise):
+        if pw.get("self_corrected"):
+            pw["p_within"] = pw.get("p")
+            pw["stars_within"] = stars_for(pw.get("p"), cfg["alpha"])
+        else:
+            pw["p_within"] = _wmap[k]
+            pw["stars_within"] = stars_for(_wmap[k], cfg["alpha"])
+    return cfg, omnibus, pairwise
+
+
 def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                      ylabel="", record_stats=None, metric_name="",
                      xtick_labels=None, stats_config=None, annot_sink=None,
@@ -300,25 +325,7 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     # Stats — config-driven; the displayed p uses the chosen multiple-comparison
     # correction so the figure agrees with the CSV.  Only the p-value is drawn;
     # the test, effect sizes and correction live in the statistics CSV/report.
-    from firefly.analysis.fa_stats_config import (
-        normalize_stats_config, correct_pvalues, stars_for)
-    cfg = normalize_stats_config(stats_config)
-    omnibus, pairwise = _STN(arrs, labels, cfg)
-    # Within-metric correction onto the pairwise list (also done centrally for
-    # the CSV; computed here so the initial draw is already correct).
-    # Self-correcting post-hocs (Games-Howell / Tukey / Dunnett) already control
-    # their own family — don't double-correct them here either.
-    _corr_idx = [k for k, pw in enumerate(pairwise)
-                 if not pw.get("self_corrected")]
-    _wp = correct_pvalues([pairwise[k]["p"] for k in _corr_idx], cfg["correction"])
-    _wmap = dict(zip(_corr_idx, _wp))
-    for k, pw in enumerate(pairwise):
-        if pw.get("self_corrected"):
-            pw["p_within"] = pw.get("p")
-            pw["stars_within"] = stars_for(pw.get("p"), cfg["alpha"])
-        else:
-            pw["p_within"] = _wmap[k]
-            pw["stars_within"] = stars_for(_wmap[k], cfg["alpha"])
+    cfg, omnibus, pairwise = _scalar_stats(arrs, labels, stats_config)
     if record_stats is not None and metric_name:
         record_stats[metric_name] = {"omnibus": omnibus, "pairwise": pairwise}
 
@@ -374,6 +381,82 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                 ha="center", va="top", fontsize=8, color=sig_col)
     if entries and annot_sink is not None and metric_name:
         annot_sink[metric_name] = entries
+
+
+# Data units added to the right of a categorical panel's x-range for an
+# in-axes key (state bars, motion classes): a key drawn outside the axes made
+# tight_layout give up on the whole comparison figure.
+KEY_STRIP = 1.3
+
+
+def _state_bars(ax, values, labels, colors, palette, *, ylabel, scale=1.0,
+                stats_records=None, metric_prefix="", stats_config=None,
+                test=True):
+    """Diffusive-state bars: for each state (x), one bar per
+    group — the mean across recordings ± SEM, the recordings as dots — and a
+    p-value bracket (stars in a minimal figure) for each compared pair within
+    the state.  ``values[g][s]`` holds group g's per-recording values for state
+    s.  ``test=False`` skips the statistics (a paired two-factor design)."""
+    from firefly.analysis.fa_states import STATE_KEYS, STATE_NAMES
+    from firefly.analysis.fa_figure_common import (select_bracket_pairs,
+                                                   draw_pvalue_brackets)
+    import matplotlib.colors as _mc
+    n = len(labels)
+    width = 0.8 / max(n, 1)
+    neutral = palette.get("TXT", "#333333")
+    bg = np.array(_mc.to_rgb(palette.get("BG", "#ffffff")))
+    rng = np.random.default_rng(0)
+    sig_style = getattr(_TL, "sig_style", "p")
+    top, brackets = 0.0, []
+    xpos = lambda si, gi: si - 0.4 + width * (gi + 0.5)
+    for si, key in enumerate(STATE_KEYS):
+        arrs = []
+        for gi in range(n):
+            a = np.asarray(values[gi][si], dtype=float) * scale
+            arrs.append(a[np.isfinite(a)])
+        for gi, a in enumerate(arrs):
+            if not len(a):
+                continue
+            m = float(a.mean())
+            sem = float(a.std(ddof=1) / np.sqrt(len(a))) if len(a) > 1 else 0.0
+            fill = (*(0.15 * np.array(_mc.to_rgb(colors[gi])) + 0.85 * bg), 0.6)
+            ax.bar(xpos(si, gi), m, width * 0.88, color=fill, edgecolor=colors[gi],
+                   linewidth=1.4, zorder=2)
+            ax.errorbar(xpos(si, gi), m, yerr=sem, fmt="none", ecolor=neutral,
+                        capsize=2.5, elinewidth=1.0, zorder=4)
+            ax.scatter(xpos(si, gi) + rng.uniform(-0.22, 0.22, len(a)) * width, a,
+                       color=colors[gi], s=14, zorder=3, edgecolors=palette.get("BG", "#ffffff"),
+                       linewidths=0.5)
+            top = max(top, float(a.max()), m + sem)
+        if not test or sum(len(a) > 0 for a in arrs) < 2:
+            continue
+        cfg, omnibus, pairwise = _scalar_stats(arrs, labels, stats_config)
+        if stats_records is not None:
+            stats_records[f"{metric_prefix}_{key}"] = {"omnibus": omnibus, "pairwise": pairwise}
+        use_corr = cfg["figure_stars_use_corrected"]
+        pairs = [(pw["i"], pw["j"], pw.get("p_within", pw.get("p")) if use_corr else pw.get("p"))
+                 for pw in pairwise]
+        for i, j, p in select_bracket_pairs(pairs, n, cfg.get("alpha", 0.05)):
+            brackets.append((xpos(si, i), xpos(si, j),
+                             significance_label(p, sig_style, cfg.get("alpha", 0.05))))
+    ax.set_xticks(range(len(STATE_KEYS)))
+    ax.set_xticklabels(STATE_NAMES)
+    # a strip on the right, inside the axes, for the group key (a key outside
+    # the axes stopped tight_layout fitting the whole comparison figure)
+    ax.set_xlim(-0.6, len(STATE_KEYS) - 0.4 + KEY_STRIP)
+    ax.set_ylim(0, (top or 1.0) * 1.08)
+    ax.set_ylabel(ylabel)
+    if brackets:
+        draw_pvalue_brackets(ax, brackets, color=palette["SIG"], fontsize=7.5, data_top=top)
+    # The groups are not on the x-axis (the states are), so key them beside the
+    # panel; kept in the full figure, dropped with every legend when minimal.
+    from matplotlib.patches import Patch
+    ax.legend(handles=[Patch(facecolor=(*(0.15 * np.array(_mc.to_rgb(c)) + 0.85 * bg), 0.6),
+                             edgecolor=c, linewidth=1.4, label=str(l))
+                       for l, c in zip(labels, colors)],
+              loc="center right", frameon=False,
+              fontsize=7.5, handlelength=1.2, handletextpad=0.5, borderaxespad=0.3)
+    ax._firefly_keep_legend = True
 
 
 def _maybe_end_labels(ax, ends, colors, labels, *,
@@ -728,8 +811,8 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
             ax.set_xlabel(LOGD_AXIS_LABEL)
 
 
-# The van Swinderen lab's axis wording (Bademosi et al. 2017; Hines &
-# van Swinderen 2021), with the units.
+# The van Swinderen lab's axis wording (Hines & van Swinderen 2021), with the
+# units.
 LOGD_AXIS_LABEL = "Log₁₀ diffusion coefficient (µm²/s)"
 # Relative-frequency style: 0.1-log-unit bins centred on −5.0, −4.9 … 1.0, as
 # in the lab's figures (Hines & van Swinderen 2021 Fig. 1J).
@@ -760,7 +843,7 @@ def _logd_kde_or_none(pooled, xk):
 def _annotate_logd_mobility(ax, thr, pal, xlim, vertical=False):
     """Label the two sides of the mobile/immobile split, as Constals et al.
     (2015) Neuron 85:787-803 Fig. 1C does — in the van Swinderen lab's words,
-    "Slow/immobile fraction" | "Fast/mobile fraction" (Bademosi et al. 2017).  Without it the dashed guide is just an unexplained line: the
+    "Slow/immobile fraction" | "Fast/mobile fraction".  Without it the dashed guide is just an unexplained line: the
     reader cannot see which side is which, nor that the threshold is a CHOICE
     rather than a property of the data.  Drawn outside the data area so it can
     never occlude a density curve.
@@ -890,7 +973,7 @@ def _logd_relfreq(cells, centres, per_recording=True):
 def _render_logd_relfreq(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0),
                          per_recording=True):
     """Relative-frequency histogram of log₁₀ D, the van Swinderen lab's way
-    (Bademosi et al. 2017 Fig. 2e; Hines & van Swinderen 2021 Fig. 1J): the
+    (Hines & van Swinderen 2021 Fig. 1J): the
     fraction of a recording's trajectories in each 0.1-log-unit bin, averaged
     across recordings, points joined, SEM error bars.  Values are already
     clipped into ``xlim``, so the end bins hold the clipped trajectories, as
@@ -1217,6 +1300,129 @@ def format_p(pv):
     return f"p = {pv:.2e}" if pv < 0.001 else f"p = {pv:.3f}"
 
 
+# ── Panel shapes and arrangement ─────────────────────────────────────────────
+# The full comparison figure is COMPARISON_GRID_COLS columns of
+# PANEL_COL_IN inches; every row is PANEL_ROW_IN tall.  A panel spans the
+# columns its content needs: box / violin / bar comparisons are near square (a
+# third of a row), the distribution curves and the per-group MSD facets are
+# wide (half a row), the polar panel is square, and a panel with many groups
+# widens so its labels fit.  Panels of one shape share rows, a short row is
+# centred, and rows run in PANEL_IMPORTANCE order.
+COMPARISON_GRID_COLS = 12
+PANEL_COL_IN = 1.05
+PANEL_ROW_IN = 3.6
+_CURVE_PANELS = ("logd_dist", "track_length", "dwell_cdf", "turning_angles")
+# Most important first: the van Swinderen lab's headline sptPALM measures (MSD,
+# its AUC, the D distribution, the mobile fraction), then motion and binding,
+# then trajectory geometry, then trajectory bookkeeping and QC.
+PANEL_IMPORTANCE = (
+    "msd", "auc", "logd_dist", "mob_immob", "states_occupancy", "states_d",
+    "states_diagram", "jdd", "rg", "dwell_cdf", "netdisp", "step", "speed", "path",
+    "turning_angles", "dir", "radial_dist", "van_hove", "vacf",
+    # per-trajectory α classes: descriptive — unreliable on short trajectories
+    "motion_classes",
+    "track_length", "dur", "track_count", "nlocs", "fluor", "linkstep", "linkspeed")
+
+
+def panel_span(key, n_cards, *, msd_style="mean_faceted", logd_style="overlaid",
+               auc_style="box_points", n_x=None):
+    """Columns (of COMPARISON_GRID_COLS) the comparison panel ``key`` spans.
+    ``n_cards``: groups (cards) on the figure; ``n_x``: categories on a scalar
+    panel's x-axis when that differs (time points in a two-factor design)."""
+    G = COMPARISON_GRID_COLS
+    per_group = lambda n: G // 3 if n <= 4 else (G // 2 if n <= 8 else G)
+    if key == "msd":
+        return G // 2 if (msd_style == "overlaid" or n_cards <= 3) else G
+    if key == "logd_dist":
+        return per_group(n_cards) if logd_style == "violin" else G // 2
+    if key in _CURVE_PANELS:
+        return G // 2
+    if key == "auc" and auc_style in ("paired", "delta"):
+        return G // 2
+    if key.startswith("__contract"):       # a notice with a paragraph of text
+        return G
+    if key == "radial_dist":
+        return G // 3
+    if key == "states_diagram":            # the groups' diagrams side by side
+        return G
+    if key in ("states_occupancy", "states_d"):   # a bar per group in each of 3 states
+        return G // 2 if n_cards <= 3 else G
+    if key == "motion_classes":            # a stacked bar per group + a side legend
+        return G // 3 if n_cards <= 3 else (G // 2 if n_cards <= 6 else G)
+    return per_group(n_cards if n_x is None else n_x)
+
+
+DIAGRAMS_PER_ROW = 4
+# Panels whose replicate dots are shaped by recording day (the box / violin /
+# bar comparisons) — the only ones the recording-day key explains.
+DAY_SHAPED_PANELS = frozenset({
+    "auc", "fluor", "mob_immob", "rg", "netdisp", "path", "step", "speed",
+    "linkstep", "linkspeed", "dir", "dur", "track_count", "nlocs", "van_hove", "vacf"})
+STATE_DIAGRAM_ROW_RATIO = 1.35         # a diagram row's height, in normal rows
+
+
+def panel_rows(key, n_cards):
+    """Rows (of PANEL_ROW_IN) the panel spans: one, except the per-group state
+    diagrams, which wrap DIAGRAMS_PER_ROW to a row."""
+    if key == "states_diagram":
+        return max(1, -(-int(n_cards) // DIAGRAMS_PER_ROW))
+    return 1
+
+
+def _panel_rank(key):
+    if key.startswith("__contract"):
+        return -1                              # an unusable family is said first
+    try:
+        return PANEL_IMPORTANCE.index(key)
+    except ValueError:
+        return len(PANEL_IMPORTANCE)
+
+
+def comparison_layout(keys, spans, heights=None, grid_cols=COMPARISON_GRID_COLS):
+    """``([(row, col, span, height)] per panel, n_rows)``.  Panels of one span
+    fill rows together in importance order; rows are ordered by their most
+    important panel.  The leftover (short) rows of different shapes share one
+    row when they fit, at the higher one's place, so the figure does not end in
+    a run of lone panels; a short row is centred.  A panel more than one row
+    tall (``heights``) has its rows to itself."""
+    span = [min(sp, grid_cols) for sp in spans]
+    height = list(heights) if heights is not None else [1] * len(keys)
+    order = sorted(range(len(keys)), key=lambda i: (_panel_rank(keys[i]), i))
+    rows = []                                  # panel indices per row, rank order
+    open_row = {}                              # span -> the row still filling
+    for i in order:
+        if height[i] > 1:                      # a tall panel: its own rows
+            rows.append([i])
+            continue
+        row = open_row.get(span[i])
+        if row is None or sum(span[j] for j in row) + span[i] > grid_cols:
+            row = []
+            rows.append(row)
+            open_row[span[i]] = row
+        row.append(i)
+    used = lambda row: sum(span[j] for j in row)
+    tall = lambda row: any(height[j] > 1 for j in row)
+    for a in rows:                             # merge short rows that fit together
+        if not a or used(a) >= grid_cols or tall(a):
+            continue
+        for b in rows:
+            if b is a or not b or tall(b) or rows.index(b) < rows.index(a):
+                continue
+            if used(b) < grid_cols and used(a) + used(b) <= grid_cols:
+                a.extend(b)
+                b.clear()
+    rows = [r for r in rows if r]
+    place = [None] * len(keys)
+    top = 0
+    for members in rows:
+        col = (grid_cols - used(members)) // 2
+        for i in members:
+            place[i] = (top, col, span[i], height[i])
+            col += span[i]
+        top += max(height[i] for i in members)
+    return place, top
+
+
 def comparison_grid(n):
     """(rows, cols) the comparison figure packs `n` panels into — the single
     source of truth shared with the UI panel-picker's live grid count."""
@@ -1372,6 +1578,18 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             vacf_persistence = np.nan
         durations = _track_durations(trk, fi)
         observed_times = _track_observed_times(trk, fi)
+        # vbSPT-style diffusive states: the run's saved result, else fitted
+        # here from its trajectories (three-state model only).
+        from firefly.analysis import fa_states
+        try:
+            _st = (fa_states.load_saved_states(summary.get("data_dir"), stem)
+                   or (fa_states.diffusive_states(trk, float(p.get("pixel_size_um")
+                                                             or DEFAULT_PIXEL_SIZE_UM),
+                                                  fi, k_max=None)
+                       if trk is not None else None))
+        except Exception:
+            _st = None
+        states = fa_states.state_summary(_st)
         if d is not None and "fit_status" in getattr(d, "columns", []):
             status = d["fit_status"].astype(str)
             n_below_resolution = int((status == "below_resolution").sum())
@@ -1399,6 +1617,7 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                 float(n_below_resolution / n_tracks) if n_tracks else np.nan),
             "n_diffusion_eligible": n_diffusion_eligible,
             "recording_day":    _recording_day(p),
+            **states,
             "auc_msd":          _msd_auc(summary["ensemble_msd"], fi),
             "spot_intensity":   _spot_intensity(summary),
             "mob_immob_ratio":  _mob_immob_ratio(d, mobile_d_threshold),
@@ -1519,7 +1738,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                  panel_styles=None,
                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
-                 minimal=False, motion_colourblind=False, curve_weighting="recording"):
+                 minimal=False, motion_colourblind=False, curve_weighting="recording",
+                 panel_only=False, export_panels=True):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
 
@@ -1580,6 +1800,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # Distribution curves (log D, track length, dwell, turning angles): each
     # recording weighted equally, mean ± SEM (default) — or every track pooled.
     per_recording = (curve_weighting != "tracks")
+    # everything a single-panel export re-renders with (export_panels below)
+    _style = dict(theme=theme, logd_plot_style=logd_plot_style, msd_plot_style=msd_plot_style,
+                  msd_err=msd_err, auc_plot_style=auc_plot_style, group_style=group_style,
+                  panel_styles=panel_styles, logd_clip_d_min=logd_clip_d_min,
+                  logd_clip_d_max=logd_clip_d_max, minimal=minimal,
+                  motion_colourblind=motion_colourblind, curve_weighting=curve_weighting)
     # Replicate dots shaped by recording day (one-way scalar panels) — the same
     # day → shape everywhere in the figure, keyed under the group band.
     _days = (list(summary_df["recording_day"])
@@ -1594,7 +1820,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     stats_records = {}
     if panels is None:
         panels = {"msd", "auc", "fluor", "logd_dist", "mob_immob",
-                  "motion_classes", "track_length", "rg", "netdisp", "path",
+                  "motion_classes", "states_occupancy", "states_d", "states_diagram",
+                  "track_length", "rg", "netdisp", "path",
                   "step", "speed", "dir", "dur", "nlocs", "jdd", "dwell_cdf",
                   "turning_angles", "radial_dist", "van_hove", "vacf"}
     requested_panels = set(panels)
@@ -1626,7 +1853,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # ── Render the figure ────────────────────────────────────────────────────
     panel_order = warning_panels + [
                    "msd", "auc", "fluor", "logd_dist", "mob_immob",
-                   "motion_classes", "track_length", "rg", "netdisp", "path",
+                   "motion_classes", "states_occupancy", "states_d",
+                   "states_diagram", "track_length", "rg", "netdisp", "path",
                    "step", "speed", "linkstep", "linkspeed",
                    "dir", "dur", "track_count", "nlocs",
                    "jdd", "dwell_cdf", "turning_angles", "radial_dist",
@@ -1641,7 +1869,20 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         print(f"  Compare: 'radial_dist' NOT in requested panels — "
               f"check the 'Radial distribution (polar)' tickbox in the "
               f"Compare tab to include it.")
-    nrows, ncols = comparison_grid(n_plots)
+    _n_x = len(tp_order) if two_factor else None
+    # paired / Δ AUC only in a group × time-point design; else it is a box panel
+    _auc = (auc_plot_style if two_factor and len(tp_order) >= 2 else "box_points")
+    _spans = [panel_span(k, (len(group_order) if two_factor and k == "msd" else n_groups),
+                         msd_style=msd_plot_style, logd_style=logd_plot_style,
+                         auc_style=_auc, n_x=_n_x) for k in enabled]
+    _heights = [panel_rows(k, n_groups) for k in enabled]
+    _place, nrows = comparison_layout(enabled, _spans, _heights)
+    # The figure is as wide as its widest row (one panel → exactly that panel);
+    # narrower rows stay centred in it.
+    _widest = max(sum(w for r2, _c, w, _h in _place if r2 == r)
+                  for r in {r for r, _c, _w, _h in _place})
+    _place = [(r, c - (COMPARISON_GRID_COLS - _widest) // 2, w, h) for r, c, w, h in _place]
+    ncols = _widest
 
     # Quick-glance summary-band geometry (the band itself is drawn after the
     # suptitle, below).  Size it in ABSOLUTE inches and grow the figure height to
@@ -1653,10 +1894,28 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     band_compact = band_ncol > 1
     band_fs = 9 if n_groups <= 8 else 8
     band_row_in = 0.26                       # inches per band row
-    band_h_in = (band_nrow + bool(day_marker)) * band_row_in + 0.46   # band (+ day key) + gap
+    # The recording-day key: only where some dot is day-shaped (the box / bar
+    # comparison panels), one line when it fits the figure's width, else under
+    # a heading in rows.
+    _show_day_key = bool(day_marker) and not minimal and bool(set(panels) & DAY_SHAPED_PANELS)
+    _day_fit = max(3, int(ncols * PANEL_COL_IN / 1.15))
+    _day_inline = _show_day_key and len(day_marker) + 1 <= _day_fit
+    _day_ncol = (len(day_marker) + 1 if _day_inline
+                 else min(len(day_marker), _day_fit)) if _show_day_key else 1
+    _day_rows = (1 if _day_inline else 1 + -(-len(day_marker) // _day_ncol)) \
+        if _show_day_key else 0
+    band_h_in = (band_nrow + _day_rows) * band_row_in + 0.46   # band (+ day key) + gap
+    if panel_only:                           # one panel: no title or group band
+        band_h_in = _day_rows * band_row_in + 0.14
     if minimal:
         band_h_in = 0.12                     # no title, no band — just a top margin
-    base_h = nrows * 3.6
+    # rows holding the state diagrams are taller (a diagram wants a square)
+    _row_ratio = [1.0] * nrows
+    for _k, (r, _c, _w, h) in zip(enabled, _place):
+        if _k == "states_diagram":
+            for rr in range(r, r + h):
+                _row_ratio[rr] = STATE_DIAGRAM_ROW_RATIO
+    base_h = sum(_row_ratio) * PANEL_ROW_IN
 
     pal = _theme_palette(theme)
     plt.rcParams.update({
@@ -1671,11 +1930,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         "legend.facecolor": pal["PNL"], "legend.edgecolor": pal["GRD"],
     })
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.2, base_h + band_h_in),
-                             facecolor=pal["BG"])
-    axes = np.array(axes).reshape(-1)
-    for ax in axes[n_plots:]:
-        ax.axis("off")
+    fig = plt.figure(figsize=(ncols * PANEL_COL_IN, base_h + band_h_in),
+                     facecolor=pal["BG"])
+    _gs = fig.add_gridspec(nrows, ncols, height_ratios=_row_ratio)
+    # one axes per panel, in draw order, each spanning its cells
+    axes = np.array([fig.add_subplot(_gs[r:r + h, c:c + w]) for r, c, w, h in _place],
+                    dtype=object)
 
     panel_idx = 0
     def _next_ax():
@@ -2016,8 +2276,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         bottom = np.zeros(n_groups)
         for ci, (cname, ccol) in enumerate(zip(classes, class_colors)):
             seg = means[:, ci]
-            ax.bar(x, seg, 0.7, bottom=bottom,
-                   color=ccol, edgecolor=pal["BG"], linewidth=0.6, label=cname)
+            ax.bar(x, seg, 0.62, bottom=bottom,      # a surface-coloured gap between segments
+                   color=ccol, edgecolor=pal["BG"], linewidth=1.2, label=cname)
             # Label each segment with its mean % when it's big enough to read.
             for gi in range(n_groups):
                 if seg[gi] >= 0.06:
@@ -2059,19 +2319,87 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                            ha="center" if _mc_rot == 0 else "right",
                            rotation_mode="anchor",
                            fontsize=8 if n_groups <= 6 else 7)
-        # Headroom above the full (=1.0) stacks for an in-axes legend, so
-        # tight_layout reserves space for it (a below-axis legend would not be
-        # accounted for and could overlap the panel beneath).  Minimal mode has
-        # no legend, so no headroom.
-        ax.set_ylim(0, 1.02 if minimal else 1.42)
+        # The key sits beside the bars, inside the axes in a strip to their
+        # right (outside the axes it broke the figure's layout), top class first
+        # as in the stack, so the axis needs no headroom.
+        ax.set_ylim(0, 1.0)
+        ax.set_xlim(-0.6, n_groups - 0.4 + max(KEY_STRIP, 0.4 * n_groups))
         ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
         ax.set_ylabel("Fraction of trajectories")
         ax.set_title("Motion classes")
-        ax.legend(frameon=False, loc="upper center", ncol=2, fontsize=7.5,
-                  columnspacing=1.0, handlelength=1.1, handletextpad=0.4)
+        _h, _l = ax.get_legend_handles_labels()
+        ax.legend(_h[::-1], _l[::-1], frameon=False, loc="center right",
+                  fontsize=7.5, handlelength=1.0, handleheight=1.0,
+                  handletextpad=0.4, borderaxespad=0.3)
         # This panel's legend maps colour→motion class (group identity is already
         # on the x-axis), so exempt it from the shared-group-legend stripping pass.
         ax._firefly_keep_legend = True
+
+    # ── 5b. Diffusive states (vbSPT-style HMM; fa_states) ───────────────────
+    def _per_card(col):
+        """Each card's per-recording values of a summary column."""
+        out = []
+        for gi in range(n_groups):
+            m = summary_df["group"] == group_factor[gi]
+            if two_factor:
+                m = m & (summary_df["timepoint"] == timepoints_per_card[gi])
+            out.append(summary_df.loc[m, col].to_numpy(dtype=float)
+                       if col in summary_df else np.array([]))
+        return out
+    for _pkey, _what, _ylabel, _title, _scale in (
+            ("states_occupancy", "occupancy", "State occupation (%)",
+             "Diffusive state occupancy", 100.0),
+            ("states_d", "D", "Apparent diffusion coefficient (µm²/s)",
+             "Diffusion coefficient by state", 1.0)):
+        if _pkey not in panels:
+            continue
+        ax = _next_ax()
+        from firefly.analysis.fa_states import STATE_KEYS as _SK
+        _cols = [_per_card(f"state_{_what}_{k}") for k in _SK]
+        _vals = [[_cols[si][gi] for si in range(len(_SK))] for gi in range(n_groups)]
+        _state_bars(ax, _vals, labels, colors, pal, ylabel=_ylabel, scale=_scale,
+                    stats_records=stats_records, metric_prefix=f"state_{_what}",
+                    stats_config=cfg, test=not two_factor)
+        ax.set_title(_title)
+
+    # ── 5c. Diffusive-state diagram, one per group ───────────────────────────
+    if "states_diagram" in panels:
+        from firefly.analysis.fa_states import (STATE_KEYS as _SK, STATE_NAMES as _SN,
+                                                STATE_COLORS as _SC)
+        from firefly.analysis.fa_figure_common import draw_state_diagram
+        ax = _next_ax()
+        ss = ax.get_subplotspec()
+        ax.remove()
+        _drow = panel_rows("states_diagram", n_groups)
+        _dcol = min(DIAGRAMS_PER_ROW, n_groups)
+        sub = ss.subgridspec(1 + _drow, _dcol, height_ratios=[0.07] + [1.0] * _drow,
+                             hspace=0.04, wspace=0.04)
+        tax = fig.add_subplot(sub[0, :])
+        tax.axis("off")
+        tax.set_title("Diffusive state model")
+        # first guess at the text size; rescale_state_diagrams() fits it to
+        # the square each diagram actually gets once the figure is laid out
+        from firefly.analysis.fa_figure_common import state_diagram_fontscale
+        _fscale = state_diagram_fontscale(min(COMPARISON_GRID_COLS * PANEL_COL_IN / _dcol,
+                                              PANEL_ROW_IN * STATE_DIAGRAM_ROW_RATIO * 0.7))
+        _mean = lambda col, gi: float(np.nanmean(_per_card(col)[gi])) if np.isfinite(
+            _per_card(col)[gi]).any() else np.nan
+        for gi in range(n_groups):
+            r_, c_ = divmod(gi, _dcol)
+            dax = fig.add_subplot(sub[1 + r_, c_])
+            occ = [_mean(f"state_occupancy_{k}", gi) for k in _SK]
+            Dv = [_mean(f"state_D_{k}", gi) for k in _SK]
+            Pm = [[_mean(f"state_P_{a}_{b}", gi) for b in _SK] for a in _SK]
+            n_fit = int(np.isfinite(_per_card(f"state_occupancy_{_SK[0]}")[gi]).sum())
+            if not np.all(np.isfinite(occ)):
+                dax.axis("off")
+                dax.text(0.5, 0.5, f"{labels[gi]}\nno diffusive-state fit", ha="center",
+                         va="center", transform=dax.transAxes, color=pal["MUT"], fontsize=9)
+                continue
+            draw_state_diagram(dax, Dv, occ, Pm, names=_SN, colors=_SC,
+                               text_color=pal["TXT"], background=pal["PNL"],
+                               title=f"{labels[gi]}  (n = {n_fit})", title_color=colors[gi],
+                               fontscale=_fscale)
 
     # ── 6. Track length distribution (CDF, x clipped at 99th %ile) ────────────
     if "track_length" in panels:
@@ -2572,7 +2900,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     if rd.legacy_only:
         suptitle += "  [legacy metrics schema 1]"
     fig_h = base_h + band_h_in
-    if not minimal:
+    if not minimal and not panel_only:
         fig.suptitle(suptitle, fontsize=12, fontweight="bold", color=pal["TXT"],
                      y=1.0 - 0.16 / fig_h)
     for ax in axes[:n_plots]:
@@ -2626,7 +2954,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     band_top = 1.0 - 0.52 / fig_h            # first band row, below the suptitle
     row_step = band_row_in / fig_h
     col_xs = [(c + 0.5) / band_ncol for c in range(band_ncol)]
-    for i in range(0 if minimal else n_groups):
+    for i in range(0 if (minimal or panel_only) else n_groups):
         r, c = divmod(i, band_ncol)
         n_cells, n_trk, med_D, med_a, n_below = _card_summary(i)
         # When the bar panels use numeric x-tick tokens (>4 groups), number the
@@ -2636,24 +2964,37 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  _band_entry(
                      lbl, n_cells, n_trk, med_D, med_a, n_below, band_compact),
                  color=colors[i], fontsize=band_fs, ha="center", va="top")
-    if day_marker and not minimal:               # key for the replicate-dot shapes
+    if _show_day_key:                            # key for the replicate-dot shapes
         from matplotlib.lines import Line2D
         _known = [d for d in day_marker if d]
         _keys = sorted(_known) + ([None] if None in day_marker else [])
-        _h = [Line2D([], [], ls="none", marker=None, label="Recording day:")]
-        _h += [Line2D([], [], ls="none", marker=day_marker[d], ms=6, mfc=pal["MUT"],
-                      mec=pal["BG"], mew=0.6, label=_day_label(d, _known)) for d in _keys]
-        _dk = fig.legend(handles=_h, loc="upper center", ncol=len(_h), frameon=False,
-                         bbox_to_anchor=(0.5, band_top - band_nrow * row_step + 0.04 / fig_h),
+        _h = [Line2D([], [], ls="none", marker=day_marker[d], ms=6, mfc=pal["MUT"],
+                     mec=pal["BG"], mew=0.6, label=_day_label(d, _known)) for d in _keys]
+        if _day_inline:
+            _h = [Line2D([], [], ls="none", marker=None, label="Recording day:")] + _h
+        else:                                    # legends fill by column: read by row
+            _nr = -(-len(_h) // _day_ncol)
+            _h = [_h[r * _day_ncol + c] for c in range(_day_ncol) for r in range(_nr)
+                  if r * _day_ncol + c < len(_h)]
+        _dk_top = (1.0 - 0.06 / fig_h if panel_only
+                   else band_top - band_nrow * row_step + 0.04 / fig_h)
+        _dk = fig.legend(handles=_h, loc="upper center", ncol=_day_ncol, frameon=False,
+                         title=None if _day_inline else "Recording day",
+                         title_fontsize=band_fs,
+                         bbox_to_anchor=(0.5, _dk_top),
                          fontsize=band_fs, labelcolor=pal["TXT"], handlelength=0.8,
                          handletextpad=0.3, columnspacing=1.1, borderaxespad=0)
         _dk._firefly_day_key = True
+        if _dk.get_title() is not None:
+            _dk.get_title().set_color(pal["TXT"])
 
     # No bottom strip (the band replaced the shared legend → legend_rows == 0);
     # reserve only the inch-sized top strip for the summary band.
     bottom = min(0.18, 0.03 + 0.026 * legend_rows) if legend_rows else 0.0
     top = 1.0 - band_h_in / fig_h
     fig.tight_layout(rect=[0, bottom, 1, top])
+    from firefly.analysis.fa_figure_common import rescale_state_diagrams
+    rescale_state_diagrams(fig)
 
     # ── Build statistics dataframe (per metric × pairwise) ────────────────────
     # Bonferroni correction across pairwise comparisons WITHIN each metric:
@@ -2904,6 +3245,19 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             print(f"  Saved: {pdf_path}")
         except Exception as _e:
             print(f"  WARN: comparison figure PDF save failed: {_e}")
+        # ── each panel on its own, numbered in the figure's reading order ─────
+        if export_panels and not panel_only:
+            _pdir = os.path.join(output_dir, f"{output_stem}_panels")
+            _reading = sorted((p for p in zip(enabled, _place)
+                               if not p[0].startswith("__contract")),
+                              key=lambda kp: (kp[1][0], kp[1][1]))
+            for _n, (_key, _p) in enumerate(_reading, 1):
+                try:
+                    _paths = _save_panel(rd, _key, os.path.join(
+                        _pdir, f"{_n:02d}_{panel_file_label(_key)}"), **_style)
+                    print(f"  Saved: {_paths[0]}")
+                except Exception as _e:
+                    print(f"  WARN: panel '{_key}' export failed: {_e}")
 
         # ── Two-factor ANOVA CSV ─────────────────────────────────────────────
         if two_factor and twoway_df is not None and len(twoway_df):
@@ -3044,7 +3398,8 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
                   msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                   panel_styles=None,
                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
-                  minimal=False, motion_colourblind=False, curve_weighting="recording"):
+                  minimal=False, motion_colourblind=False, curve_weighting="recording",
+                  panel_only=False, export_panels=True):
     """Draw (+ optionally save) a comparison from a precomputed `ReportData`.
     Only theme / graph style / panel selection vary here, so this is the cheap
     part to re-run for a live style change on cached data.  Points the memo cache
@@ -3061,7 +3416,8 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
             panel_styles=panel_styles,
             logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
             progress_cb=progress_cb, minimal=minimal,
-            motion_colourblind=motion_colourblind, curve_weighting=curve_weighting)
+            motion_colourblind=motion_colourblind, curve_weighting=curve_weighting,
+            panel_only=panel_only, export_panels=export_panels)
     finally:
         _TL.stat_cache = None
         _TL.sig_style = "p"
@@ -3076,7 +3432,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
                    logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
                    progress_cb=None, stats_config=None, use_native=False,
                    report_data=None, minimal=False, motion_colourblind=False,
-                   curve_weighting="recording"):
+                   curve_weighting="recording", panel_only=False, export_panels=True):
     """Compare N>=2 groups of analysis-output folders -> multi-panel figure,
     summary CSV, statistics CSV and combined PDF report.  Thin wrapper: computes a
     `ReportData` (unless one is supplied via ``report_data``) then renders it, so
@@ -3094,7 +3450,68 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
         group_style=group_style, panel_styles=panel_styles,
         logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
         progress_cb=progress_cb, minimal=minimal,
-        motion_colourblind=motion_colourblind, curve_weighting=curve_weighting)
+        motion_colourblind=motion_colourblind, curve_weighting=curve_weighting,
+        panel_only=panel_only, export_panels=export_panels)
+
+
+# File names for exported panels (the panel's own title, sentence case).
+PANEL_FILE_LABELS = {
+    "msd": "MSD", "auc": "Area under the MSD curve", "fluor": "Fluorescence intensity",
+    "logd_dist": "Diffusion coefficient distribution", "mob_immob": "Mobile fraction",
+    "motion_classes": "Motion classes", "states_occupancy": "Diffusive state occupancy",
+    "states_d": "Diffusion coefficient by state", "states_diagram": "Diffusive state model",
+    "track_length": "Trajectory length", "rg": "Radius of gyration",
+    "netdisp": "Net displacement", "path": "Path length", "step": "Step distance",
+    "speed": "Step speed", "linkstep": "Observed-link displacement",
+    "linkspeed": "Observed-link speed", "dir": "Directionality ratio",
+    "dur": "Trajectory duration", "track_count": "Trajectories detected",
+    "nlocs": "Localisations", "jdd": "Jump-distance populations", "dwell_cdf": "Dwell time",
+    "turning_angles": "Turning angles", "radial_dist": "Radial distribution",
+    "van_hove": "Population heterogeneity", "vacf": "Directional persistence",
+}
+
+
+def panel_file_label(key):
+    """A file-system-safe name for an exported panel."""
+    name = PANEL_FILE_LABELS.get(key, key)
+    return "".join(ch if ch.isalnum() or ch in "-" else "_" for ch in name).strip("_")
+
+
+EXPORT_PANEL_DPI = 300
+
+
+def _save_panel(report_data, panel, path_stem, **render_kwargs):
+    """Render ONE comparison panel on its own (no figure title or group band;
+    its own title and key; the recording-day key when its dots use day shapes)
+    and save it as ``path_stem``.pdf (vector) and .png (EXPORT_PANEL_DPI).
+    Expects to run inside render_report's statistics context."""
+    import matplotlib.pyplot as plt
+    os.makedirs(os.path.dirname(path_stem) or ".", exist_ok=True)
+    fig, _sdf, _st = _draw_report(report_data, output_dir=None, panels={panel},
+                                  pdf_report=False, panel_only=True, export_panels=False,
+                                  **render_kwargs)
+    try:
+        paths = [f"{path_stem}.pdf", f"{path_stem}.png"]
+        fig.savefig(_win_long_path(paths[0]), bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        fig.savefig(_win_long_path(paths[1]), dpi=EXPORT_PANEL_DPI, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+    finally:
+        plt.close(fig)
+    return paths
+
+
+def export_panel(report_data, panel, path_stem, **render_kwargs):
+    """Save one comparison panel as a publication file pair (vector PDF + PNG),
+    the way "Generate full report" saves each panel.  ``render_kwargs`` are
+    render_report's style arguments.  Returns ``[pdf_path, png_path]``."""
+    _TL.stat_cache = report_data.stat_cache
+    _TL.sig_style = "stars" if render_kwargs.get("minimal") else "p"
+    try:
+        return _save_panel(report_data, panel, path_stem, **render_kwargs)
+    finally:
+        _TL.stat_cache = None
+        _TL.sig_style = "p"
 
 
 def _json_safe(obj):

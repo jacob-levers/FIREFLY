@@ -107,8 +107,17 @@ def test_a_real_customisation_is_left_alone():
 
 
 def test_the_legacy_set_is_exactly_the_three_that_were_held_back():
-    assert wd.DEFAULT_COMPARE_PANELS - wd.LEGACY_DEFAULT_COMPARE_PANELS == {
+    assert wd.PRE_STATES_DEFAULT_COMPARE_PANELS - wd.LEGACY_DEFAULT_COMPARE_PANELS == {
         "track_count", "linkstep", "linkspeed"}
+
+
+def test_the_rc19_default_is_upgraded_to_show_the_diffusive_states():
+    """rc.19's full set was saved on every user's behalf; without the upgrade
+    the new state panels would never appear for them."""
+    stored = ",".join(sorted(wd.PRE_STATES_DEFAULT_COMPARE_PANELS))
+    c = AnalysisWorkspaceController(
+        settings=_FakeSettings({"figures/compare_panels": stored}))
+    assert {"states_occupancy", "states_d"} <= c._panels
 
 
 def test_an_unknown_stored_key_is_dropped():

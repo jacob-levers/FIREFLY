@@ -142,16 +142,20 @@ MOTION_CLASS_COLORS_BY_THEME = {
         "Immobile": "#e05252", "Confined": "#f5a623",
         "Brownian": "#4a90d9", "Directed": "#7ed321", "Unknown": "#aaaaaa",
     },
-    # Light — deeper, more-saturated hues so fills/lines don't wash out on white.
+    # Light — the classes touch in every stacked bar, so neighbours differ in
+    # lightness as well as hue (amber Confined between red and blue): ≥ 21 OKLab
+    # ΔE between neighbours for normal, deutan and protan vision.  The previous
+    # red/dark-orange pair was 7.8 (1.8 deutan).
     "Light": {
-        "Immobile": "#d1242f", "Confined": "#bc4c00",
-        "Brownian": "#0969da", "Directed": "#1a7f37", "Unknown": "#6e7781",
+        "Immobile": "#c0392b", "Confined": "#f2b134",
+        "Brownian": "#3a78c2", "Directed": "#55a868", "Unknown": "#8c959f",
     },
     # Publication — Okabe-Ito colour-blind-safe palette (deuteranopia /
     # protanopia / tritanopia distinguishable, and separable in grayscale print).
     "Publication": {
         "Immobile": "#d55e00",   # vermillion
-        "Confined": "#e69f00",   # orange
+        "Confined": "#f0e442",   # yellow — Okabe-Ito's orange sat 13 OKLab ΔE from
+                                 # the vermillion beneath it for deuteranopes (yellow: 28)
         "Brownian": "#0072b2",   # blue
         "Directed": "#009e73",   # bluish-green
         "Unknown":  "#999999",   # neutral grey

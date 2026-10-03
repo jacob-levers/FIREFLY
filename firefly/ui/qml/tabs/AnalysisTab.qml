@@ -600,7 +600,7 @@ Item {
                 // compact icon toolbar — tooltips name each action on hover
                 RowLayout {
                     spacing: sc.sp1
-                    Button { variant: "secondary"; icon: "image"; tip: "Quick figure (PNG)"; onClicked: Analysis.exportFigure() }
+                    Button { variant: "secondary"; icon: "image"; tip: "Export this graph (PDF + PNG)"; onClicked: Analysis.exportFigure() }
                     Button { variant: "secondary"; icon: "table"; tip: "Quick stats (CSV)"; onClicked: Analysis.exportStats() }
                     Button { variant: "secondary"; icon: "clock"; tip: "Open previous comparison…"; onClicked: Analysis.openPreviousComparison() }
                     Button { variant: "secondary"; icon: "folder-open"; tip: "Open output folder"; onClicked: Analysis.openOutputFolder() }
@@ -802,8 +802,8 @@ Item {
             // action row
             RowLayout {
                 Layout.fillWidth: true; spacing: sc.sp2
-                Button { variant: "secondary"; icon: "download"; text: "Export panel (PDF)"; onClicked: Analysis.exportFigure() }
-                Button { variant: "secondary"; icon: "images"; text: "Export all (PDF)"; onClicked: Analysis.exportFigure() }
+                Button { variant: "secondary"; icon: "download"; text: "Export panel (PNG)"; onClicked: Analysis.exportFigure() }
+                Button { variant: "secondary"; icon: "images"; text: "Export all (PNG)"; onClicked: Analysis.exportAllPanels() }
                 Item { Layout.fillWidth: true }
                 Button { variant: "secondary"; icon: "folder-open"; text: "Open output folder"; onClicked: Analysis.openOutputFolder() }
             }

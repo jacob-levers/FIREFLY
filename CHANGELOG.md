@@ -1,5 +1,61 @@
 # Changelog
 
+## v2.76.51-rc.20 — 4 Oct 2026
+
+### Added
+
+- **Diffusive states.** Each recording is fitted with a three-state hidden
+  Markov model (the vbSPT approach): immobile, slow mobile and fast mobile
+  states, each with an apparent diffusion coefficient, the share of steps spent
+  in it, and the per-frame probabilities of staying or switching. Because it
+  uses every step of every trajectory it works on short trajectories, where
+  per-trajectory motion classes do not. New runs save the result; older runs
+  are fitted from their saved trajectories when a comparison loads.
+
+- **Three comparison panels for them:** state occupancy and diffusion
+  coefficient per state (bars ± SEM with each recording as a dot and a p-value
+  per state), and a state diagram for each group (circle area = occupancy,
+  arrows = transition probabilities).
+
+- **Every comparison panel on its own.** Generate full report now also saves
+  each panel as a vector PDF and a 300-dpi PNG in a `<report>_panels` folder,
+  numbered in the figure's reading order. The Analysis tab's export button
+  saves the graph on screen the same way, and the per-condition view's
+  "Export all" saves all of a condition's panels.
+
+### Changed
+
+- **Comparison figure layout.** Each panel gets the shape that suits it —
+  distribution curves and MSD facets wide, box/bar comparisons near square, the
+  polar plot square — panels of one shape share rows, and the most important
+  measures come first (MSD, D distribution, AUC, mobile fraction, diffusive
+  states), with trajectory bookkeeping and QC last.
+
+- **Motion classes moved down the figure.** On simulated trajectories of fly
+  length (~10 points) the per-trajectory α classes call a Brownian trajectory
+  "Brownian" only 5% of the time; the diffusive states above are the reliable
+  measure. The panel is still exported.
+
+- **Motion-class colours on light figures** are redone so neighbouring classes
+  are clearly distinct, including for colour-blind readers, and the
+  colour-blind set's Confined is now yellow. The key sits beside the bars and
+  the panel widens with the number of groups.
+
+- **Analysis-tab graph names** follow the figure wording: Diffusion
+  coefficient, Trajectory length, Trajectory duration, Trajectory count.
+
+### Fixed
+
+- **The Analysis tab's export named graphs without a stats metric after D**,
+  so exporting several of them overwrote one file.
+
+- **The per-condition view's "Export panel (PDF)" and "Export all (PDF)"**
+  both saved the same single PNG. They are now "Export panel (PNG)" and
+  "Export all (PNG)", and do that.
+
+- **A "Comparison suppressed" notice could break the figure's layout**,
+  overlapping panels. It now spans its own row.
+
 ## v2.76.51-rc.19 — 3 Oct 2026
 
 ### Fixed

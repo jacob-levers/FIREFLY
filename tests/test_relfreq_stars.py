@@ -2,7 +2,7 @@
 
 * The diffusion-coefficient distribution as a relative-frequency histogram:
   the fraction of each recording's trajectories in 0.1-log₁₀-unit bins from
-  −5 to 1 (Hines & van Swinderen 2021 Fig. 1J; Bademosi et al. 2017 Fig. 2e),
+  −5 to 1 (Hines & van Swinderen 2021 Fig. 1J),
   averaged across recordings ± SEM.  An option beside the density curves.
 * Units on the D axis: "Log₁₀ diffusion coefficient (µm²/s)".
 * Minimal figures mark significance with stars (* / ** / *** / n.s.) as the

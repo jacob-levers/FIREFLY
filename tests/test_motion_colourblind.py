@@ -16,7 +16,7 @@ from matplotlib.colors import to_hex
 from firefly.analysis.fa_compare import compare_groups
 from firefly.analysis.fa_constants import MOTION_CLASS_ORDER, motion_class_colors
 
-OKABE_ITO = {"Immobile": "#d55e00", "Confined": "#e69f00", "Brownian": "#0072b2",
+OKABE_ITO = {"Immobile": "#d55e00", "Confined": "#f0e442", "Brownian": "#0072b2",
              "Directed": "#009e73", "Unknown": "#999999"}
 
 

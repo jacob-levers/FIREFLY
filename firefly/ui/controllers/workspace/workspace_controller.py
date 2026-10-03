@@ -172,6 +172,57 @@ class _GroupAllPanelsJob(threading.Thread):
         self._done(out)
 
 
+class _ExportAllPanelsJob(threading.Thread):
+    """Save every per-condition panel of one condition as a PNG (off the GUI
+    thread): the pooled analysis panels from ONE make_figure render, and the
+    per-recording raster panels for the chosen recording where its run saved
+    them."""
+
+    def __init__(self, folders, runs, replicate, color, theme, motion_cb, out_dir, done_cb):
+        super().__init__(daemon=True)
+        self._folders, self._runs, self._rep = list(folders), list(runs), replicate
+        self._color, self._theme, self._motion_cb = color, theme, motion_cb
+        self._out_dir, self._done = out_dir, done_cb
+
+    def run(self):
+        saved, skipped = [], []
+        try:
+            from firefly.ui.controllers.workspace import workspace_group_figures as gpf
+            os.makedirs(self._out_dir, exist_ok=True)
+            with _MATPLOTLIB_LOCK:
+                pooled = gpf.render_group_panels(self._folders, gpf.AVERAGEABLE_LETTERS,
+                                                 theme=self._theme, group_color=self._color,
+                                                 motion_colourblind=self._motion_cb)
+            for idx, panel in enumerate(wd.PANELS):
+                safe = "".join(ch if ch.isalnum() else "_" for ch in panel["name"]).strip("_")
+                path = os.path.join(self._out_dir, f"{idx + 1:02d}_{safe}.png")
+                try:
+                    letter = wd.MFIG_LETTER.get(idx)
+                    if letter is not None:
+                        if letter not in pooled:
+                            skipped.append(panel["name"]); continue
+                        pooled[letter].save(path)
+                    else:                     # raster: the chosen recording's own panel
+                        runs = self._runs[self._rep:self._rep + 1] or self._runs[:1]
+                        pl = panel.get("panel_letter")
+                        have = any(wd.find_artifact(r, f"_panel_{pl}") or
+                                   wd.find_artifact(r, "_sptpalm_figure") for r in runs)
+                        if not have:
+                            skipped.append(panel["name"]); continue
+                        with _MATPLOTLIB_LOCK:
+                            img = wf.render_panel(panel, runs, self._color, width_px=1520,
+                                                  height_px=840, dpi=200,
+                                                  motion_colourblind=self._motion_cb)
+                        if img is None or img.isNull() or not img.save(path):
+                            skipped.append(panel["name"]); continue
+                    saved.append(path)
+                except Exception:
+                    skipped.append(panel["name"])
+        except Exception as e:
+            skipped.append(f"(render failed: {e})")
+        self._done({"dir": self._out_dir, "saved": saved, "skipped": skipped})
+
+
 class _ReportJob(threading.Thread):
     """Run the real fa_compare.compare_groups engine off the GUI thread — it
     produces the multi-panel figure + every CSV / PDF / JSON artefact in one
@@ -322,6 +373,8 @@ class AnalysisWorkspaceController(QObject):
     _panelRendered = Signal()
     _groupRendered = Signal()          # group-averaged fa_figure panels ready
     _reportRendered = Signal()         # full-engine report finished (worker→GUI)
+    _panelExported = Signal()          # one panel exported to PDF + PNG (worker→GUI)
+    _allPanelsExported = Signal()      # a condition's panels saved (worker→GUI)
     _engfigRendered = Signal()         # live single-panel engine figure (worker→GUI)
     _foldersLoaded = Signal()          # condition folders loaded (worker→GUI)
 
@@ -409,6 +462,9 @@ class AnalysisWorkspaceController(QObject):
         # full-engine report (fa_compare.compare_groups) lane
         self._report_job = None
         self._pending_report: dict | None = None
+        self._pending_panel_export = None
+        self._panel_export_busy = False
+        self._pending_all_panels = None
         self._report_busy = False
         self._last_report_dir = ""
         # real report progress (compare_groups calls progress_cb(done,total,msg)
@@ -439,6 +495,8 @@ class AnalysisWorkspaceController(QObject):
         self._panelRendered.connect(self._on_panel_rendered)
         self._groupRendered.connect(self._on_group_rendered)
         self._reportRendered.connect(self._on_report_rendered)
+        self._panelExported.connect(self._on_panel_exported)
+        self._allPanelsExported.connect(self._on_all_panels_exported)
         self._engfigRendered.connect(self._on_engfig_rendered)
         # async condition-folder loading: worker threads read run sidecars off
         # the GUI thread and hand back results through this queue + signal.
@@ -494,7 +552,7 @@ class AnalysisWorkspaceController(QObject):
                 # See LEGACY_DEFAULT_COMPARE_PANELS: an exact match with the old
                 # default is the value setMetric() saved on the user's behalf,
                 # not a choice they made, so it follows the default forward.
-                if stored == wd.LEGACY_DEFAULT_COMPARE_PANELS:
+                if stored in wd.PREVIOUS_DEFAULT_COMPARE_PANELS:
                     stored = set(wd.DEFAULT_COMPARE_PANELS)
                 self._panels = stored
         except Exception:
@@ -2658,13 +2716,21 @@ class AnalysisWorkspaceController(QObject):
 
     @Slot()
     def exportFigure(self):
+        # A comparison graph that is a report panel is exported the way the full
+        # report exports panels: vector PDF + 300-dpi PNG in the figure theme.
+        if (self._view == "comparison" and self._metric in wd.PANEL_KEYS
+                and len(self._engine_groups()) >= 2):
+            self._export_engine_panel(self._metric)
+            return
         view = "panel" if self._view == "panels" else "figure"
         img = self._panel_image if self._view == "panels" else self._fig_image
         if img is None or img.isNull():
             self.toast.emit("Nothing to export yet")
             return
-        metric = (self._metric_obj().label if self._view == "comparison"
-                  else wd.PANELS[self._panel_sel]["name"])
+        # the panel on screen — its own name, not the D metric that stands in
+        # for visualisation-only panels (those all saved to one file)
+        metric = (wd.PANEL_LABEL.get(self._metric) or self._metric_obj().label
+                  if self._view == "comparison" else wd.PANELS[self._panel_sel]["name"])
         safe = "".join(ch if ch.isalnum() else "_" for ch in metric)
         path = os.path.join(self._export_dir(), f"firefly_{view}_{safe}.png")
         if img.save(path):
@@ -2672,6 +2738,97 @@ class AnalysisWorkspaceController(QObject):
             self.toast.emit(f"Saved {os.path.basename(path)}")
         else:
             self.toast.emit("Export failed")
+
+    def _export_engine_panel(self, key):
+        """Render ``key`` on its own through the report engine (off the GUI
+        thread) and save it as PDF + PNG in the export folder."""
+        if self._panel_export_busy:
+            return
+        name = wd.PANEL_LABEL.get(key) or key
+        safe = "".join(ch if ch.isalnum() else "_" for ch in name)
+        stem = os.path.join(self._export_dir(), f"firefly_{safe}")
+        render_kwargs = {k: v for k, v in self._render_report_kwargs({key}).items()
+                         if k != "panels"}
+        compute_kwargs = self._compute_report_kwargs()
+        data_rev = self._data_rev
+        ref = weakref.ref(self)
+        saved = {}
+
+        def run():
+            from firefly.analysis.fa_compare import export_panel
+            c = ref()
+            if c is None:
+                return
+            rd = c._cached_report_data(compute_kwargs, data_rev)
+            saved["paths"] = export_panel(rd, key, stem, **render_kwargs)
+
+        def deliver(result):
+            c = ref()
+            if c is not None:
+                c._pending_panel_export = (result, saved.get("paths"))
+                c._panelExported.emit()
+
+        self._panel_export_busy = True
+        self.toast.emit(f"Exporting {name}…")
+        self._panel_export_job = _ReportJob(run, stem, deliver)
+        self._panel_export_job.start()
+
+    def _on_panel_exported(self):
+        result, paths = self._pending_panel_export or ({}, None)
+        self._pending_panel_export = None
+        self._panel_export_busy = False
+        if result.get("ok") and paths:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(paths[0]))
+            self.toast.emit(f"Saved {os.path.basename(paths[0])} and .png")
+        else:
+            self.toast.emit("Export failed" + (f": {result.get('error')}"
+                                               if result.get("error") else ""))
+
+    @Slot()
+    def exportAllPanels(self):
+        """Per-condition view: every panel of the selected condition, as PNGs in
+        one folder (the pooled analysis panels and the chosen recording's
+        raster panels)."""
+        if self._panel_export_busy:
+            return
+        shown = self._shown()
+        if not shown:
+            self.toast.emit("Nothing to export yet")
+            return
+        cond = shown[min(max(0, self._panel_cond), len(shown) - 1)]
+        active = cond.active()
+        if not active:
+            self.toast.emit("This condition has no run folders")
+            return
+        s = self._settings
+        theme = (s.getStr("figures/theme", "Dark") if s else "Dark")
+        safe = "".join(ch if ch.isalnum() else "_" for ch in cond.name).strip("_") or "condition"
+        out_dir = os.path.join(self._export_dir(), f"firefly_{safe}_panels")
+        ref = weakref.ref(self)
+
+        def deliver(result):
+            c = ref()
+            if c is not None:
+                c._pending_all_panels = result
+                c._allPanelsExported.emit()
+
+        self._panel_export_busy = True
+        self.toast.emit(f"Exporting {cond.name}'s panels…")
+        self._panel_export_job = _ExportAllPanelsJob(
+            [f.path for f in active], [f.run for f in active], self._panel_replicate,
+            cond.color, theme, self._motion_colourblind(), out_dir, deliver)
+        self._panel_export_job.start()
+
+    def _on_all_panels_exported(self):
+        r = self._pending_all_panels or {}
+        self._pending_all_panels = None
+        self._panel_export_busy = False
+        n = len(r.get("saved", []))
+        if n:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(r["dir"]))
+        skipped = r.get("skipped") or []
+        self.toast.emit(f"Saved {n} panel(s)"
+                        + (f"; {len(skipped)} not available" if skipped else ""))
 
     @Slot()
     def exportStats(self):

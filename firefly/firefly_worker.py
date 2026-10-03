@@ -119,6 +119,26 @@ def _czi_acquired_at(path):
     return czi_acquired_at(path)
 
 
+def _save_diffusive_states(tracks, px, fi, extras_dir, stem, summary, log):
+    """Fit the run's diffusive states (fa_states: a 3-state HMM in the manner
+    of vbSPT), save ``{stem}_diffusive_states.json`` and add the
+    per-state occupancy / D to ``summary``.  Returns the result or None."""
+    if tracks is None or not len(tracks):
+        return None
+    from firefly.analysis.fa_states import diffusive_states, state_summary
+    states = diffusive_states(tracks, float(px), float(fi))
+    if states is None:
+        return None
+    _atomic_write_json(states, os.path.join(extras_dir, f"{stem}_diffusive_states.json"),
+                       indent=2)
+    summary.update({k: v for k, v in state_summary(states).items() if v == v})
+    log("  Diffusive states (3-state HMM): occupancy "
+        + " / ".join(f"{100 * o:.0f}%" for o in states["occupancy"])
+        + "; D " + " / ".join(f"{d:.3f}" for d in states["D"])
+        + f" µm²/s; BIC prefers {states['best_n_states']} states")
+    return states
+
+
 def _pos_float(v):
     """Parse an optional positive float param; return None for missing/≤0/bad."""
     try:
@@ -3330,6 +3350,14 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
             # Best-effort: don't let a stats-computation hiccup break the run,
             # but never hide a partially empty result panel from the run log.
             _log(f"  WARN: GUI summary statistics were incomplete: {summary_exc}")
+
+        # ── Diffusive states (vbSPT-style three-state HMM) ─────────────────────
+        # The comparison report reads this instead of refitting; derived, so a
+        # failure never breaks the run.
+        try:
+            _save_diffusive_states(tracks, px, fi, extras_dir, stem, summary, _log)
+        except Exception as states_exc:
+            _log(f"  WARN: diffusive-state analysis failed: {states_exc}")
 
         # ── Super-resolution reconstruction (deliverable) ────────────────────
         # Render the full localisation cloud into a high-res image — the canonical

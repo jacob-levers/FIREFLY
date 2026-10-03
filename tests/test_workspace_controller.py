@@ -76,7 +76,7 @@ def _dispose_controllers(monkeypatch):
     # they call back into the controller (queue puts, signal emits), so one
     # still running while the controller is destroyed writes into freed memory.
     # That fired much later, inside an unrelated test's processEvents loop.
-    jobs = ("_FigureJob", "_PanelJob", "_GroupAllPanelsJob",
+    jobs = ("_FigureJob", "_PanelJob", "_GroupAllPanelsJob", "_ExportAllPanelsJob",
             "_ReportJob", "_EngineFigJob")
     named = ("FIREFLY-CondLoad", "FIREFLY-ExtAnalyse")
     deadline = time.monotonic() + 20.0
@@ -468,3 +468,73 @@ def test_report_progress_drain():
     c._drain_report_progress()
     assert c.reportProgress == -1.0
     assert "Computing" in c.reportStatus
+
+
+def test_quick_export_names_the_panel_it_saves(tmp_path, monkeypatch):
+    """Visualisation-only panels (no stats metric) were saved under the D
+    metric's name, so the three diffusive-state panels overwrote one file."""
+    from PySide6.QtGui import QImage, QDesktopServices
+    c = AnalysisWorkspaceController(settings=None)
+    monkeypatch.setattr(c, "_export_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda *_a: True))
+    img = QImage(20, 20, QImage.Format.Format_RGB32); img.fill(0)
+    saved = []
+    for key in ("states_occupancy", "states_d", "states_diagram"):
+        c._metric, c._fig_image = key, img
+        c.exportFigure()
+        saved = sorted(p.name for p in tmp_path.iterdir())
+    assert saved == ["firefly_figure_Diffusion_coefficient_by_state.png",
+                     "firefly_figure_Diffusive_state_model.png",
+                     "firefly_figure_Diffusive_state_occupancy.png"]
+
+
+def _pump_until(pred, timeout=120.0):
+    import time
+    deadline = time.monotonic() + timeout
+    while not pred() and time.monotonic() < deadline:
+        _app.processEvents(); time.sleep(0.02)
+    _app.processEvents()
+
+
+def test_exporting_a_report_panel_writes_pdf_and_png(tmp_path, monkeypatch):
+    """Not a screenshot: the panel through the report engine, at print quality."""
+    from PySide6.QtGui import QDesktopServices
+    c, _ids = _ctrl_with_two_conditions(tmp_path, nf=2)
+    out = tmp_path / "exports"; out.mkdir()
+    monkeypatch.setattr(c, "_export_dir", lambda: str(out))
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda u: opened.append(u) or True))
+    c.setMetric("auc")
+    c.exportFigure()
+    _pump_until(lambda: not c._panel_export_busy)
+    names = sorted(p.name for p in out.iterdir())
+    assert names == ["firefly_Mean_square_displacement_AUC.pdf",
+                     "firefly_Mean_square_displacement_AUC.png"]
+    assert opened and opened[0].toLocalFile().endswith(".pdf")
+
+
+def test_export_all_saves_every_panel_of_the_condition(tmp_path, monkeypatch):
+    from PySide6.QtGui import QDesktopServices
+    c, _ids = _ctrl_with_two_conditions(tmp_path, nf=2)
+    out = tmp_path / "exports"; out.mkdir()
+    monkeypatch.setattr(c, "_export_dir", lambda: str(out))
+    monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda *_a: True))
+    results = []
+    orig = c._on_all_panels_exported
+    monkeypatch.setattr(c, "_on_all_panels_exported",
+                        lambda: (results.append(dict(c._pending_all_panels or {})), orig()))
+    c._allPanelsExported.disconnect()
+    c._allPanelsExported.connect(c._on_all_panels_exported)
+    c.exportAllPanels()
+    _pump_until(lambda: not c._panel_export_busy)
+    r = results[0]
+    assert len(r["saved"]) + len(r["skipped"]) == len(wd.PANELS)   # every panel accounted for
+    assert all(p.endswith(".png") and os.path.isfile(p) for p in r["saved"])
+    assert os.path.basename(r["dir"]).endswith("_panels")
+
+
+def test_the_panel_view_buttons_say_what_they_do():
+    qml = open(os.path.join(os.path.dirname(__file__), "..", "firefly", "ui", "qml", "tabs",
+                            "AnalysisTab.qml"), encoding="utf-8").read()
+    assert 'text: "Export all (PNG)"; onClicked: Analysis.exportAllPanels()' in qml
+    assert "Export all (PDF)" not in qml and "Export panel (PDF)" not in qml

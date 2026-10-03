@@ -235,9 +235,9 @@ def draw_pvalue_brackets(ax, pairs, *, color, fontsize=8, data_top=None,
 # survival, turning-angle histogram) can be drawn two ways:
 #   per recording — each recording's curve, averaged; every recording counts
 #                   once and the band is the SEM across recordings.  This is
-#                   how the sptPALM papers this app reproduces show them
-#                   (Bademosi et al. 2017 Nat Commun: n = NMJ chains,
-#                   mean ± s.e.m.), and it matches every other comparison
+#                   how the van Swinderen lab's sptPALM papers show them
+#                   (n = recordings, mean ± s.e.m.), and it matches every
+#                   other comparison
 #                   panel, where the recording is the unit.  The default.
 #   pooled tracks — one curve of every track in the group, so a recording
 #                   with more tracks counts for more.  No band.
@@ -292,3 +292,117 @@ def draw_sem_band(ax, x, mean, sem, color, *, alpha=0.25, zorder=2, floor=None):
         lo = np.maximum(lo, floor)
         hi = np.maximum(hi, floor)
     ax.fill_between(x, lo, hi, color=color, alpha=alpha, linewidth=0, zorder=zorder)
+
+
+# ── Diffusive-state diagram ─────────────────────────────────────────────────
+# Three circles (immobile top, slow mobile bottom-left, fast mobile bottom-
+# right): area ∝ occupancy, each labelled with its apparent D; a loop for the
+# probability of staying in a state from one frame to the next and an arrow
+# each way for every switch.  The geometry is fixed so no label can collide
+# whatever the occupancies: names / D sit radially outside their circle, loops
+# on the free outer side, and each switching probability on its own side of
+# its arrow pair (tests/test_state_diagram.py renders and checks this).
+STATE_DIAGRAM_POS = ((0.0, 0.78), (-0.8, -0.52), (0.8, -0.52))
+# loops point sideways (left, left, right) — never towards the name / D labels
+# above (immobile) or below (slow, fast) their circle, whatever its size
+_LOOP_ANGLE = (np.pi, np.pi, 0.0)
+_NAME_ABOVE = (True, False, False)
+
+
+def state_radius(occupancy):
+    """Circle radius (data units) for an occupancy fraction: area ∝ occupancy,
+    with a floor so a rare state stays visible."""
+    return 0.13 + 0.30 * np.sqrt(max(0.0, float(occupancy)))
+
+
+def format_probability(p):
+    if p is None or not np.isfinite(p):
+        return "–"
+    return "<0.01" if p < 0.005 else f"{p:.2f}"
+
+
+def draw_state_diagram(ax, D, occupancy, P, *, names, colors, text_color,
+                       background, title=None, title_color=None, fontscale=1.0):
+    """Draw one group's diffusive-state diagram into ``ax``.  ``D``,
+    ``occupancy``: per state; ``P``: 3×3 per-frame transition probabilities."""
+    from matplotlib.patches import Circle, FancyArrowPatch
+    pos = np.asarray(STATE_DIAGRAM_POS, float)
+    r = [state_radius(o) for o in occupancy]
+    fs = lambda base: base * fontscale
+    label_box = dict(boxstyle="round,pad=0.12", fc=background, ec="none", alpha=0.9)
+    ax.set_xlim(-1.8, 1.8)
+    ax.set_ylim(-1.55, 2.0)
+    r_max = state_radius(1.0)
+    ax.set_aspect("equal", adjustable="box")
+    ax.axis("off")
+    for i in range(3):
+        ax.add_patch(Circle(pos[i], r[i], color=colors[i], zorder=2))
+        ax.text(*pos[i], f"{100 * occupancy[i]:.0f}%", ha="center", va="center",
+                color="white", fontsize=fs(9.5), fontweight="bold", zorder=5)
+        # a fixed label row (as if the circle were full size), so a small
+        # circle cannot pull its label into the arrows' numbers
+        dy = (r_max + 0.07) * (1 if _NAME_ABOVE[i] else -1)
+        ax.text(pos[i][0], pos[i][1] + dy, f"{names[i]}\nD = {D[i]:.3f} µm²/s",
+                ha="center", va="bottom" if _NAME_ABOVE[i] else "top",
+                color=colors[i], fontsize=fs(8), fontweight="bold", linespacing=1.15,
+                zorder=5)
+        # stay probability: a loop on the circle's free outer side
+        ang = _LOOP_ANGLE[i]
+        a0 = pos[i] + r[i] * np.array([np.cos(ang - 0.42), np.sin(ang - 0.42)])
+        a1 = pos[i] + r[i] * np.array([np.cos(ang + 0.42), np.sin(ang + 0.42)])
+        ax.add_patch(FancyArrowPatch(a0, a1, connectionstyle="arc3,rad=1.9",
+                                     arrowstyle="-|>", mutation_scale=9 * fontscale,
+                                     color=colors[i], lw=1.3, shrinkA=0, shrinkB=0, zorder=3))
+        lp = pos[i] + (r[i] + 0.38) * np.array([np.cos(ang), np.sin(ang)])
+        ax.text(*lp, format_probability(P[i][i]), ha="center", va="center",
+                color=text_color, fontsize=fs(8), zorder=6, bbox=label_box)
+    for i in range(3):                           # one arrow each way per pair
+        for j in range(3):
+            if i == j:
+                continue
+            u = (pos[j] - pos[i]) / np.linalg.norm(pos[j] - pos[i])
+            n = np.array([-u[1], u[0]])
+            p0 = pos[i] + u * (r[i] + 0.04) + n * 0.065
+            p1 = pos[j] - u * (r[j] + 0.04) + n * 0.065
+            ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle="-|>", mutation_scale=9 * fontscale,
+                                         color=colors[i], lw=1.2, shrinkA=0, shrinkB=0, zorder=3))
+            # this arrow's number: on its own side (n), a third of the way from
+            # its source, so a pair's two numbers part along the edge as well
+            at = p0 + 0.36 * (p1 - p0)
+            ax.text(*(at + n * 0.17), format_probability(P[i][j]),
+                    ha="center", va="center", color=text_color, fontsize=fs(7.5),
+                    zorder=6, bbox=label_box)
+    if title:
+        ax.text(0.5, 0.995, title, transform=ax.transAxes, ha="center", va="top",
+                color=title_color or text_color, fontsize=fs(9.5), fontweight="bold",
+                zorder=6)
+    ax._firefly_state_diagram_scale = fontscale
+
+
+STATE_DIAGRAM_SIDE_IN = 3.35      # the side the base text sizes are set for
+
+
+def state_diagram_fontscale(side_in):
+    """Text scale for a diagram ``side_in`` inches square (tested down to 0.6)."""
+    return float(np.clip(side_in / STATE_DIAGRAM_SIDE_IN, 0.6, 1.0))
+
+
+def rescale_state_diagrams(fig):
+    """After layout: size every state diagram's text (and arrow heads) for the
+    square it actually got — the size is only known once tight_layout ran."""
+    W, H = fig.get_size_inches()
+    for ax in fig.axes:
+        old = getattr(ax, "_firefly_state_diagram_scale", None)
+        if old is None:
+            continue
+        p = ax.get_position()
+        new = state_diagram_fontscale(min(p.width * W, p.height * H))
+        k = new / old
+        if abs(k - 1) < 1e-3:
+            continue
+        for t in ax.texts:
+            t.set_fontsize(t.get_fontsize() * k)
+        for patch in ax.patches:
+            if hasattr(patch, "set_mutation_scale"):
+                patch.set_mutation_scale(patch.get_mutation_scale() * k)
+        ax._firefly_state_diagram_scale = new

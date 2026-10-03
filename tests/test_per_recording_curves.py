@@ -3,8 +3,8 @@
 Pooling every track let the recordings with the most tracks set a group's
 curve: on MB112C one Propofol recording (a quarter of the group's dwells)
 supplied 26 of its 35 dwells over 10 s, which read as a Propofol effect.  The
-sptPALM papers this app reproduces average per-recording curves and show the
-s.e.m. across recordings (Bademosi et al. 2017, n = NMJ chains).  Pooled tracks
+van Swinderen lab's sptPALM papers average per-recording curves and show the
+s.e.m. across recordings (n = recordings).  Pooled tracks
 stay available (Preferences → Figures → Distribution curves).
 """
 import json

@@ -51,7 +51,7 @@ MOTION_COLORS = {
 # Preferences → Motion-class palette → Colour-blind safe: the Okabe–Ito set
 # (fa_constants' Publication palette).
 MOTION_COLORS_CB = {
-    "Immobile": "#d55e00", "Confined": "#e69f00", "Brownian": "#0072b2",
+    "Immobile": "#d55e00", "Confined": "#f0e442", "Brownian": "#0072b2",
     "Directed": "#009e73", "Unknown": "#999999",
 }
 
@@ -712,7 +712,7 @@ def find_artifact(run, hint):
 
 
 # Names and axis labels follow the van Swinderen lab's sptPALM figures
-# (Bademosi et al. 2017; Hines & van Swinderen 2021; Hines et al. 2024):
+# (Hines & van Swinderen 2021; Hines et al. 2024):
 # sentence case, "trajectory" not "track", AUC in µm²s.
 METRICS: list[Metric] = [
     Metric("D", "Diffusion coefficient", "µm²/s", 3, "Diffusion coefficient (µm²/s)", "Diffusion",
@@ -1454,6 +1454,8 @@ COMPARE_PANELS = [
     ("msd", "Ensemble MSD"), ("auc", "MSD AUC"), ("fluor", "Fluorescence"),
     ("logd_dist", "D distribution"),
     ("mob_immob", "Mobile fraction"), ("motion_classes", "Motion classes"),
+    ("states_occupancy", "State occupancy"), ("states_d", "State D"),
+    ("states_diagram", "State diagram"),
     ("track_length", "Trajectory length"), ("rg", "Radius of gyration"),
     ("netdisp", "Net displacement"), ("path", "Path length"),
     ("step", "Step distance"), ("speed", "Step speed"),
@@ -1475,13 +1477,19 @@ COMPARE_PANEL_PRESETS = {
 # screen saying so.
 DEFAULT_COMPARE_PANELS = {k for k, _ in COMPARE_PANELS}
 
-# The pre-v2.76.51 default.  A stored selection identical to this was never an
+# Earlier defaults.  A stored selection identical to one of these was never an
 # actual choice: the panel set is persisted as a side effect of switching the
 # selected graph, so every user has one saved whether or not they ever opened
 # the picker.  An exact match is treated as "not customised" and upgraded to the
 # full set; any other combination is a real preference and is left alone.
-LEGACY_DEFAULT_COMPARE_PANELS = DEFAULT_COMPARE_PANELS - {
+# v2.76.51-rc.19 and earlier: everything but the diffusive-state panels.
+PRE_STATES_DEFAULT_COMPARE_PANELS = DEFAULT_COMPARE_PANELS - {
+    "states_occupancy", "states_d", "states_diagram"}
+# before v2.76.51: three more held back.
+LEGACY_DEFAULT_COMPARE_PANELS = PRE_STATES_DEFAULT_COMPARE_PANELS - {
     "track_count", "linkstep", "linkspeed"}
+PREVIOUS_DEFAULT_COMPARE_PANELS = (LEGACY_DEFAULT_COMPARE_PANELS,
+                                   PRE_STATES_DEFAULT_COMPARE_PANELS)
 LOGD_STYLES = [("overlaid", "Overlaid"), ("ridgeline", "Ridgeline"),
                ("violin", "Violin"), ("faceted", "Faceted")]
 
@@ -1504,10 +1512,13 @@ COMPARE_PANEL_TABS = [
     ("msd", "Mean square displacement", "msd"),
     ("auc", "Mean square displacement AUC", "auc"),
     ("fluor", "Fluorescence intensity", "fluor"),
-    ("logd_dist", "Diffusion D", "D"),
+    ("logd_dist", "Diffusion coefficient", "D"),
     ("mob_immob", "Mobile fraction", "mob"),
     ("motion_classes", "Motion classes", "motion"),
-    ("track_length", "Track length", "len"),
+    ("states_occupancy", "Diffusive state occupancy", ""),
+    ("states_d", "Diffusion coefficient by state", ""),
+    ("states_diagram", "Diffusive state model", ""),
+    ("track_length", "Trajectory length", "len"),
     ("rg", "Radius of gyration", "rg"),
     ("netdisp", "Net displacement", "netdisp"),
     ("path", "Path length", "path"),
@@ -1516,8 +1527,8 @@ COMPARE_PANEL_TABS = [
     ("linkstep", "Observed-link distance", "linkstep"),
     ("linkspeed", "Observed-link speed", "linkspeed"),
     ("dir", "Directionality ratio", "dir"),
-    ("dur", "Track duration", "dur"),
-    ("track_count", "Track count", "count"),
+    ("dur", "Trajectory duration", "dur"),
+    ("track_count", "Trajectory count", "count"),
     ("nlocs", "Localisations", "nlocs"),
     ("jdd", "Jump distance", "jdd"),
     ("dwell_cdf", "Dwell time", "dwell"),

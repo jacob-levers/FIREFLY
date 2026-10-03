@@ -1,7 +1,7 @@
 """Figure titles and axis labels use the van Swinderen lab's wording.
 
-Taken from the lab's sptPALM figures — Bademosi et al. 2017 Nat Commun (Fig. 2),
-Hines & van Swinderen 2021 eNeuro (Figs 1–4), Hines et al. 2024 J Neurosci
+Taken from the lab's sptPALM figures — Hines & van Swinderen 2021 eNeuro
+(Figs 1–4), Hines et al. 2024 J Neurosci
 (bioRxiv 2023.02.27.530184, Figs 3, 4, 8; MB543B and MB112C lines):
 "MSD (µm²)" against "Time (s)"; "AUC (µm²s)"; "Log₁₀ diffusion coefficient";
 "Relative frequency (fractions)"; "Slow/immobile fraction" | "Fast/mobile
