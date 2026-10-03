@@ -163,9 +163,13 @@ MOTION_CLASS_COLORS_BY_THEME = {
 MOTION_CLASS_COLORS = MOTION_CLASS_COLORS_BY_THEME["Dark"]
 
 
-def motion_class_colors(theme="Dark"):
+def motion_class_colors(theme="Dark", colourblind=False):
     """Motion-class colour dict for a figure theme (Immobile/Confined/Brownian/
-    Directed/Unknown).  Falls back to the Dark palette for unknown theme names."""
+    Directed/Unknown).  Falls back to the Dark palette for unknown theme names.
+    ``colourblind`` (Preferences → Motion-class palette → Colour-blind safe)
+    gives the Okabe–Ito set whatever the theme."""
+    if colourblind:
+        return MOTION_CLASS_COLORS_BY_THEME["Publication"]
     return MOTION_CLASS_COLORS_BY_THEME.get(
         (theme or "Dark").strip(), MOTION_CLASS_COLORS_BY_THEME["Dark"])
 

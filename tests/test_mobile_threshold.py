@@ -169,16 +169,16 @@ def _axes():
 
 
 def test_the_panel_labels_which_side_is_which():
-    """Fig. 1C's `<- Immobile | Mobile ->` key: without it the dashed guide is
-    an unexplained line."""
+    """Fig. 1C's immobile | mobile key, in the lab's words (Bademosi et al. 2017,
+    Fig. 2e): without it the dashed guide is an unexplained line."""
     from firefly.analysis.fa_compare import _annotate_logd_mobility
     ax = _axes()
     _annotate_logd_mobility(ax, -2.0, {"MUT": "#999"}, (-5.0, 1.0))
     said = [t.get_text() for t in ax.texts]
-    assert any("Immobile" in s for s in said) and any("Mobile" in s for s in said)
+    assert sorted(said) == ["Fast/mobile fraction", "Slow/immobile fraction"]
     # the two labels straddle the threshold
-    imm = next(t for t in ax.texts if "Immobile" in t.get_text())
-    mob = next(t for t in ax.texts if "Immobile" not in t.get_text())
+    imm = next(t for t in ax.texts if "immobile" in t.get_text())
+    mob = next(t for t in ax.texts if "immobile" not in t.get_text())
     assert imm.get_position()[0] < -2.0 < mob.get_position()[0]
 
 

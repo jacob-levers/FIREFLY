@@ -75,8 +75,8 @@ Item {
     readonly property var densityOpts: ["Compact", "Comfortable"]
     readonly property var fontSizeOpts: ["Small — 11px", "Medium — 12px", "Large — 14px"]
     readonly property var channelOpts: ["Stable", "Pre-release"]
-    readonly property var logdLabels: ["Faceted (per-replicate)", "Ridgeline", "Overlaid KDEs", "Violins + points"]
-    readonly property var logdValues: ["faceted", "ridgeline", "overlaid", "violin"]
+    readonly property var logdLabels: ["Faceted (per-replicate)", "Ridgeline", "Overlaid KDEs", "Violins + points", "Relative frequency"]
+    readonly property var logdValues: ["faceted", "ridgeline", "overlaid", "violin", "relfreq"]
     readonly property var msdLabels: ["Mean ± error (faceted)", "Individual cells + mean", "Group overlaid"]
     readonly property var msdValues: ["mean_faceted", "individual", "overlaid"]
     readonly property var groupLabels: ["Box + points", "Grouped by timepoint", "Violin + points", "Bar"]
@@ -84,6 +84,8 @@ Item {
     // Per-graph mark for the scalar comparison panels (one control each, below).
     readonly property var markLabels: ["Box + points", "Violin + points", "Bar"]
     readonly property var markValues: ["box_points", "violin", "bar"]
+    readonly property var curveLabels: ["Per recording (mean ± SEM)", "Pooled tracks"]
+    readonly property var curveValues: ["recording", "tracks"]
     readonly property var lengthLabels: ["Density", "Box"]
     readonly property var lengthValues: ["density", "box"]
     readonly property var aucLabels: ["Box + points", "Violin + points", "Bar", "Paired lines (timepoints)", "Δ box (timepoints)"]
@@ -107,6 +109,7 @@ Item {
         Settings.setValue("figures/per_panel", false)
         Settings.setValue("figures/logd_style", "overlaid")
         Settings.setValue("figures/minimal", false)
+        Settings.setValue("figures/curve_weighting", "recording")
         Settings.setValue("updates/auto_check", true)
         Settings.setValue("updates/channel", "Stable")
         Settings.setValue("updates/auto_download", false)
@@ -583,7 +586,7 @@ Item {
                     }
                     PrefRow {
                         label: "Motion-class palette"
-                        desc: "Colour-blind safe uses the Okabe–Ito set in the Visualise viewer + legend. (Exported figures follow the figure theme — pick Publication there for colour-blind.)"
+                        desc: "Colour-blind safe gives the motion classes the Okabe–Ito colours everywhere: the Visualise viewer, the Analysis tab, the comparison report and each run's figure. (The Publication theme always uses them.)"
                         Select { implicitWidth: 170
                                  model: ["Default", "Colour-blind safe"]
                                  currentIndex: (root.rev, Math.max(0, ["Default", "Colour-blind safe"].indexOf(Settings.getStr("visualise/motion_colours", "Default"))))
@@ -595,14 +598,22 @@ Item {
                     desc: "How individual graphs are drawn, in both the live Analysis tab and the exported report. More graphs will become customisable here over time."
                     PrefRow {
                         label: "Minimal figures"
-                        desc: "No legends, title or group-summary band inside the figure — for a figure whose legend goes in the caption. The p-value above each graph stays."
+                        desc: "No legends, titles or group-summary band inside the figure — for a figure whose legend goes in the caption. Comparisons are marked with stars (* p < 0.05, ** p < 0.01, *** p < 0.001, n.s.) instead of p-values."
                         Switch { objectName: "minimalFiguresSwitch"
                                  checked: (root.rev, Settings.getBool("figures/minimal", false))
                                  onToggled: (c) => Settings.setValue("figures/minimal", c) }
                     }
                     PrefRow {
-                        label: "Log-D distribution"
-                        desc: "How the per-condition log₁₀(D) distributions are plotted."
+                        label: "Distribution curves"
+                        desc: "Log D, track length, dwell time and turning angles. Per recording: each recording's curve, averaged, so every recording counts once, with the SEM across recordings shaded (as in Bademosi et al. 2017). Pooled tracks: one curve of all a group's tracks, so recordings with more tracks count for more."
+                        Select { objectName: "curveWeightingSelect"; implicitWidth: 170; model: root.curveLabels
+                                 currentIndex: (root.rev, Math.max(0, root.curveValues.indexOf(Settings.getStr("figures/curve_weighting", "recording"))))
+                                 onPicked: (t) => { var i = root.curveLabels.indexOf(t)
+                                                    if (i >= 0) Settings.setValue("figures/curve_weighting", root.curveValues[i]) } }
+                    }
+                    PrefRow {
+                        label: "Diffusion coefficient distribution"
+                        desc: "How the per-condition log₁₀(D) distributions are plotted. Relative frequency is the van Swinderen lab's style: the fraction of trajectories in 0.1-log-unit bins."
                         Select { implicitWidth: 170; model: root.logdLabels
                                  currentIndex: (root.rev, Math.max(0, root.logdValues.indexOf(Settings.getStr("figures/logd_style", "overlaid"))))
                                  onPicked: (t) => { var i = root.logdLabels.indexOf(t)
@@ -634,20 +645,20 @@ Item {
                               desc: "How each observed-link displacement divided by its actual elapsed frame time is drawn." }
                     MarkRow { label: "Directionality ratio"; panelKey: "dir"
                               desc: "How the directionality-ratio (net÷path) comparison is drawn." }
-                    MarkRow { label: "Track duration"; panelKey: "dur"
-                              desc: "How the track-duration comparison is drawn." }
+                    MarkRow { label: "Trajectory duration"; panelKey: "dur"
+                              desc: "How the trajectory-duration comparison is drawn." }
                     MarkRow { label: "Localisations"; panelKey: "nlocs"
                               desc: "How the localisation-count comparison is drawn." }
                     MarkRow { label: "Mobile fraction"; panelKey: "mob_immob"
-                              desc: "How the mobile/immobile-ratio comparison is drawn." }
-                    MarkRow { label: "Track count"; panelKey: "track_count"
-                              desc: "How the tracks-per-dish comparison is drawn." }
+                              desc: "How the mobile-fraction comparison is drawn." }
+                    MarkRow { label: "Trajectory count"; panelKey: "track_count"
+                              desc: "How the trajectories-per-recording comparison is drawn." }
                     MarkRow { label: "Non-Gaussian α₂"; panelKey: "van_hove"
                               desc: "How the van-Hove non-Gaussian parameter comparison is drawn." }
                     MarkRow { label: "Persistence (VACF)"; panelKey: "vacf"
                               desc: "How the VACF directional-persistence comparison is drawn." }
                     PrefRow {
-                        label: "Track-length distribution"
+                        label: "Trajectory length distribution"
                         desc: "Overlaid density (with the filter-threshold line) or a per-group box."
                         Select { implicitWidth: 170; model: root.lengthLabels
                                  currentIndex: (root.rev, Math.max(0, root.lengthValues.indexOf(Settings.getStr("figures/length_style", "density"))))

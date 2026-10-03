@@ -53,7 +53,7 @@ _FALLBACK = ["#58a6ff", "#f78166", "#56d364", "#27c0e8", "#f6a623", "#a371f7"]
 
 def draw_msd(fig, subplotspec, groups, data, lags_s, *, style="mean_faceted",
              err="SEM", tp_order=None, tp_colors=None, group_colors=None,
-             theme=None, ylabel="MSD (µm²)", xlabel="Time lag (s)"):
+             theme=None, ylabel="MSD (µm²)", xlabel="Time (s)"):
     """Draw the MSD comparison into ``subplotspec`` (a matplotlib SubplotSpec)
     of ``fig``.
 
@@ -190,7 +190,7 @@ def render_msd(groups, data, lags_s, *, style="mean_faceted", err="SEM",
 def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points",
                           stat_label="", pairs=None, tp_order=None, tp_colors=None,
                           group_colors=None, theme=None, ylabel="",
-                          err="SEM"):
+                          err="SEM", markers=None, day_key=None):
     """Draw a scalar-metric group comparison into ``subplotspec``.
 
     values : ``{group: {timepoint: 1-D array of per-dish values}}`` (the dish is
@@ -201,6 +201,8 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
                  there are no `pairs` to bracket.
     pairs      : ``[(i, j, "p = …")]`` — a bracket with that label is drawn between
                  groups i and j, above the data.
+    markers    : optional dot shape per value, shaped like ``values`` (the
+                 recording day); ``day_key`` ``[(marker, label)]`` keys them.
     """
     from matplotlib.lines import Line2D
 
@@ -219,6 +221,21 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
         chunks = [np.asarray(v, float) for v in values.get(g, {}).values() if v is not None and len(v)]
         return np.concatenate(chunks) if chunks else np.array([])
 
+    def _shapes(g):
+        """Dot shapes aligned with _pool(g) (all circles without `markers`)."""
+        out = []
+        for tp, v in values.get(g, {}).items():
+            if v is None or not len(v):
+                continue
+            m = (markers or {}).get(g, {}).get(tp)
+            out += list(m) if m is not None and len(m) == len(v) else ["o"] * len(v)
+        return np.asarray(out, dtype=object)
+
+    def _dots(x, d, shapes, **kw):
+        for m in dict.fromkeys(shapes):
+            sel = shapes == m
+            ax.scatter(x[sel], d[sel], marker=m, **kw)
+
     def _style(a):
         a.set_facecolor(th["bg"]); a.grid(True, axis="y", color=th["grid"], lw=0.7)
         a.set_axisbelow(True)
@@ -230,10 +247,14 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
         a.set_ylabel(ylabel, fontsize=10, color=th["fg"])
 
     def _box(a, data, positions, widths, facecols):
+        from matplotlib.colors import to_rgb
         bp = a.boxplot(data, positions=positions, widths=widths, patch_artist=True,
                        showfliers=False)
+        # Pale tint + group-coloured outline (as the report): a solid group-colour
+        # face hid the group-coloured replicate dots drawn inside it.
         for patch, c in zip(bp["boxes"], facecols):
-            patch.set_facecolor(c); patch.set_alpha(0.65); patch.set_edgecolor(th["fg"])
+            patch.set_facecolor((*to_rgb(c), 0.22))
+            patch.set_edgecolor(c); patch.set_linewidth(1.4)
         for el in ("whiskers", "caps", "medians"):
             for ln in bp[el]:
                 ln.set_color(th["fg"])
@@ -265,9 +286,9 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
                 b.set_facecolor(gc[groups[i]]); b.set_alpha(0.5); b.set_edgecolor(th["fg"])
             for i in idx:
                 d = data[i]
-                ax.scatter(np.full(len(d), i) + rng.uniform(-0.09, 0.09, len(d)),
-                           d, color=gc[groups[i]], s=11, zorder=3, edgecolors=th["bg"],
-                           linewidths=0.5)
+                _dots(np.full(len(d), i) + rng.uniform(-0.09, 0.09, len(d)), d,
+                      _shapes(groups[i]), color=gc[groups[i]], s=22, zorder=3,
+                      edgecolors=th["bg"], linewidths=0.4)
         _style(ax)
     elif style == "bar":
         means = [float(np.mean(_pool(g))) if len(_pool(g)) else 0.0 for g in groups]
@@ -279,15 +300,23 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
     else:  # box_points (default)
         data = [_pool(g) for g in groups]
         idx = [i for i, d in enumerate(data) if len(d)]
-        if idx:
-            _box(ax, [data[i] for i in idx], idx, 0.55, [gc[groups[i]] for i in idx])
-            for i in idx:
-                d = data[i]
-                ax.scatter(np.full(len(d), i) + rng.uniform(-0.12, 0.12, len(d)),
-                           d, color=gc[groups[i]], s=12, zorder=4, edgecolors=th["bg"],
-                           linewidths=0.5)
+        boxed = [i for i in idx if len(data[i]) >= 2]     # one value: just its dot
+        if boxed:
+            _box(ax, [data[i] for i in boxed], boxed, 0.55, [gc[groups[i]] for i in boxed])
+        for i in idx:
+            d = data[i]
+            _dots(np.full(len(d), i) + rng.uniform(-0.12, 0.12, len(d)), d,
+                  _shapes(groups[i]), color=gc[groups[i]], s=24, zorder=4,
+                  edgecolors=th["bg"], linewidths=0.4)
         _style(ax)
 
+    if day_key and style in ("box_points", "violin"):     # key for the dot shapes
+        _lg = ax.legend(handles=[Line2D([], [], ls="none", marker=m, ms=5, mfc=th["muted"],
+                                        mec=th["bg"], mew=0.5, label=lab) for m, lab in day_key],
+                        title="Recording day", loc="upper left", bbox_to_anchor=(1.01, 1.0),
+                        frameon=False, fontsize=7, title_fontsize=7, labelcolor=th["fg"],
+                        handletextpad=0.3, borderaxespad=0)
+        _lg.get_title().set_color(th["fg"])
     if pairs:                             # a bracket + p-value per compared pair
         from firefly.analysis.fa_figure_common import draw_pvalue_brackets
         top = max((np.nanmax(_pool(g)) for g in groups if len(_pool(g))), default=None)
@@ -300,27 +329,43 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
 
 # ── track-length distribution: overlaid density with the filter threshold ────
 def draw_length_density(fig, subplotspec, groups, dists, *, threshold=None,
-                        group_colors=None, theme=None, xlabel="Track length (frames)"):
-    """Overlaid per-group KDEs of track length; dashed line = filter threshold."""
+                        group_colors=None, theme=None, xlabel="Trajectory length (frames)",
+                        per_recording=True):
+    """Overlaid per-group KDEs of track length; dashed line = filter threshold.
+
+    ``dists[g]`` is one array, or a list of per-recording arrays: then, with
+    ``per_recording``, the curve is the mean of the recordings' KDEs, shaded
+    ± SEM (see ``fa_figure_common.group_curve``)."""
     from scipy.stats import gaussian_kde
+    from firefly.analysis.fa_figure_common import draw_sem_band, group_curve, recording_cells
     th = {**_DEFAULT_THEME, **(theme or {})}
     group_colors = group_colors or {}
     ax = fig.add_subplot(subplotspec)
-    lo = min((float(np.min(d)) for d in dists.values() if d is not None and len(d)), default=0.0)
-    hi = max((float(np.percentile(d, 99)) for d in dists.values() if d is not None and len(d)), default=1.0)
+    pooled = {g: np.concatenate(c) for g, c in
+              ((g, recording_cells(dists.get(g))) for g in groups) if c}
+    lo = min((float(np.min(d)) for d in pooled.values()), default=0.0)
+    hi = max((float(np.percentile(d, 99)) for d in pooled.values()), default=1.0)
     x = np.linspace(lo, max(hi, lo + 1), 200)
-    for i, g in enumerate(groups):
-        d = dists.get(g)
-        if d is None or len(d) < 2:
-            continue
-        d = np.asarray(d, float)
+
+    def _kde(v):
+        if len(v) < 2 or np.ptp(v) <= 0:
+            return None
         try:
-            k = gaussian_kde(d)
+            return gaussian_kde(v)(x)
         except Exception:
+            return None
+    for i, g in enumerate(groups):
+        if g not in pooled or len(pooled[g]) < 2:
+            continue
+        y, sem = group_curve(dists.get(g), _kde, per_recording)
+        if y is None:
             continue
         c = group_colors.get(g, _FALLBACK[i % len(_FALLBACK)])
-        ax.fill_between(x, k(x), color=c, alpha=0.28)
-        ax.plot(x, k(x), color=c, lw=1.8, label=g)
+        if per_recording:
+            draw_sem_band(ax, x, y, sem, c, alpha=0.3, floor=0.0)
+        else:
+            ax.fill_between(x, y, color=c, alpha=0.28)
+        ax.plot(x, y, color=c, lw=1.8, label=g)
     if threshold is not None:
         ax.axvline(float(threshold), ls="--", color=th["fg"], lw=1.2)
     ax.set_facecolor(th["bg"])
@@ -328,7 +373,7 @@ def draw_length_density(fig, subplotspec, groups, dists, *, threshold=None,
         s.set_color(th["spine"])
     ax.tick_params(labelsize=8, colors=th["fg"])
     ax.set_xlabel(xlabel, fontsize=10, color=th["fg"])
-    ax.set_ylabel("Density", fontsize=10, color=th["fg"])
+    ax.set_ylabel("Probability density (per frame)", fontsize=10, color=th["fg"])
     ax.legend(title="Group", frameon=False, fontsize=8, title_fontsize=8, labelcolor=th["fg"])
     return ax
 
@@ -336,7 +381,7 @@ def draw_length_density(fig, subplotspec, groups, dists, *, threshold=None,
 # ── MSD-AUC change across timepoints: paired lines / Δ box ───────────────────
 def draw_auc_change(fig, subplotspec, groups, paired, *, style="paired",
                     stat_labels=None, group_colors=None, tp_order=None,
-                    theme=None, ylabel="MSD AUC"):
+                    theme=None, ylabel="AUC (µm²s)"):
     """Pre/post-style AUC change.
 
     paired : ``{group: {timepoint: 1-D array}}`` with two timepoints, matched by

@@ -182,7 +182,7 @@ def _pool_summaries(summaries):
 
 
 def render_group_panels(folders, letters, theme="Dark", proj_cmap="Inferno",
-                        traj_bg=True, group_color=None):
+                        traj_bg=True, group_color=None, motion_colourblind=False):
     """Pool `folders` and render the requested make_figure `letters` for the
     group.  Returns {letter: PIL.Image}.  Returns {} on any failure (the caller
     falls back to a placeholder / the existing renderer).
@@ -298,7 +298,7 @@ def render_group_panels(folders, letters, theme="Dark", proj_cmap="Inferno",
             stack, dummy_tracks, empty, pooled["emsd"], pooled["diff"],
             pooled["pixel_size"], pooled["frame_interval"],
             fig_theme=theme, proj_cmap=proj_cmap, traj_background=traj_bg,
-            turning_angles=ta, jdd=jdd, van_hove=van_hove, vacf=vacf,
+            motion_colourblind=motion_colourblind, turning_angles=ta, jdd=jdd, van_hove=van_hove, vacf=vacf,
             mobile_frac_df=mobile_frac, dwell_df=dwell, dwell_tau=float("nan"),
             combined_panels=(want | {"O"}), want_panels=want, output_path=None)
         panels = result.get("panels", {}) or {}

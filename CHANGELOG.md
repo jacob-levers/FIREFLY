@@ -1,5 +1,66 @@
 # Changelog
 
+## v2.76.51-rc.19 — 3 Oct 2026
+
+### Fixed
+
+- **Anomalous-exponent fits that stop at their limits are no longer
+  classified.** At the track lengths typical of fly recordings (about 10
+  points), many α fits ended on the edge of the fit's range (α = 0 or 2) and
+  were counted as Immobile or Directed; on simulated Brownian tracks 45% came out
+  "Directed". Those fits are now unclassified. A genuinely ballistic track keeps
+  α = 2. D is unchanged. **Motion-class percentages will differ from earlier
+  runs** — re-run to update them.
+
+- **The Analysis tab's mobile % now counts the same trajectories as the
+  report.** Trajectories whose MSD slope came out non-positive are immobile in
+  both; the tab used to leave them out.
+
+- **A group with a single recording was drawn as a flat box.** It is now drawn
+  as its dot.
+
+- **In the Analysis tab, replicate dots inside a box were hidden** by the box's
+  solid group colour. Boxes are now a pale tint with a coloured outline, as in
+  the report.
+
+### Changed
+
+- **The comparison shows the mobile fraction** (mobile ÷ all, 0–1) instead of
+  the mobile/immobile ratio, which is unbounded and undefined for a recording
+  with no immobile trajectory. The ratio is still in the summary CSV.
+
+- **Distribution curves weight every recording equally** — log D, trajectory
+  length, dwell time and turning angles show the mean of the recordings' curves
+  with the SEM shaded, as in the van Swinderen lab's figures. Pooling every
+  trajectory let the recordings with the most trajectories set a group's curve.
+  Pooling is still available (Preferences → Figures → Distribution curves).
+
+- **Titles and axis labels use the van Swinderen lab's wording**: MSD (µm²)
+  against Time (s), AUC (µm²s), Log₁₀ diffusion coefficient (µm²/s), Relative
+  frequency (fractions), "Slow/immobile fraction" and "Fast/mobile fraction",
+  trajectories rather than tracks, sentence case. The density curves' axis reads
+  "Probability density (per log₁₀ unit)".
+
+- **Minimal figures** also drop panel titles and mark comparisons with stars
+  (* p < 0.05, ** p < 0.01, *** p < 0.001, n.s.) instead of p-values.
+
+- **Median lines and error bars are neutral**, not red, which read as
+  "significant".
+
+- **The colour-blind option recolours motion classes everywhere**: the
+  comparison report, the Analysis tab and each run's figure, not only the
+  Visualise viewer.
+
+### Added
+
+- **Relative-frequency style for the diffusion-coefficient distribution**
+  (Preferences → Figures): the fraction of each recording's trajectories in
+  0.1-log-unit bins, averaged with SEM error bars, as in the lab's papers.
+
+- **Replicate dots are shaped by recording day**, with a key under the group
+  summary, so a day effect is visible. The day comes from the CZI: new runs
+  record it, and older runs read it from the recording while it is reachable.
+
 ## v2.76.51-rc.18 — 3 Oct 2026
 
 ### Fixed

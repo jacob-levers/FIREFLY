@@ -114,6 +114,11 @@ def _apply_determinism(log_cb=None) -> dict:
 
 
 # ── Per-localisation precision (loc_sigma_x_nm / loc_sigma_y_nm) ─────────────
+def _czi_acquired_at(path):
+    from firefly.analysis.fa_loaders import czi_acquired_at
+    return czi_acquired_at(path)
+
+
 def _pos_float(v):
     """Parse an optional positive float param; return None for missing/≤0/bad."""
     try:
@@ -1059,6 +1064,7 @@ def _render_palmtracer_native(p, out_dir, stem, fig_dir, data_dir, extras_dir, l
         fig_data = make_figure(
             stack, tracks, imsd_df, emsd_df, diff_df, px, fi,
             fig_theme=p.get("theme", "Dark"),
+            motion_colourblind=bool(p.get("motion_colourblind", False)),
             proj_cmap=p.get("fig_proj_cmap", "Inferno"),
             jdd=s.get("jdd"), turning_angles=s.get("turning_angles"),
             mobile_frac_df=s.get("mobile_fraction"), dwell_df=s.get("dwell_times"),
@@ -2673,6 +2679,7 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                 fig_data = make_figure(
                     proj_sample, tracks, imsd_df, emsd_df, diff_df, px, fi,
                     fig_theme=fig_theme, proj_cmap=fig_proj_cmap,
+                    motion_colourblind=bool(p.get("motion_colourblind", False)),
                     jdd=jdd, turning_angles=ta, mobile_frac_df=mf,
                     cluster_labels=cluster_labels, cluster_locs=cluster_xy,
                     cluster_motion=cluster_motion,
@@ -3109,6 +3116,10 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
                     # tab uses this to reload a background image.  Stored as
                     # absolute path so the source location survives folder moves.
                     "input_file":       os.path.abspath(p.get("file", "")) if p.get("file") else None,
+                    # When the recording was made (CZI header) — the comparison
+                    # report marks each replicate's dot by recording day.
+                    "acquired_at":      (_czi_acquired_at(p["file"])
+                                         if str(p.get("file", "")).lower().endswith(".czi") else None),
                 }, os.path.join(extras_dir, f"{stem}_params.json"), indent=2)
             extras_saved.append("params")
         except Exception as exc:

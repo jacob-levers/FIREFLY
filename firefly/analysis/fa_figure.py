@@ -200,7 +200,7 @@ def reflow_grid(n):
 
 def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 pixel_size, frame_interval, output_path=None, roi_mask=None,
-                fig_theme="Dark", proj_cmap="Inferno", jdd=None,
+                fig_theme="Dark", proj_cmap="Inferno", jdd=None, motion_colourblind=False,
                 turning_angles=None, mobile_frac_df=None,
                 cluster_labels=None, cluster_locs=None,
                 cluster_motion=None,
@@ -258,7 +258,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     # Theme-specific motion-class colours (shadow the module-global `MC` for the
     # whole figure body so every motion-coloured panel suits this theme — and
     # Publication uses the colour-blind-safe palette).
-    MC = motion_class_colors(fig_theme)
+    MC = motion_class_colors(fig_theme, colourblind=motion_colourblind)
 
     # ── Projection colourmap ───────────────────────────────────────────────────
     _cmap_map = {
@@ -377,14 +377,14 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     ax.plot([x0,x0+bp],[y0,y0],"-",color="white",lw=3)
     ax.text(x0+bp/2,y0+proj.shape[0]*.025,"5 um",
             ha="center",va="bottom",color="white",fontsize=8)
-    ax.set_xlabel(f"X  ({pixel_size} um/px)",fontsize=9)
+    ax.set_xlabel(f"X ({pixel_size} µm/px)",fontsize=9)
     ax.set_ylabel("Y (px)",fontsize=9)
     if roi_mask is not None:
         ax.contour(roi_mask.astype(float), levels=[0.5],
                    colors=["#58a6ff"], linewidths=[1.2], alpha=0.8)
         ax.text(0.02, 0.02, f"ROI", transform=ax.transAxes,
                 color="#58a6ff", fontsize=8, va="bottom")
-    sax(ax,"A","Max Projection", kind="image")
+    sax(ax,"A","Max projection", kind="image")
 
     # B — trajectory map coloured by motion type (subsample if very many tracks)
     ax = _ax("B")
@@ -406,7 +406,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     ax.set_xlim(0,proj.shape[1]); ax.set_ylim(0,proj.shape[0])
     ax.set_xlabel("X (px)",fontsize=9); ax.set_ylabel("Y (px)",fontsize=9)
     shown = f"{n_drawn:,}" + (f" of {len(all_pids):,}" if n_drawn < len(all_pids) else "")
-    sax(ax,"B",f"Trajectories  (n={shown})", kind="image")
+    sax(ax,"B",f"Trajectories (n={shown})", kind="image")
 
     # C — trajectories coloured by D value
     ax = _ax("C")
@@ -434,12 +434,12 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 col = "#555555"
             _draw_track(grp, col, ax)
         cb = plt.colorbar(_sm_d, ax=ax, fraction=0.046, pad=0.04)
-        cb.set_label("log10(D)  [µm²/s]", fontsize=8, color=TXT)
+        cb.set_label("Log₁₀ diffusion coefficient (µm²/s)", fontsize=8, color=TXT)
         cb.ax.yaxis.set_tick_params(color=TXT)
         plt.setp(cb.ax.yaxis.get_ticklabels(), color=TXT, fontsize=7)
     ax.set_xlim(0, proj.shape[1]); ax.set_ylim(0, proj.shape[0])
     ax.set_xlabel("X (px)", fontsize=9); ax.set_ylabel("Y (px)", fontsize=9)
-    sax(ax, "C", "Trajectories by D value", kind="image")
+    sax(ax, "C", "Trajectories by diffusion coefficient", kind="image")
 
     # D — MSD curves
     ax = _ax("D")
@@ -461,12 +461,12 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.plot(te,msd_linear(te,*po),"--",color="#f78166",lw=2,
                 label=f"Fit D={po[0]:.4f} µm²/s")
     except Exception: pass
-    ax.set_xlabel("Lag time (s)",fontsize=9)
+    ax.set_xlabel("Time (s)",fontsize=9)
     ax.set_ylabel("MSD (µm²)",fontsize=9)
     ax.set_xscale("log"); ax.set_yscale("log")
     ax.grid(True,which="both",ls="--",alpha=0.22,lw=0.5)
     ax.legend(fontsize=8,loc="upper left",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
-    sax(ax,"D","MSD Curves")
+    sax(ax,"D","MSD curves")
 
     # E — D distribution
     ax = _ax("E")
@@ -509,7 +509,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         # distribution curves is clipped by the top axis.
         ymax = max(peaks) if peaks else 1.0
         ax.set_ylim(0, ymax * 1.42)
-        ax.set_xlabel("log10(D)  [µm²/s]",fontsize=9)
+        ax.set_xlabel("Log₁₀ diffusion coefficient (µm²/s)",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
         ax.legend(fontsize=7.5,loc="upper right",framealpha=0.9,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
     else:
@@ -525,7 +525,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
             va="top", ha="left", alpha=0.9,
         )
     ax.grid(True,ls="--",alpha=0.22,lw=0.5)
-    sax(ax,"E","Diffusion Coefficient Distribution")
+    sax(ax,"E","Diffusion coefficient distribution")
 
     # F — motion-class composition as a simple vertical bar chart: one bar per
     # class (height = % of classified tracks), the class names on the x-axis and
@@ -555,9 +555,9 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.set_xticklabels(classes, fontsize=8)
         ax.set_ylim(0, 100)
         ax.set_yticks([0, 25, 50, 75, 100])
-        ax.set_ylabel("% of tracks (including unclassified)", fontsize=9)
+        ax.set_ylabel("% of trajectories (including unclassified)", fontsize=9)
         ax.grid(True, axis="y", ls="--", alpha=0.22, lw=0.5)
-    sax(ax,"F","Descriptive α Classes")
+    sax(ax,"F","Descriptive α classes")
 
     # G — alpha distribution
     ax = _ax("G")
@@ -575,22 +575,26 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                             MC[m], m, bins=ba)
         for xv,lb,ls in [(0.5,"a=0.5",":"),(1.0,"a=1 Brownian","--"),(2.0,"a=2 directed",":")]:
             ax.axvline(xv,color=GRD,ls=ls,lw=1.2,label=lb)
-        ax.set_xlabel("Anomalous exponent alpha",fontsize=9)
+        ax.set_xlabel("Anomalous exponent α",fontsize=9)
         ax.set_ylabel("Count",fontsize=9)
         ax.legend(fontsize=7,loc="upper right",framealpha=0.85,facecolor=PNL,edgecolor=GRD,labelcolor=TXT)
     n_nan = int(diff_df["alpha"].isna().sum())
-    n_other_unavailable = max(0, n_nan - n_below)
+    n_at_limit = (int((diff_df["alpha_fit_status"] == "at_limit").sum())
+                  if "alpha_fit_status" in diff_df.columns else 0)
+    n_other_unavailable = max(0, n_nan - n_below - n_at_limit)
     if n_nan:
         _alpha_note = (
             f"Below resolution (unclassified): {n_below}/{n_total}"
             if n_below else "Below resolution: 0"
         )
+        if n_at_limit:
+            _alpha_note += f"\nFit stopped at α = 0 or 2 (unclassified): {n_at_limit}"
         if n_other_unavailable:
             _alpha_note += f"\nOther α unavailable: {n_other_unavailable}"
         ax.text(0.02, 0.97, _alpha_note, transform=ax.transAxes,
                 fontsize=7, color=TXT, va="top", ha="left", alpha=0.9)
     ax.grid(True,ls="--",alpha=0.22,lw=0.5)
-    sax(ax,"G","Anomalous Exponent Alpha Distribution")
+    sax(ax,"G","Anomalous exponent α distribution")
 
     # H — Position Density Heatmap
     ax = _ax("H")
@@ -603,8 +607,8 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.imshow(h_sm.T, origin="lower", cmap="hot",
                   extent=[xe[0], xe[-1], ye[0], ye[-1]],
                   aspect="equal", interpolation="bilinear")
-        ax.set_xlabel("X  (µm)", fontsize=9)
-        ax.set_ylabel("Y  (µm)", fontsize=9)
+        ax.set_xlabel("X (µm)", fontsize=9)
+        ax.set_ylabel("Y (µm)", fontsize=9)
         if roi_mask is not None:
             H_px, W_px = roi_mask.shape
             ax.contour(
@@ -614,7 +618,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 colors=["#58a6ff"], linewidths=[1.0], alpha=0.7)
     except Exception:
         pass
-    sax(ax, "H", "Position Density Map", kind="image")
+    sax(ax, "H", "Position density map", kind="image")
 
     # I — Turning Angle Distribution
     # Plotted as a single LINE following the count of each |angle| bin,
@@ -646,12 +650,12 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.axvline(180, color=GRD, lw=0.6, ls=":")
         ax.set_xlim(0, 180)
         ax.set_xticks([0, 45, 90, 135, 180])
-        ax.set_xlabel("|Turning angle|  (°)", fontsize=9)
-        ax.set_ylabel("Relative frequency", fontsize=9)
+        ax.set_xlabel("|Turning angle| (°)", fontsize=9)
+        ax.set_ylabel("Relative frequency (fractions)", fontsize=9)
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
         ax.legend(fontsize=7, loc="upper right", framealpha=0.85,
                   facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
-    sax(ax, "I", "Turning Angle Distribution")
+    sax(ax, "I", "Turning angle distribution")
 
     # J — Mobile Fraction Over Time
     ax = _ax("J")
@@ -667,7 +671,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.set_xlabel("Time (s)", fontsize=9)
         ax.set_ylabel("Mobile fraction (%)", fontsize=9)
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
-    sax(ax, "J", "Mobile Fraction Over Time")
+    sax(ax, "J", "Mobile fraction over time")
 
     # K — Jump Distance Distribution (spans cols 1–2)
     ax = _ax("K")
@@ -701,7 +705,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         else:
             ax.plot(jdd["r_range"], jdd["pdf_total"],
                     color=TXT, lw=2.5, ls="--", label="Total fit")
-        ax.set_xlabel("Jump distance  (µm)", fontsize=9)
+        ax.set_xlabel("Jump distance (µm)", fontsize=9)
         ax.set_ylabel("Probability density", fontsize=9)
         ax.set_xlim(0, r_max_plot)
         ax.set_ylim(bottom=0)
@@ -718,7 +722,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
     else:
         ax.text(0.5, 0.5, "JDD not computed", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=12)
-        sax(ax, "K", "Jump Distance Distribution")
+        sax(ax, "K", "Jump distance distribution")
 
     # L — Cluster Map
     ax = _ax("L")
@@ -742,7 +746,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                      if _mot is not None else set())
             if _real:
                 from collections import Counter
-                mcol = motion_class_colors(fig_theme)
+                mcol = motion_class_colors(fig_theme, colourblind=motion_colourblind)
                 dom = {}
                 for cid in np.unique(cluster_labels[clustered]):
                     ms = _mot[cluster_labels == cid]
@@ -769,15 +773,15 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                            s=1.5, c=cluster_labels[clustered], cmap=cmap_c,
                            alpha=0.7, linewidths=0, rasterized=True,
                            vmin=0, vmax=n_c - 1)
-        ax.set_xlabel("X  (µm)", fontsize=9)
-        ax.set_ylabel("Y  (µm)", fontsize=9)
+        ax.set_xlabel("X (µm)", fontsize=9)
+        ax.set_ylabel("Y (µm)", fontsize=9)
         n_shown = int(cluster_labels.max()) + 1 if cluster_labels.max() >= 0 else 0
         ax.text(0.02, 0.98, f"n={n_shown} clusters",
                 transform=ax.transAxes, fontsize=8, color=TXT, va="top")
     else:
         ax.text(0.5, 0.5, "Cluster analysis\nnot computed",
                 transform=ax.transAxes, ha="center", va="center", color=TXT, fontsize=10)
-    _clu_title = "Cluster Map  (DBSCAN)"
+    _clu_title = "Cluster map (DBSCAN)"
     if cluster_subsampled_n:
         _clu_title += f"  (sub-sampled to {int(cluster_subsampled_n):,})"
     sax(ax, "L", _clu_title, kind="image")
@@ -794,13 +798,13 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                     label=f"τ = {dwell_tau:.2f} s")
             ax.legend(fontsize=8, loc="upper right", framealpha=0.85,
                       facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
-        ax.set_xlabel("Dwell time  (s)", fontsize=9)
+        ax.set_xlabel("Dwell time (s)", fontsize=9)
         ax.set_ylabel("Probability density", fontsize=9)
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
     else:
         ax.text(0.5, 0.5, "Insufficient data\n(need confined/immobile tracks)",
                 transform=ax.transAxes, ha="center", va="center", color=TXT, fontsize=10)
-    sax(ax, "M", "Dwell Time Distribution")
+    sax(ax, "M", "Dwell time distribution")
 
     # N — MSS Slope Distribution
     ax = _ax("N")
@@ -818,14 +822,14 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 _filled_kde(ax, xk, bw, sub["mss_slope"], MC[m], m, bins=bins)
         for xv, lb, ls_ in [(0.25, "Confined", ":"), (0.5, "Brownian", "--"), (0.75, "Directed", ":")]:
             ax.axvline(xv, color=GRD, ls=ls_, lw=1.2, label=lb)
-        ax.set_xlabel("MSS slope  (ν)", fontsize=9)
+        ax.set_xlabel("MSS slope (ν)", fontsize=9)
         ax.set_ylabel("Count", fontsize=9)
         ax.legend(fontsize=7, loc="upper right", framealpha=0.85, facecolor=PNL, edgecolor=GRD, labelcolor=TXT)
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
     else:
         ax.text(0.5, 0.5, "MSS not computed\n(tracks too short)",
                 transform=ax.transAxes, ha="center", va="center", color=TXT, fontsize=10)
-    sax(ax, "N", "Moment Scaling Spectrum  (MSS slope)")
+    sax(ax, "N", "Moment scaling spectrum (MSS slope)")
 
     # O — Radial Distribution of turning angles (polar)
     # A polar histogram of signed turning angles, oriented so 0° (straight
@@ -877,7 +881,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.set_yticklabels([])
         ax.tick_params(axis="y", which="both", left=False)
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
-    sax(ax, "O", "Radial Distribution  (signed turning angles)")
+    sax(ax, "O", "Radial distribution (signed turning angles)")
 
     # P — van Hove displacement distribution (left slot of row 5)
     # The pooled single-frame step distribution with a same-σ Gaussian
@@ -902,13 +906,13 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         _pos = pdf[pdf > 0]
         if _pos.size:
             ax.set_ylim(_pos.min() * 0.5, pdf.max() * 2.0)
-        ax.set_xlabel("Δx, Δy  (µm)"); ax.set_ylabel("P(Δ)  (log)")
+        ax.set_xlabel("Δx, Δy (µm)"); ax.set_ylabel("P(Δ) (log)")
         ax.legend(fontsize=8, framealpha=0.3, loc="upper right")
         ax.text(0.03, 0.95, f"α₂ = {a2:.3f}", transform=ax.transAxes,
                 ha="left", va="top", color=TXT, fontsize=9,
                 bbox=dict(boxstyle="round", fc=PNL, ec=GRD, alpha=0.7))
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
-    sax(ax, "P", "van Hove  (single-frame displacements)")
+    sax(ax, "P", "van Hove (single-frame displacements)")
 
     # Q — velocity autocorrelation function (right slot of row 5)
     # Normalised ensemble VACF vs lag.  Flat-at-zero => Brownian (no
@@ -925,14 +929,14 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         pers = vacf.get("persistence", float("nan"))
         ax.axhline(0.0, color=GRD, lw=1.0, ls=":")
         ax.plot(lags, cv, marker="o", ms=4, color=ACC, lw=1.3)
-        ax.set_xlabel("lag  (frames)"); ax.set_ylabel("VACF  (normalised)")
+        ax.set_xlabel("Lag (frames)"); ax.set_ylabel("VACF (normalised)")
         ax.set_xlim(left=0)
         ax.text(0.97, 0.95, f"persistence = {pers:.3f}",
                 transform=ax.transAxes, ha="right", va="top", color=TXT,
                 fontsize=9,
                 bbox=dict(boxstyle="round", fc=PNL, ec=GRD, alpha=0.7))
         ax.grid(True, ls="--", alpha=0.22, lw=0.5)
-    sax(ax, "Q", "Velocity Autocorrelation")
+    sax(ax, "Q", "Velocity autocorrelation")
 
     # ── R / S — the two headline sampling numbers ────────────────────────────
     # Single-value bars, deliberately: these are the numbers that get read off
@@ -983,7 +987,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.set_xticks([1])
         ax.set_xticklabels([f"{len(_tl):,} tracks"], fontsize=9)
         ax.set_xlim(0.4, 1.6)
-        ax.set_ylabel("Track length  (localisations)", fontsize=9)
+        ax.set_ylabel("Trajectory length (localisations)", fontsize=9)
         ax.legend(handles=[
             Line2D([], [], color=_kde_col, lw=2.0, label=f"median  {_med:,.0f}"),
             Line2D([], [], color="none", marker="D", markersize=6,
@@ -1002,7 +1006,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
                 transform=ax.transAxes, ha="center", va="center",
                 color=TXT, fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
-    sax(ax, "R", "Track Length")
+    sax(ax, "R", "Trajectory length")
 
     # S — Total Tracks
     ax = _ax("S")
@@ -1021,7 +1025,7 @@ def make_figure(stack, tracks, imsd_df, emsd_df, diff_df,
         ax.text(0.5, 0.5, "No tracks", transform=ax.transAxes,
                 ha="center", va="center", color=TXT, fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
-    sax(ax, "S", "Total Tracks")
+    sax(ax, "S", "Total trajectories")
 
     md = diff_df["D"].dropna().median()
     ma = diff_df["alpha"].dropna().median()

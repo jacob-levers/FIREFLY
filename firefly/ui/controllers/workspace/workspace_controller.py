@@ -107,6 +107,8 @@ class _FigureJob(threading.Thread):
                     grouped_data=self._cfg.get("_grouped_data"),
                     stats_config=self._cfg.get("_stats_config"),
                     minimal=bool(self._cfg.get("_minimal", False)),
+                    motion_colourblind=bool(self._cfg.get("_motion_cb", False)),
+                    curve_weighting=self._cfg.get("_curve_weighting", "recording"),
                     width_px=w, height_px=h, dpi=110)
         except Exception:
             img = None
@@ -116,8 +118,9 @@ class _FigureJob(threading.Thread):
 class _PanelJob(threading.Thread):
     """Render one per-condition publication panel off the GUI thread."""
 
-    def __init__(self, panel, runs, color, size, done_cb):
+    def __init__(self, panel, runs, color, size, done_cb, motion_colourblind=False):
         super().__init__(daemon=True)
+        self._motion_cb = motion_colourblind
         self._panel = panel
         self._runs = runs
         self._color = color
@@ -130,7 +133,8 @@ class _PanelJob(threading.Thread):
             w, h = self._size
             with _MATPLOTLIB_LOCK:
                 img = wf.render_panel(self._panel, self._runs, self._color,
-                                      width_px=w, height_px=h, dpi=110)
+                                      width_px=w, height_px=h, dpi=110,
+                                      motion_colourblind=self._motion_cb)
         except Exception:
             img = None
         self._done(img)
@@ -141,8 +145,9 @@ class _GroupAllPanelsJob(threading.Thread):
     make_figure call (the heavy part is shared), returning {letter: QImage}.
     The controller caches the dict per group so switching panels is instant."""
 
-    def __init__(self, folders, theme, color, done_cb):
+    def __init__(self, folders, theme, color, done_cb, motion_colourblind=False):
         super().__init__(daemon=True)
+        self._motion_cb = motion_colourblind
         self._folders = list(folders)
         self._theme = theme
         self._color = color
@@ -155,7 +160,8 @@ class _GroupAllPanelsJob(threading.Thread):
             with _MATPLOTLIB_LOCK:
                 panels = gpf.render_group_panels(
                     self._folders, gpf.AVERAGEABLE_LETTERS,
-                    theme=self._theme, group_color=self._color)
+                    theme=self._theme, group_color=self._color,
+                    motion_colourblind=self._motion_cb)
             for letter, pil in panels.items():
                 try:
                     out[letter] = gpf.pil_to_qimage(pil)
@@ -534,13 +540,24 @@ class AnalysisWorkspaceController(QObject):
         return bool(wd.PANEL_METRIC.get(self._metric))
 
     def _values(self, cond: _Condition, metric) -> np.ndarray:
-        vals = [metric.scalar(f.run) for f in cond.active()]
-        return np.array([v for v in vals if v is not None], dtype=float)
+        return self._values_days(cond, metric)[0]
+
+    def _values_days(self, cond: _Condition, metric):
+        """Per-replicate values + each one's recording day (aligned)."""
+        pairs = [(metric.scalar(f.run), f.run) for f in cond.active()]
+        pairs = [(v, r) for v, r in pairs if v is not None]
+        return (np.array([v for v, _r in pairs], dtype=float),
+                [r.recording_day() for _v, r in pairs])
 
     def _pooled_dist(self, cond: _Condition, metric):
-        chunks = [metric.dist(f.run) for f in cond.active()]
-        chunks = [c for c in chunks if c is not None and len(c)]
+        chunks = self._run_dists(cond, metric)
         return np.concatenate(chunks) if chunks else None
+
+    def _run_dists(self, cond: _Condition, metric) -> list:
+        """Each active recording's per-track values, kept apart so a curve can
+        weight every recording equally (Preferences → Distribution curves)."""
+        chunks = [metric.dist(f.run) for f in cond.active()]
+        return [np.asarray(c, float) for c in chunks if c is not None and len(c)]
 
     def _build_groups(self):
         """Build the list of comparison groups for the current Group-by mode."""
@@ -555,13 +572,15 @@ class AnalysisWorkspaceController(QObject):
             for name in present:
                 members = [c for c in shown if c.phase == name]
                 tp = next((t for t in self._timepoints if t["name"] == name), None)
-                vals, dists = [], []
+                vals, dists, days, run_dists = [], [], [], []
                 mc = {}
                 for c in members:
-                    vals.append(self._values(c, metric))
-                    d = self._pooled_dist(c, metric)
-                    if d is not None:
-                        dists.append(d)
+                    v, dd = self._values_days(c, metric)
+                    vals.append(v); days += dd
+                    rd_ = self._run_dists(c, metric)
+                    run_dists += rd_
+                    if rd_:
+                        dists.append(np.concatenate(rd_))
                     for f in c.active():
                         for k, v in (f.run.summary.get("motion_counts") or {}).items():
                             mc[k] = mc.get(k, 0) + int(v)
@@ -570,7 +589,9 @@ class AnalysisWorkspaceController(QObject):
                     "label": name, "color": tp["color"] if tp else wd.MOTION_COLORS["Unknown"],
                     "phase": name,
                     "values": np.concatenate(vals) if vals else np.array([]),
+                    "days": days,
                     "dist": np.concatenate(dists) if dists else None,
+                    "dists": run_dists,
                     "motion_counts": mc, "subjects": [c.name for c in members],
                     "ntracks": int(ntracks),
                 })
@@ -587,10 +608,12 @@ class AnalysisWorkspaceController(QObject):
             for f in c.active():
                 for k, v in (f.run.summary.get("motion_counts") or {}).items():
                     mc[k] = mc.get(k, 0) + int(v)
+            vals, days = self._values_days(c, metric)
             groups.append({
                 "label": _glabel(c.name, c.phase), "name": c.name, "color": c.color,
-                "phase": c.phase, "values": self._values(c, metric),
-                "dist": self._pooled_dist(c, metric), "motion_counts": mc,
+                "phase": c.phase, "values": vals, "days": days,
+                "dist": self._pooled_dist(c, metric), "dists": self._run_dists(c, metric),
+                "motion_counts": mc,
                 "ntracks": int(sum(f.run.n_tracks for f in c.active())),
             })
         return groups
@@ -961,9 +984,23 @@ class AnalysisWorkspaceController(QObject):
 
     def _build_legend(self, groups, metric):
         if metric.id == "motion":
-            return [{"name": k, "color": wd.MOTION_COLORS[k]}
+            mc = wd.motion_colors(self._motion_colourblind())
+            return [{"name": k, "color": mc[k]}
                     for k in ("Immobile", "Confined", "Brownian", "Directed")]
         return [{"name": g["label"], "color": g["color"]} for g in groups]
+
+    def _curve_weighting(self) -> str:
+        """Preferences → Distribution curves: "recording" (each recording
+        weighted equally, mean ± SEM — the default) or "tracks" (pooled)."""
+        s = self._settings
+        v = s.getStr("figures/curve_weighting", "recording") if s else "recording"
+        return v if v in ("recording", "tracks") else "recording"
+
+    def _motion_colourblind(self) -> bool:
+        """Preferences → Motion-class palette → Colour-blind safe."""
+        s = self._settings
+        return bool(s is not None
+                    and s.getStr("visualise/motion_colours", "Default") == "Colour-blind safe")
 
     # ── figure lane ─────────────────────────────────────────────────────
     def _compute_report_kwargs(self) -> dict:
@@ -1000,7 +1037,9 @@ class AnalysisWorkspaceController(QObject):
             group_style=(s.getStr("figures/group_style", "box_points") if s else "box_points"),
             panel_styles=self._panel_styles(),
             logd_clip_d_min=dlo, logd_clip_d_max=dhi,
-            minimal=(s.getBool("figures/minimal", False) if s else False))
+            minimal=(s.getBool("figures/minimal", False) if s else False),
+            motion_colourblind=self._motion_colourblind(),
+            curve_weighting=self._curve_weighting())
 
     # Comparison panels drawn as a scalar bar/box/violin — each gets its OWN
     # format in Preferences (figures/style_<key>).  AUC is NOT here: its single
@@ -1176,6 +1215,8 @@ class AnalysisWorkspaceController(QObject):
             cfg["_group_style"] = s.getStr("figures/group_style", "box_points")
             cfg["_length_style"] = s.getStr("figures/length_style", "density")
             cfg["_minimal"] = s.getBool("figures/minimal", False)
+            cfg["_motion_cb"] = self._motion_colourblind()
+            cfg["_curve_weighting"] = self._curve_weighting()
             try:
                 cfg["_mobile_d"] = float(s.get("analysis/mobile_d", MOBILE_D_THRESHOLD_DEFAULT))
             except (TypeError, ValueError):
@@ -1404,7 +1445,8 @@ class AnalysisWorkspaceController(QObject):
         if panel.get("kind") == "raster" and runs:
             ri = min(max(0, self._panel_replicate), len(runs) - 1)
             runs = [runs[ri]]
-        self._panel_job = _PanelJob(panel, runs, cond.color, (760, 420), deliver)
+        self._panel_job = _PanelJob(panel, runs, cond.color, (760, 420), deliver,
+                                    motion_colourblind=self._motion_colourblind())
         self._panel_job.start()
 
     def _group_key(self):
@@ -1454,7 +1496,8 @@ class AnalysisWorkspaceController(QObject):
                 c._pending_group = (key, d)
                 c._groupRendered.emit()
 
-        self._group_job = _GroupAllPanelsJob(folders, theme, cond.color, gdeliver)
+        self._group_job = _GroupAllPanelsJob(folders, theme, cond.color, gdeliver,
+                                             motion_colourblind=self._motion_colourblind())
         self._group_job.start()
 
     def _on_group_rendered(self):
@@ -1661,7 +1704,7 @@ class AnalysisWorkspaceController(QObject):
         if not isinstance(key, str):
             return
         if not (key.startswith("figures/")
-                or key in ("analysis/mobile_d",
+                or key in ("analysis/mobile_d", "visualise/motion_colours",
                            "analysis/dcoeff_clip_logmin", "analysis/dcoeff_clip_logmax")):
             return
         if key == "figures/compare_panels":

@@ -31,7 +31,8 @@ def _groups(tmp_path, n):
 
 
 def _auc_axis(fig):
-    return next(a for a in fig.axes if "Area Under" in (a.get_title() or ""))
+    # by the y label: minimal mode clears every title
+    return next(a for a in fig.axes if a.get_ylabel().startswith("AUC"))
 
 
 def _p_texts(ax):
@@ -108,14 +109,17 @@ def test_the_p_value_sits_above_the_data(tmp_path, n):
     plt.close(fig)
 
 
-def test_minimal_mode_has_no_legend_title_or_band(tmp_path):
+def test_minimal_mode_has_no_legend_titles_or_band(tmp_path):
+    """No panel titles either: in a thesis figure they go in the caption."""
     fig, _s, _st = compare_groups(_groups(tmp_path, 3), output_dir=None, minimal=True,
                                   panels={"auc", "logd_dist", "motion_classes", "dwell_cdf"},
                                   pdf_report=False, auc_plot_style="box_points")
     assert not (fig._suptitle and fig._suptitle.get_text())
+    assert not any(a.get_title(loc=l) for a in fig.axes for l in ("center", "left", "right"))
     assert fig.texts == []                                    # no group-summary band
     assert all(a.get_legend() is None for a in fig.axes) and not fig.legends
-    assert _p_texts(_auc_axis(fig))                           # the p-value stays
+    marks = [t.get_text() for t in _auc_axis(fig).texts if t.get_text().strip()]
+    assert marks and set(marks) <= {"*", "**", "***", "n.s."}  # stars, as the lab marks them
     plt.close(fig)
 
 
@@ -123,6 +127,7 @@ def test_the_default_figure_keeps_its_title_and_band(tmp_path):
     fig, _s, _st = compare_groups(_groups(tmp_path, 3), output_dir=None,
                                   panels={"auc"}, pdf_report=False, auc_plot_style="box_points")
     assert fig._suptitle is not None and fig._suptitle.get_text()
+    assert _auc_axis(fig).get_title() == "Area under the MSD curve"
     assert len(fig.texts) == 1 + 3                            # the title + one band entry per group
     plt.close(fig)
 
@@ -168,18 +173,20 @@ def test_the_live_preview_brackets_each_pair_in_group_colours():
         assert np.allclose(c.get_facecolor()[:, :3], to_rgba(cols[g])[:3])
 
 
-def test_live_minimal_mode_strips_legends():
+def test_live_minimal_mode_strips_legends_and_titles():
     pytest.importorskip("PySide6")
     from matplotlib.figure import Figure
     from firefly.ui.controllers.workspace import workspace_figures as wf
     fig = Figure(); ax = fig.add_subplot(111)
     ax.plot([0, 1], [0, 1], label="Control"); ax.legend()
+    ax.set_title("Median D"); ax.set_title("n = 3", loc="right"); fig.suptitle("Report")
     wf._RENDER.minimal = True
     try:
         wf._qimage_from_figure(fig)
     finally:
         wf._RENDER.minimal = False
     assert ax.get_legend() is None
+    assert not (ax.get_title() or ax.get_title(loc="right") or fig._suptitle.get_text())
 
 
 def test_the_preferences_toggle_exists_and_resets_off():

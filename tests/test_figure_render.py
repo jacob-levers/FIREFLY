@@ -165,7 +165,7 @@ def test_compare_groups_honours_dcoeff_clip_range(tmp_path):
         logd_plot_style="overlaid",
         logd_clip_d_min=1e-3, logd_clip_d_max=1.0)      # → log₁₀ x-axis [-3, 0]
     assert fig is not None
-    ax = next((a for a in fig.axes if "LogD" in (a.get_title() or "")), None)
+    ax = next((a for a in fig.axes if "Diffusion coefficient distribution" in (a.get_title() or "")), None)
     assert ax is not None
     lo, hi = ax.get_xlim()
     assert abs(lo - (-3.0)) < 1e-6 and abs(hi - 0.0) < 1e-6

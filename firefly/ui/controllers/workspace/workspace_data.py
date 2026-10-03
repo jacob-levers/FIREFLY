@@ -48,6 +48,16 @@ MOTION_COLORS = {
     "Immobile": "#e05252", "Confined": "#f5a623", "Brownian": "#4a90d9",
     "Directed": "#7ed321", "Unknown": "#aaaaaa",
 }
+# Preferences → Motion-class palette → Colour-blind safe: the Okabe–Ito set
+# (fa_constants' Publication palette).
+MOTION_COLORS_CB = {
+    "Immobile": "#d55e00", "Confined": "#e69f00", "Brownian": "#0072b2",
+    "Directed": "#009e73", "Unknown": "#999999",
+}
+
+
+def motion_colors(colourblind=False) -> dict:
+    return MOTION_COLORS_CB if colourblind else MOTION_COLORS
 
 # condition swatch palette (matches the design tokens).  12 distinct hues so a
 # group × time-point design (one condition per cell — e.g. 3 groups × 3 time
@@ -210,6 +220,17 @@ class RunData:
     def diff(self) -> Optional[pd.DataFrame]:
         return self._read_csv("_diffusion_summary.csv")
 
+    def recording_day(self) -> Optional[str]:
+        """``YYYY-MM-DD`` the recording was made, or None (see
+        ``fa_loaders.recording_day``) — shapes this run's dot in the graphs."""
+        if "_recording_day" not in self._cache:
+            try:
+                from firefly.analysis.fa_loaders import recording_day
+                self._cache["_recording_day"] = recording_day(self.params)
+            except Exception:
+                self._cache["_recording_day"] = None
+        return self._cache["_recording_day"]
+
     def _diff_col(self, col: str, *, positive: bool = False) -> Optional[np.ndarray]:
         df = self.diff()
         if df is None or col not in df.columns:
@@ -288,11 +309,19 @@ def _mobile_pct(run: RunData) -> Optional[float]:
     run.  Recomputing here puts both on one number and makes a threshold change
     apply retroactively, with no reprocessing.
 
+    It counts the same tracks as the report's Mobile fraction panel
+    (``fa_diffusion.mobility_masks``): a track whose MSD slope came out
+    non-positive is immobile, not dropped.
+
     The stored value is still the fallback for runs with no per-track table
     (palmTRACER caches, partial outputs)."""
-    d = run._diff_col("D", positive=True)
-    if d is not None and d.size:
-        return 100.0 * float((d >= float(run.mobile_d)).mean())
+    df = run.diff()
+    if df is not None and "D" in df.columns:
+        from firefly.analysis.fa_diffusion import _mobile_fraction
+        f = _mobile_fraction(df.assign(D=pd.to_numeric(df["D"], errors="coerce")),
+                             float(run.mobile_d))
+        if np.isfinite(f):
+            return 100.0 * f
     v = run.summary.get("mobile_fraction")
     return float(v) * 100.0 if v is not None else None
 
@@ -644,17 +673,17 @@ PANELS = [
     {"name": "Motion classification",         "cat": "Population",  "kind": "mfig", "letter": "F"},
     {"name": "Anomalous exponent α",          "cat": "Diffusion",  "kind": "mfig", "letter": "G"},
     {"name": "Position density map",          "cat": "Imaging",    "kind": "raster", "panel_letter": "H", "art": "_superres"},
-    {"name": "Turning-angle distribution",    "cat": "Tracking",   "kind": "mfig", "letter": "I"},
+    {"name": "Turning angle distribution",    "cat": "Tracking",   "kind": "mfig", "letter": "I"},
     {"name": "Mobile fraction over time",     "cat": "Population",  "kind": "mfig", "letter": "J"},
-    {"name": "Jump-distance distribution",    "cat": "Diffusion",  "kind": "mfig", "letter": "K"},
+    {"name": "Jump distance distribution",    "cat": "Diffusion",  "kind": "mfig", "letter": "K"},
     {"name": "Cluster map",                   "cat": "Imaging",    "kind": "raster", "panel_letter": "L", "art": "_superres"},
-    {"name": "Dwell-time distribution",       "cat": "Population",  "kind": "mfig", "letter": "M"},
-    {"name": "Moment-scaling spectrum",       "cat": "Diffusion",  "kind": "mfig", "letter": "N"},
+    {"name": "Dwell time distribution",       "cat": "Population",  "kind": "mfig", "letter": "M"},
+    {"name": "Moment scaling spectrum",       "cat": "Diffusion",  "kind": "mfig", "letter": "N"},
     {"name": "Radial distribution",           "cat": "Tracking",   "kind": "mfig", "letter": "O"},
     {"name": "van Hove displacements",        "cat": "Population",  "kind": "mfig", "letter": "P"},
     {"name": "Velocity autocorrelation",      "cat": "Population",  "kind": "mfig", "letter": "Q"},
-    {"name": "Track length",                  "cat": "Tracking",   "kind": "mfig", "letter": "R"},
-    {"name": "Total tracks",                  "cat": "Tracking",   "kind": "mfig", "letter": "S"},
+    {"name": "Trajectory length",                  "cat": "Tracking",   "kind": "mfig", "letter": "R"},
+    {"name": "Total trajectories",                  "cat": "Tracking",   "kind": "mfig", "letter": "S"},
 ]
 
 # gallery index → fa_figure letter (derived from the `letter` fields above).
@@ -682,68 +711,71 @@ def find_artifact(run, hint):
     return None
 
 
+# Names and axis labels follow the van Swinderen lab's sptPALM figures
+# (Bademosi et al. 2017; Hines & van Swinderen 2021; Hines et al. 2024):
+# sentence case, "trajectory" not "track", AUC in µm²s.
 METRICS: list[Metric] = [
-    Metric("D", "Diffusion D", "µm²/s", 3, "log₁₀ D (µm²/s)", "Diffusion",
+    Metric("D", "Diffusion coefficient", "µm²/s", 3, "Diffusion coefficient (µm²/s)", "Diffusion",
            scalar=lambda r: _summary(r, "median_d"),
            dist=lambda r: r._diff_col("D", positive=True), log_default=True),
-    Metric("a", "Anomalous α", "", 2, "anomalous exponent α", "Diffusion",
+    Metric("a", "Anomalous α", "", 2, "Anomalous exponent α", "Diffusion",
            scalar=lambda r: _summary(r, "median_alpha"),
            dist=lambda r: r._diff_col("alpha")),
-    Metric("mob", "Mobile fraction", "%", 0, "mobile fraction (%)", "Population",
+    Metric("mob", "Mobile fraction", "%", 0, "Mobile fraction (%)", "Population",
            scalar=_mobile_pct),
     Metric("motion", "Motion classes", "%", 0, "Brownian fraction (%)", "Population",
            scalar=lambda r: _motion_frac(r, "Brownian")),
-    Metric("len", "Track length", "frames", 0, "track length (frames)", "Tracking",
+    Metric("len", "Trajectory length", "frames", 0, "Trajectory length (frames)", "Tracking",
            scalar=_track_len_median, dist=_track_len_dist),
-    Metric("msd", "MSD @1s", "µm²", 3, "MSD @1s (µm²)", "Diffusion",
+    Metric("msd", "MSD at 1 s", "µm²", 3, "MSD at 1 s (µm²)", "Diffusion",
            scalar=_msd_at_1s),
-    Metric("step", "Step distance", "µm", 3, "step distance (µm)", "Tracking",
+    Metric("step", "Step distance", "µm", 3, "Step distance (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "mean_step_um"),
            dist=lambda r: r._diff_col("mean_step_um")),
-    Metric("speed", "Step speed", "µm/s", 3, "step speed (µm/s)", "Tracking",
+    Metric("speed", "Step speed", "µm/s", 3, "Step speed (µm/s)", "Tracking",
            scalar=_speed_measured_scalar, dist=_speed_measured_dist),
     Metric("linkstep", "Observed-link distance", "µm", 3,
-           "observed-link distance (µm)", "Tracking",
+           "Observed-link distance (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "mean_link_displacement_um"),
            dist=lambda r: r._diff_col("mean_link_displacement_um")),
     Metric("linkspeed", "Observed-link speed", "µm/s", 3,
-           "observed-link speed (µm/s)", "Tracking",
+           "Observed-link speed (µm/s)", "Tracking",
            scalar=_link_speed_scalar, dist=_link_speed_dist),
-    Metric("rg", "Radius of gyration", "µm", 3, "R_g (µm)", "Tracking",
+    Metric("rg", "Radius of gyration", "µm", 3, "Radius of gyration (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "radius_of_gyration_um"),
            dist=lambda r: r._diff_col("radius_of_gyration_um")),
-    Metric("netdisp", "Net displacement", "µm", 3, "net displacement (µm)", "Tracking",
+    Metric("netdisp", "Net displacement", "µm", 3, "Net displacement (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "net_displacement_um"),
            dist=lambda r: r._diff_col("net_displacement_um")),
-    Metric("path", "Path length", "µm", 3, "path length (µm)", "Tracking",
+    Metric("path", "Path length", "µm", 3, "Path length (µm)", "Tracking",
            scalar=lambda r: _col_median(r, "path_length_um"),
            dist=lambda r: r._diff_col("path_length_um")),
-    Metric("dir", "Directionality ratio", "", 3, "net ÷ path", "Tracking",
+    Metric("dir", "Directionality ratio", "", 3, "Directionality ratio", "Tracking",
            scalar=lambda r: _col_median(r, "directionality_ratio"),
            dist=lambda r: r._diff_col("directionality_ratio")),
-    Metric("dur", "Track duration", "s", 3, "track duration (s)", "Tracking",
+    Metric("dur", "Trajectory duration", "s", 3, "Trajectory duration (s)", "Tracking",
            scalar=_duration_scalar, dist=_duration_dist),
-    Metric("nlocs", "Localisations", "", 0, "localisations (n)", "Tracking",
+    Metric("nlocs", "Localisations", "", 0, "Localisations (n)", "Tracking",
            scalar=_nlocs_scalar),
-    Metric("fluor", "Fluorescence intensity", "a.u.", 0, "fluorescence (a.u.)", "Imaging",
+    Metric("fluor", "Fluorescence intensity", "a.u.", 0, "Fluorescence intensity (a.u.)", "Imaging",
            scalar=_fluor_scalar, dist=_fluor_dist, approx=True),
-    Metric("angle", "Turning angle", "", 2, "mean |cos θ|", "Tracking",
+    Metric("angle", "Turning angle", "", 2, "Mean |cos θ|", "Tracking",
            scalar=_angle_scalar, dist=_angle_dist),
     Metric("a2", "Non-Gaussian α₂", "", 2, "α₂", "Diffusion",
            scalar=_nongauss_a2),
-    Metric("conf", "Confinement R", "nm", 0, "R_conf (nm)", "Population",
+    Metric("conf", "Confinement radius", "nm", 0, "Confinement radius (nm)", "Population",
            scalar=_conf_scalar, dist=_conf_dist),
-    Metric("dwell", "Dwell time", "s", 2, "dwell time (s)", "Population",
+    Metric("dwell", "Dwell time", "s", 2, "Dwell time (s)", "Population",
            scalar=lambda r: _summary(r, "dwell_tau_s"), dist=_dwell_dist),
     # scalars that back comparison panels which previously had no stats cards
-    Metric("count", "Track count", "", 0, "tracks (n)", "Tracking",
+    Metric("count", "Trajectory count", "", 0, "Trajectories (n)", "Tracking",
            scalar=_track_count),
-    Metric("auc", "MSD AUC", "µm²·s", 3, "MSD AUC (µm²·s)", "Diffusion",
+    Metric("auc", "MSD AUC", "µm²s", 3, "AUC (µm²s)", "Diffusion",
            scalar=_msd_auc),
-    Metric("jdd", "Jump distance", "µm", 3, "median jump (µm)", "Diffusion",
+    Metric("jdd", "Jump distance", "µm", 3, "Median jump distance (µm)", "Diffusion",
            scalar=_jdd_median_jump),
     # the radial distribution summarises the same turning-angle directionality
-    Metric("radial", "Radial persistence", "", 2, "mean |cos θ|", "Tracking",
+    Metric("radial", "Radial persistence", "", 2, "Mean |cos θ|", "Tracking",
            scalar=_angle_scalar, dist=_angle_dist),
     # VACF lag-1 directional persistence (computed from tracks like fa_compare)
     Metric("vacf", "VACF persistence", "", 3, "VACF persistence (lag 1)", "Population",
@@ -1420,14 +1452,14 @@ def es_magnitude(es: Optional[float]) -> str:
 # ── comparison-report figure panels (keys match fa_compare's panel_order) ───────
 COMPARE_PANELS = [
     ("msd", "Ensemble MSD"), ("auc", "MSD AUC"), ("fluor", "Fluorescence"),
-    ("logd_dist", "log₁₀(D) dist."),
-    ("mob_immob", "Mobile / immobile"), ("motion_classes", "Motion classes"),
-    ("track_length", "Track length"), ("rg", "Radius of gyration"),
+    ("logd_dist", "D distribution"),
+    ("mob_immob", "Mobile fraction"), ("motion_classes", "Motion classes"),
+    ("track_length", "Trajectory length"), ("rg", "Radius of gyration"),
     ("netdisp", "Net displacement"), ("path", "Path length"),
     ("step", "Step distance"), ("speed", "Step speed"),
     ("linkstep", "Observed-link distance"), ("linkspeed", "Observed-link speed"),
-    ("dir", "Directionality"), ("dur", "Track duration"),
-    ("track_count", "Track count"), ("nlocs", "Localisations"),
+    ("dir", "Directionality"), ("dur", "Trajectory duration"),
+    ("track_count", "Trajectory count"), ("nlocs", "Localisations"),
     ("jdd", "Jump distance"), ("dwell_cdf", "Dwell-time CDF"),
     ("turning_angles", "Turning angles"), ("radial_dist", "Radial dist."),
     ("van_hove", "Van Hove"), ("vacf", "VACF"),

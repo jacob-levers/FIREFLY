@@ -33,6 +33,13 @@ def msd_anomalous(t, D, alpha, offset):
 
 ALPHA_THRESHOLDS_DEFAULT = (0.5, 0.9, 1.1)
 
+# An anomalous fit whose exponent ends within this of a bound (0 or 2) stopped on
+# the box edge: no α estimate and no motion class.  On real fly data the stuck
+# fits cluster sharply inside 0.01 of each bound (0.001–0.01: 29% of finite α;
+# 1.999–2: 31%), while genuine values thin out smoothly beyond it.
+ALPHA_LIMIT_TOL = 0.01
+_ALPHA_BOUNDS = (0.0, 2.0)          # the anomalous fit's exponent box
+
 
 # MOBILE_D_THRESHOLD_DEFAULT is imported from fa_constants at the top of this
 # module (see the citation there).  The import alone re-exports it, so the many
@@ -176,6 +183,19 @@ def _longest_contiguous_run_span(frames):
     return int(run_lengths.max() - 1)
 
 
+def _alpha_wants_past_two(t, m, popt):
+    """True when an anomalous fit that ended on α = 2 was STOPPED there — refit
+    with the upper bound lifted to 4 and the exponent runs on past 2.  A
+    genuinely ballistic MSD (∝ t²) settles back at 2 and is a real α."""
+    try:
+        p2, _ = curve_fit(msd_anomalous, t, m, p0=list(popt),
+                          bounds=([0, _ALPHA_BOUNDS[0], -np.inf], [np.inf, 4.0, np.inf]),
+                          maxfev=5000)
+    except (ValueError, RuntimeError, FloatingPointError):
+        return True                      # can't confirm it is a real α → treat as stuck
+    return bool(p2[1] > _ALPHA_BOUNDS[1] + ALPHA_LIMIT_TOL)
+
+
 def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
                      alpha_thresholds=ALPHA_THRESHOLDS_DEFAULT,
                      gap_policy=GapPolicy.ALL_PAIRS):
@@ -255,26 +275,34 @@ def _msd_and_fit_one(xy_um, frames, pid, lag_times, max_lagtime, n_fit,
                 popt, _ = curve_fit(
                     msd_anomalous, t_ok, m_ok,
                     p0=[max(d_raw, 1e-6), 1.0, msd0],
-                    bounds=([0, 0, -np.inf], [np.inf, 2.0, np.inf]),
+                    bounds=([0, _ALPHA_BOUNDS[0], -np.inf], [np.inf, _ALPHA_BOUNDS[1], np.inf]),
                     maxfev=5000)
                 k_alpha, alpha, alpha_offset = map(float, popt)
                 alpha_mse = float(np.mean((m_ok - msd_anomalous(t_ok, *popt))**2))
                 # Test the dynamic RISE, not the total t^alpha term: alpha≈0
-                # is degenerate with the intercept. The ballistic alpha=2
-                # boundary is legitimate and must not imply immobility.
+                # is degenerate with the intercept.
                 rise = 4*k_alpha*(t_ok[-1]**alpha - t_ok[0]**alpha)
                 scale = max(float(np.max(np.abs(m_ok))), np.finfo(float).tiny)
-                if alpha <= 1e-3 or rise / scale < .10:
-                    # Either the exponent collapsed to zero (an MSD that does
-                    # not grow with lag) or the dynamic rise is negligible
-                    # against the static floor.  alpha is unusable in both
-                    # cases — but both are the signature of a track that barely
-                    # moves, so the DISPLACEMENT classifies it without needing
-                    # an exponent.  Only the alpha>=2 bound is excluded here:
-                    # a ballistic fit is real motion, not immobility.
+                if rise / scale < .10:
+                    # The MSD barely rises above its own static floor: the
+                    # signature of a track that barely moves, so the
+                    # DISPLACEMENT classifies it (Immobile) without needing an
+                    # exponent.
                     offset_dominated = True
                     alpha = np.nan
                     alpha_status = "unidentifiable"
+                elif (alpha < ALPHA_LIMIT_TOL
+                      or (alpha > _ALPHA_BOUNDS[1] - ALPHA_LIMIT_TOL
+                          and _alpha_wants_past_two(t_ok, m_ok, popt))):
+                    # The exponent stopped on a bound of [0, 2]: the fit wanted
+                    # to go further, so this is the box edge, not an α.  With 4
+                    # MSD points and three free parameters it is common — 45% of
+                    # simulated purely Brownian tracks were called "Directed"
+                    # from α = 2 fits.  No estimate, no motion class.  (A truly
+                    # ballistic track's best fit IS 2 — it settles there with
+                    # the bound lifted, and stays Directed.)
+                    alpha = np.nan
+                    alpha_status = "at_limit"
                 else:
                     alpha_status = "descriptive_fit"
             except (ValueError, RuntimeError, FloatingPointError):
@@ -1335,6 +1363,15 @@ def _mob_immob_ratio(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
     if n_mob + n_imm == 0:
         return np.nan
     return float(n_mob / n_imm) if n_imm > 0 else np.nan
+
+
+def _mobile_fraction(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
+    """Mobile / (mobile + immobile), 0–1 — the same tracks as
+    :func:`_mob_immob_ratio`, but bounded and defined when nothing is immobile
+    (NaN only when no track has a usable D or a non-positive slope)."""
+    mobile, immobile = mobility_masks(diff_df, d_threshold)
+    n_mob, n_imm = int(mobile.sum()), int(immobile.sum())
+    return float(n_mob / (n_mob + n_imm)) if n_mob + n_imm else np.nan
 
 
 def _motion_fractions(diff_df):

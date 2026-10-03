@@ -148,7 +148,7 @@ def test_live_numbers_appear_with_two_ready_conditions(tmp_path):
     assert c.headline[0]["label"] == "Total tracks"
     assert len(c.statsRows) == 2
     assert len(c.significanceRows) == 1          # one pair
-    assert c.methods.startswith("Diffusion D was compared across 2 conditions")
+    assert c.methods.startswith("Diffusion coefficient was compared across 2 conditions")
     # clearly separated groups → significant with a large effect
     assert c.significanceRows[0]["mag"] == "large"
 

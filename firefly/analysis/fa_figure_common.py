@@ -228,3 +228,67 @@ def draw_pvalue_brackets(ax, pairs, *, color, fontsize=8, data_top=None,
     if n_levels:
         ax.set_ylim(min(lo0, bottom), top + gap + (n_levels - 1) * step + rng * 0.10)
     return texts
+
+
+# ── Group curves from per-recording data ────────────────────────────────────
+# A distribution curve for a group (log D density, track-length CDF, dwell
+# survival, turning-angle histogram) can be drawn two ways:
+#   per recording — each recording's curve, averaged; every recording counts
+#                   once and the band is the SEM across recordings.  This is
+#                   how the sptPALM papers this app reproduces show them
+#                   (Bademosi et al. 2017 Nat Commun: n = NMJ chains,
+#                   mean ± s.e.m.), and it matches every other comparison
+#                   panel, where the recording is the unit.  The default.
+#   pooled tracks — one curve of every track in the group, so a recording
+#                   with more tracks counts for more.  No band.
+CURVE_WEIGHTINGS = ("recording", "tracks")
+
+
+def recording_cells(x):
+    """A group's per-recording value arrays (finite, non-empty).  Accepts a
+    list of arrays or one pooled array (then treated as a single recording)."""
+    if x is None:
+        return []
+    seq = x if isinstance(x, (list, tuple)) else [x]
+    out = []
+    for a in seq:
+        if a is None:
+            continue
+        a = np.asarray(a, float).ravel()
+        a = a[np.isfinite(a)]
+        if len(a):
+            out.append(a)
+    return out
+
+
+def group_curve(cells, curve_fn, per_recording=True):
+    """``(mean, sem)`` of ``curve_fn(values)`` for one group.
+
+    ``per_recording``: ``curve_fn`` of each recording, averaged, and the SEM
+    across recordings (None with fewer than two).  Otherwise ``curve_fn`` of
+    every value pooled, with no SEM.  ``curve_fn`` may return None for data it
+    cannot draw (e.g. a KDE of one point); such recordings are left out.
+    ``(None, None)`` when nothing is drawable."""
+    cells = recording_cells(cells)
+    if not cells:
+        return None, None
+    if not per_recording or len(cells) == 1:
+        return curve_fn(np.concatenate(cells)), None
+    ys = [y for y in (curve_fn(c) for c in cells) if y is not None]
+    if not ys:
+        return None, None
+    Y = np.vstack([np.asarray(y, float) for y in ys])
+    sem = Y.std(axis=0, ddof=1) / np.sqrt(len(ys)) if len(ys) >= 2 else None
+    return Y.mean(axis=0), sem
+
+
+def draw_sem_band(ax, x, mean, sem, color, *, alpha=0.25, zorder=2, floor=None):
+    """Shade mean ± SEM (nothing when ``sem`` is None); ``floor`` clips the
+    lower edge for log axes."""
+    if sem is None or mean is None:
+        return
+    lo, hi = mean - sem, mean + sem
+    if floor is not None:
+        lo = np.maximum(lo, floor)
+        hi = np.maximum(hi, floor)
+    ax.fill_between(x, lo, hi, color=color, alpha=alpha, linewidth=0, zorder=zorder)

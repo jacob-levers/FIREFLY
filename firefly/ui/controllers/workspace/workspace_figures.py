@@ -21,7 +21,7 @@ import numpy as np
 
 from firefly.analysis.fa_constants import MOBILE_D_THRESHOLD_DEFAULT
 from . import workspace_data as _wd
-from .workspace_data import Metric, MOTION_COLORS
+from .workspace_data import Metric, motion_colors
 
 # design mat / ink
 _MAT = "#0a0d12"
@@ -195,12 +195,16 @@ _RENDER = threading.local()
 
 
 def _qimage_from_figure(fig):
-    if getattr(_RENDER, "minimal", False):       # Preferences → Minimal figures
-        for _ax in fig.axes:
+    if getattr(_RENDER, "minimal", False):       # Preferences → Minimal figures:
+        for _ax in fig.axes:                     # no legends, no titles
             if _ax.get_legend() is not None:
                 _ax.get_legend().remove()
+            for _loc in ("center", "left", "right"):
+                _ax.set_title("", loc=_loc)
         for _lg in list(fig.legends):
             _lg.remove()
+        if getattr(fig, "_suptitle", None) is not None:
+            fig._suptitle.set_text("")
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from PySide6.QtGui import QImage
     canvas = FigureCanvasAgg(fig)
@@ -230,14 +234,15 @@ def _new_axes(width_px, height_px, dpi):
 
 
 def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi,
-                        logd_clip=(0.00001, 10.0)):
+                        logd_clip=(0.00001, 10.0), per_recording=True):
     """Render the Diffusion-D metric with the REAL engine LogD renderer so the
     live preview is exactly the report's ``logd_dist`` panel (KDE distribution),
     not a bespoke ECDF.  Built on the live data; drawn into the live dark axes."""
     from firefly.analysis.fa_compare import (
-        _render_logd_overlaid, _render_logd_ridgeline, _render_logd_violin)
+        _render_logd_overlaid, _render_logd_relfreq, _render_logd_ridgeline,
+        _render_logd_violin)
     from firefly.analysis.fa_theme import _theme_palette
-    if style not in ("overlaid", "ridgeline", "violin"):
+    if style not in ("overlaid", "ridgeline", "violin", "relfreq"):
         style = "overlaid"          # faceted needs facet data → overlaid live
     pal = dict(_theme_palette("Dark"))
     pal["GRD"] = _GRID              # threshold line tint matches the live grid
@@ -250,15 +255,20 @@ def _render_logd_engine(groups, style, mobile_d, width_px, height_px, dpi,
         return np.clip(np.log10(a), _lo, _hi) if a.size else None
     per_card = []
     for g in groups:
-        pooled = _clip_log(g["dist"]) if g.get("dist") is not None else None
+        if g.get("dists"):              # one array per recording (see per_recording)
+            pooled = [c for c in (_clip_log(d) for d in g["dists"]) if c is not None] or None
+        else:
+            pooled = _clip_log(g["dist"]) if g.get("dist") is not None else None
         medians = _clip_log(g.get("values"))
         per_card.append((g["label"], g["color"], pooled, medians))
     thr = float(np.log10(mobile_d if mobile_d and mobile_d > 0
                         else MOBILE_D_THRESHOLD_DEFAULT))
     fig, ax = _new_axes(width_px, height_px, dpi)
-    fn = {"ridgeline": _render_logd_ridgeline, "violin": _render_logd_violin}.get(
+    fn = {"ridgeline": _render_logd_ridgeline, "violin": _render_logd_violin,
+          "relfreq": _render_logd_relfreq}.get(
         style, _render_logd_overlaid)
-    fn(ax, per_card, thr, pal, mobile_d or MOBILE_D_THRESHOLD_DEFAULT, xlim=(_lo, _hi))
+    fn(ax, per_card, thr, pal, mobile_d or MOBILE_D_THRESHOLD_DEFAULT, xlim=(_lo, _hi),
+       per_recording=per_recording)
     # keep the live dark theme: re-tint labels/title/legend the engine left default
     ax.title.set_color(_INK)
     ax.xaxis.label.set_color(_MUTED); ax.yaxis.label.set_color(_MUTED)
@@ -313,6 +323,7 @@ def _render_group_comparison(groups, metric, style, err, width_px, height_px, dp
     from matplotlib.figure import Figure
     from firefly.analysis import fa_group_figures as _gf
     order, values, gcolors = [], {}, {}
+    markers, day_key = None, None
     tp_order = None
     if style == "grouped" and grouped_data and grouped_data.get("data"):
         gd = grouped_data
@@ -325,37 +336,55 @@ def _render_group_comparison(groups, metric, style, err, width_px, height_px, dp
                 order.append(nm); values[nm] = tps
                 gcolors[nm] = gd.get("colors", {}).get(nm)
     else:
+        day_of = {}
         for g in groups:
-            v = np.asarray(g.get("values", []), float); v = v[np.isfinite(v)]
+            v = np.asarray(g.get("values", []), float); ok = np.isfinite(v); v = v[ok]
             if not len(v):
                 continue
             order.append(g["label"]); values[g["label"]] = {"": v}
             gcolors[g["label"]] = g.get("color")
+            d = list(g.get("days") or [])
+            if len(d) == len(ok):
+                day_of[g["label"]] = [x for x, k in zip(d, ok) if k]
+        # Replicate dots shaped by recording day — the report's rule
+        # (fa_compare.day_markers), so a day has the same shape in both.
+        if len(day_of) == len(order):
+            from firefly.analysis.fa_compare import day_markers, _day_label
+            dm = day_markers([x for g in order for x in day_of[g]])
+            if dm:
+                markers = {g: {"": [dm.get(x if x else None, "o") for x in day_of[g]]}
+                           for g in order}
+                known = sorted(k for k in dm if k)
+                day_key = [(dm[k], _day_label(k, known))
+                           for k in known + ([None] if None in dm else [])]
     stat_label, pairs = "", None
     names = [l for l in order if values[l]]
     arrs = [np.concatenate(list(values[l].values())) for l in names]
     if len(arrs) >= 2 and all(len(a) >= 1 for a in arrs):
         try:
-            from firefly.analysis.fa_compare import format_p
+            from firefly.analysis.fa_compare import significance_label
             from firefly.analysis.fa_figure_common import select_bracket_pairs
             raw, omni_p, sc = _engine_stats(arrs, names, stats_config)
+            # p-values, or stars in a minimal figure (as the report)
+            sig_style = "stars" if getattr(_RENDER, "minimal", False) else "p"
+            _lbl = lambda p: significance_label(p, sig_style, sc.get("alpha", 0.05))
             pos = {nm: order.index(nm) for nm in names}       # x position of each group
             chosen = select_bracket_pairs(raw, len(arrs), sc.get("alpha", 0.05))
-            pairs = [(pos[names[i]], pos[names[j]], format_p(p)) for i, j, p in chosen] or None
+            pairs = [(pos[names[i]], pos[names[j]], _lbl(p)) for i, j, p in chosen] or None
             if not pairs and len(arrs) > 2:
-                stat_label = format_p(omni_p) or ""
+                stat_label = _lbl(omni_p) or ""
         except Exception:
             pass
     fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
     _gf.draw_group_comparison(fig, fig.add_gridspec(1, 1)[0], order, values, style=style,
                               stat_label=stat_label, pairs=pairs, group_colors=gcolors,
-                              tp_order=tp_order,
+                              tp_order=tp_order, markers=markers, day_key=day_key,
                               theme=_gf_theme(), ylabel=metric.axis, err=err)
     fig.tight_layout(pad=1.1)
     return _qimage_from_figure(fig)
 
 
-def _render_length_density(groups, metric, width_px, height_px, dpi):
+def _render_length_density(groups, metric, width_px, height_px, dpi, per_recording=True):
     """Overlaid per-group track-length density (Preferences figures/length_style)."""
     from matplotlib.figure import Figure
     from firefly.analysis import fa_group_figures as _gf
@@ -364,13 +393,16 @@ def _render_length_density(groups, metric, width_px, height_px, dpi):
         d = g.get("dist")
         if d is None or not len(d):
             continue
-        order.append(g["label"]); dists[g["label"]] = np.asarray(d, float)
+        order.append(g["label"])
+        dists[g["label"]] = (list(g["dists"]) if g.get("dists")
+                             else np.asarray(d, float))
         gcolors[g["label"]] = g.get("color")
     if not order:
         return None
     fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
     _gf.draw_length_density(fig, fig.add_gridspec(1, 1)[0], order, dists,
-                            group_colors=gcolors, theme=_gf_theme(), xlabel=metric.axis)
+                            group_colors=gcolors, theme=_gf_theme(), xlabel=metric.axis,
+                            per_recording=per_recording)
     fig.tight_layout(pad=1.1)
     return _qimage_from_figure(fig)
 
@@ -382,28 +414,33 @@ def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
                   mobile_d: float = MOBILE_D_THRESHOLD_DEFAULT,
                   logd_clip: tuple = (0.00001, 10.0),
                   group_style: str = "box_points", length_style: str = "density",
-                  grouped_data=None, stats_config=None, minimal: bool = False):
+                  grouped_data=None, stats_config=None, minimal: bool = False,
+                  motion_colourblind: bool = False, curve_weighting: str = "recording"):
     """Render one metric across ``groups`` → detached ``QImage``.
 
     ``groups``: ``[{"label", "color", "values": ndarray(per-folder scalars),
     "dist": ndarray|None (pooled per-track)}]``.  ``minimal`` drops every in-figure
     legend (Preferences → Figures → Minimal figures); ``stats_config`` is the
-    engine statistics config the p-value label uses.
+    engine statistics config the p-value label uses; ``motion_colourblind`` gives
+    the motion classes the Okabe–Ito colours (Preferences → Motion-class palette).
     """
     _RENDER.minimal = bool(minimal)
+    _RENDER.colourblind = bool(motion_colourblind)
     try:
         return _render_metric(groups, metric, plot=plot, err=err, log_x=log_x,
                               width_px=width_px, height_px=height_px, dpi=dpi,
                               logd_style=logd_style, mobile_d=mobile_d, logd_clip=logd_clip,
                               group_style=group_style, length_style=length_style,
-                              grouped_data=grouped_data, stats_config=stats_config)
+                              grouped_data=grouped_data, stats_config=stats_config,
+                              per_recording=(curve_weighting != "tracks"))
     finally:
         _RENDER.minimal = False
+        _RENDER.colourblind = False
 
 
 def _render_metric(groups, metric, *, plot, err, log_x, width_px, height_px, dpi,
                    logd_style, mobile_d, logd_clip, group_style, length_style,
-                   grouped_data, stats_config):
+                   grouped_data, stats_config, per_recording=True):
     if metric.id == "motion":
         return _render_motion(groups, width_px, height_px, dpi)
     # Diffusion D → the engine's own LogD-distribution panel, so the live preview
@@ -411,7 +448,8 @@ def _render_metric(groups, metric, *, plot, err, log_x, width_px, height_px, dpi
     if metric.id == "D" and any(g.get("dist") is not None and len(g["dist"]) for g in groups):
         try:
             return _render_logd_engine(groups, logd_style, mobile_d,
-                                       width_px, height_px, dpi, logd_clip=logd_clip)
+                                       width_px, height_px, dpi, logd_clip=logd_clip,
+                                       per_recording=per_recording)
         except Exception:
             pass   # fall through to the generic renderer if the engine path fails
 
@@ -420,7 +458,8 @@ def _render_metric(groups, metric, *, plot, err, log_x, width_px, height_px, dpi
     # Track-length distribution → overlaid density (Preferences figures/length_style).
     if metric.id == "len" and length_style == "density" and has_dist:
         try:
-            img = _render_length_density(groups, metric, width_px, height_px, dpi)
+            img = _render_length_density(groups, metric, width_px, height_px, dpi,
+                                         per_recording=per_recording)
             if img is not None:
                 return img
         except Exception:
@@ -436,8 +475,7 @@ def _render_metric(groups, metric, *, plot, err, log_x, width_px, height_px, dpi
         except Exception:
             pass   # fall through to the legacy renderer
     fig, ax = _new_axes(width_px, height_px, dpi)
-    title = f"{metric.label}" + (f"  ({metric.unit})" if metric.unit else "")
-    ax.set_title(title, fontsize=11, fontweight="bold", pad=10)
+    ax.set_title(metric.label, fontsize=11, fontweight="bold", pad=10)   # unit: on the axis
 
     if has_dist and plot in ("Violin", "Box", "ECDF", "Histogram"):
         if plot == "ECDF":
@@ -538,7 +576,7 @@ def _draw_ecdf(ax, groups, metric, log_x):
         ax.plot(d, y, color=g["color"], linewidth=1.8, label=g["label"])
         alld.append(d)
     ax.set_xlabel(metric.axis)
-    ax.set_ylabel("cumulative fraction")
+    ax.set_ylabel("Cumulative fraction")
     # data is already log10 when logd → plain (linear-space) robust fences
     rng = _robust_limits(np.concatenate(alld)) if alld else None
     if rng:
@@ -569,7 +607,7 @@ def _draw_hist(ax, groups, metric, log_x):
         ax.hist(d, bins=bins, histtype="step", color=g["color"], linewidth=1.6,
                 label=g["label"], density=True)
     ax.set_xlabel(metric.axis)
-    ax.set_ylabel("density")
+    ax.set_ylabel("Probability density (per log₁₀ unit)" if logd else "Probability density")
     if rng:
         ax.set_xlim(*rng)
     ax.grid(color=_GRID, linewidth=0.6, alpha=0.6)
@@ -597,9 +635,18 @@ def _draw_bars(ax, groups, metric, err):
 
 
 def render_panel(panel: dict, runs, color="#58a6ff", *,
-                 width_px: int = 720, height_px: int = 380, dpi: int = 100):
+                 width_px: int = 720, height_px: int = 380, dpi: int = 100,
+                 motion_colourblind: bool = False):
     """Render one per-condition publication panel from the condition's pooled
     run folders → detached ``QImage``.  See ``workspace_data.PANELS``."""
+    _RENDER.colourblind = bool(motion_colourblind)
+    try:
+        return _render_panel(panel, runs, color, width_px, height_px, dpi)
+    finally:
+        _RENDER.colourblind = False
+
+
+def _render_panel(panel, runs, color, width_px, height_px, dpi):
     kind = panel.get("kind")
     if kind == "raster":
         return _render_raster(panel, runs, width_px, height_px, dpi)
@@ -695,13 +742,13 @@ def _draw_single_dist(ax, vals, color, axis, logd):
     ax.axvline(med, color=_INK, linewidth=1.2, linestyle="--", alpha=0.8)
     if rng:
         ax.set_xlim(*rng)
-    ax.set_xlabel(axis); ax.set_ylabel("count")
+    ax.set_xlabel(axis); ax.set_ylabel("Count")
     ax.grid(axis="y", color=_GRID, linewidth=0.6, alpha=0.6)
 
 
 def _render_msd(runs, width_px, height_px, dpi):
     fig, ax = _new_axes(width_px, height_px, dpi)
-    ax.set_title("Ensemble MSD curves", fontsize=11, fontweight="bold", pad=10)
+    ax.set_title("Ensemble MSD", fontsize=11, fontweight="bold", pad=10)
     drew = False
     for r in runs:
         emsd = r._read_csv("_ensemble_msd.csv")
@@ -715,15 +762,20 @@ def _render_msd(runs, width_px, height_px, dpi):
                 transform=ax.transAxes, color=_FAINT, fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
     else:
-        ax.set_xlabel("lag time (s)"); ax.set_ylabel("MSD (µm²)")
+        ax.set_xlabel("Time (s)"); ax.set_ylabel("MSD (µm²)")
         ax.grid(color=_GRID, linewidth=0.6, alpha=0.6)
     fig.tight_layout(pad=1.1)
     return _qimage_from_figure(fig)
 
 
+def _motion_colors() -> dict:
+    """Motion-class colours for the render in progress (colour-blind option)."""
+    return motion_colors(getattr(_RENDER, "colourblind", False))
+
+
 def _render_motion_single(runs, width_px, height_px, dpi):
     fig, ax = _new_axes(width_px, height_px, dpi)
-    ax.set_title("Motion-class fractions", fontsize=11, fontweight="bold", pad=10)
+    ax.set_title("Motion classes", fontsize=11, fontweight="bold", pad=10)
     counts = {}
     for r in runs:
         for k, v in (r.summary.get("motion_counts") or {}).items():
@@ -737,11 +789,11 @@ def _render_motion_single(runs, width_px, height_px, dpi):
         left = 0.0
         for cls in ("Immobile", "Confined", "Brownian", "Directed"):
             frac = 100.0 * counts.get(cls, 0) / total
-            ax.barh(0, frac, left=left, color=MOTION_COLORS[cls], label=f"{cls} {frac:.0f}%",
+            ax.barh(0, frac, left=left, color=_motion_colors()[cls], label=f"{cls} {frac:.0f}%",
                     edgecolor=_MAT, height=0.5)
             left += frac
         ax.set_xlim(0, 100); ax.set_ylim(-1, 1); ax.set_yticks([])
-        ax.set_xlabel("fraction (%)")
+        ax.set_xlabel("Fraction (%)")
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=4,
                   fontsize=7, frameon=False, labelcolor=_MUTED)
     fig.tight_layout(pad=1.1)
@@ -800,7 +852,7 @@ def _render_raster(panel, runs, width_px, height_px, dpi):
 def _render_motion(groups, width_px, height_px, dpi):
     """Stacked motion-class fractions per condition."""
     fig, ax = _new_axes(width_px, height_px, dpi)
-    ax.set_title("Motion-class fractions  (%)", fontsize=11, fontweight="bold", pad=10)
+    ax.set_title("Motion classes", fontsize=11, fontweight="bold", pad=10)
     positions = np.arange(len(groups)) + 1
     bottoms = np.zeros(len(groups))
     for cls in ("Immobile", "Confined", "Brownian", "Directed"):
@@ -810,12 +862,12 @@ def _render_motion(groups, width_px, height_px, dpi):
             total = sum(int(v) for v in counts.values()) if counts else 0
             fr.append(100.0 * int(counts.get(cls, 0)) / total if total else 0.0)
         fr = np.asarray(fr)
-        ax.bar(positions, fr, bottom=bottoms, width=0.6, color=MOTION_COLORS[cls],
+        ax.bar(positions, fr, bottom=bottoms, width=0.6, color=_motion_colors()[cls],
                alpha=0.85, label=cls, edgecolor=_MAT, linewidth=0.6)
         bottoms += fr
     ax.set_xticks(positions)
     ax.set_xticklabels([g["label"] for g in groups], fontsize=8, color=_MUTED)
-    ax.set_ylabel("fraction (%)")
+    ax.set_ylabel("Fraction (%)")
     ax.set_ylim(0, 100)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=4,
               fontsize=7, frameon=False, labelcolor=_MUTED)

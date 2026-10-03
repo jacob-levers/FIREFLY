@@ -105,6 +105,53 @@ except ImportError:
     HAS_TIFFFILE = False
 
 
+def czi_acquired_at(path):
+    """When a CZI was recorded, as ZEN wrote it (ISO 8601 string), or None.
+
+    Reads only the file header and the metadata segment (a few tens of kB, no
+    CZI library): ``AcquisitionDateAndTime`` when present, else the document's
+    ``CreationDate`` — on ELYRA recordings that is the acquisition.  Never
+    raises: any non-CZI, unreadable or truncated file gives None."""
+    import re
+    import struct
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(100)
+            if len(head) < 100 or not head.startswith(b"ZISRAWFILE"):
+                return None
+            meta_pos = struct.unpack_from("<q", head, 92)[0]    # FileHeader.MetadataPosition
+            if meta_pos <= 0:
+                return None
+            fh.seek(meta_pos)
+            seg = fh.read(32 + 256)
+            if not seg.startswith(b"ZISRAWMETADATA"):
+                return None
+            xml_size = struct.unpack_from("<i", seg, 32)[0]
+            if not 0 < xml_size < 64 * 1024 * 1024:
+                return None
+            xml = fh.read(xml_size).decode("utf-8", "replace")
+    except (OSError, struct.error, ValueError):
+        return None
+    for tag in ("AcquisitionDateAndTime", "CreationDate"):
+        m = re.search(rf"<{tag}>\s*(\d{{4}}-\d\d-\d\d[^<]*?)\s*</{tag}>", xml)
+        if m:
+            return m.group(1)
+    return None
+
+
+def recording_day(params):
+    """The day a run's recording was made (``YYYY-MM-DD``) or None — from the
+    run's params (``acquired_at``, recorded at process time) else, for older
+    runs, the source CZI's header when the recording is still reachable."""
+    params = params or {}
+    stamp = params.get("acquired_at")
+    if not stamp:
+        src = str(params.get("input_file") or "")
+        if src.lower().endswith(".czi") and os.path.isfile(src):
+            stamp = czi_acquired_at(src)
+    return str(stamp)[:10] if stamp else None
+
+
 def _parse_czi_metadata(xml):
     """Extract pixel size (µm) and frame interval (s) from CZI metadata.
 

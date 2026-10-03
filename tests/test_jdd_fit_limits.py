@@ -98,7 +98,7 @@ def test_the_comparison_panel_does_not_plot_a_stuck_fit(tmp_path):
     groups = [{"label": "A", "color": "#000000", "folders": [run("a0", stuck, 1), run("a1", stuck, 2)]},
               {"label": "B", "color": "#d55e00", "folders": [run("b0", good, 3), run("b1", good, 4)]}]
     fig, _s, _st = compare_groups(groups, output_dir=None, panels={"jdd"}, pdf_report=False)
-    ax = next(a for a in fig.axes if "JDD" in (a.get_title() or ""))
+    ax = next(a for a in fig.axes if "Jump-distance" in (a.get_title() or ""))
     ys = np.concatenate([c.get_offsets()[:, 1] for c in ax.collections if len(c.get_offsets())])
     assert ys.size == 4                                   # B's two fits × two populations
     assert np.all((ys > 1e-5) & (ys < 10))

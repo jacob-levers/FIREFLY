@@ -15,13 +15,15 @@ from firefly.analysis.fa_constants import (
     MOTION_CLASS_ORDER, motion_class_colors, label_text_color, DEFAULT_FRAME_INTERVAL_S,
 )
 from firefly.analysis.fa_theme import _theme_palette, style_axes
+from firefly.analysis.fa_figure_common import (group_curve, draw_sem_band,
+                                                recording_cells)
 from firefly.analysis.fa_palmtracer import load_summary_from_folder, _win_long_path
 
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
-from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, MOBILE_D_THRESHOLD_DEFAULT,
+from firefly.analysis.fa_diffusion import (_msd_auc, _mob_immob_ratio, _mobile_fraction, MOBILE_D_THRESHOLD_DEFAULT,
                           _motion_fractions, _track_lengths,
                           compute_van_hove, compute_vacf, jdd_fit_at_limit)
 from firefly.analysis.fa_circular import (
@@ -153,10 +155,49 @@ class CompareInputError(Exception):
     a crash report — it is an expected condition, not a bug."""
 
 
+# Replicate-dot shape per recording day (one shape per day, in date order; an
+# undated recording gets an "x").  More days than shapes → no day encoding.
+DAY_MARKERS = ("o", "s", "^", "D", "v", "P", "<", ">", "h", "*")
+UNDATED_MARKER = "X"
+
+
+def _recording_day(params):
+    """See ``fa_loaders.recording_day`` (shared with the live Analysis tab)."""
+    from firefly.analysis.fa_loaders import recording_day
+    return recording_day(params)
+
+
+def day_markers(days):
+    """``{day: marker}`` for the replicate dots, or {} when the days would not
+    tell the reader anything (one day only) or would not fit the shape set.
+    Undated replicates map under the key None."""
+    known = sorted({d for d in days if d})
+    has_undated = any(not d for d in days)
+    if len(known) + has_undated < 2 or len(known) > len(DAY_MARKERS):
+        return {}
+    out = dict(zip(known, DAY_MARKERS))
+    if has_undated:
+        out[None] = UNDATED_MARKER
+    return out
+
+
+def _day_label(day, all_days):
+    """'16 Sep' — with the year when the days span more than one."""
+    import datetime as _dt
+    if not day:
+        return "undated"
+    try:
+        d = _dt.date.fromisoformat(day)
+    except ValueError:
+        return str(day)
+    years = {str(x)[:4] for x in all_days if x}
+    return d.strftime("%-d %b %Y" if len(years) > 1 else "%-d %b")
+
+
 def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
                      ylabel="", record_stats=None, metric_name="",
                      xtick_labels=None, stats_config=None, annot_sink=None,
-                     style="box_points"):
+                     style="box_points", markers=None):
     """Per-group scalar comparison with individual replicate dots, generalised
     to N groups.  ``style`` (Preferences → Figures → Group comparison) picks the
     backdrop mark: ``box_points`` (box + median/IQR, the default) / ``violin`` /
@@ -170,8 +211,12 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
 
     `xtick_labels` overrides the x-axis tick text (display only — `labels`
     still drives the statistics); used to put short tokens on the axis when
-    there are many groups, with the full names carried by the shared legend."""
+    there are many groups, with the full names carried by the shared legend.
+
+    `markers` (optional) gives each replicate dot a shape — per group, a list
+    aligned with ``data_per_group`` (the recording day; see `day_markers`)."""
     sig_col = palette["SIG"]
+    _neutral = palette.get("TXT", "#333333")    # medians / means / error bars
     # Bar body = a wash of each group's OWN colour blended toward the figure
     # background, with the saturated group colour kept as the edge ("tint +
     # outline").  This is theme-adaptive: a pale pastel on white themes
@@ -184,9 +229,13 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         rgb = np.array(_mc.to_rgb(colors[i]))
         return tuple((1.0 - frac) * rgb + frac * _bgc)
 
-    arrs = [np.asarray(d, dtype=float) for d in data_per_group]
-    arrs = [a[np.isfinite(a)] for a in arrs]
+    raw = [np.asarray(d, dtype=float) for d in data_per_group]
+    keep = [np.isfinite(a) for a in raw]
+    arrs = [a[k] for a, k in zip(raw, keep)]
     n = len(arrs)
+    shapes = [np.asarray(markers[i], dtype=object)[keep[i]]
+              if markers is not None and i < len(markers) and len(markers[i]) == len(raw[i])
+              else np.full(len(arrs[i]), "o", dtype=object) for i in range(n)]
     means = [float(a.mean()) if len(a) else 0.0 for a in arrs]
     sems  = [float(a.std(ddof=1) / np.sqrt(len(a))) if len(a) > 1 else 0.0
              for a in arrs]
@@ -205,7 +254,7 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         ax.bar(x, means, yerr=sems, capsize=4,
                color=[(*_bar_fill_for(i, frac=0.88), 0.45) for i in range(n)],
                edgecolor=colors, linewidth=1.6,
-               ecolor=sig_col)
+               ecolor=_neutral)
     elif style in ("violin", "violin_points"):
         vi = [i for i in range(n) if len(arrs[i]) >= 2]
         if vi:
@@ -218,9 +267,10 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         for i in range(n):                       # mean ± SEM marker on top
             if len(arrs[i]):
                 ax.errorbar(i, means[i], yerr=sems[i], fmt="_", ms=14,
-                            color=sig_col, capsize=4, lw=1.5, zorder=4)
+                            color=_neutral, capsize=4, lw=1.5, zorder=4)
     else:                                        # box_points / grouped → box + IQR
-        bp = ax.boxplot([arrs[i] if len(arrs[i]) else [np.nan] for i in range(n)],
+        # A lone replicate gets no box: one value collapses it to a flat line.
+        bp = ax.boxplot([arrs[i] if len(arrs[i]) >= 2 else [np.nan] for i in range(n)],
                         positions=list(x), widths=0.5, showfliers=False,
                         patch_artist=True)
         for i, patch in enumerate(bp["boxes"]):
@@ -228,14 +278,17 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
             patch.set_edgecolor(colors[i]); patch.set_linewidth(1.6)
         for ln in bp["whiskers"] + bp["caps"]:
             ln.set_color(palette.get("MUT", sig_col)); ln.set_linewidth(1.0)
-        for md in bp["medians"]:
-            md.set_color(sig_col); md.set_linewidth(1.8)
+        for md in bp["medians"]:                 # neutral: red reads as "significant"
+            md.set_color(_neutral); md.set_linewidth(1.8)
     rng = np.random.default_rng(0)
     for i, a in enumerate(arrs):                 # replicate dots in their group's colour
         if len(a):
-            ax.scatter(i + rng.uniform(-0.15, 0.15, len(a)), a, color=colors[i],
-                       s=22, zorder=3, edgecolors=palette.get("BG", "#ffffff"),
-                       linewidths=0.6)
+            xs = i + rng.uniform(-0.15, 0.15, len(a))
+            for m in dict.fromkeys(shapes[i]):   # one scatter per shape (= recording day)
+                sel = shapes[i] == m
+                ax.scatter(xs[sel], a[sel], color=colors[i], marker=m,
+                           s=22, zorder=3, edgecolors=palette.get("BG", "#ffffff"),
+                           linewidths=0.6)
     ax.set_xticks(x)
     disp = list(xtick_labels) if xtick_labels is not None else list(labels)
     _short = all(len(str(t)) <= 6 for t in disp)
@@ -270,6 +323,8 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
         record_stats[metric_name] = {"omnibus": omnibus, "pairwise": pairwise}
 
     use_corr = cfg["figure_stars_use_corrected"]
+    _sig_style = getattr(_TL, "sig_style", "p")      # "stars" in minimal figures
+    _lbl = lambda p: significance_label(p, _sig_style, cfg.get("alpha", 0.05))
 
     def _pair_p(pair, which="within"):
         """The p-value drawn for one pair: corrected (within- or across-metric)
@@ -305,17 +360,17 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
     entries = []
     if chosen:
         texts = draw_pvalue_brackets(
-            ax, [(i, j, format_p(p)) for i, j, p in chosen], color=sig_col,
+            ax, [(i, j, _lbl(p)) for i, j, p in chosen], color=sig_col,
             fontsize=7.5, data_top=top_data)
         for (i, j, _p), txt in zip(chosen, texts):
             pw = by_ij[(i, j)]
-            entries.append((txt, (lambda which, pw=pw: format_p(_pair_p(pw, which)))))
-    elif n > 2 and omnibus and format_p(omnibus.get("p")):
+            entries.append((txt, (lambda which, pw=pw: _lbl(_pair_p(pw, which)))))
+    elif n > 2 and omnibus and _lbl(omnibus.get("p")):
         # Nothing to bracket (all pairs untestable, or none significant with many
         # groups) → the overall p-value in a band cleared above the data.
         lo_, hi_ = ax.get_ylim()
         ax.set_ylim(lo_, top_data + (top_data - lo_) * 0.22)
-        ax.text(0.5, 0.985, format_p(omnibus.get("p")), transform=ax.transAxes,
+        ax.text(0.5, 0.985, _lbl(omnibus.get("p")), transform=ax.transAxes,
                 ha="center", va="top", fontsize=8, color=sig_col)
     if entries and annot_sink is not None and metric_name:
         annot_sink[metric_name] = entries
@@ -572,7 +627,7 @@ def _interaction_plot(ax, summary_df, metric, group_order, tp_order,
 
 
 def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
-                        threshold_label="", xlim=(-5.0, 1.0)):
+                        threshold_label="", xlim=(-5.0, 1.0), per_recording=True):
     """Render the LogD distribution as small-multiple facets.
 
     Each facet overlays the pooled-per-track KDE(s) for its series (e.g. PRE
@@ -584,10 +639,10 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
 
     `facets`: list of (facet_title, facet_title_color, series) where each
     `series` item is
-        (color, pooled_per_track_logD, [per_cell_medians], label, dashed).
-    Facets share the x-axis (log₁₀ D).
+        (color, per_recording_logD_arrays, [per_cell_medians], label, dashed).
+    Facets share the x-axis (log₁₀ D).  ``per_recording``: see
+    ``_logd_density``.
     """
-    from scipy import stats as _stats
     xlo, xhi = xlim
     xk = np.linspace(xlo, xhi, 300)
     facets = [f for f in facets if f[2]]            # drop empty facets
@@ -615,7 +670,7 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
             Line2D([0], [0], color=key, lw=1.5, ls="--", label="POST"),
         ]
     handles.append(Line2D([0], [0], color=key, ls="none", marker="o",
-                          mfc=key, markersize=6, label="per-cell median"))
+                          mfc=key, markersize=6, label="per-recording median"))
     if threshold_label:
         handles.append(Line2D([0], [0], color=pal["GRD"], lw=0.9, ls="--",
                               label=threshold_label))
@@ -630,16 +685,14 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
         ax = fig.add_subplot(sub[fi + 1])
         maxd = 1e-9
         for (scolor, pooled, _medians, slabel, dashed) in series:
-            v = np.asarray(pooled, float); v = v[np.isfinite(v)]
-            if len(v) >= 2 and np.ptp(v) > 1e-9:
-                try:
-                    y = _stats.gaussian_kde(v)(xk)
-                except Exception:
-                    y = None
-                if y is not None:
-                    maxd = max(maxd, float(np.nanmax(y)))
-                    ax.plot(xk, y, color=scolor, lw=1.4,
-                            ls=("--" if dashed else "-"), zorder=4, label=slabel)
+            y, sem = _logd_density(pooled, xk, per_recording)
+            if y is not None:
+                maxd = max(maxd, float(np.nanmax(y if sem is None else y + sem)))
+                ax.plot(xk, y, color=scolor, lw=1.4,
+                        ls=("--" if dashed else "-"), zorder=4, label=slabel)
+                if per_recording:
+                    draw_sem_band(ax, xk, y, sem, scolor, alpha=0.25, zorder=2, floor=0.0)
+                else:
                     ax.fill_between(xk, 0.0, y, color=scolor, alpha=0.13,
                                     linewidth=0, zorder=2)
         # ── per-replicate median dots, in a strip below the baseline ──────────
@@ -672,7 +725,22 @@ def _render_logd_facets(fig, subplotspec, facets, thr, pal, title,
         if fi < nF - 1:
             ax.set_xticklabels([])
         else:
-            ax.set_xlabel("log₁₀ D  (µm²/s)")
+            ax.set_xlabel(LOGD_AXIS_LABEL)
+
+
+# The van Swinderen lab's axis wording (Bademosi et al. 2017; Hines &
+# van Swinderen 2021), with the units.
+LOGD_AXIS_LABEL = "Log₁₀ diffusion coefficient (µm²/s)"
+# Relative-frequency style: 0.1-log-unit bins centred on −5.0, −4.9 … 1.0, as
+# in the lab's figures (Hines & van Swinderen 2021 Fig. 1J).
+LOGD_RELFREQ_BIN = 0.1
+
+
+def _logd_density(cells, xk, per_recording=True):
+    """``(mean, sem)`` log D density of one group on ``xk``: the mean of each
+    recording's KDE ± SEM across recordings (``per_recording``), or one KDE of
+    every track pooled (sem None).  See ``fa_figure_common.group_curve``."""
+    return group_curve(cells, lambda v: _logd_kde_or_none(v, xk), per_recording)
 
 
 def _logd_kde_or_none(pooled, xk):
@@ -691,8 +759,8 @@ def _logd_kde_or_none(pooled, xk):
 
 def _annotate_logd_mobility(ax, thr, pal, xlim, vertical=False):
     """Label the two sides of the mobile/immobile split, as Constals et al.
-    (2015) Neuron 85:787-803 Fig. 1C does — ``<- Immobile | Mobile ->`` above
-    the axes.  Without it the dashed guide is just an unexplained line: the
+    (2015) Neuron 85:787-803 Fig. 1C does — in the van Swinderen lab's words,
+    "Slow/immobile fraction" | "Fast/mobile fraction" (Bademosi et al. 2017).  Without it the dashed guide is just an unexplained line: the
     reader cannot see which side is which, nor that the threshold is a CHOICE
     rather than a property of the data.  Drawn outside the data area so it can
     never occlude a density curve.
@@ -708,35 +776,43 @@ def _annotate_logd_mobility(ax, thr, pal, xlim, vertical=False):
                          else ax.get_yaxis_transform()))
     if vertical:
         # y = log10 D: label just inside the left spine, rotated with the axis.
-        ax.text(0.012, (lo + thr) / 2, "Immobile", ha="left", va="center",
+        ax.text(0.012, (lo + thr) / 2, "Slow/immobile", ha="left", va="center",
                 rotation=90, **kw)
-        ax.text(0.012, (thr + hi) / 2, "Mobile", ha="left", va="center",
+        ax.text(0.012, (thr + hi) / 2, "Fast/mobile", ha="left", va="center",
                 rotation=90, **kw)
         return
     # x = log10 D: a labelled strip just above the axes, arrows pointing out.
-    ax.text((lo + thr) / 2, 1.015, "$\\leftarrow$ Immobile", ha="center",
+    ax.text((lo + thr) / 2, 1.015, "Slow/immobile fraction", ha="center",
             va="bottom", **kw)
-    ax.text((thr + hi) / 2, 1.015, "Mobile $\\rightarrow$", ha="center",
+    ax.text((thr + hi) / 2, 1.015, "Fast/mobile fraction", ha="center",
             va="bottom", **kw)
 
 
-def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
+def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0),
+                           per_recording=True):
     """Classic ridgeline: one filled KDE per group, stacked with a vertical
     offset and directly labelled, plus a tick per replicate (per-cell median)
-    on each ridge baseline so the honest n is still visible."""
+    on each ridge baseline so the honest n is still visible.  With
+    ``per_recording`` the ridge is the mean of the recordings' KDEs and its
+    SEM is shaded over the ridge."""
     xlo, xhi = xlim
     xk = np.linspace(xlo, xhi, 300)
-    dens = [(lbl, col, _logd_kde_or_none(pooled, xk), medians)
+    dens = [(lbl, col, *_logd_density(pooled, xk, per_recording), medians)
             for (lbl, col, pooled, medians) in per_card]
-    maxd = max((float(np.nanmax(y)) for _, _, y, _ in dens if y is not None),
+    maxd = max((float(np.nanmax(y if sem is None else y + sem))
+                for _, _, y, sem, _ in dens if y is not None),
                default=1.0) or 1.0
     step = maxd * 0.55
-    for i, (lbl, col, y, medians) in enumerate(reversed(dens)):
+    for i, (lbl, col, y, sem, medians) in enumerate(reversed(dens)):
         base = i * step
         ax.axhline(base, color=pal["GRD"], lw=0.5, alpha=0.4, zorder=1)
         if y is not None:
-            ax.fill_between(xk, base, base + y, color=col, alpha=0.75,
+            ax.fill_between(xk, base, base + y, color=col,
+                            alpha=(0.55 if per_recording else 0.75),
                             linewidth=0, zorder=2 + i)
+            if sem is not None:
+                draw_sem_band(ax, xk, base + y, sem, col, alpha=0.35, zorder=2 + i,
+                              floor=base)
             ax.plot(xk, base + y, color=pal["BG"], lw=0.8, zorder=2 + i)
         meds = [m for m in (() if medians is None else medians)
                 if np.isfinite(m)]
@@ -750,25 +826,32 @@ def _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.
     ax.set_yticks([])
     ax.set_xlim(xlo, xhi)
     ax.set_ylim(-step * 0.3, (len(dens) - 1) * step + maxd * 1.15)
-    ax.set_xlabel("log₁₀ D  (µm²/s)")
-    ax.set_title("LogD distribution  (ridgeline)", pad=15)  # room for the key
+    ax.set_xlabel(LOGD_AXIS_LABEL)
+    ax.set_title("Diffusion coefficient distribution", pad=15)  # room for the key
 
 
-def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
-    """All groups' KDEs overlaid on one axes (best for ≤3 groups)."""
+def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0),
+                          per_recording=True):
+    """All groups' KDEs overlaid on one axes (best for ≤3 groups).  With
+    ``per_recording`` each curve is the mean of its recordings' KDEs, shaded
+    ± SEM; otherwise one KDE of the pooled tracks, filled to the axis."""
     xlo, xhi = xlim
     xk = np.linspace(xlo, xhi, 300)
     bins = np.linspace(xlo, xhi, 31)
     for (lbl, col, pooled, _medians) in per_card:
         if pooled is None:
             continue
-        y = _logd_kde_or_none(pooled, xk)
+        y, sem = _logd_density(pooled, xk, per_recording)
         if y is not None:
-            ax.fill_between(xk, 0.0, y, color=col, alpha=0.18, linewidth=0,
-                            zorder=2)
+            if per_recording:
+                draw_sem_band(ax, xk, y, sem, col, alpha=0.28, zorder=2, floor=0.0)
+            else:
+                ax.fill_between(xk, 0.0, y, color=col, alpha=0.18, linewidth=0,
+                                zorder=2)
             ax.plot(xk, y, color=col, lw=1.6, label=lbl, zorder=3)
         else:
-            v = np.asarray(pooled, float); v = v[np.isfinite(v)]
+            cells = recording_cells(pooled)
+            v = np.concatenate(cells) if cells else np.array([])
             counts, edges = np.histogram(v, bins=bins)
             centers = 0.5 * (edges[:-1] + edges[1:])
             frac = counts / counts.sum() if counts.sum() else counts
@@ -777,32 +860,115 @@ def _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0
                label=f"D = {mobile_d_threshold:g} µm²/s")
     _annotate_logd_mobility(ax, thr, pal, (xlo, xhi))
     ax.set_xlim(xlo, xhi)
-    ax.set_xlabel("log₁₀ D  (µm²/s)")
-    ax.set_ylabel("Density")
-    ax.set_title("LogD distribution  (overlaid)", pad=15)   # room for the key
+    ax.set_xlabel(LOGD_AXIS_LABEL)
+    # The KDE integrates to 1 over log₁₀ D: its height is the fraction of
+    # trajectories per log₁₀ unit (0.8 ≈ 8% per 0.1-unit relative-frequency bin).
+    ax.set_ylabel("Probability density (per log₁₀ unit)")
+    ax.set_title("Diffusion coefficient distribution", pad=15)   # room for the key
     ax.legend(frameon=False, loc="best", fontsize=7)
 
 
-def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0)):
+def logd_relfreq_centres(xlim=(-5.0, 1.0)):
+    """Bin centres for the relative-frequency style (see LOGD_RELFREQ_BIN)."""
+    lo, hi = xlim
+    n = int(round((hi - lo) / LOGD_RELFREQ_BIN))
+    return np.round(lo + LOGD_RELFREQ_BIN * np.arange(n + 1), 6)
+
+
+def _logd_relfreq(cells, centres, per_recording=True):
+    """``(mean, sem)`` fraction of trajectories in each bin around ``centres``:
+    per recording and averaged ± SEM, or of every track pooled (sem None)."""
+    edges = np.concatenate([centres - LOGD_RELFREQ_BIN / 2,
+                            [centres[-1] + LOGD_RELFREQ_BIN / 2]])
+
+    def _frac(v):
+        counts, _ = np.histogram(v, bins=edges)
+        return counts / len(v) if len(v) else None
+    return group_curve(cells, _frac, per_recording)
+
+
+def _render_logd_relfreq(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0),
+                         per_recording=True):
+    """Relative-frequency histogram of log₁₀ D, the van Swinderen lab's way
+    (Bademosi et al. 2017 Fig. 2e; Hines & van Swinderen 2021 Fig. 1J): the
+    fraction of a recording's trajectories in each 0.1-log-unit bin, averaged
+    across recordings, points joined, SEM error bars.  Values are already
+    clipped into ``xlim``, so the end bins hold the clipped trajectories, as
+    PALMTracer's LogD column does."""
+    from matplotlib.ticker import MaxNLocator
+    centres = logd_relfreq_centres(xlim)
+    curves = []
+    for (lbl, col, pooled, _medians) in per_card:
+        if pooled is None:
+            continue
+        y, sem = _logd_relfreq(pooled, centres, per_recording)
+        if y is not None:
+            curves.append((lbl, col, y, sem))
+    for lbl, col, y, sem in curves:
+        if sem is not None:                      # SEM error bars with caps, as the lab's
+            ax.errorbar(centres, y, yerr=sem, fmt="none", ecolor=col, elinewidth=0.9,
+                        capsize=1.8, capthick=0.9, zorder=2)
+        ax.plot(centres, y, "-o", color=col, lw=1.4, ms=3.2, label=lbl, zorder=3)
+    ax.axvline(thr, color=pal.get("MUT", pal["GRD"]), ls="--", lw=1.0,
+               label=f"D = {mobile_d_threshold:g} µm²/s")
+    # x range: where the trajectories are, to whole log units (the lab's run
+    # −4 or −5 to 1).  Tail bins under 1% of the peak (a few pixels; on MB112C
+    # the 0.12% of trajectories below −4) are left off; a real pile of clipped
+    # trajectories at the floor is far above that and keeps the floor in view.
+    lo, hi = xlim
+    peak = max((float(np.nanmax(y + (sem if sem is not None else 0)))
+                for _l, _c, y, sem in curves), default=0.0)
+    if peak > 0:
+        tallest = np.nanmax(np.vstack([y for _l, _c, y, _s in curves]), axis=0)
+        held = centres[tallest >= 0.01 * peak]
+        lo = max(xlim[0], float(np.floor(held.min())))
+        hi = min(xlim[1], float(np.ceil(held.max())))
+        if thr <= lo or thr >= hi:               # keep the threshold guide in view
+            lo, hi = min(lo, np.floor(thr)), max(hi, np.ceil(thr))
+    _annotate_logd_mobility(ax, thr, pal, (lo, hi))
+    ax.set_xlim(lo - LOGD_RELFREQ_BIN, hi + LOGD_RELFREQ_BIN)
+    ax.set_ylim(0, peak * 1.1 if peak > 0 else 1.0)
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=4))
+    ax.set_xlabel(LOGD_AXIS_LABEL)
+    ax.set_ylabel("Relative frequency (fractions)")
+    ax.set_title("Diffusion coefficient distribution", pad=15)   # room for the key
+    ax.legend(frameon=False, loc="best", fontsize=7)
+
+
+def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 1.0),
+                        per_recording=True):
     """Per-group violins (log₁₀ D on y) with a per-cell median dot strip — a
-    SuperPlot-style view that shows shape AND the replicate-level data."""
+    SuperPlot-style view that shows shape AND the replicate-level data.  With
+    ``per_recording`` a violin's outline is the mean of its recordings' KDEs."""
     valid = []
     for (lbl, col, pooled, medians) in per_card:
         if pooled is None:
             continue
-        v = np.asarray(pooled, float); v = v[np.isfinite(v)]
+        cells = recording_cells(pooled)
+        v = np.concatenate(cells) if cells else np.array([])
         if len(v) >= 2 and np.ptp(v) > 1e-9:
-            valid.append((lbl, col, v, medians))
+            valid.append((lbl, col, cells if per_recording else v, medians))
     if not valid:
         ax.axis("off")
         ax.text(0.5, 0.5, "No diffusion data", ha="center", va="center",
                 color=pal.get("MUT", "#9aa4b2"), transform=ax.transAxes)
         return
     positions = list(range(1, len(valid) + 1))
-    parts = ax.violinplot([v for _, _, v, _ in valid], positions=positions,
-                          showmeans=False, showextrema=False, widths=0.82)
-    for pc, (_lbl, col, _v, _m) in zip(parts["bodies"], valid):
-        pc.set_facecolor(col); pc.set_edgecolor(col); pc.set_alpha(0.38)
+    if per_recording:
+        yk = np.linspace(xlim[0], xlim[1], 300)
+        for pos, (_lbl, col, cells, _m) in zip(positions, valid):
+            dens, _sem = _logd_density(cells, yk, True)
+            if dens is None:
+                continue
+            keep = dens > 1e-3 * dens.max()          # trim the empty tails
+            w = 0.41 * dens / dens.max()
+            ax.fill_betweenx(yk[keep], pos - w[keep], pos + w[keep], color=col,
+                             alpha=0.38, edgecolor=col, linewidth=0.8)
+    else:
+        parts = ax.violinplot([v for _, _, v, _ in valid], positions=positions,
+                              showmeans=False, showextrema=False, widths=0.82)
+        for pc, (_lbl, col, _v, _m) in zip(parts["bodies"], valid):
+            pc.set_facecolor(col); pc.set_edgecolor(col); pc.set_alpha(0.38)
     rng = np.random.default_rng(0)
     for pos, (_lbl, col, _v, medians) in zip(positions, valid):
         meds = [m for m in (() if medians is None else medians)
@@ -817,9 +983,9 @@ def _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0, 
     ax.set_xticklabels([l for l, _, _, _ in valid], rotation=30, ha="right",
                        fontsize=7)
     _annotate_logd_mobility(ax, thr, pal, xlim, vertical=True)
-    ax.set_ylabel("log₁₀ D  (µm²/s)")
+    ax.set_ylabel(LOGD_AXIS_LABEL)
     ax.set_ylim(xlim)
-    ax.set_title("LogD distribution  (violins + per-cell medians)")
+    ax.set_title("Diffusion coefficient distribution")
     ax.legend(frameon=False, loc="lower right", fontsize=7)
 
 
@@ -837,6 +1003,10 @@ LOGD_STYLE_DESCRIPTIONS = {
         "Ridgeline — filled KDEs stacked with an offset, directly labelled. Best "
         "for comparing many groups' shapes compactly and spotting multi-modality. "
         "The vertical offset makes exact peak heights harder to compare."),
+    "relfreq": (
+        "Relative frequency — the fraction of each recording's trajectories in "
+        "0.1-log-unit bins, averaged across recordings with SEM error bars; the "
+        "van Swinderen lab's published style."),
     "violin": (
         "Violins + points — a violin per group with a per-cell median dot strip "
         "(SuperPlot style). Best for showing each group's spread plus the "
@@ -1023,6 +1193,17 @@ def _threshold_warnings(labels, all_summaries):
                    + ") — differences between them may come from detection rather "
                    "than biology; re-run every group on one threshold.")
     return out
+
+
+def significance_label(pv, style="p", alpha=0.05):
+    """The label over a compared pair: ``format_p`` (the full figure), or — in
+    minimal figures, as the van Swinderen lab's figures mark it — stars:
+    * p < 0.05, ** p < 0.01, *** p < 0.001, n.s. at or above α."""
+    if style != "stars":
+        return format_p(pv)
+    from firefly.analysis.fa_stats_config import stars_for
+    st = stars_for(pv, alpha)
+    return "n.s." if st == "ns" else (st or None)
 
 
 def format_p(pv):
@@ -1217,9 +1398,11 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
             "below_resolution_fraction": (
                 float(n_below_resolution / n_tracks) if n_tracks else np.nan),
             "n_diffusion_eligible": n_diffusion_eligible,
+            "recording_day":    _recording_day(p),
             "auc_msd":          _msd_auc(summary["ensemble_msd"], fi),
             "spot_intensity":   _spot_intensity(summary),
             "mob_immob_ratio":  _mob_immob_ratio(d, mobile_d_threshold),
+            "mobile_fraction":  _mobile_fraction(d, mobile_d_threshold),
             "median_D":         _replicate_median_d(d),
             "median_alpha":     _col_median_from(d, "alpha"),
             "radius_of_gyration": _col_median_from(d, "radius_of_gyration_um"),
@@ -1300,7 +1483,7 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
         try:
             inference_df = paired_df.copy()
             if "diffusion" in compatibility_warnings:
-                for column in ("auc_msd", "mob_immob_ratio", "median_D",
+                for column in ("auc_msd", "mob_immob_ratio", "mobile_fraction", "median_D",
                                "median_alpha", "vacf_persistence"):
                     if column in inference_df:
                         inference_df[column] = np.nan
@@ -1336,7 +1519,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                  panel_styles=None,
                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
-                 minimal=False):
+                 minimal=False, motion_colourblind=False, curve_weighting="recording"):
     """Compare N≥2 groups of analysis output folders and render a multi-panel
     figure, summary CSV, statistics CSV and combined PDF report.
 
@@ -1394,6 +1577,17 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     paired_df = rd.paired_df
     mobile_d_threshold = rd.mobile_d_threshold
     compatibility_warnings = dict(rd.compatibility_warnings)
+    # Distribution curves (log D, track length, dwell, turning angles): each
+    # recording weighted equally, mean ± SEM (default) — or every track pooled.
+    per_recording = (curve_weighting != "tracks")
+    # Replicate dots shaped by recording day (one-way scalar panels) — the same
+    # day → shape everywhere in the figure, keyed under the group band.
+    _days = (list(summary_df["recording_day"])
+             if "recording_day" in getattr(summary_df, "columns", ()) else [])
+    day_marker = {} if two_factor else day_markers(_days)
+    rep_markers = ([[day_marker.get(d if d else None, "o")
+                     for d in summary_df.loc[summary_df["group"] == lbl, "recording_day"]]
+                    for lbl in labels] if day_marker else None)
     # Per-panel annotation handles + the returned per-metric stats dict are built
     # as the panels draw (the returned `stats` only ever covers RENDERED panels).
     panel_annots = {}
@@ -1459,7 +1653,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     band_compact = band_ncol > 1
     band_fs = 9 if n_groups <= 8 else 8
     band_row_in = 0.26                       # inches per band row
-    band_h_in = band_nrow * band_row_in + 0.46   # band + gap under the suptitle
+    band_h_in = (band_nrow + bool(day_marker)) * band_row_in + 0.46   # band (+ day key) + gap
     if minimal:
         band_h_in = 0.12                     # no title, no band — just a top margin
     base_h = nrows * 3.6
@@ -1562,7 +1756,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                            err=msd_err,
                            tp_order=tp_ord,
                            group_colors={g: group_colors.get(g) for g in groups_order},
-                           theme=gtheme, xlabel="Time delta (s)")
+                           theme=gtheme, xlabel="Time (s)")
         else:
             _ax = fig.add_subplot(ss)
             _ax.text(0.5, 0.5, "no MSD curves exported", ha="center", va="center",
@@ -1621,7 +1815,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                 _gfig.draw_auc_change(fig, ss, groups_o, paired, style=style,
                                       tp_order=list(tp_order), stat_labels=stat_labels,
                                       group_colors={g: group_colors.get(g) for g in groups_o},
-                                      theme=gtheme, ylabel="MSD AUC")
+                                      theme=gtheme, ylabel="AUC (µm²s)")
             else:
                 _ax = fig.add_subplot(ss)
                 _ax.text(0.5, 0.5, "no paired AUC (unmatched timepoints)",
@@ -1633,9 +1827,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             data = [summary_df.loc[summary_df["group"] == lbl, "auc_msd"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
-                             ylabel="AUC (µm²·s)",
-                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=mark)
-            ax.set_title("Area Under the Curve")
+                             ylabel="AUC (µm²s)",
+                             record_stats=stats_records, metric_name="auc_msd", xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg, annot_sink=panel_annots, style=mark)
+            ax.set_title("Area under the MSD curve")
 
     # ── 2b. Fluorescence (spot intensity) bar — sits next to MSD AUC ───────────
     if "fluor" in panels:
@@ -1652,9 +1846,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Spot intensity (a.u.)",
                              record_stats=stats_records, metric_name="spot_intensity",
-                             xtick_labels=bar_xticks, stats_config=cfg,
+                             xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg,
                              annot_sink=panel_annots, style=_pstyle("fluor"))
-        ax.set_title("Fluorescence Intensity")
+        ax.set_title("Fluorescence intensity")
 
     # ── 3. LogD distribution (filled KDEs; ridgeline when many groups) ────────
     if "logd_dist" in panels:
@@ -1664,7 +1858,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         # the replicate-level truth (a few high-track cells would otherwise
         # dominate).  The immobile tail is clipped INTO range (not dropped) so
         # an immobilising drug effect stays visible.
-        _styles = ("faceted", "ridgeline", "overlaid", "violin")
+        _styles = ("faceted", "ridgeline", "overlaid", "violin", "relfreq")
         style = logd_plot_style if logd_plot_style in _styles else "overlaid"
         ax = _next_ax()
         thr = np.log10(mobile_d_threshold)
@@ -1694,7 +1888,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                         continue
                     pooled.append(lg)
                     medians.append(float(np.median(lg)))
-            return (np.concatenate(pooled) if pooled else None), medians
+            # one array per recording: the renderers weight them (see per_recording)
+            return (pooled if pooled else None), medians
 
         # One entry per card/group — used by ridgeline / overlaid / violin.
         per_card = []
@@ -1703,11 +1898,17 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             per_card.append((labels[gi], colors[gi], pooled, medians))
 
         if style == "ridgeline":
-            _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim)
+            _render_logd_ridgeline(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim,
+                                   per_recording=per_recording)
         elif style == "overlaid":
-            _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim)
+            _render_logd_overlaid(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim,
+                                  per_recording=per_recording)
         elif style == "violin":
-            _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim)
+            _render_logd_violin(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim,
+                                per_recording=per_recording)
+        elif style == "relfreq":
+            _render_logd_relfreq(ax, per_card, thr, pal, mobile_d_threshold, xlim=_xlim,
+                                 per_recording=per_recording)
         else:
             # ── Faceted (default): facet by drug, PRE vs POST overlaid, with a
             # per-replicate median dot strip beneath each density. ──
@@ -1740,25 +1941,29 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                         facets.append((labels[gi], colors[gi],
                                        [(colors[gi], pld, med, labels[gi], False)]))
             _render_logd_facets(fig, ss, facets, thr, pal,
-                                "LogD distribution  (● per-cell median)",
-                                threshold_label=thr_lbl, xlim=_xlim)
+                                "Diffusion coefficient distribution",
+                                threshold_label=thr_lbl, xlim=_xlim,
+                                per_recording=per_recording)
 
-    # ── 4. Mobile/Immobile ratio bar ──────────────────────────────────────────
+    # ── 4. Mobile fraction (panel key "mob_immob" kept for saved selections) ──
+    # mobile / (mobile + immobile), 0–1.  The mobile/immobile RATIO is still in
+    # the summary CSV (PALMTracer reports it) but not drawn or tested: it is
+    # unbounded and undefined for a recording with no immobile track.
     if "mob_immob" in panels:
         ax = _next_ax()
         if two_factor:
-            _interaction_plot(ax, summary_df, "mob_immob_ratio", group_order,
+            _interaction_plot(ax, summary_df, "mobile_fraction", group_order,
                               tp_order, group_colors, pal,
-                              ylabel="Mobile/Immobile ratio",
-                              headline=_twoway_headline(twoway_df, "mob_immob_ratio"),
+                              ylabel="Mobile fraction",
+                              headline=_twoway_headline(twoway_df, "mobile_fraction"),
                               card_colors=card_colors, stats_config=cfg)
         else:
-            data = [summary_df.loc[summary_df["group"] == lbl, "mob_immob_ratio"].values
+            data = [summary_df.loc[summary_df["group"] == lbl, "mobile_fraction"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
-                             ylabel="Mobile/Immobile ratio",
-                             record_stats=stats_records, metric_name="mob_immob_ratio", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("mob_immob"))
-        ax.set_title("Mobile/Immobile Ratio")
+                             ylabel="Mobile fraction",
+                             record_stats=stats_records, metric_name="mobile_fraction", xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("mob_immob"))
+        ax.set_title("Mobile fraction")
 
     # ── 5. Motion class fractions (stacked bars: x = population, colour = class) ─
     if "motion_classes" in panels:
@@ -1766,9 +1971,10 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         # Canonical motion-class colours/order — shared with the single-run
         # figure AND the FIREFLY viewer (fa_constants) so a class is the same
         # colour everywhere: Immobile=red, Confined=orange, Brownian=blue,
-        # Directed=green.
+        # Directed=green — or the Okabe–Ito set under the colour-blind option.
         classes = list(MOTION_CLASS_ORDER)
-        class_colors = [motion_class_colors(theme)[c] for c in classes]
+        _mcc = motion_class_colors(theme, colourblind=motion_colourblind)
+        class_colors = [_mcc[c] for c in classes]
         # Each replicate's 4 named-class fractions are renormalised to sum to 1
         # (matching the single-run figure's panel-F stacked bar, which
         # renormalises the same 4 classes), so the stacked bars reach the top.
@@ -1859,8 +2065,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         # no legend, so no headroom.
         ax.set_ylim(0, 1.02 if minimal else 1.42)
         ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
-        ax.set_ylabel("Fraction of tracks")
-        ax.set_title("Motion Class Fractions")
+        ax.set_ylabel("Fraction of trajectories")
+        ax.set_title("Motion classes")
         ax.legend(frameon=False, loc="upper center", ncol=2, fontsize=7.5,
                   columnspacing=1.0, handlelength=1.1, handletextpad=0.4)
         # This panel's legend maps colour→motion class (group identity is already
@@ -1870,33 +2076,46 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # ── 6. Track length distribution (CDF, x clipped at 99th %ile) ────────────
     if "track_length" in panels:
         ax = _next_ax()
-        pooled_per_group = {}
+        pooled_per_group, cells_per_group = {}, {}
         for grp_label, summaries, _ in _zip_groups():
             arrs = []
             for s in summaries:
                 fi = _fi_or_default(s["params"], s.get("stem", ""))
                 tl = _track_lengths(s["tracks"], fi)
                 if len(tl):
-                    arrs.append(tl)
+                    arrs.append(np.asarray(tl, float))
             if arrs:
                 pooled_per_group[grp_label] = np.concatenate(arrs)
+                cells_per_group[grp_label] = arrs
         combined = (np.concatenate(list(pooled_per_group.values()))
                     if pooled_per_group else np.array([]))
         x_clip = float(np.percentile(combined, 99)) if len(combined) else None
+        if per_recording and len(combined):
+            # each recording's CDF at every observed length (whole frames, so a
+            # few hundred values), averaged (± SEM)
+            _xg = np.unique(combined)
+            _cdf = lambda v: np.searchsorted(np.sort(v), _xg, side="right") / len(v)
         for grp_label, color in zip(labels, colors):
             p = pooled_per_group.get(grp_label)
             if p is None or len(p) == 0: continue
+            if per_recording:
+                y, sem = group_curve(cells_per_group[grp_label], _cdf, True)
+                if sem is not None:
+                    ax.fill_between(_xg, np.clip(y - sem, 0, 1), np.clip(y + sem, 0, 1),
+                                    color=color, alpha=0.25, linewidth=0, step="post", zorder=2)
+                ax.plot(_xg, y, color=color, lw=1.5, label=grp_label, drawstyle="steps-post")
+                continue
             x_sorted = np.sort(p)
             y = np.arange(1, len(x_sorted) + 1) / len(x_sorted)
             ax.plot(x_sorted, y, color=color, lw=1.5, label=grp_label)
         if pooled_per_group:
             if x_clip and x_clip > 0:
                 ax.set_xlim(0, x_clip)
-                ax.set_title("Track Length Distribution  (x clipped at 99th %ile)")
+                ax.set_title("Trajectory length")
             else:
-                ax.set_title("Track Length Distribution")
+                ax.set_title("Trajectory length")
             ax.set_ylim(0, 1.02)
-            ax.set_xlabel("Track length (s)")
+            ax.set_xlabel("Trajectory length (s)")
             ax.set_ylabel("Cumulative fraction")
             ax.legend(frameon=False, loc="best")
         else:
@@ -1904,7 +2123,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     ha="center", va="center", transform=ax.transAxes,
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title("Track Length Distribution")
+            ax.set_title("Trajectory length")
         # Stats: mean elapsed track duration (per replicate).  The deprecated
         # mean_track_length_s export retains its historical observed-time
         # meaning but is no longer used for duration inference.
@@ -1922,35 +2141,35 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         if two_factor:
             _interaction_plot(ax, summary_df, "radius_of_gyration", group_order,
                               tp_order, group_colors, pal,
-                              ylabel="R_g (µm)",
+                              ylabel="Radius of gyration (µm)",
                               headline=_twoway_headline(twoway_df, "radius_of_gyration"),
                               card_colors=card_colors, stats_config=cfg)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "radius_of_gyration"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
-                             ylabel="R_g (µm)",
+                             ylabel="Radius of gyration (µm)",
                              record_stats=stats_records, metric_name="radius_of_gyration",
-                             xtick_labels=bar_xticks, stats_config=cfg,
+                             xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg,
                              annot_sink=panel_annots, style=_pstyle("rg"))
-        ax.set_title("Radius of Gyration")
+        ax.set_title("Radius of gyration")
 
     # ── 6a3. Track-geometry scalar panels (net displacement, path length,
     #         directionality, track duration, localisation count) ──────────────
     # Each is a per-replicate scalar drawn like the panels above: a group×time
     # interaction plot in two-factor mode, else a per-condition bar-with-dots.
     for _pkey, _col, _ylabel, _title in (
-            ("netdisp", "net_displacement", "Net displacement (µm)", "Net Displacement"),
-            ("path",    "path_length",      "Path length (µm)",      "Path Length"),
-            ("step",    "step_distance",    "Step distance (µm)",    "Step Distance"),
-            ("speed",   "step_speed",       "Step speed (µm/s)",     "Step Speed"),
+            ("netdisp", "net_displacement", "Net displacement (µm)", "Net displacement"),
+            ("path",    "path_length",      "Path length (µm)",      "Path length"),
+            ("step",    "step_distance",    "Step distance (µm)",    "Step distance"),
+            ("speed",   "step_speed",       "Step speed (µm/s)",     "Step speed"),
             ("linkstep", "link_displacement", "Observed-link displacement (µm)",
-             "Observed-Link Displacement"),
+             "Observed-link displacement"),
             ("linkspeed", "link_speed", "Observed-link speed (µm/s)",
-             "Observed-Link Speed"),
-            ("dir",     "directionality",   "Net ÷ path",            "Directionality Ratio"),
-            ("dur",     "track_duration",   "Track duration (s)",    "Track Duration"),
-            ("nlocs",   "n_localisations",  "Localisations (n)",     "Number of Localisations")):
+             "Observed-link speed"),
+            ("dir",     "directionality",   "Directionality ratio",  "Directionality ratio"),
+            ("dur",     "track_duration",   "Trajectory duration (s)", "Trajectory duration"),
+            ("nlocs",   "n_localisations",  "Localisations (n)",     "Localisations")):
         if _pkey not in panels:
             continue
         ax = _next_ax()
@@ -1964,7 +2183,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal, ylabel=_ylabel,
                              record_stats=stats_records, metric_name=_col,
-                             xtick_labels=bar_xticks, stats_config=cfg,
+                             xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg,
                              annot_sink=panel_annots, style=_pstyle(_pkey))
         ax.set_title(_title)
 
@@ -1973,17 +2192,17 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         ax = _next_ax()
         if two_factor:
             _interaction_plot(ax, summary_df, "n_tracks", group_order, tp_order,
-                              group_colors, pal, ylabel="Tracks (n)",
+                              group_colors, pal, ylabel="Trajectories (n)",
                               headline=_twoway_headline(twoway_df, "n_tracks"),
                               card_colors=card_colors, stats_config=cfg)
         else:
             data = [summary_df.loc[summary_df["group"] == lbl, "n_tracks"].values
                     for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
-                             ylabel="Tracks (n)",
+                             ylabel="Trajectories (n)",
                              record_stats=stats_records, metric_name="n_tracks",
-                             xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("track_count"))
-        ax.set_title("Tracks detected")
+                             xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("track_count"))
+        ax.set_title("Trajectories detected")
 
     # ── 7. JDD: per-population D + fraction (N groups) ────────────────────────
     if "jdd" in panels:
@@ -2029,7 +2248,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             ax.set_xticks(np.arange(max_pop_overall))
             ax.set_xticklabels(tick_labels)
             ax.set_xlim(-0.5, max_pop_overall - 0.5)
-            ax.set_ylabel("D (µm²/s, log scale)")
+            ax.set_ylabel("Diffusion coefficient (µm²/s)")
             ax.set_yscale("log")
             # ── Readable log y-axis ──────────────────────────────────────────
             # Plain decimal tick labels (0.001, 0.01, 0.1, 1) instead of 10^x
@@ -2058,7 +2277,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             ax.grid(True, axis="y", which="minor", color=pal["GRD"],
                     lw=0.4, alpha=0.30)
             ax.set_axisbelow(True)       # gridlines behind the markers
-            ax.set_title("JDD: population D (apparent when uncalibrated; size ∝ fraction)")
+            ax.set_title("Jump-distance populations")
             ax.legend(frameon=False, loc="best")
             if n_stuck:
                 ax.text(0.02, 0.02, f"{n_stuck} fit(s) stopped at a parameter limit — not shown",
@@ -2074,14 +2293,15 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     color=(pal.get("MUT", pal["TXT"]) if n_stuck else pal["GRD"]),
                     fontsize=8.5)
             ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title("Jump Distance Distribution")
+            ax.set_title("Jump-distance populations")
 
     # ── 8. Dwell time CDF (N groups) ──────────────────────────────────────────
     if "dwell_cdf" in panels:
         ax = _next_ax()
         any_data = False
+        dwell_cells = []
         for grp_label, summaries, color in _zip_groups():
-            pooled = []
+            cells = []
             for s in summaries:
                 d = s.get("dwell_times")
                 if d is None or len(d) == 0: continue
@@ -2089,26 +2309,51 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                                         "dwell_time", "dwell", "tau_s")
                             if c in d.columns), None)
                 if col is None: continue
-                pooled.extend(d[col].values)
-            if not pooled: continue
+                v = np.asarray(d[col].values, dtype=float)
+                v = v[np.isfinite(v) & (v > 0)]
+                if len(v): cells.append(v)
+            dwell_cells.append((grp_label, color, cells))
+        _all = [c for _g, _c, cs in dwell_cells for c in cs]
+        _xg = np.unique(np.concatenate(_all)) if _all else np.array([0.0])
+        if len(_xg) > 4000:                      # continuous dwells: quantile grid
+            _xg = np.unique(np.quantile(_xg, np.linspace(0, 1, 4000)))
+        _xg = np.concatenate([[0.0], _xg])
+        _surv = lambda v: 1.0 - np.searchsorted(np.sort(v), _xg, side="right") / len(v)
+        _floor = None
+        for grp_label, color, cells in dwell_cells:
+            if not cells: continue
             any_data = True
-            arr = np.sort(np.asarray(pooled, dtype=float))
-            arr = arr[arr > 0]
-            if len(arr) == 0: continue
+            if per_recording:
+                # each recording's survival curve on one grid, averaged (± SEM);
+                # zero once every recording has run out (masked on the log axis)
+                y, sem = group_curve(cells, _surv, True)
+                pos = y[y > 0]
+                if len(pos):
+                    _floor = min(_floor or 1.0, float(pos.min()) * 0.5)
+                yy = np.where(y > 0, y, np.nan)
+                if sem is not None and len(pos):
+                    lo = np.maximum(yy - sem, float(pos.min()) * 0.5)
+                    ax.fill_between(_xg, lo, yy + sem, color=color, alpha=0.13,
+                                    linewidth=0, step="post", zorder=2)
+                ax.plot(_xg, yy, color=color, lw=1.5, label=grp_label, drawstyle="steps-post")
+                continue
+            arr = np.sort(np.concatenate(cells))
             y = 1 - np.arange(1, len(arr) + 1) / len(arr)
             ax.plot(arr, y, color=color, lw=1.5, label=grp_label)
         if any_data:
             ax.set_xlabel("Dwell time (s)")
             ax.set_ylabel("Survival fraction")
-            ax.set_title("Dwell Time Survival")
+            ax.set_title("Dwell time")
             ax.set_yscale("log")
+            if per_recording and _floor:
+                ax.set_ylim(bottom=_floor)
             ax.legend(frameon=False, loc="best")
         else:
             ax.text(0.5, 0.5, "No dwell-time data\n(re-run analysis to generate)",
                     ha="center", va="center", transform=ax.transAxes,
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title("Dwell Time Survival")
+            ax.set_title("Dwell time")
 
     # ── 9. Turning angle distribution (N groups, unsigned |angle|) ────────────
     # Single line per group, plotting the count of each |θ| bin on
@@ -2121,27 +2366,32 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         centers = 0.5 * (bins[:-1] + bins[1:])
         pooled_per_group = []
         for grp_label, summaries, color in _zip_groups():
-            pooled = []
+            cells = []
             for s in summaries:
                 ta = s.get("turning_angles")
                 if ta is None or len(ta) == 0: continue
-                pooled.extend(np.abs(np.asarray(ta).ravel()))
-            pooled_per_group.append((grp_label, color, pooled))
+                cells.append(np.abs(np.asarray(ta, dtype=float).ravel()))
+            pooled_per_group.append((grp_label, color, recording_cells(cells)))
+
+        def _ta_frac(v):
+            counts, _ = np.histogram(v, bins=bins)
+            return counts / counts.sum() if counts.sum() else None
         ta_ends, ta_cols, ta_labs = [], [], []
-        for grp_label, color, pooled in pooled_per_group:
-            if not pooled: continue
+        for grp_label, color, cells in pooled_per_group:
+            if not cells: continue
+            frac, sem = group_curve(cells, _ta_frac, per_recording)
+            if frac is None: continue
             any_data = True
-            counts, _ = np.histogram(pooled, bins=bins)
-            frac = counts / counts.sum() if counts.sum() else counts
+            draw_sem_band(ax, centers, frac, sem, color, alpha=0.25, floor=0.0)
             ax.plot(centers, frac, "-o", color=color, lw=1.5, ms=3, label=grp_label)
             ta_ends.append((float(centers[-1]), float(frac[-1])))
             ta_cols.append(color); ta_labs.append(grp_label)
         if any_data:
-            ax.set_xlabel("|Turning angle|  (°)")
-            ax.set_ylabel("Relative frequency")
+            ax.set_xlabel("|Turning angle| (°)")
+            ax.set_ylabel("Relative frequency (fractions)")
             ax.set_xlim(0, 180)
             ax.set_xticks([0, 45, 90, 135, 180])
-            ax.set_title("Turning Angle Distribution")
+            ax.set_title("Turning angles")
             # Direct end labels when the curves separate at 180°; else shared legend.
             if not _maybe_end_labels(ax, ta_ends, ta_cols, ta_labs):
                 ax.legend(frameon=False, loc="best")
@@ -2150,7 +2400,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     ha="center", va="center", transform=ax.transAxes,
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title("Turning Angle Distribution")
+            ax.set_title("Turning angles")
 
     # ── 10. Radial distribution (polar, signed turning angles) ────────────────
     # Polar histogram showing the angular distribution of step-to-step
@@ -2235,8 +2485,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             # interpreted comparatively, not in absolute density units.
             ax.set_yticklabels([])
             ax.tick_params(axis="y", which="both", left=False)
-            ax.set_title("Radial Distribution  (each group normalised to "
-                         "its own total)", pad=14, fontsize=9)
+            ax.set_title("Radial distribution", pad=14, fontsize=9)
             ax.legend(loc="upper right", bbox_to_anchor=(1.20, 1.10),
                       frameon=False, fontsize=8)
             ax.grid(True, ls="--", alpha=0.22, lw=0.5)
@@ -2245,7 +2494,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                     ha="center", va="center", transform=ax.transAxes,
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title("Radial Distribution")
+            ax.set_title("Radial distribution")
 
     # ── van Hove non-Gaussian α₂ (population heterogeneity) ───────────────────
     if "van_hove" in panels and "nongauss_alpha2" in summary_df.columns:
@@ -2257,12 +2506,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                               headline=_twoway_headline(twoway_df, "nongauss_alpha2"),
                               card_colors=card_colors, stats_config=cfg)
         else:
-            data = [summary_df.loc[summary_df["group"] == lbl, "nongauss_alpha2"]
-                    .dropna().to_numpy() for lbl in labels]
+            data = [summary_df.loc[summary_df["group"] == lbl, "nongauss_alpha2"].to_numpy(float)
+                    for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="Non-Gaussian α₂",
                              record_stats=stats_records,
-                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("van_hove"))
+                             metric_name="nongauss_alpha2", xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("van_hove"))
         ax.set_title("Population heterogeneity (α₂)")
 
     # ── VACF persistence (directional memory) ─────────────────────────────────
@@ -2275,13 +2524,13 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                               headline=_twoway_headline(twoway_df, "vacf_persistence"),
                               card_colors=card_colors, stats_config=cfg)
         else:
-            data = [summary_df.loc[summary_df["group"] == lbl, "vacf_persistence"]
-                    .dropna().to_numpy() for lbl in labels]
+            data = [summary_df.loc[summary_df["group"] == lbl, "vacf_persistence"].to_numpy(float)
+                    for lbl in labels]
             _bar_with_dots_n(ax, data, labels, colors, pal,
                              ylabel="VACF persistence (lag 1)",
                              record_stats=stats_records,
-                             metric_name="vacf_persistence", xtick_labels=bar_xticks, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("vacf"))
-        ax.set_title("Directional persistence (VACF lag 1)")
+                             metric_name="vacf_persistence", xtick_labels=bar_xticks, markers=rep_markers, stats_config=cfg, annot_sink=panel_annots, style=_pstyle("vacf"))
+        ax.set_title("Directional persistence")
 
     # ── Drop per-panel legends (the top band is the shared key) ───────────────
     # Per-panel `loc="best"` legends overlap the data badly once there are many
@@ -2302,6 +2551,10 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     if minimal:
         for _lg in list(fig.legends):
             _lg.remove()
+        # …and no titles either: in a thesis figure they go in the caption too.
+        for ax in fig.axes:
+            for _loc in ("center", "left", "right"):
+                ax.set_title("", loc=_loc)
     legend_rows = 0   # no reserved bottom strip — the band replaces the legend
 
     # ── Suptitle ──────────────────────────────────────────────────────────────
@@ -2363,11 +2616,11 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         if compact:
             d_s = f"{d:.3f}" if np.isfinite(d) else "—"
             a_s = f"{a:.2f}" if np.isfinite(a) else "—"
-            return (f"●  {lab} — {n_trk:,} trk · D {d_s} · α {a_s}"
+            return (f"●  {lab} — {n_trk:,} traj · D {d_s} · α {a_s}"
                     f"{below_s}  (n={n_cells})")
         d_s = f"{d:.4f} µm²/s" if np.isfinite(d) else "—"
         a_s = f"{a:.3f}" if np.isfinite(a) else "—"
-        return (f"●  {lab} — {n_trk:,} tracks · med D {d_s} · "
+        return (f"●  {lab} — {n_trk:,} trajectories · med D {d_s} · "
                 f"med α {a_s}{below_s}   (n={n_cells})")
 
     band_top = 1.0 - 0.52 / fig_h            # first band row, below the suptitle
@@ -2383,6 +2636,18 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  _band_entry(
                      lbl, n_cells, n_trk, med_D, med_a, n_below, band_compact),
                  color=colors[i], fontsize=band_fs, ha="center", va="top")
+    if day_marker and not minimal:               # key for the replicate-dot shapes
+        from matplotlib.lines import Line2D
+        _known = [d for d in day_marker if d]
+        _keys = sorted(_known) + ([None] if None in day_marker else [])
+        _h = [Line2D([], [], ls="none", marker=None, label="Recording day:")]
+        _h += [Line2D([], [], ls="none", marker=day_marker[d], ms=6, mfc=pal["MUT"],
+                      mec=pal["BG"], mew=0.6, label=_day_label(d, _known)) for d in _keys]
+        _dk = fig.legend(handles=_h, loc="upper center", ncol=len(_h), frameon=False,
+                         bbox_to_anchor=(0.5, band_top - band_nrow * row_step + 0.04 / fig_h),
+                         fontsize=band_fs, labelcolor=pal["TXT"], handlelength=0.8,
+                         handletextpad=0.3, columnspacing=1.1, borderaxespad=0)
+        _dk._firefly_day_key = True
 
     # No bottom strip (the band replaced the shared legend → legend_rows == 0);
     # reserve only the inch-sized top strip for the summary band.
@@ -2435,7 +2700,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # The across-metric family is the pairwise comparisons of the canonical
     # SCALAR metrics (omnibus rows and per-class motion fractions excluded), so
     # the family size is reproducible and matches the "scalar metrics" framing.
-    _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mob_immob_ratio",
+    _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mobile_fraction",
                       "median_D", "median_alpha", "radius_of_gyration",
                       "net_displacement", "path_length", "step_distance",
                       "step_speed", "link_displacement", "link_speed",
@@ -2779,13 +3044,14 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
                   msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                   panel_styles=None,
                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
-                  minimal=False):
+                  minimal=False, motion_colourblind=False, curve_weighting="recording"):
     """Draw (+ optionally save) a comparison from a precomputed `ReportData`.
     Only theme / graph style / panel selection vary here, so this is the cheap
     part to re-run for a live style change on cached data.  Points the memo cache
     at `report_data.stat_cache` for the duration of the draw.  Returns
     ``(fig, summary_df, stats)`` exactly like `compare_groups`."""
     _TL.stat_cache = report_data.stat_cache
+    _TL.sig_style = "stars" if minimal else "p"
     try:
         return _draw_report(
             report_data, output_dir=output_dir, output_stem=output_stem,
@@ -2794,9 +3060,11 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
             msd_err=msd_err, auc_plot_style=auc_plot_style, group_style=group_style,
             panel_styles=panel_styles,
             logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
-            progress_cb=progress_cb, minimal=minimal)
+            progress_cb=progress_cb, minimal=minimal,
+            motion_colourblind=motion_colourblind, curve_weighting=curve_weighting)
     finally:
         _TL.stat_cache = None
+        _TL.sig_style = "p"
 
 
 def compare_groups(groups=None, output_dir=None, output_stem="comparison",
@@ -2807,7 +3075,8 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
                    panel_styles=None,
                    logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
                    progress_cb=None, stats_config=None, use_native=False,
-                   report_data=None, minimal=False):
+                   report_data=None, minimal=False, motion_colourblind=False,
+                   curve_weighting="recording"):
     """Compare N>=2 groups of analysis-output folders -> multi-panel figure,
     summary CSV, statistics CSV and combined PDF report.  Thin wrapper: computes a
     `ReportData` (unless one is supplied via ``report_data``) then renders it, so
@@ -2824,7 +3093,8 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
         msd_plot_style=msd_plot_style, msd_err=msd_err, auc_plot_style=auc_plot_style,
         group_style=group_style, panel_styles=panel_styles,
         logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
-        progress_cb=progress_cb, minimal=minimal)
+        progress_cb=progress_cb, minimal=minimal,
+        motion_colourblind=motion_colourblind, curve_weighting=curve_weighting)
 
 
 def _json_safe(obj):

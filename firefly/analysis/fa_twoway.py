@@ -15,7 +15,7 @@ group × time × lag model because pingouin's ``mixed_anova`` supports only one
 within factor + one between factor.  They are therefore handled two ways:
 
   * at the two-factor level via their per-(cell, time point) SCALAR summary
-    (MSD → ``auc_msd``; LogD → ``median_D`` / ``mob_immob_ratio``), which slot
+    (MSD → ``auc_msd``; LogD → ``median_D`` / ``mobile_fraction``), which slot
     straight into :func:`compute_twoway_anova`; and
   * an optional per-time-point group × (lag | bin) mixed-ANOVA drill-down via
     :func:`curve_drilldown_per_timepoint`, which recovers curve-shape
@@ -43,7 +43,7 @@ _LOGD_CENTERS = 0.5 * (_LOGD_BINS[:-1] + _LOGD_BINS[1:])
 
 # Per-(cell, time point) scalar metrics the two-way ANOVA runs on.  These are
 # the columns produced by fa_compare's `_row` helper.
-SCALAR_METRICS = ["auc_msd", "spot_intensity", "mob_immob_ratio",
+SCALAR_METRICS = ["auc_msd", "spot_intensity", "mobile_fraction",
                   "median_D", "median_alpha", "radius_of_gyration",
                   "net_displacement", "path_length", "step_distance",
                   "step_speed", "link_displacement", "link_speed",

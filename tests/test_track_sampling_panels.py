@@ -59,8 +59,8 @@ def test_every_panel_list_carries_the_same_letters():
 def test_the_gallery_names_the_two_new_panels():
     from firefly.ui.controllers.workspace import workspace_data as wd
     by_letter = {p.get("letter"): p for p in wd.PANELS if p.get("letter")}
-    assert "track length" in by_letter["R"]["name"].lower()
-    assert "tracks" in by_letter["S"]["name"].lower()
+    assert "trajectory length" in by_letter["R"]["name"].lower()
+    assert "trajectories" in by_letter["S"]["name"].lower()
     assert by_letter["R"]["kind"] == by_letter["S"]["kind"] == "mfig"
 
 
@@ -125,8 +125,8 @@ def _run(*, columns=True, frame_interval=0.02, seed=5, want={"R", "S"}):
 
 def test_both_panels_render_and_are_titled():
     out = _run()
-    assert out["panel_titles"]["R"] == "Track Length"
-    assert out["panel_titles"]["S"] == "Total Tracks"
+    assert out["panel_titles"]["R"] == "Trajectory length"
+    assert out["panel_titles"]["S"] == "Total trajectories"
     for l in ("R", "S"):
         assert out["panels"][l].size[0] > 100 and out["panels"][l].size[1] > 100
 
