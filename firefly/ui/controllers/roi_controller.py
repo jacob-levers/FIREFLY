@@ -655,6 +655,16 @@ class RoiController(QObject):
         self._brush_undo = []
         self._brush_token += 1
 
+    def _restart_brush(self):
+        """The ROI just changed files (or reverted): the paint buffer, its
+        preview and its undo history belonged to the previous one.  Left in
+        place, the previous file's region stayed drawn over the next and the
+        next stroke extended it.  Re-seed from the polygons now loaded."""
+        self._end_brush_session()
+        if self._tool in ("brush", "eraser"):
+            self._begin_brush_session()
+        self.brushChanged.emit()
+
     def _render_brush_preview(self):
         """Translucent green fill of the painted mask, for the overlay."""
         import numpy as np
@@ -906,6 +916,7 @@ class RoiController(QObject):
         existing = self._store.get(self._file) if self._store else None
         self._polys = [[(float(y), float(x)) for y, x in poly]
                        for poly in (existing or [])]
+        self._restart_brush()
         self._editing = True
         self.roiSettingsChanged.emit()
         self.viewChanged.emit()
@@ -981,6 +992,7 @@ class RoiController(QObject):
         self._draft = []
         self._polys = [[(float(y), float(x)) for y, x in poly]
                        for poly in (meta.get("polygons") or [])]
+        self._restart_brush()
         self._editing = True
         for sig in (self.roiSettingsChanged, self.viewChanged, self.polygonsChanged,
                     self.draftChanged, self.detectChanged, self.spotsChanged,
@@ -2088,6 +2100,7 @@ class RoiController(QObject):
         self._polys = [[(float(y), float(x)) for y, x in poly]
                        for poly in (existing or [])]
         self._draft = []
+        self._restart_brush()
         spec = (self._ovr.get(self._file) if self._ovr else None) or self._default_spec()
         self._apply_spec(spec)
         self._editing = False

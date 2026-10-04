@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.76.51-rc.22 — 4 Oct 2026
+
+### Fixed
+
+- **A brush-painted ROI followed you to the next file.** After painting an ROI
+  with the brush and opening another recording, the previous file's region
+  stayed drawn over the new one, and the first stroke on the new file was added
+  to it — so the second file's ROI came out as the first file's region plus
+  the new strokes (and the same in reverse on going back). Each file now starts
+  from its own saved ROI. **Check ROIs painted with the brush since rc.8**
+  (when the brush arrived) before running them. Polygon ROIs were not
+  affected.
+
 ## v2.76.51-rc.21 — 4 Oct 2026
 
 ### Added
