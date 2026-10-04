@@ -77,8 +77,8 @@ Item {
     readonly property var channelOpts: ["Stable", "Pre-release"]
     readonly property var logdLabels: ["Faceted (per-replicate)", "Ridgeline", "Overlaid KDEs", "Violins + points", "Relative frequency"]
     readonly property var logdValues: ["faceted", "ridgeline", "overlaid", "violin", "relfreq"]
-    readonly property var msdLabels: ["Mean ± error (faceted)", "Individual cells + mean", "Group overlaid"]
-    readonly property var msdValues: ["mean_faceted", "individual", "overlaid"]
+    readonly property var msdLabels: ["Mean ± error (faceted)", "Individual cells + mean", "Group overlaid", "Group overlaid, no error bars"]
+    readonly property var msdValues: ["mean_faceted", "individual", "overlaid", "overlaid_plain"]
     readonly property var groupLabels: ["Box + points", "Grouped by timepoint", "Violin + points", "Bar"]
     readonly property var groupValues: ["box_points", "grouped", "violin", "bar"]
     // Per-graph mark for the scalar comparison panels (one control each, below).
@@ -651,7 +651,7 @@ Item {
                     }
                     PrefRow {
                         label: "MSD curves"
-                        desc: "How the ensemble-MSD vs. time-lag curves are plotted, faceted by group (timepoints from your setup; error type from the Analysis tab)."
+                        desc: "How the ensemble-MSD vs. time-lag curves are plotted: one panel per group, or every group on one plot with or without error bars. Error bars are mean ± the Analysis tab's Error setting (SD / SEM / 95% CI) between recordings."
                         Select { implicitWidth: 170; model: root.msdLabels
                                  currentIndex: (root.rev, Math.max(0, root.msdValues.indexOf(Settings.getStr("figures/msd_style", "mean_faceted"))))
                                  onPicked: (t) => { var i = root.msdLabels.indexOf(t)

@@ -82,18 +82,31 @@ def draw_msd(fig, subplotspec, groups, data, lags_s, *, style="mean_faceted",
         ax.xaxis.label.set_color(th["fg"]); ax.yaxis.label.set_color(th["fg"])
         ax.title.set_color(th["fg"])
 
-    # ── overlaid: all group means on one axes (group = colour, tp = linestyle)
-    if style == "overlaid":
+    # ── overlaid: all group means on one axes (group = colour, tp = linestyle),
+    # with error bars ("overlaid") or without them ("overlaid_plain")
+    if style in ("overlaid", "overlaid_plain"):
+        bars = style == "overlaid"
         ax = fig.add_subplot(subplotspec)
         dashes = ["-", "--", ":", "-."]
+        # Each curve sits a little to one side of its lag so the bars of
+        # different conditions do not hide one another (≤ 0.15 lag in total).
+        series = [(g, tp) for g in groups for tp in tp_order
+                  if data.get(g, {}).get(tp) is not None and len(data[g][tp])]
+        lag = float(np.median(np.diff(T))) if len(T) > 1 else 0.0
+        step = (0.15 * lag / max(len(series) - 1, 1)) if bars else 0.0
         for gi, g in enumerate(groups):
             gc = group_colors.get(g, _FALLBACK[gi % len(_FALLBACK)])
             for ti, tp in enumerate(tp_order):
                 arr = data.get(g, {}).get(tp)
                 if arr is None or not len(arr):
                     continue
-                ax.plot(T, np.asarray(arr, float).mean(0), color=gc, lw=2.0,
-                        ls=dashes[ti % len(dashes)], marker="o", ms=3.2)
+                # mean ± the Analysis tab's error between recordings, as faceted
+                arr = np.asarray(arr, float)
+                dx = (series.index((g, tp)) - (len(series) - 1) / 2) * step
+                ax.errorbar(T + dx, arr.mean(0), yerr=(dispersion(arr, err) if bars else None),
+                            color=gc, lw=2.0,
+                            ls=dashes[ti % len(dashes)], marker="o", ms=3.2,
+                            capsize=2.2, elinewidth=1.0)
         _axstyle(ax); ax.set_xlabel(xlabel, fontsize=10); ax.set_ylabel(ylabel, fontsize=10)
         gl = [Line2D([0], [0], color=group_colors.get(g, _FALLBACK[i % len(_FALLBACK)]), lw=2.4)
               for i, g in enumerate(groups)]
@@ -162,15 +175,16 @@ def render_msd(groups, data, lags_s, *, style="mean_faceted", err="SEM",
     groups   : ordered group (condition) names.
     data     : ``{group: {timepoint_label: (n_dishes, n_lags) array}}``.
     lags_s   : ``(n_lags,)`` time-lag axis (seconds).
-    style    : ``'mean_faceted'`` | ``'individual'`` | ``'overlaid'``.
-    err      : ``'SD'`` | ``'SEM'`` | ``'95% CI'`` (mean_faceted only).
+    style    : ``'mean_faceted'`` | ``'individual'`` | ``'overlaid'`` |
+               ``'overlaid_plain'`` (overlaid, no error bars).
+    err      : ``'SD'`` | ``'SEM'`` | ``'95% CI'`` (mean_faceted and overlaid).
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     th = {**_DEFAULT_THEME, **(theme or {})}
-    if style == "overlaid":
+    if style in ("overlaid", "overlaid_plain"):
         h = width_in * 0.6
     else:
         rows, cols = facet_grid(len(groups))

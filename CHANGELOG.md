@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.76.51-rc.24 — 4 Oct 2026
+
+### Changed
+
+- **The overlaid MSD graph has error bars.** "Group overlaid" drew only each
+  condition's mean curve. It now shows mean ± the Analysis tab's Error setting
+  (SD / SEM / 95% CI) between recordings, as the faceted style does — choose
+  SEM to match the lab's published figures. Each condition's bars sit slightly
+  to one side of the time point so they do not hide one another.
+
+### Added
+
+- **"Group overlaid, no error bars"** in Preferences → Graph styles → MSD
+  curves, for the overlaid graph without them.
+
 ## v2.76.51-rc.23 — 4 Oct 2026
 
 ### Added

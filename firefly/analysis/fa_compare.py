@@ -1335,7 +1335,7 @@ def panel_span(key, n_cards, *, msd_style="mean_faceted", logd_style="overlaid",
     G = COMPARISON_GRID_COLS
     per_group = lambda n: G // 3 if n <= 4 else (G // 2 if n <= 8 else G)
     if key == "msd":
-        return G // 2 if (msd_style == "overlaid" or n_cards <= 3) else G
+        return G // 2 if (msd_style in ("overlaid", "overlaid_plain") or n_cards <= 3) else G
     if key == "logd_dist":
         return per_group(n_cards) if logd_style == "violin" else G // 2
     if key in _CURVE_PANELS:
@@ -2016,7 +2016,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                       "spine": pal["GRD"], "muted": pal["MUT"]}
             _gfig.draw_msd(fig, ss, groups_order, data, tref,
                            style=(msd_plot_style if msd_plot_style in
-                                  ("mean_faceted", "individual", "overlaid")
+                                  ("mean_faceted", "individual", "overlaid",
+                                   "overlaid_plain")
                                   else "mean_faceted"),
                            err=msd_err,
                            tp_order=tp_ord,
