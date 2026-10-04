@@ -63,3 +63,20 @@ def classify_candidates(rows, *, min_cnr=0., roi_mask=None, roi_known=True,
                       outside_roi=int(counts.get('outside_roi', 0)),
                       passed=int(rows.passes_contrast.sum()) if not roi_known else int(counts.get('passes_detection',0)),
                       roi_known=roi_known, backend=backend)
+
+
+def below_threshold(kept, low, *, radius):
+    """Candidates of a lower-threshold detection that the threshold drops.
+
+    ``kept`` is the detection at the threshold, ``low`` the same detector at a
+    lower one.  A low candidate within ``radius`` px of a kept spot is that
+    spot (a lower threshold grows a spot and can nudge its centre); the rest
+    are what the threshold excludes.  Kept spots stay exactly the detector's —
+    nothing is emulated by filtering masses.
+    """
+    if not len(low) or not len(kept):
+        return low.copy()
+    k = kept[["x", "y"]].to_numpy(float)
+    lo = low[["x", "y"]].to_numpy(float)
+    d2 = ((lo[:, None, :] - k[None, :, :]) ** 2).sum(-1)
+    return low[(d2.min(axis=1) > float(radius) ** 2)].copy()

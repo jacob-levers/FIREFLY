@@ -141,20 +141,28 @@ def sampled_max_projection(path, cap: int = DEFAULT_CAP):
     return sampled_projection(path, "max", cap)
 
 
-def detection_frame(path, idx, channel=0):
+def _czi_plane(czi, idx, channel):
+    import numpy as np
+    dims = dict(zip(czi.dims, czi.size))
+    ch = min(int(channel), int(dims.get('C', 1)) - 1)  # same clamp as load_czi
+    return np.squeeze(czi.read_image(T=int(idx), C=ch)[0])
+
+
+def detection_frame(path, idx, channel=0, czi=None):
     """Read an exact raw plane for detection; never collapse unknown dimensions.
 
     Index is local to the selected file. Unsupported layouts fail explicitly
     instead of displaying a different plane as a faithful detection preview.
+    ``czi`` reuses an already-open CziFile (opening one costs as much as
+    reading two planes).
     """
     import numpy as np
     ext = os.path.splitext(path)[1].lower()
     if ext == '.czi':
-        from aicspylibczi import CziFile
-        czi = CziFile(path)
-        dims = dict(zip(czi.dims, czi.size))
-        ch = min(int(channel), int(dims.get('C',1))-1)  # same clamp as load_czi
-        frame = np.squeeze(czi.read_image(T=int(idx), C=ch)[0])
+        if czi is None:
+            from aicspylibczi import CziFile
+            czi = CziFile(path)
+        frame = _czi_plane(czi, idx, channel)
     elif ext in ('.tif', '.tiff'):
         import tifffile
         with tifffile.TiffFile(path) as tif:
@@ -176,3 +184,43 @@ def detection_frame(path, idx, channel=0):
     if frame.ndim != 2:
         raise ValueError('Ambiguous image dimensions: cannot preview the production detector safely.')
     return frame
+
+
+class DetectionFrames:
+    """A recording's raw detection planes, read on demand.
+
+    Enough of an array — ``len``, ``shape``, integer and slice indexing — for
+    estimators that sample a few frames or windows (the auto threshold, the
+    wavelet noise) without loading a multi-GB recording.  Every plane is
+    exactly :func:`detection_frame`'s; a CZI is opened once, not per plane.
+    """
+    ndim = 3
+
+    def __init__(self, path, n_frames, channel=0):
+        self._path, self._channel = str(path), int(channel)
+        self._czi = None
+        if os.path.splitext(self._path)[1].lower() == '.czi':
+            from aicspylibczi import CziFile
+            self._czi = CziFile(self._path)
+        first = self._plane(0)
+        self.shape = (int(n_frames),) + tuple(first.shape)
+
+    def _plane(self, i):
+        return detection_frame(self._path, int(i), self._channel, czi=self._czi)
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getitem__(self, key):
+        import numpy as np
+        if isinstance(key, slice):
+            idx = range(*key.indices(len(self)))
+            if not len(idx):
+                return np.empty((0,) + self.shape[1:], dtype=np.float32)
+            return np.stack([self._plane(i) for i in idx])
+        i = int(key)
+        if i < 0:
+            i += len(self)
+        if not 0 <= i < len(self):
+            raise IndexError(f"frame {key} outside 0-{len(self) - 1}")
+        return self._plane(i)

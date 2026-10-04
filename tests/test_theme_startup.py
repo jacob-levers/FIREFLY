@@ -18,7 +18,10 @@ OLD = ("FIREFLY", "sptPALM")         # old foreign domain — the bug's source
 class _FakeQSettings:
     store: dict = {}
 
-    def __init__(self, org, app): self._k = (org, app)
+    class Scope: UserScope = 0
+    defaultFormat = staticmethod(lambda: 0)
+
+    def __init__(self, *args): self._k = tuple(args[-2:])   # (org, app)
     def value(self, key, default=None): return type(self).store.get((self._k, key), default)
     def setValue(self, key, value): type(self).store[(self._k, key)] = value
     def sync(self): pass

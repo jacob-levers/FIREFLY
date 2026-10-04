@@ -1586,6 +1586,73 @@ def _static_minmass(masses, sensitivity, diag, log_fn):
     return mm
 
 
+# The palmTRACER-style detector's threshold, in units of the recording's noise
+# on the detection image: the median threshold-to-noise ratio of hand-set
+# palmTRACER thresholds over 11 PC12 recordings (range 2.0–4.8).  Fixed before
+# the MB112C analysis and used for every file in it.
+WAVELET_NOISE_FACTOR = 4.4
+
+
+def wavelet_noise(stack, n_frames=40):
+    """Robust noise of palmTRACER's detection image (the second wavelet plane):
+    1.4826 × MAD over each sampled frame's pixels, median over up to
+    ``n_frames`` evenly spaced frames.  Only those frames are read.
+
+    Returns ``(sigma, frames_used)``.
+    """
+    from firefly.analysis.fa_localize_backends import palmtracer_w2
+    n = len(stack)
+    if n <= 0:
+        raise ValueError("no frames to measure noise on")
+    idx = np.linspace(0, n - 1, min(int(n_frames), n)).astype(int)
+    sig = []
+    for i in idx:
+        w = palmtracer_w2(np.asarray(stack[int(i)], dtype=np.float32)).ravel()
+        sig.append(1.4826 * np.median(np.abs(w - np.median(w))))
+    return float(np.median(sig)), int(len(idx))
+
+
+def recommend_wavelet_threshold(stack, n_frames=40, factor=WAVELET_NOISE_FACTOR):
+    """The palmTRACER-style detector's recommended threshold for a recording:
+    ``factor`` × its wavelet noise, to the nearest 5 counts.  Absolute counts,
+    so the rule — not the number — is what carries between recordings.
+
+    Returns ``(threshold, {"sigma", "factor", "n_frames"})``.
+    """
+    sigma, used = wavelet_noise(stack, n_frames=n_frames)
+    t = max(5.0, 5.0 * round(float(factor) * sigma / 5.0))
+    return t, {"sigma": sigma, "factor": float(factor), "n_frames": used}
+
+
+def estimate_minmass_for_run(stack, p, log_cb=None):
+    """The minmass an Auto-threshold run with params ``p`` picks for ``stack``.
+
+    The worker's own call, shared so the Preview & ROI viewer's recommended
+    threshold is the number a run would use rather than a look-alike.
+    """
+    mftr = p.get("minmass_max_false_track_rate")
+    try:
+        mftr = float(mftr) if mftr not in (None, "", 0, 0.0) else None
+    except (TypeError, ValueError):
+        mftr = None
+    return estimate_minmass(
+        stack,
+        diameter=int(p["diameter"]),
+        percentile=64,
+        backend=p["backend"],
+        sensitivity=p.get("minmass_sensitivity", "balanced"),
+        mode=p.get("minmass_mode", "linkability"),
+        target_density=p.get("minmass_target_density"),
+        bg_radius=int(p.get("bg_radius", 10)),
+        bg_method=p.get("bg_method", "uniform_filter"),
+        workers=int(p["workers"]),
+        log_cb=log_cb,
+        search_range=int(p.get("search_range", 5)),
+        memory=int(p.get("memory", 3)),
+        link_min_len=max(4, int(p.get("min_track_len", 4) or 4)),
+        max_false_track_rate=mftr)
+
+
 def estimate_minmass(stack, diameter=7, percentile=64, backend="auto",
                      sensitivity="balanced", frame_sample=80,
                      bg_radius=50, bg_method="uniform_filter",

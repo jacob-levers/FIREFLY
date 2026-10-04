@@ -11,7 +11,36 @@ The public convention is ``(y, x)`` end-to-end.
 """
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
+
 from PySide6.QtCore import Property, QObject, Signal, Slot
+
+# Detections cached per (file, frame, detector settings, threshold): moving
+# the threshold back to a value already seen shows its spots at once.
+_DETECTION_CACHE_SIZE = 64
+
+# The overlay also marks, in red, what the threshold excludes: spots the same
+# detector finds at this fraction of the threshold but not at the threshold —
+# the near misses.  Measured on MB112C frames at the recommended threshold, ¾
+# gives about 1–5 red per detected spot; ½ gave 3–40, nearly all noise, which
+# buried the frame.
+_EXCLUDED_FRACTION = 0.75
+
+
+
+class _PreviewImport:
+    """The ImportController attributes ``build_params`` reads, for the file the
+    viewer has open — enough to build a run's own detection parameters."""
+    def __init__(self, path, settings):
+        from firefly.analysis.fa_constants import (DEFAULT_FRAME_INTERVAL_S,
+                                                   DEFAULT_PIXEL_SIZE_UM)
+        self.filePath, self.outDir, self.isCsv = path, None, False
+        self.overridePx = self.overrideFi = False
+        self.pixelSize = float(settings.get_float("analysis/pixel_size", DEFAULT_PIXEL_SIZE_UM))
+        self.frameInterval = float(settings.get_float("analysis/frame_interval",
+                                                      DEFAULT_FRAME_INTERVAL_S))
+
 
 # label → analysis mask-mode "mode_hint" for the projection / mask builder
 _MASK_MODE_HINT = {"Max": "max", "Mean": "mean", "Sum": "sum",
@@ -46,6 +75,9 @@ class RoiController(QObject):
     detectChanged = Signal()            # detection on/off + minmass
     previewInvalidated = Signal()
     spotsChanged = Signal()             # detected-spot overlay
+    _spotsDetected = Signal(object, object)   # (key, rows | error) worker → GUI
+    _recommendReady = Signal(object, object)  # (request, (value, note) | error) worker → GUI
+    recommendChanged = Signal()         # "Set to recommended" busy / note
     brushChanged = Signal()             # brush tool / radius / painted preview
     panelChanged = Signal()             # which screen of the viewer is showing
 
@@ -123,6 +155,20 @@ class RoiController(QObject):
         self._spot_summary = "Preview off"
         self._spot_inspection = ""
         self._spots_stale = True
+        # Threshold dragging: detections run off the GUI thread, newest request
+        # wins, and each one is cached (see previewThreshold).
+        self._det_cache = OrderedDict()
+        self._det_wanted = None         # the detection the overlay should show
+        self._det_pending = False
+        self._det_req = None
+        self._det_lock = threading.Lock()
+        self._det_thread = None
+        self._det_low_wanted = None     # its partner at _EXCLUDED_FRACTION (red spots)
+        self._shown = None              # (kept, low) detections behind the overlay
+        # "Set to recommended": worked out off the GUI thread for the open file.
+        self._rec_busy = False
+        self._rec_note = ""
+        self._rec_thread = None
         # Candidate masses from a minmass=0 detection on the displayed frame,
         # cached against the settings that change them.  Re-thresholding this
         # array is instant, so the histogram and the consequence readouts can
@@ -147,6 +193,8 @@ class RoiController(QObject):
         self._apply_spec(self._default_spec())
         if settings is not None and hasattr(settings, "changed"):
             settings.changed.connect(self._spot_settings_changed)
+        self._spotsDetected.connect(self._on_spots_detected)
+        self._recommendReady.connect(self._on_recommended)
         # An ROI edit does not change what was DETECTED, only which candidates
         # fall inside it — so re-label the cached spots instead of throwing them
         # away.  Discarding them made the overlay empty on every brush stroke
@@ -487,10 +535,7 @@ class RoiController(QObject):
         self._wavelet = v
         self.invalidateMassProfile()
         self._invalidate_spots()
-        # Same rule as minmass: off per-file, the panel moves the shared value
-        # every file uses; on, the value belongs to this file and is saved with it.
-        if self._s is not None and not self._run_scoped and not self._wavelet_per_file:
-            self._s.set("analysis/wavelet_threshold", v)
+        self._persist_threshold()
         self.detectChanged.emit()
 
     @Property(bool, notify=detectChanged)
@@ -826,6 +871,8 @@ class RoiController(QObject):
 
     def _open(self, path, panel, detect=None):
         self._file = path or ""
+        self._rec_note = ""
+        self.recommendChanged.emit()
         self._panel = panel
         if detect is not None:
             self._detect_on = bool(detect)
@@ -1489,15 +1536,256 @@ class RoiController(QObject):
             return
         self._minmass = v
         self._invalidate_spots()
-        # Run-scoped: the detection threshold of a COMPLETED run is history —
-        # previewing spots over it must not rewrite the sidebar for future runs.
-        # Per-file: the value belongs to this file's override, saved on commit;
-        # writing the sidebar here would change every other file in the batch.
-        if self._s is not None and not self._run_scoped and not self._minmass_per_file:
-            self._s.set("analysis/minmass", v)
-            self._s.set("analysis/auto_minmass", False)
+        self._persist_threshold()
         self.detectChanged.emit()
         # spots NOT rebuilt here — QML debounces refreshSpots (locate is heavy)
+
+    def _persist_threshold(self):
+        """Write the panel's threshold where it belongs.  Run-scoped: the
+        threshold of a COMPLETED run is history — previewing over it must not
+        rewrite the sidebar.  Per-file: it belongs to this file's override,
+        saved on commit; writing the sidebar would change every other file.
+        Otherwise it is the shared sidebar value (minmass also turns Auto
+        minmass off).  Only values that changed are written: each write makes
+        the whole parameter sidebar re-evaluate."""
+        g = self._s
+        if g is None or self._run_scoped:
+            return
+        if self._is_palmtracer_detector():
+            if (not self._wavelet_per_file
+                    and abs(g.get_float("analysis/wavelet_threshold", -1.0) - self._wavelet) > 1e-9):
+                g.set("analysis/wavelet_threshold", self._wavelet)
+        elif not self._minmass_per_file:
+            if abs(g.get_float("analysis/minmass", -1.0) - self._minmass) > 1e-9:
+                g.set("analysis/minmass", self._minmass)
+            if g.get_bool("analysis/auto_minmass", False):
+                g.set("analysis/auto_minmass", False)
+
+    # ── threshold dragging ───────────────────────────────────────────────
+    @Slot(float)
+    def previewThreshold(self, v):
+        """The slider is being dragged: move the preview's threshold only.
+        Nothing is written until commitThreshold (writing the setting on every
+        step made the whole sidebar re-evaluate per pixel of drag), the last
+        overlay stays up, and the new one is detected off the GUI thread."""
+        v = max(0.0, float(v))
+        if self._is_palmtracer_detector():
+            self._wavelet = v
+        else:
+            self._minmass = v
+        self.detectChanged.emit()
+        self._request_spots_async()
+
+    @Slot(float)
+    def commitThreshold(self, v):
+        """The slider was released / a value typed: keep it, write it where it
+        belongs, and show its detection at once (usually already cached)."""
+        v = max(0.0, float(v))
+        if self._is_palmtracer_detector():
+            self._wavelet = v
+            self.invalidateMassProfile()
+        else:
+            self._minmass = v
+        self._persist_threshold()
+        self.detectChanged.emit()
+        if self._detect_on:
+            self._recompute_spots()
+
+    # ── recommended threshold ────────────────────────────────────────────
+    @Property(bool, notify=recommendChanged)
+    def recommending(self):
+        return self._rec_busy
+
+    @Property(str, notify=recommendChanged)
+    def recommendNote(self):
+        return self._rec_note
+
+    @Slot()
+    def recommendThreshold(self):
+        """Move the threshold to FIREFLY's recommendation for the open
+        recording, then commit it like a typed value.  palmTRACER-style
+        detector: 4.4 × the recording's wavelet noise.  Every other detector:
+        the minmass an Auto-threshold run would pick.  Worked out off the GUI
+        thread — the minmass search links a few hundred frames."""
+        if self._rec_busy or not self._file or self._run_scoped or self._n_frames <= 0:
+            return
+        g = self._s
+        req = dict(file=self._file, n=int(self._n_frames),
+                   channel=int(round(g.get_float("analysis/channel", 0))) if g else 0,
+                   wavelet=self._is_palmtracer_detector(), params=None)
+        if not req["wavelet"]:
+            try:
+                from firefly.ui.controllers.params.params_builder import build_params
+                req["params"] = build_params(g, _PreviewImport(self._file, g), fpath=self._file,
+                                             override_store=self._ovr)
+            except Exception as exc:
+                self._rec_note = f"No recommendation: {exc}"
+                self.recommendChanged.emit()
+                return
+        self._rec_busy = True
+        self._rec_note = "Working out the recommended threshold…"
+        self.recommendChanged.emit()
+        self._rec_thread = threading.Thread(target=self._recommend_worker, args=(req,),
+                                            daemon=True, name="FIREFLY-RecommendThreshold")
+        self._rec_thread.start()
+
+    def _recommend_worker(self, req):
+        try:
+            from firefly.analysis import fa_localize as fl
+            from firefly.ui.controllers.params.preview_loader import DetectionFrames
+            stack = DetectionFrames(req["file"], req["n"], req["channel"])
+            if req["wavelet"]:
+                t, info = fl.recommend_wavelet_threshold(stack)
+                note = (f"Recommended {t:g}: {info['factor']:g} × this recording's wavelet "
+                        f"noise (σ = {info['sigma']:.1f} counts, {info['n_frames']} frames).")
+            else:
+                t, diag = fl.estimate_minmass_for_run(stack, req["params"], log_cb=lambda _m: None)
+                method = str((diag or {}).get("method") or "")
+                note = (f"Recommended {t:.3g}: the minmass an Auto-threshold run picks for "
+                        f"this recording"
+                        + (" (fallback estimate — the linking test was inconclusive)."
+                           if method.startswith("static_fallback") else "."))
+            self._recommendReady.emit(req, (float(t), note))
+        except Exception as exc:                  # reported on the GUI thread
+            self._recommendReady.emit(req, exc)
+
+    def _on_recommended(self, req, result):
+        self._rec_busy = False
+        if req["file"] != self._file or req["wavelet"] != self._is_palmtracer_detector():
+            self._rec_note = ""                   # another file / detector by now
+        elif isinstance(result, Exception):
+            self._rec_note = f"No recommendation: {result}"
+        else:
+            value, self._rec_note = result
+            self.commitThreshold(value)
+        self.recommendChanged.emit()
+
+    @Property(bool, notify=spotsChanged)
+    def spotsUpdating(self):
+        """A detection for the current threshold is running."""
+        return self._det_pending
+
+    def _det_options(self, scale=1.0):
+        """``(key, options)`` of the detection the panel currently asks for —
+        the production localiser's own arguments (fa_detection_preview) — with
+        the threshold multiplied by ``scale``."""
+        from firefly.ui.controllers.params.params_builder import BG_METHOD_MAP, BACKEND_LABEL_TO_VALUE
+        g = self._s
+        extra = self._detector_kwargs()
+        minmass = float(self._minmass)
+        if "wavelet_threshold" in extra:
+            extra = {"wavelet_threshold": extra["wavelet_threshold"] * scale}
+        else:
+            minmass *= scale
+        opts = dict(
+            diameter=int(round(g.get_float("analysis/diameter", 7))) if g else 7,
+            minmass=minmass,
+            bg_radius=int(round(g.get_float("analysis/bg_radius", 10))) if g else 10,
+            bg_method=(BG_METHOD_MAP.get(g.get_str("analysis/bg_method", "Uniform Filter"),
+                                         "uniform_filter") if g else "uniform_filter"),
+            backend=(BACKEND_LABEL_TO_VALUE.get(g.get_str("analysis/backend", "Auto"), "auto")
+                     if g else "auto"),
+            **extra)
+        channel = int(round(g.get_float("analysis/channel", 0))) if g else 0
+        key = (self._file, int(self._frame_idx), channel, opts["diameter"], opts["bg_radius"],
+               opts["bg_method"], opts["backend"], round(opts["minmass"], 9),
+               round(float(opts.get("wavelet_threshold", -1.0)), 9))
+        return key, opts
+
+    def _view_dets(self):
+        """The detections the overlay needs: at the threshold (green) and at
+        _EXCLUDED_FRACTION of it, whose extra spots are what the threshold
+        excludes (red).  ``None`` for the second when the threshold is 0."""
+        key, opts = self._det_options()
+        low = self._det_options(_EXCLUDED_FRACTION)
+        return (key, opts), (low if low[0] != key else None)
+
+    def _want(self, dets):
+        (key, _opts), low = dets
+        self._det_wanted = key               # a late result for another view cannot replace it
+        self._det_low_wanted = low[0] if low else None
+
+    def _show_cached(self):
+        """Show the wanted view if its detections are cached; True if shown."""
+        rows = self._det_cache.get(self._det_wanted)
+        if rows is None:
+            return False
+        low = None
+        if self._det_low_wanted is not None:
+            low = self._det_cache.get(self._det_low_wanted)
+            if low is None:
+                return False
+            self._det_cache.move_to_end(self._det_low_wanted)
+        self._det_cache.move_to_end(self._det_wanted)
+        self._det_pending = False
+        self._apply_rows(rows, low)
+        return True
+
+    def _cache_put(self, key, rows):
+        self._det_cache[key] = rows
+        self._det_cache.move_to_end(key)
+        while len(self._det_cache) > _DETECTION_CACHE_SIZE:
+            self._det_cache.popitem(last=False)
+
+    def _request_spots_async(self):
+        if not self._detect_on or self._view_mode != "raw" or self._raw_frame is None:
+            return
+        dets = self._view_dets()
+        self._want(dets)
+        if self._show_cached():                  # seen before: show it at once
+            return
+        need = [d for d in dets if d is not None and d[0] not in self._det_cache]
+        self._det_pending = True
+        self.spotsChanged.emit()
+        with self._det_lock:
+            self._det_req = (self._raw_frame, need)
+            if self._det_thread is None or not self._det_thread.is_alive():
+                self._det_thread = threading.Thread(target=self._det_loop, daemon=True,
+                                                    name="FIREFLY-SpotPreview")
+                self._det_thread.start()
+
+    def _det_loop(self):
+        """Worker: detect the newest request; requests superseded while one
+        runs are dropped.  Exits when there is nothing left to do."""
+        from firefly.analysis import fa_detection_preview as fdp
+        while True:
+            with self._det_lock:
+                req, self._det_req = self._det_req, None
+                if req is None:
+                    self._det_thread = None
+                    return
+            frame, need = req
+            for key, opts in need:
+                try:
+                    rows, _ = fdp.preview_detections(frame, roi_mask=None, roi_known=False, **opts)
+                    self._spotsDetected.emit(key, rows)
+                except Exception as exc:          # reported on the GUI thread
+                    self._spotsDetected.emit(key, exc)
+                with self._det_lock:
+                    if self._det_req is not None:   # superseded: start on the newest
+                        break
+
+    def _on_spots_detected(self, key, rows):
+        if isinstance(rows, Exception):
+            if key == self._det_wanted:
+                self._det_pending = False
+                self._spot_summary = f"Preview unavailable: {rows}"
+                self.spotsChanged.emit()
+            elif key == self._det_low_wanted:    # no red spots; the green ones stand
+                self._det_low_wanted = None
+                self._show_cached()
+            return
+        self._cache_put(key, rows)
+        if key in (self._det_wanted, self._det_low_wanted):   # still the view on screen
+            self._show_cached()
+
+    def dispose(self):
+        """Let running preview work finish and stop its threads."""
+        with self._det_lock:
+            self._det_req = None
+        for th in (self._det_thread, self._rec_thread):
+            if th is not None:
+                th.join(timeout=10)
 
     @Property(int, notify=spotsChanged)
     def spotToken(self):
@@ -1528,12 +1816,17 @@ class RoiController(QObject):
         pen = QPen(QColor(57, 255, 110)); pen.setWidthF(1.3)   # match live-detection green
         p.setPen(pen); p.setBrush(_Qt.NoBrush)
         colors = {"passes_detection": "#39ff6e", "roi_unchecked": "#55c8ff",
-                  "outside_roi": "#ff5577", "low_contrast": "#ffb347",
-                  "contrast_unavailable": "#ffb347"}
+                  "outside_roi": "#b47cff", "low_contrast": "#ffb347",
+                  "contrast_unavailable": "#ffb347", "below_threshold": "#ff2a2a"}
+        halo = QPen(QColor(0, 0, 0, 200)); halo.setWidthF(3.2)
         for i, (x, y) in enumerate(zip(xs, ys)):
+            c = QPointF(float(x), float(y))
             if decisions is not None:
+                if decisions[i] == "below_threshold":
+                    # red sits on red in Inferno/Hot: a dark halo keeps it legible
+                    p.setPen(halo); p.drawEllipse(c, 4.0, 4.0)
                 pen.setColor(QColor(colors[decisions[i]])); p.setPen(pen)
-            p.drawEllipse(QPointF(float(x), float(y)), 4.0, 4.0)
+            p.drawEllipse(c, 4.0, 4.0)
         p.end()
         return img
 
@@ -1553,6 +1846,7 @@ class RoiController(QObject):
         self._spots_stale = True
         self._spots = None
         self._spot_rows = None
+        self._shown = None
         self._spot_count = 0
         self._spot_inspection = ""
         if schedule:
@@ -1566,12 +1860,16 @@ class RoiController(QObject):
         cannot say different things about the same overlay."""
         g = self._s
         backend = summary.get("backend") or "auto"
-        text = (f"{backend} · frame {self._frame_idx + 1} · minmass {self._minmass:g}\n"
-                f"{summary['candidates']} pass minmass · "
+        thr = (f"wavelet threshold {self._wavelet:g}" if self._is_palmtracer_detector()
+               else f"minmass {self._minmass:g}")
+        text = (f"{backend} · frame {self._frame_idx + 1} · {thr}\n"
+                f"{summary['candidates']} detected · "
                 f"{summary['contrast_rejected']} contrast rejected · "
                 f"{summary['outside_roi']} outside ROI · {summary['passed']} pass "
                 + ("detection + ROI." if summary.get("roi_known")
                    else f"detection. ROI NOT evaluated: {roi_note}.")
+                + (f" {summary['below_threshold']} excluded by the threshold (red: found at "
+                   f"{_EXCLUDED_FRACTION:g}× it)." if summary.get("below_threshold") else "")
                 + " Final track retention is not evaluated.")
         if g and g.get_bool("analysis/auto_minmass", False):
             text += " Auto minmass is ON: the run will choose a different threshold."
@@ -1584,34 +1882,62 @@ class RoiController(QObject):
         re-label, or when the ROI cannot be resolved (an unclosed polygon, a
         missing sister image), because then the labels really are unknown.
         """
-        if not self._detect_on or self._spot_rows is None or self._raw_frame is None:
+        if not self._detect_on or self._shown is None or self._raw_frame is None:
             self._invalidate_spots()
             return
         try:
-            from firefly.analysis.fa_detection_preview import classify_candidates
-            g = self._s
-            cnr = float(g.get_float("analysis/min_cnr", 0)) if g else 0.
-            try:
-                mask, known = self._detection_roi(self._raw_frame.shape)
-                roi_note = ""
-            except ValueError as exc:
-                mask, known, roi_note = None, False, str(exc)
-            rows, summary = classify_candidates(
-                self._spot_rows, min_cnr=cnr, roi_mask=mask, roi_known=known,
-                shape=self._raw_frame.shape,
-                backend=(g.get_str("analysis/backend", "Auto") if g else "Auto"))
-            self._spot_rows = rows
-            self._spot_count = summary["passed"]
-            self._spots = self._spots_qimage(*self._raw_frame.shape,
-                                             rows.x, rows.y, rows.decision.tolist())
-            self._spots_stale = False
-            self._spot_summary = self._compose_spot_summary(summary, roi_note)
-            self._spots_token += 1
-            self.spotsChanged.emit()
+            self._apply_rows(*self._shown)
         except Exception:
             self._invalidate_spots()
 
+    def _apply_rows(self, rows, low=None):
+        """Show detected candidates: label them against the current ROI and
+        contrast cutoff (cheap — no detector) and redraw the overlay.  ``low``
+        is the same detector at _EXCLUDED_FRACTION of the threshold; its spots
+        that the threshold drops are drawn red."""
+        import pandas as pd
+        from firefly.analysis.fa_detection_preview import below_threshold, classify_candidates
+        kept = rows
+        g = self._s
+        cnr = float(g.get_float("analysis/min_cnr", 0)) if g else 0.
+        try:
+            mask, known = self._detection_roi(self._raw_frame.shape)
+            roi_note = ""
+        except ValueError as exc:
+            mask, known, roi_note = None, False, f"{exc}; fix/save the ROI before running"
+        rows, summary = classify_candidates(
+            rows, min_cnr=cnr, roi_mask=mask, roi_known=known,
+            shape=self._raw_frame.shape,
+            backend=(g.get_str("analysis/backend", "Auto") if g else "Auto"))
+        shown = rows
+        if low is not None and len(low):
+            diam = float(g.get_float("analysis/diameter", 7)) if g else 7.0
+            ex = below_threshold(kept, low, radius=max(2.0, diam / 2.0))
+            if len(ex):
+                ex, _ = classify_candidates(ex, roi_mask=mask, roi_known=known,
+                                            shape=self._raw_frame.shape)
+                ex["decision"] = "below_threshold"
+                summary["below_threshold"] = len(ex)
+                shown = pd.concat([ex, rows], ignore_index=True)   # green drawn on top
+        self._shown = (kept, low)
+        self._spot_rows = shown
+        self._spot_count = summary["passed"]
+        self._spots = self._spots_qimage(*self._raw_frame.shape,
+                                         shown.x, shown.y, shown.decision.tolist())
+        self._spots_stale = False
+        self._spot_summary = self._compose_spot_summary(summary, roi_note)
+        self._spots_token += 1
+        self.spotsChanged.emit()
+
     def _spot_settings_changed(self, key):
+        key = str(key)
+        if self._s is not None and key in ("analysis/wavelet_threshold", "analysis/minmass"):
+            cur = self._wavelet if key == "analysis/wavelet_threshold" else self._minmass
+            if abs(self._s.get_float(key, cur) - cur) < 1e-9:
+                return              # the panel's own value coming back: nothing changed
+        if key == "analysis/auto_minmass":
+            self.spotsChanged.emit()            # only the summary's note changes
+            return
         if str(key).startswith("analysis/"):
             if key == "analysis/minmass" and self._s is not None and not self._minmass_per_file:
                 self._minmass = float(self._s.get_float(key, self._minmass))
@@ -1637,13 +1963,15 @@ class RoiController(QObject):
         distance = (rows.x-float(x))**2 + (rows.y-float(y))**2
         i = int(np.argmin(distance.to_numpy()))
         if distance.iloc[i] > 36:
-            self._spot_inspection = "No candidate within 6 pixels. Spots below minmass are not displayed."
+            self._spot_inspection = ("No candidate within 6 pixels. Spots that need less than "
+                                     f"{_EXCLUDED_FRACTION:g}× the threshold are not displayed.")
         else:
             r = rows.iloc[i]
             cnr = f"{r.raw_cnr:.3g}" if np.isfinite(r.raw_cnr) else "unavailable (edge/zero noise)"
             names = {"passes_detection":"passes detection + ROI", "roi_unchecked":"passes detection; ROI not evaluated",
                      "outside_roi":"rejected: outside ROI", "low_contrast":"rejected: raw contrast",
-                     "contrast_unavailable":"rejected: raw contrast unavailable"}
+                     "contrast_unavailable":"rejected: raw contrast unavailable",
+                     "below_threshold": f"excluded by the threshold (found at {_EXCLUDED_FRACTION:g}× it)"}
             roi = "not evaluated" if r.inside_roi is None else ("inside" if r.inside_roi else "outside")
             self._spot_inspection = (f"ROI={roi} · x={r.x:.2f}, y={r.y:.2f} · mass={r.mass:.4g} · raw CNR={cnr} · "
                                      + names[r.decision] + ". Track retention not evaluated.")
@@ -1696,27 +2024,23 @@ class RoiController(QObject):
                 self._render_display()
             if self._raw_frame is None:
                 raise ValueError("Cannot read the exact raw plane for this file/layout")
-            g = self._s
-            diameter = int(round(g.get_float("analysis/diameter", 7))) if g else 7
-            radius = int(round(g.get_float("analysis/bg_radius",10))) if g else 10
-            bg = BG_METHOD_MAP.get(g.get_str("analysis/bg_method", "Uniform Filter"), "uniform_filter") if g else "uniform_filter"
-            backend = BACKEND_LABEL_TO_VALUE.get(g.get_str("analysis/backend", "Auto"), "auto") if g else "auto"
-            cnr = float(g.get_float("analysis/min_cnr",0)) if g else 0.
-            roi_note = "requires the run projection"
-            try:
-                mask, known = self._detection_roi(self._raw_frame.shape)
-            except ValueError as exc:
-                mask, known = None, False
-                roi_note = f"{exc}; fix/save the ROI before running"
-            rows, summary = preview_detections(self._raw_frame, diameter=diameter,
-                minmass=self._minmass, bg_radius=radius, bg_method=bg, backend=backend,
-                min_cnr=cnr, roi_mask=mask, roi_known=known,
-                **self._detector_kwargs())
-            self._spot_rows = rows
-            self._spot_count = summary['passed']
-            self._spots = self._spots_qimage(*self._raw_frame.shape, rows.x, rows.y, rows.decision.tolist())
-            self._spots_stale = False
-            self._spot_summary = self._compose_spot_summary(summary, roi_note)
+            dets = self._view_dets()
+            self._want(dets)                     # a late drag result cannot replace it
+            self._det_pending = False
+            (key, opts), low = dets
+            if key not in self._det_cache:
+                rows, _ = preview_detections(self._raw_frame, roi_mask=None, roi_known=False,
+                                             **opts)
+                self._cache_put(key, rows)
+            if low is not None and low[0] not in self._det_cache:
+                try:
+                    rows, _ = preview_detections(self._raw_frame, roi_mask=None,
+                                                 roi_known=False, **low[1])
+                    self._cache_put(low[0], rows)
+                except Exception:                # no red spots; the green ones stand
+                    self._det_low_wanted = None
+            self._show_cached()
+            return
         except Exception as exc:
             self._spot_summary = f"Preview unavailable: {exc}"
             self.statusMessage.emit(self._spot_summary)

@@ -30,6 +30,9 @@ class _Application:
 class _FakeQSettings:
     instances = []
 
+    class Scope: UserScope = 0
+    defaultFormat = staticmethod(lambda: 0)
+
     def __init__(self, *_args):
         self.values = {}
         self.sync_calls = 0
@@ -69,3 +72,12 @@ def test_pending_preferences_sync_at_update_quit_boundary(monkeypatch):
     app.aboutToQuit.emit()
     assert store.sync_calls == 1
 
+
+
+def test_tests_never_open_the_live_store(tmp_path_factory):
+    """conftest points the default format at a throwaway tree and every store
+    follows it — on a Mac the two-name form went straight to cfprefsd."""
+    from firefly.ui.controllers import theme_controller
+    base = os.path.realpath(str(tmp_path_factory.getbasetemp()))
+    for store in (settings_controller.app_settings(), theme_controller._store()):
+        assert os.path.realpath(store.fileName()).startswith(base), store.fileName()

@@ -13,6 +13,14 @@ from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
 from firefly.ui.ui_theme import _THEMES, _resolve_startup_theme
 
 
+def _store(organization="jacoblevers", application="FIREFLY"):
+    """A preference store in the default format — see
+    ``settings_controller.app_settings``.  Built from this module's own
+    ``QSettings`` so a test's stand-in for it is the one used."""
+    return QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope,
+                     organization, application)
+
+
 def _font_mult(label):
     """UI font-size label ('Medium — 12px' / 'Small' / 'Large') → text multiplier
     (relative to the 12px base)."""
@@ -82,7 +90,7 @@ class ThemeController(QObject):
             self._persist_theme(self._name) if startup.materialize else True)
         # reduce-motion lives in the primary store (jacoblevers/FIREFLY).
         try:
-            self._reduced_motion = QSettings("jacoblevers", "FIREFLY").value(
+            self._reduced_motion = _store().value(
                 "ui/reduce_motion", False, type=bool)
         except Exception:
             self._reduced_motion = False
@@ -91,9 +99,9 @@ class ThemeController(QObject):
         # didn't persist reliably across a macOS update (see _pick_startup_theme).
         self._accent = "Luminous blue"
         try:
-            a = QSettings("jacoblevers", "FIREFLY").value("ui/accent", None)
+            a = _store().value("ui/accent", None)
             if a is None:                       # one-time migration from the old store
-                a = QSettings("FIREFLY", "sptPALM").value("ui/accent", "Luminous blue")
+                a = _store("FIREFLY", "sptPALM").value("ui/accent", "Luminous blue")
             if any(x["name"] == a for x in self._ACCENTS):
                 self._accent = a
         except Exception:
@@ -104,7 +112,7 @@ class ThemeController(QObject):
         self._fmult = 1.0
         self._dmult = 1.0
         try:
-            ps = QSettings("jacoblevers", "FIREFLY")
+            ps = _store()
             self._fmult = _font_mult(ps.value("ui/font_size", "Medium — 12px"))
             self._dmult = _density_mult(ps.value("ui/density", "Compact"))
         except Exception:
@@ -113,7 +121,7 @@ class ThemeController(QObject):
         # Tracks the Visualise motion-palette setting so red↔green status reads
         # for everyone; cached so palette() needn't re-read QSettings each call.
         try:
-            self._cb_status = (QSettings("jacoblevers", "FIREFLY").value(
+            self._cb_status = (_store().value(
                 "visualise/motion_colours", "Default") == "Colour-blind safe")
         except Exception:
             self._cb_status = False
@@ -130,7 +138,7 @@ class ThemeController(QObject):
         from firefly.ui.ui_theme import write_theme_file
         file_ok = write_theme_file(name)
         try:
-            s = QSettings("jacoblevers", "FIREFLY")
+            s = _store()
             s.setValue("ui/app_theme", name)
             s.sync()
             status = s.status() if hasattr(s, "status") else None
@@ -186,7 +194,7 @@ class ThemeController(QObject):
         if any(a["name"] == name for a in self._ACCENTS) and name != self._accent:
             self._accent = name
             try:
-                s = QSettings("jacoblevers", "FIREFLY")   # primary store (survives updates)
+                s = _store()   # primary store (survives updates)
                 s.setValue("ui/accent", name); s.sync()
             except Exception:
                 pass
@@ -242,7 +250,7 @@ class ThemeController(QObject):
         if bool(v) != self._reduced_motion:
             self._reduced_motion = bool(v)
             try:
-                s = QSettings("jacoblevers", "FIREFLY")
+                s = _store()
                 s.setValue("ui/reduce_motion", self._reduced_motion)
                 s.sync()                          # flush now — survive a crash
             except Exception:

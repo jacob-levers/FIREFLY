@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.76.51-rc.21 — 4 Oct 2026
+
+### Added
+
+- **See what the detection threshold excludes.** The Preview & ROI detection
+  overlay now also circles, in red, the spots the detector finds at ¾ of the
+  current threshold but not at it — the near misses a slightly lower threshold
+  would keep. Green is still exactly what a run detects. Click a red spot to
+  see why it was left out. Spots outside the ROI are now purple.
+
+- **Set to recommended.** A button under the threshold slider moves it to
+  FIREFLY's recommendation for the open recording. For the palmTRACER-style
+  detector that is 4.4 × the recording's noise on the wavelet detection image,
+  rounded to the nearest 5 — a threshold-to-noise ratio taken from hand-set
+  palmTRACER thresholds; on the MB112C recordings it reproduces the thresholds
+  that analysis used. For every other detector it is the minmass an
+  Auto-threshold run would pick for that recording, from the run's own
+  calculation. A note under the button says how the number was reached.
+
+### Changed
+
+- **Dragging the detection threshold is live.** The slider no longer saves the
+  setting on every step (each save redrew the whole parameter sidebar);
+  detection runs in the background, the previous overlay stays up until the
+  new one is ready, and thresholds you have already visited show at once. The
+  setting is saved when you let go, click an arrow or type a value. The preview
+  finds exactly the spots a run finds at that threshold.
+
+### Fixed
+
+- **Running FIREFLY's test suite on a Mac no longer changes the app's saved
+  settings.** The tests read and wrote the live preferences there (on other
+  systems they were already kept apart).
+
 ## v2.76.51-rc.20 — 4 Oct 2026
 
 ### Added

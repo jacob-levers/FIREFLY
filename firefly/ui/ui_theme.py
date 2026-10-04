@@ -176,7 +176,10 @@ class _StartupTheme:
 def _read_qsettings_theme(organization: str, application: str):
     """Return ``(value, read_ok)`` including Qt's non-exception error channel."""
     try:
-        settings = QtCore.QSettings(organization, application)
+        # default format, not the two-name form: see settings_controller.app_settings
+        settings = QtCore.QSettings(QtCore.QSettings.defaultFormat(),
+                                    QtCore.QSettings.Scope.UserScope,
+                                    organization, application)
         value = settings.value("ui/app_theme", None)
         if hasattr(settings, "status"):
             status = settings.status()

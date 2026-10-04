@@ -1655,28 +1655,8 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
              f"{_det_kwargs['wavelet_threshold']:g} on raw frames"
              + ("  (auto-minmass does not apply — skipped)" if p.get("auto_minmass") else ""))
     elif p.get("auto_minmass", False):
-        from firefly.analysis.fa_localize import estimate_minmass
-        _mftr = p.get("minmass_max_false_track_rate")
-        try:
-            _mftr = float(_mftr) if _mftr not in (None, "", 0, 0.0) else None
-        except (TypeError, ValueError):
-            _mftr = None
-        minmass_arg, mm_diag = estimate_minmass(
-            stack,
-            diameter=int(p["diameter"]),
-            percentile=64,
-            backend=p["backend"],
-            sensitivity=p.get("minmass_sensitivity", "balanced"),
-            mode=p.get("minmass_mode", "linkability"),
-            target_density=p.get("minmass_target_density"),
-            bg_radius=int(p.get("bg_radius", 10)),
-            bg_method=p.get("bg_method", "uniform_filter"),
-            workers=int(p["workers"]),
-            log_cb=_log,
-            search_range=int(p.get("search_range", 5)),
-            memory=int(p.get("memory", 3)),
-            link_min_len=max(4, int(p.get("min_track_len", 4) or 4)),
-            max_false_track_rate=_mftr)
+        from firefly.analysis.fa_localize import estimate_minmass_for_run
+        minmass_arg, mm_diag = estimate_minmass_for_run(stack, p, log_cb=_log)
     else:
         minmass_arg = float(p["minmass"])
 

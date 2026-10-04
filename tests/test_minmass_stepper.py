@@ -152,3 +152,34 @@ def test_changing_the_threshold_raises_no_qml_error(threshold):
     offenders = [m for m in messages
                  if "is not a function" in m or "TypeError" in m]
     assert not offenders, f"the threshold handler threw: {offenders[:3]}"
+
+
+def test_under_the_palmtracer_detector_an_arrow_steps_the_wavelet_threshold(qml_window, tmp_path):
+    """The palmTRACER-style detector thresholds on its wavelet value, so the
+    same arrows nudge that — and an arrow is a deliberate value, so it is
+    committed to the setting at once (a slider drag is not, until release)."""
+    import numpy as np
+    import tifffile
+
+    win, qw = qml_window
+    roi = qw.rootContext().contextProperty("Roi")
+    roi._s.set("analysis/backend", "Wavelet — palmTRACER-style (CPU)")
+    stack = np.random.default_rng(2).normal(100, 2, (3, 64, 64)).astype("float32")
+    stack[:, 30:33, 30:33] += 900.0
+    path = tmp_path / "wav.tif"
+    tifffile.imwrite(path, stack, photometric="minisblack")
+    win.resize(1400, 950); win.show()
+    roi.editDetection(str(path))
+    _app.processEvents()
+    try:
+        spin = _find(qw.rootObject(), "minmassSpin")
+        assert not roi.minmassApplies
+        start = roi.waveletThreshold
+        _step(spin, 1)
+        _app.processEvents()
+        assert roi.waveletThreshold == pytest.approx(start + 10, abs=1e-9)
+        assert roi._s.get_float("analysis/wavelet_threshold", -1.0) == pytest.approx(start + 10)
+    finally:
+        roi.cancel()
+        win.hide()
+        _app.processEvents()

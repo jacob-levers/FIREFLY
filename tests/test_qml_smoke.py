@@ -124,6 +124,37 @@ def test_shell_loads_without_qml_errors(qml_window):
     win.hide()
 
 
+def test_the_shell_uses_no_live_preferences(qml_window, tmp_path):
+    """``QSettings("org", "app")`` is always the NATIVE format, whatever the
+    default format is — and on macOS native means cfprefsd, which ignores
+    $HOME.  So the redirect above never covered a Mac: the QML tests read the
+    developer's real detector setting and wrote test thresholds into their real
+    preferences.  The live store must land in the temporary tree."""
+    win, _qw = qml_window
+    from firefly.ui.controllers.settings_controller import SettingsController
+    ctl = next(o for o in win._firefly_ctx if isinstance(o, SettingsController))
+    assert ctl._s.format() == QSettings.Format.IniFormat
+    assert os.path.realpath(ctl._s.fileName()).startswith(os.path.realpath(str(tmp_path)))
+
+
+def test_no_preference_store_bypasses_the_default_format():
+    """Every store is opened through ``app_settings`` (or names its format), so
+    redirecting the default format isolates all of them, not just some."""
+    import ast
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / "firefly"
+    offenders = []
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+            if name == "QSettings" and len(node.args) == 2:
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert not offenders, offenders
+
+
 def test_ready_predicate_rejects_a_missing_qml_root():
     """A repaint-capable widget without Main.qml must never pass release smoke."""
     from firefly.ui.app_qml import _qml_has_rendered_root
@@ -160,6 +191,9 @@ def test_theme_controller_tokens_and_live_switch(monkeypatch, tmp_path):
 
     class _FakeSettings:
         store: dict = {}
+
+        class Scope: UserScope = 0
+        defaultFormat = staticmethod(lambda: 0)
 
         def __init__(self, *a, **k):
             pass

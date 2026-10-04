@@ -10,12 +10,25 @@ from __future__ import annotations
 from PySide6.QtCore import QCoreApplication, QObject, QSettings, Signal, Slot
 
 
+def app_settings(organization="jacoblevers", application="FIREFLY"):
+    """The app's preference store.
+
+    Opened with ``QSettings.defaultFormat()`` because the two-name constructor
+    is always the NATIVE format — on macOS that is cfprefsd, which ignores
+    $HOME — so a test that points the default format at a temporary INI tree
+    would otherwise still read and write the live preferences.  The app never
+    changes the default format, so for users this is the same store as ever.
+    """
+    return QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope,
+                     organization, application)
+
+
 class SettingsController(QObject):
     changed = Signal(str)       # a key was written via any setter → observers refresh
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._s = QSettings("jacoblevers", "FIREFLY")
+        self._s = app_settings()
         # The updater asks QApplication to quit immediately after staging the
         # replacement.  Flush buffered preferences at that explicit lifecycle
         # boundary, before a detached update helper could ever time out and

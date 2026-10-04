@@ -780,10 +780,13 @@ Item {
                                 // wavelet value (raw counts); every other detector on
                                 // minmass.  The same controls drive whichever applies.
                                 readonly property bool wav: !Roi.minmassApplies
+                                // Dragging only moves the preview (detected off the GUI
+                                // thread, last overlay kept up); release / a typed value
+                                // commits it to the setting and shows it at once.
                                 function setThreshold(v, final) {
-                                    if (wav) Roi.waveletThreshold = v
-                                    else { Roi.detectMinmass = v; guide.refresh() }
-                                    if (Roi.detectEnabled) { if (final) Roi.refreshSpots(); else spotsDebounce.restart() }
+                                    if (final) Roi.commitThreshold(v)
+                                    else Roi.previewThreshold(v)
+                                    if (!wav) guide.refresh()
                                 }
                                 visible: !Roi.runScoped
                                 Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp2
@@ -827,7 +830,7 @@ Item {
                                         decimals: thrSection.wav ? 0 : 4
                                         step: thrSection.wav ? thrSection.nudgeWavelet : thrSection.nudge
                                         value: thrSection.wav ? Roi.waveletThreshold : Roi.detectMinmass
-                                        onCommitted: (v) => thrSection.setThreshold(v, false)
+                                        onCommitted: (v) => thrSection.setThreshold(v, true)
                                     }
                                 }
                                 RowLayout {
@@ -846,6 +849,27 @@ Item {
                                         onPicked: (v) => { if (thrSection.wav) thrSection.nudgeWavelet = parseFloat(v)
                                                            else thrSection.nudge = parseFloat(v) }
                                     }
+                                }
+                                // FIREFLY's own choice for this recording: 4.4 × its
+                                // wavelet noise (palmTRACER-style), else the minmass an
+                                // Auto-threshold run picks.  Committed like a typed value.
+                                Button {
+                                    objectName: "recommendThreshold"
+                                    Layout.fillWidth: true
+                                    text: Roi.recommending ? "Working out…" : "Set to recommended"
+                                    icon: Roi.recommending ? "loader-circle" : "sparkles"
+                                    spin: Roi.recommending
+                                    enabled: !Roi.recommending
+                                    tip: thrSection.wav
+                                         ? "4.4 × this recording's noise on the wavelet detection image"
+                                         : "The minmass an Auto-threshold run would pick for this recording"
+                                    onClicked: Roi.recommendThreshold()
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                    visible: text.length > 0
+                                    text: Roi.recommendNote
+                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: sc.sp3
@@ -1019,7 +1043,7 @@ Item {
                                     Item { Layout.fillWidth: true }
                                     Text {
                                         visible: Roi.detectEnabled
-                                        text: Roi.spotsStale ? "outdated" : Roi.spotCount + " pass"
+                                        text: Roi.spotsStale ? "outdated" : (Roi.spotsUpdating ? "updating…" : Roi.spotCount + " pass")
                                         color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
                                     }
                                     Switch {
@@ -1040,7 +1064,8 @@ Item {
                                     }
                                     Text {
                                         Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                        text: "Green: detection + ROI. Orange: contrast rejected. Red: outside ROI. Blue: ROI unchecked."
+                                        text: "Green: detected. Red: excluded by the threshold (found at ¾ of it). " +
+                                              "Purple: outside ROI. Orange: contrast rejected. Blue: ROI unchecked."
                                         color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                                     }
                                     Text {
