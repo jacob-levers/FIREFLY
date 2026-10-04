@@ -30,6 +30,26 @@ _THEME_RC_KEYS = (
 )
 
 
+def strip_legends(fig):
+    """Remove every legend from ``fig`` (minimal figures carry none).
+
+    ``ax.get_legend().remove()`` is not enough: a key drawn with ``ax.legend``
+    and then kept with ``ax.add_artist`` (how a second key shares one axes) is
+    only detached from the added copy, and the axes still draws it.
+    """
+    from matplotlib.legend import Legend
+    for ax in fig.axes:
+        found = {id(c): c for c in ax.get_children() if isinstance(c, Legend)}
+        ax.legend_ = None
+        for lg in found.values():
+            try:
+                lg.remove()
+            except (NotImplementedError, ValueError):
+                lg.set_visible(False)
+    for lg in list(fig.legends):
+        lg.remove()
+
+
 @contextlib.contextmanager
 def rcparams_for_theme(plt, pal):
     """Temporarily force matplotlib's global rcParams onto the FIREFLY theme

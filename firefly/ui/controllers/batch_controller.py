@@ -391,11 +391,15 @@ class BatchController(QObject):
 
     def _roi_label(self, s):
         try:
+            # A stored polygon is the ROI the run uses whatever mode the file's
+            # override names (the worker switches to it), so it wins here too.
+            # The override's mode can say None: a file painted with the brush
+            # left selected from the previous one never had its mode set.
+            if self._roi_store and self._roi_store.has(s["primary"]):
+                return "Polygon"
             ovr = self._override_store.get(s["primary"]) if self._override_store else None
             if ovr:
                 return self._ROI_SHORT.get(ovr.get("roi_mode", ""), "ROI")
-            if self._roi_store and self._roi_store.has(s["primary"]):
-                return "Polygon"
         except Exception:
             pass
         return ""

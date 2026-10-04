@@ -328,9 +328,41 @@ def draw_group_comparison(fig, subplotspec, groups, values, *, style="box_points
 
 
 # ── track-length distribution: overlaid density with the filter threshold ────
+def draw_length_cdf(ax, cells, labels, colors, *, per_recording=True):
+    """Cumulative fraction of trajectories up to each length, one curve per
+    group.  ``cells[label]`` is a list of per-recording length arrays; with
+    ``per_recording`` each recording's curve is averaged (± SEM, shaded),
+    otherwise all a group's trajectories are pooled.  Returns the 99th
+    percentile of every length, for the x-range."""
+    from firefly.analysis.fa_figure_common import group_curve
+    pooled = {g: np.concatenate(c) for g, c in cells.items() if c}
+    combined = np.concatenate(list(pooled.values())) if pooled else np.array([])
+    x_clip = float(np.percentile(combined, 99)) if len(combined) else None
+    if per_recording and len(combined):
+        # each recording's CDF at every observed length (whole frames, so a
+        # few hundred values), averaged (± SEM)
+        _xg = np.unique(combined)
+        _cdf = lambda v: np.searchsorted(np.sort(v), _xg, side="right") / len(v)
+    for grp_label, color in zip(labels, colors):
+        p = pooled.get(grp_label)
+        if p is None or len(p) == 0:
+            continue
+        if per_recording:
+            y, sem = group_curve(cells[grp_label], _cdf, True)
+            if sem is not None:
+                ax.fill_between(_xg, np.clip(y - sem, 0, 1), np.clip(y + sem, 0, 1),
+                                color=color, alpha=0.25, linewidth=0, step="post", zorder=2)
+            ax.plot(_xg, y, color=color, lw=1.5, label=grp_label, drawstyle="steps-post")
+            continue
+        x_sorted = np.sort(p)
+        y = np.arange(1, len(x_sorted) + 1) / len(x_sorted)
+        ax.plot(x_sorted, y, color=color, lw=1.5, label=grp_label)
+    return x_clip
+
+
 def draw_length_density(fig, subplotspec, groups, dists, *, threshold=None,
                         group_colors=None, theme=None, xlabel="Trajectory length (frames)",
-                        per_recording=True):
+                        per_recording=True, ylabel="Probability density (per frame)"):
     """Overlaid per-group KDEs of track length; dashed line = filter threshold.
 
     ``dists[g]`` is one array, or a list of per-recording arrays: then, with
@@ -373,7 +405,7 @@ def draw_length_density(fig, subplotspec, groups, dists, *, threshold=None,
         s.set_color(th["spine"])
     ax.tick_params(labelsize=8, colors=th["fg"])
     ax.set_xlabel(xlabel, fontsize=10, color=th["fg"])
-    ax.set_ylabel("Probability density (per frame)", fontsize=10, color=th["fg"])
+    ax.set_ylabel(ylabel, fontsize=10, color=th["fg"])
     ax.legend(title="Group", frameon=False, fontsize=8, title_fontsize=8, labelcolor=th["fg"])
     return ax
 

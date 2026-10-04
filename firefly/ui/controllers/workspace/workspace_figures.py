@@ -196,13 +196,11 @@ _RENDER = threading.local()
 
 def _qimage_from_figure(fig):
     if getattr(_RENDER, "minimal", False):       # Preferences → Minimal figures:
-        for _ax in fig.axes:                     # no legends, no titles
-            if _ax.get_legend() is not None:
-                _ax.get_legend().remove()
+        from firefly.analysis.fa_figure_common import strip_legends
+        strip_legends(fig)                       # no legends (incl. add_artist keys),
+        for _ax in fig.axes:                     # no titles
             for _loc in ("center", "left", "right"):
                 _ax.set_title("", loc=_loc)
-        for _lg in list(fig.legends):
-            _lg.remove()
         if getattr(fig, "_suptitle", None) is not None:
             fig._suptitle.set_text("")
     from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -407,13 +405,45 @@ def _render_length_density(groups, metric, width_px, height_px, dpi, per_recordi
     return _qimage_from_figure(fig)
 
 
+def _render_length_cdf(groups, metric, width_px, height_px, dpi, per_recording=True):
+    """Per-group cumulative fraction of track lengths (the default length view)."""
+    from matplotlib.figure import Figure
+    from firefly.analysis import fa_group_figures as _gf
+    cells, order, colors = {}, [], []
+    for g in groups:
+        d = g.get("dist")
+        if d is None or not len(d):
+            continue
+        cells[g["label"]] = ([np.asarray(c, float) for c in g["dists"] if len(c)]
+                             if g.get("dists") else [np.asarray(d, float)])
+        order.append(g["label"]); colors.append(g.get("color"))
+    if not order:
+        return None
+    fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=_MAT)
+    ax = fig.add_subplot()
+    th = _gf_theme()
+    x_clip = _gf.draw_length_cdf(ax, cells, order, colors, per_recording=per_recording)
+    if x_clip and x_clip > 0:
+        ax.set_xlim(0, x_clip)
+    ax.set_ylim(0, 1.02)
+    ax.set_facecolor(th["bg"])
+    for sp in ax.spines.values():
+        sp.set_color(th["spine"])
+    ax.tick_params(labelsize=8, colors=th["fg"])
+    ax.set_xlabel(metric.axis, fontsize=10, color=th["fg"])
+    ax.set_ylabel("Cumulative fraction", fontsize=10, color=th["fg"])
+    ax.legend(title="Group", frameon=False, fontsize=8, title_fontsize=8, labelcolor=th["fg"])
+    fig.tight_layout(pad=1.1)
+    return _qimage_from_figure(fig)
+
+
 def render_metric(groups: list[dict], metric: Metric, *, plot: str = "Violin",
                   err: str = "95% CI", log_x: bool = False,
                   width_px: int = 720, height_px: int = 380, dpi: int = 100,
                   logd_style: str = "overlaid",
                   mobile_d: float = MOBILE_D_THRESHOLD_DEFAULT,
                   logd_clip: tuple = (0.00001, 10.0),
-                  group_style: str = "box_points", length_style: str = "density",
+                  group_style: str = "box_points", length_style: str = "cdf",
                   grouped_data=None, stats_config=None, minimal: bool = False,
                   motion_colourblind: bool = False, curve_weighting: str = "recording"):
     """Render one metric across ``groups`` → detached ``QImage``.
@@ -455,11 +485,13 @@ def _render_metric(groups, metric, *, plot, err, log_x, width_px, height_px, dpi
 
     has_dist = any(g.get("dist") is not None and len(g["dist"]) for g in groups)
 
-    # Track-length distribution → overlaid density (Preferences figures/length_style).
-    if metric.id == "len" and length_style == "density" and has_dist:
+    # Track-length distribution → cumulative curve (default) or overlaid
+    # density (Preferences figures/length_style), as the export draws it.
+    if metric.id == "len" and has_dist:
         try:
-            img = _render_length_density(groups, metric, width_px, height_px, dpi,
-                                         per_recording=per_recording)
+            draw = (_render_length_density if length_style == "density"
+                    else _render_length_cdf)
+            img = draw(groups, metric, width_px, height_px, dpi, per_recording=per_recording)
             if img is not None:
                 return img
         except Exception:

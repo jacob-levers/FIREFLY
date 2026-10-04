@@ -153,6 +153,14 @@ else:
 _ICONS_DIR = os.path.join(_QML_DIR, "assets", "icons")
 
 
+def roi_state_paths():
+    """Where per-file ROIs and their ROI/threshold overrides are kept between
+    sessions: FIREFLY's data folder, beside the theme file."""
+    from firefly.ui.ui_theme import app_data_dir
+    d = app_data_dir()
+    return os.path.join(d, "roi_polygons.json"), os.path.join(d, "roi_overrides.json")
+
+
 def build_main_window(app: QtWidgets.QApplication):
     """Construct the QML shell hosted in a QMainWindow. Returns (window, ctx)
     where ctx keeps the controllers alive (they must outlive the QML engine)."""
@@ -165,8 +173,10 @@ def build_main_window(app: QtWidgets.QApplication):
         settings.get_str("visualise/motion_colours", "Default") == "Colour-blind safe")
         if k == "visualise/motion_colours" else None)
     importc = ImportController(settings)
-    roi_store = RoiStore()
-    roi_override = RoiOverrideStore()     # per-file ROI-settings overrides (viewer)
+    # Per-file ROIs + ROI/threshold overrides, kept between sessions.
+    _polys_path, _ovr_path = roi_state_paths()
+    roi_store = RoiStore(_polys_path)
+    roi_override = RoiOverrideStore(_ovr_path)   # per-file ROI-settings overrides (viewer)
     analysis = AnalysisController(settings, importc, roi_store=roi_store,
                                   override_store=roi_override)
     visualise = VisualiseController(settings, importc)

@@ -86,9 +86,34 @@ Item {
     readonly property var markValues: ["box_points", "violin", "bar"]
     readonly property var curveLabels: ["Per recording (mean ± SEM)", "Pooled tracks"]
     readonly property var curveValues: ["recording", "tracks"]
-    readonly property var lengthLabels: ["Density", "Box"]
-    readonly property var lengthValues: ["density", "box"]
-    readonly property var aucLabels: ["Box + points", "Violin + points", "Bar", "Paired lines (timepoints)", "Δ box (timepoints)"]
+    readonly property var lengthLabels: ["Cumulative", "Density"]
+    readonly property var lengthValues: ["cdf", "density"]
+    readonly property var aucLabels: ["Box + points", "Violin + points", "Bar", "Paired lines (needs timepoints)", "Δ box (needs timepoints)"]
+    // A graph set apart from the one comparison style: "" = same as all graphs.
+    readonly property var overrideLabels: ["Same as all graphs"].concat(markLabels)
+    readonly property var overrideValues: [""].concat(markValues)
+    // The scalar comparison graphs that share one style (figures/group_style) and
+    // can each be set apart (figures/style_<k>) — workspace SCALAR_STYLE_PANELS.
+    readonly property var styledGraphs: [
+        { k: "fluor",       l: "Fluorescence",           d: "Spot intensity." },
+        { k: "rg",          l: "Radius of gyration",     d: "" },
+        { k: "netdisp",     l: "Net displacement",       d: "First → last localisation." },
+        { k: "path",        l: "Path length",            d: "" },
+        { k: "step",        l: "Step distance",          d: "Between consecutive frames." },
+        { k: "speed",       l: "Step speed",             d: "" },
+        { k: "linkstep",    l: "Observed-link distance", d: "Every adjacent observed localisation, including gap-spanning links." },
+        { k: "linkspeed",   l: "Observed-link speed",    d: "Each observed link ÷ its elapsed frame time." },
+        { k: "dir",         l: "Directionality ratio",   d: "Net ÷ path." },
+        { k: "dur",         l: "Trajectory duration",    d: "" },
+        { k: "nlocs",       l: "Localisations",          d: "Per trajectory." },
+        { k: "mob_immob",   l: "Mobile fraction",        d: "" },
+        { k: "track_count", l: "Trajectory count",       d: "Per recording." },
+        { k: "van_hove",    l: "Non-Gaussian α₂",        d: "" },
+        { k: "vacf",        l: "Persistence (VACF)",     d: "" }
+    ]
+    property bool graphOverridesOpen: false
+    readonly property int graphOverrideCount: (root.rev, styledGraphs.filter(
+        g => markValues.indexOf(Settings.getStr("figures/style_" + g.k, "")) >= 0).length)
     readonly property var aucValues: ["box_points", "violin", "bar", "paired", "delta"]
 
     function restoreDefaults() {
@@ -110,6 +135,10 @@ Item {
         Settings.setValue("figures/logd_style", "overlaid")
         Settings.setValue("figures/minimal", false)
         Settings.setValue("figures/curve_weighting", "recording")
+        Settings.setValue("figures/group_style", "box_points")
+        Settings.setValue("figures/length_style", "cdf")
+        for (var g = 0; g < styledGraphs.length; g++)
+            Settings.setValue("figures/style_" + styledGraphs[g].k, "")
         Settings.setValue("updates/auto_check", true)
         Settings.setValue("updates/channel", "Stable")
         Settings.setValue("updates/auto_download", false)
@@ -184,16 +213,17 @@ Item {
         }
     }
 
-    // A per-graph "how is this scalar comparison drawn" row: box+points / violin /
-    // bar, bound to its OWN setting (figures/style_<panelKey>).
+    // One graph set apart from the shared comparison style: "Same as all graphs"
+    // (figures/style_<panelKey> empty) or its own box+points / violin / bar.
     component MarkRow: PrefRow {
         id: mrow
         property string panelKey: ""
-        Select { implicitWidth: 170; model: root.markLabels
-                 currentIndex: (root.rev, Math.max(0, root.markValues.indexOf(
-                     Settings.getStr("figures/style_" + mrow.panelKey, "box_points"))))
-                 onPicked: (t) => { var i = root.markLabels.indexOf(t)
-                                    if (i >= 0) Settings.setValue("figures/style_" + mrow.panelKey, root.markValues[i]) } }
+        Select { objectName: "graphStyle_" + mrow.panelKey
+                 implicitWidth: 170; model: root.overrideLabels
+                 currentIndex: (root.rev, Math.max(0, root.overrideValues.indexOf(
+                     Settings.getStr("figures/style_" + mrow.panelKey, ""))))
+                 onPicked: (t) => { var i = root.overrideLabels.indexOf(t)
+                                    if (i >= 0) Settings.setValue("figures/style_" + mrow.panelKey, root.overrideValues[i]) } }
     }
 
     // ── dimmed backdrop ─────────────────────────────────────────────────────
@@ -627,48 +657,59 @@ Item {
                                  onPicked: (t) => { var i = root.msdLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/msd_style", root.msdValues[i]) } }
                     }
-                    MarkRow { label: "Fluorescence"; panelKey: "fluor"
-                              desc: "How the fluorescence (spot-intensity) comparison is drawn." }
-                    MarkRow { label: "Radius of gyration"; panelKey: "rg"
-                              desc: "How the radius-of-gyration comparison is drawn." }
-                    MarkRow { label: "Net displacement"; panelKey: "netdisp"
-                              desc: "How the net-displacement (first→last) comparison is drawn." }
-                    MarkRow { label: "Path length"; panelKey: "path"
-                              desc: "How the path-length comparison is drawn." }
-                    MarkRow { label: "Step distance"; panelKey: "step"
-                              desc: "How the (measured) step-distance comparison is drawn." }
-                    MarkRow { label: "Step speed"; panelKey: "speed"
-                              desc: "How the (measured) step-speed comparison is drawn." }
-                    MarkRow { label: "Observed-link distance"; panelKey: "linkstep"
-                              desc: "How displacement between every adjacent observed localisation (including gap-spanning links) is drawn." }
-                    MarkRow { label: "Observed-link speed"; panelKey: "linkspeed"
-                              desc: "How each observed-link displacement divided by its actual elapsed frame time is drawn." }
-                    MarkRow { label: "Directionality ratio"; panelKey: "dir"
-                              desc: "How the directionality-ratio (net÷path) comparison is drawn." }
-                    MarkRow { label: "Trajectory duration"; panelKey: "dur"
-                              desc: "How the trajectory-duration comparison is drawn." }
-                    MarkRow { label: "Localisations"; panelKey: "nlocs"
-                              desc: "How the localisation-count comparison is drawn." }
-                    MarkRow { label: "Mobile fraction"; panelKey: "mob_immob"
-                              desc: "How the mobile-fraction comparison is drawn." }
-                    MarkRow { label: "Trajectory count"; panelKey: "track_count"
-                              desc: "How the trajectories-per-recording comparison is drawn." }
-                    MarkRow { label: "Non-Gaussian α₂"; panelKey: "van_hove"
-                              desc: "How the van-Hove non-Gaussian parameter comparison is drawn." }
-                    MarkRow { label: "Persistence (VACF)"; panelKey: "vacf"
-                              desc: "How the VACF directional-persistence comparison is drawn." }
+                    PrefRow {
+                        label: "Comparison graphs"
+                        desc: "How every per-recording comparison graph is drawn — fluorescence, radius of gyration, displacements, speeds, directionality, trajectory duration and count, localisations, mobile fraction, α₂ and persistence. Set any one apart below."
+                        Select { objectName: "graphStyleAll"; implicitWidth: 170; model: root.markLabels
+                                 currentIndex: (root.rev, Math.max(0, root.markValues.indexOf(Settings.getStr("figures/group_style", "box_points"))))
+                                 onPicked: (t) => { var i = root.markLabels.indexOf(t)
+                                                    if (i >= 0) Settings.setValue("figures/group_style", root.markValues[i]) } }
+                    }
+                    Rectangle {                          // fold-out: set single graphs apart
+                        objectName: "customiseGraphs"
+                        Layout.fillWidth: true
+                        implicitHeight: 40
+                        color: custHover.hovered ? pal.PANEL_ALT : "transparent"
+                        Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top }
+                                    height: 1; color: pal.BORDER }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: sc.sp5; anchors.rightMargin: sc.sp5
+                            spacing: sc.sp3
+                            Icon { name: "chevron-down"; color: pal.TXT_MUTED; size: 14
+                                   rotation: root.graphOverridesOpen ? 0 : -90 }
+                            Text { text: "Customise individual graphs"; color: pal.TXT
+                                   font.pixelSize: sc.textSm; Layout.fillWidth: true }
+                            Text { text: root.graphOverrideCount === 0 ? "all the same"
+                                         : root.graphOverrideCount + " set apart"
+                                   color: root.graphOverrideCount ? pal.ACC : pal.TXT_MUTED
+                                   font.pixelSize: sc.textXs }
+                        }
+                        HoverHandler { id: custHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: root.graphOverridesOpen = !root.graphOverridesOpen }
+                    }
+                    ColumnLayout {
+                        objectName: "graphOverrides"
+                        visible: root.graphOverridesOpen
+                        Layout.fillWidth: true; spacing: 0
+                        Repeater {
+                            model: root.styledGraphs
+                            delegate: MarkRow { label: modelData.l; desc: modelData.d
+                                                panelKey: modelData.k }
+                        }
+                    }
                     PrefRow {
                         label: "Trajectory length distribution"
-                        desc: "Overlaid density (with the filter-threshold line) or a per-group box."
-                        Select { implicitWidth: 170; model: root.lengthLabels
-                                 currentIndex: (root.rev, Math.max(0, root.lengthValues.indexOf(Settings.getStr("figures/length_style", "density"))))
+                        desc: "Cumulative: the fraction of trajectories up to each length. Density: overlaid distributions, with a dashed line at the minimum trajectory length."
+                        Select { objectName: "lengthStyleSelect"; implicitWidth: 170; model: root.lengthLabels
+                                 currentIndex: (root.rev, Math.max(0, root.lengthValues.indexOf(Settings.getStr("figures/length_style", "cdf"))))
                                  onPicked: (t) => { var i = root.lengthLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/length_style", root.lengthValues[i]) } }
                     }
                     PrefRow {
                         label: "MSD-AUC"
                         desc: "Area under each MSD curve. Box + points / violin / bar draw it per condition; 'Paired lines' and 'Δ box' show the change across timepoints and apply only to group × pre/post designs (otherwise they fall back to box + points)."
-                        Select { implicitWidth: 170; model: root.aucLabels
+                        Select { objectName: "aucStyleSelect"; implicitWidth: 170; model: root.aucLabels
                                  currentIndex: (root.rev, Math.max(0, root.aucValues.indexOf(Settings.getStr("figures/auc_style", "box_points"))))
                                  onPicked: (t) => { var i = root.aucLabels.indexOf(t)
                                                     if (i >= 0) Settings.setValue("figures/auc_style", root.aucValues[i]) } }
@@ -898,7 +939,7 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true; wrapMode: Text.WordWrap
-                    text: "Settings drive every exported panel of the 17-panel publication figure and the in-app plots alike."
+                    text: "Settings drive every exported panel of the comparison figure and the in-app plots alike."
                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                 }
             }

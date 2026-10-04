@@ -103,7 +103,7 @@ class _FigureJob(threading.Thread):
                     logd_clip=(float(self._cfg.get("_logd_clip_min", 0.00001)),
                                float(self._cfg.get("_logd_clip_max", 10.0))),
                     group_style=self._cfg.get("_group_style", "box_points"),
-                    length_style=self._cfg.get("_length_style", "density"),
+                    length_style=self._cfg.get("_length_style", "cdf"),
                     grouped_data=self._cfg.get("_grouped_data"),
                     stats_config=self._cfg.get("_stats_config"),
                     minimal=bool(self._cfg.get("_minimal", False)),
@@ -1092,8 +1092,9 @@ class AnalysisWorkspaceController(QObject):
             msd_plot_style=(s.getStr("figures/msd_style", "mean_faceted") if s else "mean_faceted"),
             msd_err=self._cfg.get("err", "SEM"),
             auc_plot_style=(s.getStr("figures/auc_style", "box_points") if s else "box_points"),
-            group_style=(s.getStr("figures/group_style", "box_points") if s else "box_points"),
+            group_style=self._group_style(),
             panel_styles=self._panel_styles(),
+            length_plot_style=self._length_style(),
             logd_clip_d_min=dlo, logd_clip_d_max=dhi,
             minimal=(s.getBool("figures/minimal", False) if s else False),
             motion_colourblind=self._motion_colourblind(),
@@ -1108,14 +1109,34 @@ class AnalysisWorkspaceController(QObject):
                            "dir", "dur", "nlocs", "mob_immob", "track_count",
                            "van_hove", "vacf")
 
+    _MARKS = ("box_points", "violin", "bar")
+
+    def _group_style(self) -> str:
+        """The one mark every scalar comparison graph uses (Preferences →
+        Graph styles → Comparison graphs)."""
+        s = self._settings
+        v = s.getStr("figures/group_style", "box_points") if s else "box_points"
+        return v if v in self._MARKS else "box_points"
+
     def _panel_styles(self) -> dict:
-        """Per-panel comparison mark (box_points / violin / bar) from Preferences —
-        one setting per scalar comparison graph."""
+        """Graphs set apart from that one style (Preferences → Customise
+        individual graphs).  Only real overrides: an unset or "same as all"
+        graph is left out so it follows ``figures/group_style``."""
         s = self._settings
         if s is None:
             return {}
-        return {k: s.getStr(f"figures/style_{k}", "box_points")
-                for k in self.SCALAR_STYLE_PANELS}
+        out = {}
+        for k in self.SCALAR_STYLE_PANELS:
+            v = s.getStr(f"figures/style_{k}", "")
+            if v in self._MARKS:
+                out[k] = v
+        return out
+
+    def _length_style(self) -> str:
+        """Trajectory length: cumulative curve (default) or density."""
+        s = self._settings
+        v = s.getStr("figures/length_style", "cdf") if s else "cdf"
+        return "density" if v == "density" else "cdf"
 
     def _cached_report_data(self, compute_kwargs, data_rev):
         """Return the ReportData for ``data_rev`` — reuse the cache when its rev
@@ -1270,8 +1291,9 @@ class AnalysisWorkspaceController(QObject):
         s = self._settings
         if s is not None:
             cfg["_logd_style"] = s.getStr("figures/logd_style", "overlaid")
-            cfg["_group_style"] = s.getStr("figures/group_style", "box_points")
-            cfg["_length_style"] = s.getStr("figures/length_style", "density")
+            cfg["_group_style"] = (self._panel_styles().get(self._metric)
+                                   or self._group_style())
+            cfg["_length_style"] = self._length_style()
             cfg["_minimal"] = s.getBool("figures/minimal", False)
             cfg["_motion_cb"] = self._motion_colourblind()
             cfg["_curve_weighting"] = self._curve_weighting()

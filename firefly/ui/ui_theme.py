@@ -86,6 +86,24 @@ def _xdg_config_home(home: str) -> str:
     return os.path.join(home, ".config")
 
 
+def app_data_dir() -> str:
+    """FIREFLY's per-user data folder — stable across app updates.
+
+    ``FIREFLY_DATA_DIR`` (an absolute path) overrides it: the test suite points
+    it at a temporary folder so no test can write the real one.
+    """
+    override = os.environ.get("FIREFLY_DATA_DIR")
+    if override and os.path.isabs(override):
+        return override
+    import sys
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "FIREFLY")
+    if os.name == "nt":
+        return os.path.join(os.environ.get("APPDATA") or home, "FIREFLY")
+    return os.path.join(_xdg_config_home(home), "firefly")
+
+
 def theme_pref_path() -> str:
     """Plain-file store for the chosen app theme, in a stable per-user dir that
     survives app updates.
@@ -98,15 +116,7 @@ def theme_pref_path() -> str:
     reliably after an in-app update (it kept reverting).  A plain JSON file in
     the app-data dir sidesteps cfprefsd entirely, so the choice is durable.
     """
-    import sys
-    home = os.path.expanduser("~")
-    if sys.platform == "darwin":
-        base = os.path.join(home, "Library", "Application Support", "FIREFLY")
-    elif os.name == "nt":
-        base = os.path.join(os.environ.get("APPDATA") or home, "FIREFLY")
-    else:
-        base = os.path.join(_xdg_config_home(home), "firefly")
-    return os.path.join(base, "ui_prefs.json")
+    return os.path.join(app_data_dir(), "ui_prefs.json")
 
 
 _THEME_FILE_UNREADABLE = object()

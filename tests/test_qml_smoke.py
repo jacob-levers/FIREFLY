@@ -54,6 +54,7 @@ def qml_window(monkeypatch, tmp_path):
     monkeypatch.setenv("APPDATA", str(isolated_home / "AppData" / "Roaming"))
     monkeypatch.setenv("LOCALAPPDATA", str(isolated_home / "AppData" / "Local"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(isolated_home / ".config"))
+    monkeypatch.setenv("FIREFLY_DATA_DIR", str(isolated_home / "firefly-data"))
     previous_format = QSettings.defaultFormat()
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope,

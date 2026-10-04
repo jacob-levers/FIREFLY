@@ -120,3 +120,32 @@ def test_a_drawn_polygon_does_not_follow_you_either(viewer):
     c.commit()
     c.editFile(b)
     assert c.getPolygons() == []
+
+
+def test_the_queue_badge_names_the_roi_a_run_will_use(viewer):
+    """With the brush still selected from the previous file, the next file is
+    painted without re-picking the tool, so its ROI mode stays None; a
+    per-file threshold then saves that None, and the queue said "None" for a
+    file whose run WILL apply the painted polygon (the worker uses any stored
+    polygon).  The badge must say what the run does."""
+    from firefly.ui.controllers.batch_controller import BatchController
+    from firefly.ui.controllers.params import params_builder
+    c, (a, b) = viewer
+    c._s["analysis/roi_mode"] = "None"
+    c._s["analysis/backend"] = "Wavelet — palmTRACER-style (CPU)"
+    c.setBatchMode(True)
+    c.editFile(a); c.roiMode = "Manual polygon"; _paint(c, 20, 20); c.commit()
+    c.editFile(b); _paint(c, 45, 45); c.commit()          # brush still selected
+    c.editDetection(b); c.setThresholdPerFile(True); c.commitThreshold(150.0); c.commit()
+
+    q = BatchController.__new__(BatchController)
+    q._override_store, q._roi_store = c._ovr, c._store
+    assert q._roi_label({"primary": b}) == "Polygon"
+
+    class _Import:
+        filePath, outDir, isCsv = b, None, False
+        overridePx = overrideFi = False
+        pixelSize, frameInterval = 0.106, 0.02
+    p = params_builder.build_params(c._s, _Import(), fpath=b, roi_store=c._store,
+                                    override_store=c._ovr)
+    assert p["roi_polygon"] and p["wavelet_threshold"] == 150.0

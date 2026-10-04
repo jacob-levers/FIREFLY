@@ -1,4 +1,5 @@
-"""Session-wide guard: no test opens the developer's live FIREFLY preferences.
+"""Session-wide guards: no test opens the developer's live FIREFLY preferences
+or writes FIREFLY's real data folder (theme file, saved ROIs).
 
 The app opens every preference store with ``QSettings.defaultFormat()``
 (``settings_controller.app_settings``), so pointing that format at a throwaway
@@ -24,3 +25,15 @@ def _isolated_preferences(tmp_path_factory):
                       str(root / "system"))
     yield
     QSettings.setDefaultFormat(previous)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_data_folder(tmp_path_factory):
+    import os
+    previous = os.environ.get("FIREFLY_DATA_DIR")
+    os.environ["FIREFLY_DATA_DIR"] = str(tmp_path_factory.mktemp("firefly-data"))
+    yield
+    if previous is None:
+        os.environ.pop("FIREFLY_DATA_DIR", None)
+    else:
+        os.environ["FIREFLY_DATA_DIR"] = previous

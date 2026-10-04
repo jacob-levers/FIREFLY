@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.76.51-rc.23 — 4 Oct 2026
+
+### Added
+
+- **ROIs are kept between sessions.** Drawn and painted ROIs and each file's
+  own settings (ROI options, "analyse each ROI separately", ROI names and a
+  per-file detection threshold) are saved in FIREFLY's data folder, so they
+  survive closing the app and updating it. An ROI applies only to the
+  recording it was drawn on: if a different file later appears at the same
+  path, the old ROI is not used. To remove one, delete it in the ROI panel and
+  save.
+
+### Changed
+
+- **One style for all comparison graphs.** Preferences → Graph styles had
+  fifteen identical Box + points / Violin + points / Bar rows, one per graph.
+  One "Comparison graphs" setting now draws them all; any single graph can
+  still be set apart under "Customise individual graphs". Graphs you had
+  already changed keep their style.
+
+- **Trajectory length** can be drawn as a cumulative curve (the default, as
+  before) or as overlaid densities with a dashed line at the minimum
+  trajectory length.
+
+- **MSD-AUC's paired-lines and Δ-box options say they need timepoints**;
+  without them the graph is drawn as box + points.
+
+### Fixed
+
+- **The trajectory length style did nothing.** It offered Density / Box, but
+  the graph was always a cumulative curve and never read the setting.
+
+- **Minimal figures kept the overlaid MSD graph's legend**, in exports and in
+  the Analysis tab. Every legend is now removed.
+
+- **Minimal figures left empty space beside the motion-class and diffusive-
+  state bars** where their colour key had been. The bars now fill the panel.
+
+- **The batch queue said "None" for a file with an ROI** when its ROI was
+  painted with the brush still selected from the previous file and it then
+  got its own threshold. The run did use the ROI; the badge now says
+  "Polygon" for any file with one.
+
 ## v2.76.51-rc.22 — 4 Oct 2026
 
 ### Fixed

@@ -17,7 +17,7 @@ from firefly.analysis.fa_constants import (
 )
 from firefly.analysis.fa_theme import _theme_palette, style_axes
 from firefly.analysis.fa_figure_common import (group_curve, draw_sem_band,
-                                                recording_cells)
+                                                recording_cells, strip_legends)
 from firefly.analysis.fa_palmtracer import load_summary_from_folder, _win_long_path
 
 import numpy as np
@@ -385,7 +385,9 @@ def _bar_with_dots_n(ax, data_per_group, labels, colors, palette,
 
 # Data units added to the right of a categorical panel's x-range for an
 # in-axes key (state bars, motion classes): a key drawn outside the axes made
-# tight_layout give up on the whole comparison figure.
+# tight_layout give up on the whole comparison figure.  The axes records it as
+# ``_firefly_key_strip`` so a minimal figure, which drops the key, can give the
+# space back.
 KEY_STRIP = 1.3
 
 
@@ -444,6 +446,7 @@ def _state_bars(ax, values, labels, colors, palette, *, ylabel, scale=1.0,
     # a strip on the right, inside the axes, for the group key (a key outside
     # the axes stopped tight_layout fitting the whole comparison figure)
     ax.set_xlim(-0.6, len(STATE_KEYS) - 0.4 + KEY_STRIP)
+    ax._firefly_key_strip = KEY_STRIP
     ax.set_ylim(0, (top or 1.0) * 1.08)
     ax.set_ylabel(ylabel)
     if brackets:
@@ -1735,6 +1738,7 @@ def compute_report(groups, *, mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
 def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                  panels=None, theme="Dark", pdf_report=True,
                  logd_plot_style="overlaid", msd_plot_style="mean_faceted",
+                 length_plot_style="cdf",
                  msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                  panel_styles=None,
                  logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
@@ -1802,6 +1806,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     per_recording = (curve_weighting != "tracks")
     # everything a single-panel export re-renders with (export_panels below)
     _style = dict(theme=theme, logd_plot_style=logd_plot_style, msd_plot_style=msd_plot_style,
+                  length_plot_style=length_plot_style,
                   msd_err=msd_err, auc_plot_style=auc_plot_style, group_style=group_style,
                   panel_styles=panel_styles, logd_clip_d_min=logd_clip_d_min,
                   logd_clip_d_max=logd_clip_d_max, minimal=minimal,
@@ -2324,6 +2329,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         # as in the stack, so the axis needs no headroom.
         ax.set_ylim(0, 1.0)
         ax.set_xlim(-0.6, n_groups - 0.4 + max(KEY_STRIP, 0.4 * n_groups))
+        ax._firefly_key_strip = max(KEY_STRIP, 0.4 * n_groups)
         ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
         ax.set_ylabel("Fraction of trajectories")
         ax.set_title("Motion classes")
@@ -2403,8 +2409,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
 
     # ── 6. Track length distribution (CDF, x clipped at 99th %ile) ────────────
     if "track_length" in panels:
+        from firefly.analysis import fa_group_figures as _gfig
         ax = _next_ax()
-        pooled_per_group, cells_per_group = {}, {}
+        cells_per_group, min_len_s = {}, set()
         for grp_label, summaries, _ in _zip_groups():
             arrs = []
             for s in summaries:
@@ -2412,46 +2419,41 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                 tl = _track_lengths(s["tracks"], fi)
                 if len(tl):
                     arrs.append(np.asarray(tl, float))
+                try:
+                    min_len_s.add(round(float(s["params"]["min_track_len"]) * fi, 9))
+                except (KeyError, TypeError, ValueError):
+                    min_len_s.add(None)
             if arrs:
-                pooled_per_group[grp_label] = np.concatenate(arrs)
                 cells_per_group[grp_label] = arrs
-        combined = (np.concatenate(list(pooled_per_group.values()))
-                    if pooled_per_group else np.array([]))
-        x_clip = float(np.percentile(combined, 99)) if len(combined) else None
-        if per_recording and len(combined):
-            # each recording's CDF at every observed length (whole frames, so a
-            # few hundred values), averaged (± SEM)
-            _xg = np.unique(combined)
-            _cdf = lambda v: np.searchsorted(np.sort(v), _xg, side="right") / len(v)
-        for grp_label, color in zip(labels, colors):
-            p = pooled_per_group.get(grp_label)
-            if p is None or len(p) == 0: continue
-            if per_recording:
-                y, sem = group_curve(cells_per_group[grp_label], _cdf, True)
-                if sem is not None:
-                    ax.fill_between(_xg, np.clip(y - sem, 0, 1), np.clip(y + sem, 0, 1),
-                                    color=color, alpha=0.25, linewidth=0, step="post", zorder=2)
-                ax.plot(_xg, y, color=color, lw=1.5, label=grp_label, drawstyle="steps-post")
-                continue
-            x_sorted = np.sort(p)
-            y = np.arange(1, len(x_sorted) + 1) / len(x_sorted)
-            ax.plot(x_sorted, y, color=color, lw=1.5, label=grp_label)
-        if pooled_per_group:
-            if x_clip and x_clip > 0:
-                ax.set_xlim(0, x_clip)
-                ax.set_title("Trajectory length")
-            else:
-                ax.set_title("Trajectory length")
-            ax.set_ylim(0, 1.02)
-            ax.set_xlabel("Trajectory length (s)")
-            ax.set_ylabel("Cumulative fraction")
-            ax.legend(frameon=False, loc="best")
-        else:
+        if not cells_per_group:
             ax.text(0.5, 0.5, "No track-length data",
                     ha="center", va="center", transform=ax.transAxes,
                     color=pal["GRD"], fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title("Trajectory length")
+        elif length_plot_style == "density":
+            # overlaid densities; the dashed line is the minimum trajectory
+            # length when every recording was filtered at the same one
+            ss = ax.get_subplotspec(); ax.remove()
+            present = [l for l in labels if l in cells_per_group]
+            ax = _gfig.draw_length_density(
+                fig, ss, present, cells_per_group,
+                threshold=(min_len_s.pop() if len(min_len_s) == 1 and None not in min_len_s
+                           else None),
+                group_colors=dict(zip(labels, colors)),
+                theme={"bg": pal["PNL"], "fg": pal["TXT"], "grid": pal["GRD"],
+                       "spine": pal["GRD"], "muted": pal["MUT"]},
+                xlabel="Trajectory length (s)", per_recording=per_recording,
+                ylabel="Probability density (per s)")
+        else:
+            x_clip = _gfig.draw_length_cdf(ax, cells_per_group, labels, colors,
+                                           per_recording=per_recording)
+            if x_clip and x_clip > 0:
+                ax.set_xlim(0, x_clip)
+            ax.set_ylim(0, 1.02)
+            ax.set_xlabel("Trajectory length (s)")
+            ax.set_ylabel("Cumulative fraction")
+            ax.legend(frameon=False, loc="best")
+        ax.set_title("Trajectory length")
         # Stats: mean elapsed track duration (per replicate).  The deprecated
         # mean_track_length_s export retains its historical observed-time
         # meaning but is no longer used for duration inference.
@@ -2877,8 +2879,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         if _lg is not None:
             _lg.remove()
     if minimal:
-        for _lg in list(fig.legends):
-            _lg.remove()
+        strip_legends(fig)                   # incl. keys kept with add_artist
+        for ax in fig.axes:                  # …and the room set aside for them
+            strip = getattr(ax, "_firefly_key_strip", 0)
+            if strip:
+                lo, hi = ax.get_xlim()
+                ax.set_xlim(lo, hi - strip)
         # …and no titles either: in a thesis figure they go in the caption too.
         for ax in fig.axes:
             for _loc in ("center", "left", "right"):
@@ -3395,6 +3401,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
 def render_report(report_data, *, output_dir=None, output_stem="comparison",
                   panels=None, theme="Dark", pdf_report=True,
                   logd_plot_style="overlaid", msd_plot_style="mean_faceted",
+                  length_plot_style="cdf",
                   msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                   panel_styles=None,
                   logd_clip_d_min=1e-5, logd_clip_d_max=10.0, progress_cb=None,
@@ -3412,6 +3419,7 @@ def render_report(report_data, *, output_dir=None, output_stem="comparison",
             report_data, output_dir=output_dir, output_stem=output_stem,
             panels=panels, theme=theme, pdf_report=pdf_report,
             logd_plot_style=logd_plot_style, msd_plot_style=msd_plot_style,
+            length_plot_style=length_plot_style,
             msd_err=msd_err, auc_plot_style=auc_plot_style, group_style=group_style,
             panel_styles=panel_styles,
             logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
@@ -3427,6 +3435,7 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
                    panels=None, theme="Dark", pdf_report=True,
                    mobile_d_threshold=MOBILE_D_THRESHOLD_DEFAULT,
                    logd_plot_style="overlaid", msd_plot_style="mean_faceted",
+                   length_plot_style="cdf",
                    msd_err="SEM", auc_plot_style="paired", group_style="box_points",
                    panel_styles=None,
                    logd_clip_d_min=1e-5, logd_clip_d_max=10.0,
@@ -3446,7 +3455,8 @@ def compare_groups(groups=None, output_dir=None, output_stem="comparison",
     return render_report(
         rd, output_dir=output_dir, output_stem=output_stem, panels=panels,
         theme=theme, pdf_report=pdf_report, logd_plot_style=logd_plot_style,
-        msd_plot_style=msd_plot_style, msd_err=msd_err, auc_plot_style=auc_plot_style,
+        msd_plot_style=msd_plot_style, length_plot_style=length_plot_style,
+        msd_err=msd_err, auc_plot_style=auc_plot_style,
         group_style=group_style, panel_styles=panel_styles,
         logd_clip_d_min=logd_clip_d_min, logd_clip_d_max=logd_clip_d_max,
         progress_cb=progress_cb, minimal=minimal,

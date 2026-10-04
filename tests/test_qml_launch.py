@@ -33,6 +33,7 @@ def _boot(ui_env, marker, timeout=40):
     env["APPDATA"] = str(isolated_home / "AppData" / "Roaming")
     env["LOCALAPPDATA"] = str(isolated_home / "AppData" / "Local")
     env["XDG_CONFIG_HOME"] = str(isolated_home / ".config")
+    env["FIREFLY_DATA_DIR"] = str(isolated_home / "firefly-data")
     if ui_env is not None:
         env["FIREFLY_UI"] = ui_env
     # Configure QSettings before importing the real entry point.  HOME/XDG
