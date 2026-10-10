@@ -88,6 +88,22 @@ class ReportData:
 # panels annotate the pairwise dicts in place) without poisoning the cache.
 _TL = threading.local()
 
+# The across-metric correction family: the pairwise comparisons of the canonical
+# per-recording SCALAR metrics (omnibus rows and per-class motion fractions
+# excluded).  Every member is tested whether or not its graph is drawn, so the
+# family — and every corrected p-value and star — is the same for the full
+# figure, a subset of graphs and each exported single panel.
+ACROSS_FAMILY = frozenset({
+    "auc_msd", "spot_intensity", "mobile_fraction", "median_D", "median_alpha",
+    "radius_of_gyration", "net_displacement", "path_length", "step_distance",
+    "step_speed", "link_displacement", "link_speed", "directionality",
+    "track_duration", "n_localisations", "mean_observed_time_s",
+    "mean_track_duration_s", "n_tracks", "nongauss_alpha2", "vacf_persistence",
+    # the diffusive-state model's six per-recording scalars are tested and
+    # starred like the rest
+    "state_occupancy_immobile", "state_occupancy_slow", "state_occupancy_fast",
+    "state_D_immobile", "state_D_slow", "state_D_fast"})
+
 
 def _arr_key(arrs):
     out = []
@@ -3043,6 +3059,19 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         if "diffusion" not in compatibility_warnings:
             hidden_metrics.extend(
                 ["median_D", "median_alpha", "vacf_persistence"])
+        # ...and every other member of the across-metric family whose graph is
+        # not drawn, so the correction family does not depend on the panels —
+        # except those a metric-contract mismatch suppresses (as their panels are).
+        _suppressed = set()
+        if "diffusion" in compatibility_warnings:
+            _suppressed |= {"auc_msd", "mobile_fraction", "median_D",
+                            "median_alpha", "vacf_persistence"}
+        if "step" in compatibility_warnings:
+            _suppressed |= {"step_distance", "step_speed",
+                            "link_displacement", "link_speed"}
+        if "link" in compatibility_warnings or rd.legacy_only:
+            _suppressed |= {"link_displacement", "link_speed"}
+        hidden_metrics += sorted(ACROSS_FAMILY - set(hidden_metrics) - _suppressed)
         for _m in hidden_metrics:
             if _m in summary_df.columns and _m not in stats_records:
                 arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
@@ -3061,20 +3090,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
     # The across-metric family is the pairwise comparisons of the canonical
     # SCALAR metrics (omnibus rows and per-class motion fractions excluded), so
     # the family size is reproducible and matches the "scalar metrics" framing.
-    _ACROSS_FAMILY = {"auc_msd", "spot_intensity", "mobile_fraction",
-                      "median_D", "median_alpha", "radius_of_gyration",
-                      "net_displacement", "path_length", "step_distance",
-                      "step_speed", "link_displacement", "link_speed",
-                      "directionality",
-                      "track_duration", "n_localisations",
-                      "mean_observed_time_s", "mean_track_duration_s",
-                      "n_tracks", "nongauss_alpha2",
-                      "vacf_persistence",
-                      # the diffusive-state model's six per-recording scalars
-                      # are tested and starred like the rest
-                      "state_occupancy_immobile", "state_occupancy_slow",
-                      "state_occupancy_fast", "state_D_immobile",
-                      "state_D_slow", "state_D_fast"}
+    _ACROSS_FAMILY = ACROSS_FAMILY
     across_pw = []
     for metric, rec in stats_records.items():
         pairs = rec.get("pairwise", [])

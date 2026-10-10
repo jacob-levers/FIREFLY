@@ -211,3 +211,20 @@ def test_across_metric_correction_relabels_every_bracket(tmp_path):
     b = sorted(t.get_text() for t in _auc_axis(corr).texts)
     assert len(a) == len(b) == 3 and all(P_ONLY.match(t) for t in b)
     plt.close(plain); plt.close(corr)
+
+
+def test_the_correction_family_does_not_depend_on_the_graphs_drawn(tmp_path):
+    """Across-metric correction runs over the whole fixed family of scalar
+    measures, so a corrected p-value — and the star an exported single panel
+    shows — is the same however many graphs are drawn."""
+    groups = _groups(tmp_path, 2)
+    cfg = {"correction": "fdr_bh", "across_metric_correction": True}
+    f1, _s, one = compare_groups(groups, output_dir=None, pdf_report=False,
+                                 panels={"mob_immob"}, stats_config=cfg)
+    f2, _s, many = compare_groups(groups, output_dir=None, pdf_report=False,
+                                  panels={"mob_immob", "auc", "rg", "step", "states_occupancy"},
+                                  stats_config=cfg)
+    for m in ("mobile_fraction", "median_D"):
+        a, b = one[m]["pairwise"][0]["p_across"], many[m]["pairwise"][0]["p_across"]
+        assert np.isfinite(a) and a == pytest.approx(b)
+    plt.close(f1); plt.close(f2)

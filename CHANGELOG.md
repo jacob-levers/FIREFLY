@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.76.51-rc.26 — 11 Oct 2026
+
+### Fixed
+
+- **Corrected p-values no longer depend on which graphs are drawn.** With
+  "correct across metrics" on, only the measures whose graphs were in the
+  figure were corrected together, so the same comparison gave different
+  corrected p-values (and stars) for the full figure, a selection of graphs
+  and each graph exported on its own. Every measure is now always in the
+  correction, whichever graphs are drawn, so the statistics files, the full
+  figure and each exported graph agree.
+
 ## v2.76.51-rc.25 — 11 Oct 2026
 
 ### Fixed
