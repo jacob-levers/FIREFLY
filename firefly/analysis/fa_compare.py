@@ -393,12 +393,14 @@ KEY_STRIP = 1.3
 
 def _state_bars(ax, values, labels, colors, palette, *, ylabel, scale=1.0,
                 stats_records=None, metric_prefix="", stats_config=None,
-                test=True):
+                test=True, annot_sink=None):
     """Diffusive-state bars: for each state (x), one bar per
     group — the mean across recordings ± SEM, the recordings as dots — and a
     p-value bracket (stars in a minimal figure) for each compared pair within
     the state.  ``values[g][s]`` holds group g's per-recording values for state
-    s.  ``test=False`` skips the statistics (a paired two-factor design)."""
+    s.  ``test=False`` skips the statistics (a paired two-factor design).
+    ``annot_sink`` receives each state's labels, as `_bar_with_dots_n` does, so
+    across-metric correction can redraw them."""
     from firefly.analysis.fa_states import STATE_KEYS, STATE_NAMES
     from firefly.analysis.fa_figure_common import (select_bracket_pairs,
                                                    draw_pvalue_brackets)
@@ -409,7 +411,7 @@ def _state_bars(ax, values, labels, colors, palette, *, ylabel, scale=1.0,
     bg = np.array(_mc.to_rgb(palette.get("BG", "#ffffff")))
     rng = np.random.default_rng(0)
     sig_style = getattr(_TL, "sig_style", "p")
-    top, brackets = 0.0, []
+    top, brackets, owners = 0.0, [], []      # owners[k]: (metric, pair) of brackets[k]
     xpos = lambda si, gi: si - 0.4 + width * (gi + 0.5)
     for si, key in enumerate(STATE_KEYS):
         arrs = []
@@ -438,9 +440,11 @@ def _state_bars(ax, values, labels, colors, palette, *, ylabel, scale=1.0,
         use_corr = cfg["figure_stars_use_corrected"]
         pairs = [(pw["i"], pw["j"], pw.get("p_within", pw.get("p")) if use_corr else pw.get("p"))
                  for pw in pairwise]
+        by_ij = {(int(pw["i"]), int(pw["j"])): pw for pw in pairwise}
         for i, j, p in select_bracket_pairs(pairs, n, cfg.get("alpha", 0.05)):
             brackets.append((xpos(si, i), xpos(si, j),
                              significance_label(p, sig_style, cfg.get("alpha", 0.05))))
+            owners.append((f"{metric_prefix}_{key}", by_ij[(int(i), int(j))], cfg, use_corr))
     ax.set_xticks(range(len(STATE_KEYS)))
     ax.set_xticklabels(STATE_NAMES)
     # a strip on the right, inside the axes, for the group key (a key outside
@@ -450,7 +454,16 @@ def _state_bars(ax, values, labels, colors, palette, *, ylabel, scale=1.0,
     ax.set_ylim(0, (top or 1.0) * 1.08)
     ax.set_ylabel(ylabel)
     if brackets:
-        draw_pvalue_brackets(ax, brackets, color=palette["SIG"], fontsize=7.5, data_top=top)
+        texts = draw_pvalue_brackets(ax, brackets, color=palette["SIG"], fontsize=7.5,
+                                     data_top=top)
+        if annot_sink is not None:
+            for txt, (metric, pw, cfg, use_corr) in zip(texts, owners):
+                if txt is None:
+                    continue
+                build = (lambda which, pw=pw, cfg=cfg, use_corr=use_corr: significance_label(
+                    pw.get(f"p_{which}", pw.get("p_within", pw.get("p"))) if use_corr
+                    else pw.get("p"), sig_style, cfg.get("alpha", 0.05)))
+                annot_sink.setdefault(metric, []).append((txt, build))
     # The groups are not on the x-axis (the states are), so key them beside the
     # panel; kept in the full figure, dropped with every legend when minimal.
     from matplotlib.patches import Patch
@@ -2366,7 +2379,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         _vals = [[_cols[si][gi] for si in range(len(_SK))] for gi in range(n_groups)]
         _state_bars(ax, _vals, labels, colors, pal, ylabel=_ylabel, scale=_scale,
                     stats_records=stats_records, metric_prefix=f"state_{_what}",
-                    stats_config=cfg, test=not two_factor)
+                    stats_config=cfg, test=not two_factor, annot_sink=panel_annots)
         ax.set_title(_title)
 
     # ── 5c. Diffusive-state diagram, one per group ───────────────────────────
@@ -3056,7 +3069,12 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
                       "track_duration", "n_localisations",
                       "mean_observed_time_s", "mean_track_duration_s",
                       "n_tracks", "nongauss_alpha2",
-                      "vacf_persistence"}
+                      "vacf_persistence",
+                      # the diffusive-state model's six per-recording scalars
+                      # are tested and starred like the rest
+                      "state_occupancy_immobile", "state_occupancy_slow",
+                      "state_occupancy_fast", "state_D_immobile",
+                      "state_D_slow", "state_D_fast"}
     across_pw = []
     for metric, rec in stats_records.items():
         pairs = rec.get("pairwise", [])

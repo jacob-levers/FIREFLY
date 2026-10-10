@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.76.51-rc.25 — 11 Oct 2026
+
+### Fixed
+
+- **Correcting across metrics now includes the diffusive states.** With
+  "correct across metrics" switched on, the three state occupancies and the
+  three within-state diffusion coefficients were left out of the correction,
+  so the state graphs kept uncorrected stars beside corrected ones on every
+  other graph. They are now corrected with the rest, in the statistics files
+  and on the graphs.
+
 ## v2.76.51-rc.24 — 4 Oct 2026
 
 ### Changed

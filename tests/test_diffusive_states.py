@@ -193,6 +193,30 @@ def test_minimal_mode_marks_the_states_with_stars(state_report, tmp_path):
     plt.close(fig)
 
 
+def test_across_metric_correction_covers_the_states(state_report):
+    """The six state measures are tested and starred like every other scalar,
+    so across-metric correction must include them — and the state panel's marks
+    must show the corrected value, as the other bar panels' do."""
+    from firefly.analysis.fa_compare import compare_groups
+    import matplotlib.pyplot as plt
+    groups, *_ = state_report
+    cfg = {"correction": "fdr_bh", "across_metric_correction": True}
+    fig, _s, stats = compare_groups(groups, output_dir=None, pdf_report=False, minimal=True,
+                                    panels={"states_occupancy", "states_d", "auc"},
+                                    stats_config=cfg)
+    for what in ("occupancy", "D"):
+        for k in STATE_KEYS:
+            pw = stats[f"state_{what}_{k}"]["pairwise"][0]
+            assert np.isfinite(pw["p_across"]) and pw["p_across"] >= pw["p"]
+    ax = next(a for a in fig.axes if a.get_ylabel() == "State occupation (%)")
+    marks = [t.get_text() for t in ax.texts if t.get_text().strip()]
+    from firefly.analysis.fa_compare import significance_label
+    want = [significance_label(stats[f"state_occupancy_{k}"]["pairwise"][0]["p_across"], "stars", 0.05)
+            for k in STATE_KEYS]
+    assert marks == want
+    plt.close(fig)
+
+
 def test_each_run_saves_its_states_for_the_report(tmp_path):
     import json
     from firefly.firefly_worker import _save_diffusive_states
