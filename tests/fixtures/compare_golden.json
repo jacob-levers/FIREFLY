@@ -859,46 +859,6 @@
      }
     ]
    },
-   "track_duration": {
-    "omnibus": null,
-    "pairwise": [
-     {
-      "cliffs_delta": null,
-      "cliffs_delta_ci_high": null,
-      "cliffs_delta_ci_low": null,
-      "cohens_d": null,
-      "family": "pairwise",
-      "hedges_g": null,
-      "hedges_g_ci_high": null,
-      "hedges_g_ci_low": null,
-      "i": 0,
-      "j": 1,
-      "label_i": "Ctrl",
-      "label_j": "Drug",
-      "mean_i": "nan",
-      "mean_j": "nan",
-      "n_i": 0,
-      "n_j": 0,
-      "n_needed_80": null,
-      "n_needed_90": null,
-      "note": "n<2 replicates - no test possible",
-      "p": "nan",
-      "p_across": "nan",
-      "p_self": null,
-      "p_within": "nan",
-      "rank_biserial": null,
-      "self_corrected": false,
-      "sem_i": "nan",
-      "sem_j": "nan",
-      "stars": "",
-      "stars_across": "",
-      "stars_within": "",
-      "test": "n<2",
-      "tost_equivalent": null,
-      "tost_p": null
-     }
-    ]
-   },
    "vacf_persistence": {
     "omnibus": null,
     "pairwise": [

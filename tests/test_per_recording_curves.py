@@ -1,8 +1,8 @@
 """Distribution curves weight each recording equally, mean ± SEM, by default.
 
 Pooling every track let the recordings with the most tracks set a group's
-curve: on MB112C one Propofol recording (a quarter of the group's dwells)
-supplied 26 of its 35 dwells over 10 s, which read as a Propofol effect.  The
+curve: on a real dataset one drug-treated recording (a quarter of its group's
+dwells) supplied most of the long dwells, which read as a drug effect.  The
 van Swinderen lab's sptPALM papers average per-recording curves and show the
 s.e.m. across recordings (n = recordings).  Pooled tracks
 stay available (Preferences → Figures → Distribution curves).

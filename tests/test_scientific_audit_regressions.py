@@ -1,4 +1,4 @@
-"""Known-truth regressions from the MB543B scientific audit."""
+"""Known-truth regressions from an earlier scientific audit."""
 import contextlib
 import io
 import numpy as np

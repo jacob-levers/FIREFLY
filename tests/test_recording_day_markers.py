@@ -1,6 +1,6 @@
 """Replicate dots shaped by recording day.
 
-On the MB112C data day was confounded with condition (the later flies sat
+On a real dataset day was confounded with condition (the later flies sat
 lower in both groups); with every dot a plain circle that is invisible on the
 figure.  Each recording's day comes from the CZI header — recorded into the
 run's params at process time, or read from the recording for older runs.

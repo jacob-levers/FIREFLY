@@ -4,7 +4,7 @@ in-figure legend, title or group-summary band (Preferences → Figures).
 The label used to be a red block of test name, p, stars, effect size and
 correction drawn over the points (three-group panels put it inside the axes at
 top-left).  The rest of that is in the statistics CSV and report.  Minimal mode
-is for thesis figures whose legend lives in the caption.
+is for publication figures whose legend lives in the caption.
 """
 import re
 
@@ -67,7 +67,7 @@ def test_replicate_dots_take_their_group_colour(tmp_path):
 
 
 def test_a_pair_with_an_untestable_group_gets_no_bracket(tmp_path):
-    """Propofol + Aniline was one fly: no test against it is possible."""
+    """A group of one recording: no test against it is possible."""
     from test_workspace_data import make_run_folder
     groups = _groups(tmp_path, 2) + [{"label": "Single", "color": "#0072b2",
                                        "folders": [make_run_folder(str(tmp_path), "one", seed=99, d_centre=0.2)]}]
@@ -110,7 +110,7 @@ def test_the_p_value_sits_above_the_data(tmp_path, n):
 
 
 def test_minimal_mode_has_no_legend_titles_or_band(tmp_path):
-    """No panel titles either: in a thesis figure they go in the caption."""
+    """No panel titles either: in a publication figure they go in the caption."""
     fig, _s, _st = compare_groups(_groups(tmp_path, 3), output_dir=None, minimal=True,
                                   panels={"auc", "logd_dist", "motion_classes", "dwell_cdf"},
                                   pdf_report=False, auc_plot_style="box_points")
@@ -228,3 +228,50 @@ def test_the_correction_family_does_not_depend_on_the_graphs_drawn(tmp_path):
         a, b = one[m]["pairwise"][0]["p_across"], many[m]["pairwise"][0]["p_across"]
         assert np.isfinite(a) and a == pytest.approx(b)
     plt.close(f1); plt.close(f2)
+
+
+def test_the_motion_classes_are_corrected_with_the_rest(tmp_path):
+    """The per-class motion fractions are tested per recording like every other
+    measure, so they are corrected in the same family — whether or not their
+    graph is drawn — instead of being reported with a raw p-value."""
+    groups = _groups(tmp_path, 2)
+    cfg = {"correction": "fdr_bh", "across_metric_correction": True}
+    f1, _s, without = compare_groups(groups, output_dir=None, pdf_report=False,
+                                     panels={"mob_immob"}, stats_config=cfg)
+    f2, _s, drawn = compare_groups(groups, output_dir=None, pdf_report=False,
+                                   panels={"mob_immob", "motion_classes"}, stats_config=cfg)
+    for c in ("Immobile", "Confined", "Brownian", "Directed"):
+        a = without[f"motion_frac_{c}"]["pairwise"][0]["p_across"]
+        b = drawn[f"motion_frac_{c}"]["pairwise"][0]["p_across"]
+        assert np.isfinite(a) and a == pytest.approx(b)
+    m = "mobile_fraction"
+    assert without[m]["pairwise"][0]["p_across"] == pytest.approx(drawn[m]["pairwise"][0]["p_across"])
+    plt.close(f1); plt.close(f2)
+
+
+def test_the_duration_graph_shows_each_recordings_mean_duration(tmp_path):
+    """Trajectories last whole frames, so a recording's MEDIAN duration can only
+    be a few frame multiples and every box collapses onto one or two values.
+    The graph plots each recording's mean duration instead."""
+    import os
+    import pandas as pd
+    groups = _groups(tmp_path, 2)
+    for k, folder in enumerate(f for g in groups for f in g["folders"]):
+        # every recording: mostly 10-frame trajectories (median duration 0.18 s)
+        # plus k + 1 long ones, so the means differ while the medians tie
+        lengths = [10] * 40 + [30 + 5 * k] * (k + 1)
+        rows = [(pid, fr, 10.0 + 0.1 * fr, 10.0) for pid, n in enumerate(lengths)
+                for fr in range(n)]
+        stem = os.path.basename(folder)
+        pd.DataFrame(rows, columns=["particle", "frame", "x", "y"]).to_csv(
+            os.path.join(folder, "firefly_extras", f"{stem}_trajectories.csv"), index=False)
+    fig, summary, _st = compare_groups(groups, output_dir=None, pdf_report=False,
+                                       panels={"dur"}, minimal=True)
+    assert summary["track_duration"].nunique() == 1          # the tie being guarded against
+    ax = next(a for a in fig.axes if "duration" in a.get_ylabel().lower())
+    ys = np.sort(np.concatenate([c.get_offsets()[:, 1] for c in ax.collections
+                                 if len(c.get_offsets())]))
+    want = np.sort(summary["mean_track_duration_s"].to_numpy(float))
+    assert ys.size == want.size and np.allclose(ys, want)
+    assert ax.get_ylabel() == "Mean trajectory duration (s)"
+    plt.close(fig)

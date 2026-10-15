@@ -3,7 +3,7 @@
 Manual minmass previously offered one number — a spot count on one frame — so
 the choice was guesswork. These cover the guidance that replaces it, and in
 particular the refusal to draw a noise floor the data does not support: on real
-MB543B recordings the valley estimate moved between ~0.27 and ~0.47 depending
+fly recordings the valley estimate moved between ~0.27 and ~0.47 depending
 only on which frames were sampled, at 16, 48 AND 96 frames. A line that moves
 that much is worse than no line, because the user aims at it.
 """
@@ -90,7 +90,7 @@ def test_no_floor_means_no_below_floor_claim():
 
 
 def test_a_dense_result_is_flagged_because_precision_degrades():
-    """The artefact that drove the whole MB543B reanalysis: density inflates
+    """The artefact that drove a whole dataset's reanalysis: density inflates
     every displacement metric through localisation precision."""
     frames = _frames(n_frames=4, n_noise=400, n_signal=200)
     g = threshold_guidance(np.concatenate(frames), 1e-6, n_frames=4)

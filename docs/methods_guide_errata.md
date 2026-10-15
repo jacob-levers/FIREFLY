@@ -21,8 +21,8 @@ Detection offers a raw contrast/noise gate independent of per-frame intensity
 normalization; it ships off. The Drosophila preset uses manual minmass 0.45,
 Auto (Torch-first) detection, memory 5 and four fit lags, and requires manual
 neuronal ROIs. All values require validation against imaging conditions and controls.
-The original MB543B audit under `audits/2026-09-14` describes rc.5 and is retained
-as historical evidence, not a description of the corrected implementation.
+An earlier internal audit (not part of this repository) describes rc.5; it is
+historical evidence, not a description of the corrected implementation.
 
 The shipped `FIREFLY_Methods_Guide-v2.pdf` has no in-repo source, so it cannot be
 regenerated automatically. This file lists the sections whose wording no longer

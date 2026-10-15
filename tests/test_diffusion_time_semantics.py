@@ -149,7 +149,7 @@ def test_negative_slope_has_no_physical_D_but_still_counts_as_immobile():
     """A noisy finite-sample negative slope is not a physical D -- but it is not
     a reason to delete the track either. Roughly half of a truly immobile
     population lands here, so dropping these rows from the D-based fractions
-    inflates the mobile fraction (69%->79% on real data)."""
+    inflates the mobile fraction (by about ten percentage points on real data)."""
     x = [0.0, 0.01, -0.01, 0.01, -0.01, 0.01,
          -0.01, 0.01, -0.01, 0.01, -0.01, 0.01]
     _, _, diff = compute_msd_and_fit(

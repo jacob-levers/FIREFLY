@@ -19,7 +19,7 @@ from firefly.analysis.fa_figure_common import (STATE_DIAGRAM_POS, draw_state_dia
 from firefly.analysis.fa_states import STATE_COLORS, STATE_NAMES
 
 CASES = {
-    "MB112C-like": ([0.018, 0.066, 0.261], [0.11, 0.29, 0.60],
+    "typical fly": ([0.018, 0.066, 0.261], [0.11, 0.29, 0.60],
                     [[0.87, 0.10, 0.03], [0.05, 0.85, 0.10], [0.01, 0.07, 0.92]]),
     "one state dominates": ([0.001, 0.024, 0.229], [0.02, 0.03, 0.95],
                             [[0.999, 0.0004, 0.0006], [0.30, 0.40, 0.30], [0.0004, 0.002, 0.9976]]),

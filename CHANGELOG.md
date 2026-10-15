@@ -1,47 +1,35 @@
 # Changelog
 
-## v2.76.51-rc.26 — 11 Oct 2026
+## v2.76.51 — 15 Oct 2026
 
-### Fixed
+Consolidates the 2.76.51-rc.1 … rc.27 pre-release series. Newest first within each section.
 
-- **Corrected p-values no longer depend on which graphs are drawn.** With
-  "correct across metrics" on, only the measures whose graphs were in the
-  figure were corrected together, so the same comparison gave different
-  corrected p-values (and stars) for the full figure, a selection of graphs
-  and each graph exported on its own. Every measure is now always in the
-  correction, whichever graphs are drawn, so the statistics files, the full
-  figure and each exported graph agree.
+### Important — results from earlier versions change; re-analyse before publishing
 
-## v2.76.51-rc.25 — 11 Oct 2026
-
-### Fixed
-
-- **Correcting across metrics now includes the diffusive states.** With
-  "correct across metrics" switched on, the three state occupancies and the
-  three within-state diffusion coefficients were left out of the correction,
-  so the state graphs kept uncorrected stars beside corrected ones on every
-  other graph. They are now corrected with the rest, in the statistics files
-  and on the graphs.
-
-## v2.76.51-rc.24 — 4 Oct 2026
-
-### Changed
-
-- **The overlaid MSD graph has error bars.** "Group overlaid" drew only each
-  condition's mean curve. It now shows mean ± the Analysis tab's Error setting
-  (SD / SEM / 95% CI) between recordings, as the faceted style does — choose
-  SEM to match the lab's published figures. Each condition's bars sit slightly
-  to one side of the time point so they do not hide one another.
+- **Detection now reproduces PALMTracer's.** The à trous wavelet engine is
+  replaced by a reconstruction of PALMTracer's wavelet detector, which takes
+  PALMTracer's own threshold, so a PALMTracer value carries over unchanged
+  (rc.16). Runs made with the old wavelet engine detect different spots.
+- **Median D counts the molecules that did not move,** at PALMTracer's
+  1×10⁻⁵ µm²/s floor, so median D is lower than in earlier runs (rc.15).
+- **The mobile fraction keeps non-moving tracks in its denominator,** so it is
+  lower than in earlier runs (rc.6).
+- **The ensemble MSD is a mean over displacement pairs,** the standard
+  estimator; the MSD graph and MSD-AUC drop 15–35% (rc.6). Ordinary D and the
+  anomalous coefficient Kα are now fitted and reported separately.
+- **α fits that stop at the edge of their range are unclassified** rather than
+  counted as Immobile or Directed, so motion-class percentages change (rc.19);
+  JDD population fits no longer stick to their limits (rc.18).
+- **Corrected p-values change when correcting across metrics.** The family now
+  always holds every per-recording measure, including the diffusive states and
+  the motion classes, whichever graphs are drawn (rc.25–rc.27).
+- **Distribution curves weight every recording equally** by default, mean ± SEM
+  across recordings (rc.19); the MSD-AUC graph no longer drops replicates (rc.2).
 
 ### Added
 
 - **"Group overlaid, no error bars"** in Preferences → Graph styles → MSD
   curves, for the overlaid graph without them.
-
-## v2.76.51-rc.23 — 4 Oct 2026
-
-### Added
-
 - **ROIs are kept between sessions.** Drawn and painted ROIs and each file's
   own settings (ROI options, "analyse each ROI separately", ROI names and a
   per-file detection threshold) are saved in FIREFLY's data folder, so they
@@ -49,55 +37,6 @@
   recording it was drawn on: if a different file later appears at the same
   path, the old ROI is not used. To remove one, delete it in the ROI panel and
   save.
-
-### Changed
-
-- **One style for all comparison graphs.** Preferences → Graph styles had
-  fifteen identical Box + points / Violin + points / Bar rows, one per graph.
-  One "Comparison graphs" setting now draws them all; any single graph can
-  still be set apart under "Customise individual graphs". Graphs you had
-  already changed keep their style.
-
-- **Trajectory length** can be drawn as a cumulative curve (the default, as
-  before) or as overlaid densities with a dashed line at the minimum
-  trajectory length.
-
-- **MSD-AUC's paired-lines and Δ-box options say they need timepoints**;
-  without them the graph is drawn as box + points.
-
-### Fixed
-
-- **The trajectory length style did nothing.** It offered Density / Box, but
-  the graph was always a cumulative curve and never read the setting.
-
-- **Minimal figures kept the overlaid MSD graph's legend**, in exports and in
-  the Analysis tab. Every legend is now removed.
-
-- **Minimal figures left empty space beside the motion-class and diffusive-
-  state bars** where their colour key had been. The bars now fill the panel.
-
-- **The batch queue said "None" for a file with an ROI** when its ROI was
-  painted with the brush still selected from the previous file and it then
-  got its own threshold. The run did use the ROI; the badge now says
-  "Polygon" for any file with one.
-
-## v2.76.51-rc.22 — 4 Oct 2026
-
-### Fixed
-
-- **A brush-painted ROI followed you to the next file.** After painting an ROI
-  with the brush and opening another recording, the previous file's region
-  stayed drawn over the new one, and the first stroke on the new file was added
-  to it — so the second file's ROI came out as the first file's region plus
-  the new strokes (and the same in reverse on going back). Each file now starts
-  from its own saved ROI. **Check ROIs painted with the brush since rc.8**
-  (when the brush arrived) before running them. Polygon ROIs were not
-  affected.
-
-## v2.76.51-rc.21 — 4 Oct 2026
-
-### Added
-
 - **See what the detection threshold excludes.** The Preview & ROI detection
   overlay now also circles, in red, the spots the detector finds at ¾ of the
   current threshold but not at it — the near misses a slightly lower threshold
@@ -108,30 +47,9 @@
   FIREFLY's recommendation for the open recording. For the palmTRACER-style
   detector that is 4.4 × the recording's noise on the wavelet detection image,
   rounded to the nearest 5 — a threshold-to-noise ratio taken from hand-set
-  palmTRACER thresholds; on the MB112C recordings it reproduces the thresholds
-  that analysis used. For every other detector it is the minmass an
+  palmTRACER thresholds. For every other detector it is the minmass an
   Auto-threshold run would pick for that recording, from the run's own
   calculation. A note under the button says how the number was reached.
-
-### Changed
-
-- **Dragging the detection threshold is live.** The slider no longer saves the
-  setting on every step (each save redrew the whole parameter sidebar);
-  detection runs in the background, the previous overlay stays up until the
-  new one is ready, and thresholds you have already visited show at once. The
-  setting is saved when you let go, click an arrow or type a value. The preview
-  finds exactly the spots a run finds at that threshold.
-
-### Fixed
-
-- **Running FIREFLY's test suite on a Mac no longer changes the app's saved
-  settings.** The tests read and wrote the live preferences there (on other
-  systems they were already kept apart).
-
-## v2.76.51-rc.20 — 4 Oct 2026
-
-### Added
-
 - **Diffusive states.** Each recording is fitted with a three-state hidden
   Markov model (the vbSPT approach): immobile, slow mobile and fast mobile
   states, each with an apparent diffusion coefficient, the share of steps spent
@@ -150,93 +68,6 @@
   numbered in the figure's reading order. The Analysis tab's export button
   saves the graph on screen the same way, and the per-condition view's
   "Export all" saves all of a condition's panels.
-
-### Changed
-
-- **Comparison figure layout.** Each panel gets the shape that suits it —
-  distribution curves and MSD facets wide, box/bar comparisons near square, the
-  polar plot square — panels of one shape share rows, and the most important
-  measures come first (MSD, D distribution, AUC, mobile fraction, diffusive
-  states), with trajectory bookkeeping and QC last.
-
-- **Motion classes moved down the figure.** On simulated trajectories of fly
-  length (~10 points) the per-trajectory α classes call a Brownian trajectory
-  "Brownian" only 5% of the time; the diffusive states above are the reliable
-  measure. The panel is still exported.
-
-- **Motion-class colours on light figures** are redone so neighbouring classes
-  are clearly distinct, including for colour-blind readers, and the
-  colour-blind set's Confined is now yellow. The key sits beside the bars and
-  the panel widens with the number of groups.
-
-- **Analysis-tab graph names** follow the figure wording: Diffusion
-  coefficient, Trajectory length, Trajectory duration, Trajectory count.
-
-### Fixed
-
-- **The Analysis tab's export named graphs without a stats metric after D**,
-  so exporting several of them overwrote one file.
-
-- **The per-condition view's "Export panel (PDF)" and "Export all (PDF)"**
-  both saved the same single PNG. They are now "Export panel (PNG)" and
-  "Export all (PNG)", and do that.
-
-- **A "Comparison suppressed" notice could break the figure's layout**,
-  overlapping panels. It now spans its own row.
-
-## v2.76.51-rc.19 — 3 Oct 2026
-
-### Fixed
-
-- **Anomalous-exponent fits that stop at their limits are no longer
-  classified.** At the track lengths typical of fly recordings (about 10
-  points), many α fits ended on the edge of the fit's range (α = 0 or 2) and
-  were counted as Immobile or Directed; on simulated Brownian tracks 45% came out
-  "Directed". Those fits are now unclassified. A genuinely ballistic track keeps
-  α = 2. D is unchanged. **Motion-class percentages will differ from earlier
-  runs** — re-run to update them.
-
-- **The Analysis tab's mobile % now counts the same trajectories as the
-  report.** Trajectories whose MSD slope came out non-positive are immobile in
-  both; the tab used to leave them out.
-
-- **A group with a single recording was drawn as a flat box.** It is now drawn
-  as its dot.
-
-- **In the Analysis tab, replicate dots inside a box were hidden** by the box's
-  solid group colour. Boxes are now a pale tint with a coloured outline, as in
-  the report.
-
-### Changed
-
-- **The comparison shows the mobile fraction** (mobile ÷ all, 0–1) instead of
-  the mobile/immobile ratio, which is unbounded and undefined for a recording
-  with no immobile trajectory. The ratio is still in the summary CSV.
-
-- **Distribution curves weight every recording equally** — log D, trajectory
-  length, dwell time and turning angles show the mean of the recordings' curves
-  with the SEM shaded, as in the van Swinderen lab's figures. Pooling every
-  trajectory let the recordings with the most trajectories set a group's curve.
-  Pooling is still available (Preferences → Figures → Distribution curves).
-
-- **Titles and axis labels use the van Swinderen lab's wording**: MSD (µm²)
-  against Time (s), AUC (µm²s), Log₁₀ diffusion coefficient (µm²/s), Relative
-  frequency (fractions), "Slow/immobile fraction" and "Fast/mobile fraction",
-  trajectories rather than tracks, sentence case. The density curves' axis reads
-  "Probability density (per log₁₀ unit)".
-
-- **Minimal figures** also drop panel titles and mark comparisons with stars
-  (* p < 0.05, ** p < 0.01, *** p < 0.001, n.s.) instead of p-values.
-
-- **Median lines and error bars are neutral**, not red, which read as
-  "significant".
-
-- **The colour-blind option recolours motion classes everywhere**: the
-  comparison report, the Analysis tab and each run's figure, not only the
-  Visualise viewer.
-
-### Added
-
 - **Relative-frequency style for the diffusion-coefficient distribution**
   (Preferences → Figures): the fraction of each recording's trajectories in
   0.1-log-unit bins, averaged with SEM error bars, as in the lab's papers.
@@ -244,81 +75,9 @@
 - **Replicate dots are shaped by recording day**, with a key under the group
   summary, so a day effect is visible. The day comes from the CZI: new runs
   record it, and older runs read it from the recording while it is reachable.
-
-## v2.76.51-rc.18 — 3 Oct 2026
-
-### Fixed
-
-- **JDD population fits no longer stick to their limits.** The jump-distance
-  fit was given the median MSD intercept as its localisation-error offset. That
-  intercept also holds the plateau of confined tracks and motion blur, and on
-  fly recordings it was larger than most jumps, so every fit ended on its bounds
-  (D = 10⁻⁶ and 100 µm²/s) and the comparison panel plotted those as
-  populations. The offset now comes only from per-localisation precision when
-  the detector provides it; otherwise the JDD reports apparent D, labelled as
-  such. A fit that still ends on a limit is marked and never plotted, including
-  in runs saved by older versions — re-run those to refit. **JDD values will
-  differ from earlier runs.**
-
-- **The Analysis tab's quick graphs ran their own Kruskal–Wallis test**, so one
-  comparison could carry two different p-values. They now use the same
-  statistics as the report and the stats cards.
-
-- **A p-value too small to compute showed as "p = 0.00e+00".** It now reads
-  "p < 1e-300".
-
-### Changed
-
-- **Comparison graphs show a p-value for every pair of groups**, each on a
-  bracket above the data, and nothing else: the test, effect sizes and
-  correction are in the statistics CSV. With up to four groups every testable
-  pair is bracketed; with more, only the significant pairs. A group with a
-  single replicate cannot be tested, so it gets no bracket.
-
-- **Replicate dots are drawn in their group's colour**, and slightly smaller.
-
-### Added
-
 - **Minimal figures** (Preferences → Figures → Graph styles): comparison
   figures without legends, title or the group-summary band, for figures whose
   legend goes in the caption. The p-values stay.
-
-## v2.76.51-rc.17 — 1 Oct 2026
-
-### Fixed
-
-- **The CUDA installer now says why it couldn't reach the PyTorch index.** A
-  failed index fetch was meant to be reported under "Last probe error", but the
-  message was dropped on the way, so the failure appeared with no reason given.
-
-### Changed
-
-- **About 3,000 lines of unused code removed.** The retired pre-QML viewer and
-  ROI editor, napari-era interface helpers, an unused GPU refinement path in the
-  PyTorch detector, an abandoned "CUDA declined" setting, interface properties no
-  screen used, and unused imports. Nothing you use changes; the code that runs
-  your analyses is now easier to follow and to check.
-
-## v2.76.51-rc.16 — 1 Oct 2026
-
-### Changed
-
-- **The wavelet detector now reproduces PALMTracer's.** The à trous wavelet
-  engine is replaced by **Wavelet — palmTRACER-style (CPU)**, a reconstruction
-  of PALMTracer's wavelet detection. It works on the raw frames and takes
-  PALMTracer's own wavelet threshold, so a value from a PALMTracer analysis
-  carries over unchanged. On the 2015 PC12 recordings analysed in PALMTracer it
-  finds the same spots (98–99.9%), the same tracks (94–99.5%) and the same
-  median D in every region, where the old engine shared 28–53% of tracks. On
-  two datasets never used to build it, every spot matched. Tracking is close but
-  not identical: FIREFLY links with its own linker, so a long track through a
-  close encounter between molecules can split differently. Settings and run
-  manifests that name the old engine now use the new one. Set the threshold in
-  the sidebar (**Wavelet threshold (palmTRACER)**) or the Threshold panel;
-  minmass and auto-minmass do not apply to this detector.
-
-### Added
-
 - **A wavelet threshold for one file in a batch.** With the palmTRACER-style
   detector selected, the Threshold panel sets the wavelet threshold, and
   **Use for this file only** saves it with that file, as minmass already could.
@@ -331,222 +90,6 @@
   threshold, all treated recordings on another — which changes what counts as a
   spot exactly along the comparison being made. Wavelet thresholds are checked
   as well as minmass.
-
-### Fixed
-
-- **Reopening a file that has its own threshold showed the shared one.** The
-  Threshold panel re-read the sidebar's minmass on open, so the file's own value
-  was replaced on screen, and the next Save wrote the sidebar's value over it.
-  Present since rc.8.
-
-- **A change to the shared minmass replaced the open file's own threshold.**
-  While the Threshold panel was open on a file with its own value, any change to
-  the sidebar minmass was copied into it.
-
-## v2.76.51-rc.15 — 1 Oct 2026
-
-### Changed
-
-- **Median D now counts the molecules that did not move.** A track whose MSD
-  does not rise gets a non-positive slope and no measurable D. The mobile
-  fraction has counted those tracks as immobile since rc.6, but median D skipped
-  them, so it described only the molecules that moved and read high — 0.128 vs
-  0.088 µm²/s on a PC12 recording also analysed in PALMTracer, the largest
-  single reason the two programs' medians disagreed. They now count at
-  1e-5 µm²/s, the floor PALMTracer uses, everywhere median D is reported: the
-  run summary, the comparison report and PALMTracer imports. Tracks with too few
-  lags or below resolution stay out, as they do in the mobile fraction.
-  **Median D will be lower than before** for any recording with non-moving
-  tracks; re-run comparisons to pick it up.
-
-### Fixed
-
-- **The PALMTracer-format D files wrote non-moving tracks blank.** PALMTracer
-  pins them at D = 1e-5 and LogD = −5 and keeps the row; FIREFLY left both
-  columns empty (the LogD clamp leaves NaN as NaN, despite the exporter's own
-  comment that immobile tracks "pile at the floor"), so anything reading the
-  file the PALMTracer way lost about 15% of tracks, all immobile. They are now
-  written as PALMTracer writes them. The file's Mobile/Immobile ratio is
-  unchanged: it follows PALMTracer's rule, which leaves those tracks out.
-
-## v2.76.51-rc.14 — 24 Sep 2026
-
-### Fixed
-
-- **A batch could write one folder's results into another folder.** Picking a
-  folder while the previous one was still being scanned — easy on an external
-  drive — skipped the new scan entirely. The old folder's recordings filled the
-  queue while the Source row named the new one, and with the default output
-  (`<source>/batch_results`) their results were written into the wrong folder.
-  Every scan now records which folder it was for; a superseded result is
-  discarded and the folder you actually chose is scanned.
-
-- **The Analysis tab ignored the Log-D clip range.** The setting is entered as
-  log₁₀D and runs have honoured it, but the Analysis tab still read the retired
-  linear keys, which nothing writes. It always clamped at 10⁻⁵…10 µm²/s whatever
-  the sidebar said, and changing the range never redrew it. It now reads the
-  same keys, converted the same way, as the runs.
-
-- **Stopping a HYPER-FLY batch reported the files it never started as failed.**
-  Stop a 12-file run after 3 and the status read "12 / 12 done · 9 failed",
-  nine queue rows turned red and nine dashboard tiles said "Failed" with no
-  reason. Files that never started are no longer counted as failures; the log
-  says how many were not started instead. A worker failure whose message is
-  empty — a MemoryError on a large recording, say — now names its cause rather
-  than showing a blank.
-
-- **Two script errors on every visit to the Import and Process tabs.** A badge
-  and the run-result card read a property of their own from inside their slide
-  transform, where it is not in scope, so the lookup threw and the slide-in never
-  played.
-
-### Tests
-
-- New permanent checks that fail if QML references a controller member, or a
-  member of a QML id, that does not exist; if code reads a settings key nothing
-  defines; or if any tab raises a script error while rendering. Each was
-  confirmed to fail against the real bug it guards — the id check catches the
-  `guide.rescore()` fault that disabled the threshold histogram from rc.8 to
-  rc.12.
-
-## v2.76.51-rc.13 — 24 Sep 2026
-
-### Fixed
-
-- **The detection threshold panel stalled on every interaction.** Each change —
-  moving the slider, typing a value, flipping "Use for this file only" — refitted
-  the noise floor from scratch: three GaussianMixture fits on the GUI thread,
-  measured at ~15 ms and ~100% of the cost of rebuilding the panel. The floor
-  describes the harvested candidates, not the threshold you are choosing, so it
-  is now fitted once per recording and cached alongside them. Rebuilding the
-  panel went from 14.2 ms to 0.3 ms, and the per-file toggle from ~16 ms to
-  ~0.6 ms. Pressing **Profile** still re-harvests and refits, because that is
-  what it is for.
-
-- **The mass histogram never followed the threshold.** Three handlers called
-  `guide.rescore()`, which was never defined. QML abandons the rest of a handler
-  when one throws, so the TypeError took the whole thing with it: the histogram
-  and the kept-count readouts never re-scored against the new threshold, and the
-  detection overlay was never re-run either. Both are the reason that panel
-  exists, and neither failed visibly — the error went to the Qt log and the UI
-  simply did nothing. Introduced in rc.8, present until now.
-
-### Known
-
-- Pressing **Profile** blocks the window for ~1.5 s while it detects across 16
-  frames at threshold zero. That is real work and it is button-initiated, but it
-  runs on the GUI thread and should not.
-
-## v2.76.51-rc.12 — 24 Sep 2026
-
-### Changed
-
-- **Drawing an ROI and choosing a detection threshold are now two screens, with
-  a button each.** They shared one modal reached by one button, so picking a
-  threshold meant opening something labelled "ROI" and scrolling past the
-  polygon tools, and tracing a region meant scrolling past the mass histogram.
-  Every row in the batch queue now offers **ROI** and **Threshold** separately,
-  and so does the single-file preview card. Same viewer, same file, same saved
-  settings — it just opens on the screen you asked for, and the title says which
-  one you are on.
-
-- **The detection threshold has arrows.** A 0–50 slider and a text box were the
-  only ways to move a number that matters at the second decimal place: one
-  slider pixel is a large fraction of a working minmass of ~0.45, and trying
-  0.46 meant retyping the whole value. The exact field now has **−** and **+**
-  either side of it — hold to repeat, or use ↑/↓ in the field — and a **Nudge
-  by** row picks the increment (0.001 / 0.01 / 0.1 / 1). One fixed increment
-  could not serve every case: mass is in the selected detector's own units, so a
-  sensible step on trackpy is the wrong order of magnitude elsewhere.
-
-### Fixed
-
-- **The detection threshold screen opens on raw frames.** Detection runs on
-  acquired frames, so the overlay draws nothing over a max projection — it posts
-  "Select Raw frames" instead. Opening the threshold screen on the projection
-  therefore showed the overlay switched on, no dots, and a nag, which is the
-  opposite of its purpose. It now opens on frame 1 with the spots already drawn.
-  The ROI screen still opens on the projection, which is the right canvas for
-  tracing a region.
-
-- **A typed number stopped following what it displays.** The numeric field
-  assigned its own value on commit, which destroyed the binding to its source.
-  So after typing a detection threshold, dragging the slider no longer moved the
-  number in the box: it sat frozen at what had been typed while the real
-  threshold changed underneath it. The field now only reports the new value and
-  lets its owner write back, exactly as the sliders already did. This affects
-  every numeric field in the app, not only this one.
-
-- **A folder-loading thread could emit into a destroyed controller.** The
-  Analysis tab's loaders run on plain threads and signal back into the
-  controller that started them. If that controller was destroyed while a load
-  was still in flight, the queued signal was delivered into freed memory and
-  crashed inside whatever event loop happened to be running — far from the
-  cause. The loaders are now tracked and the emit checks the object is still
-  alive first. This removes one known contributor to the intermittent crash; it
-  is not a claim that every cause is now gone.
-
-## v2.76.51-rc.11 — 24 Sep 2026
-
-### Fixed
-
-- **Drawing an ROI blanked the detection dots.** Every polygon edit — a brush
-  stroke, a vertex drag — discarded the whole detection overlay and marked it
-  "outdated", so the spots vanished exactly while you were using them to judge
-  where to draw, and did not return until a refresh. An ROI edit does not change
-  what was DETECTED, only which candidates fall inside it, so the cached
-  candidates are now re-labelled in place: the dots stay on screen and their
-  green/red classification updates as you draw. Changing the threshold, frame,
-  diameter, background or backend still re-runs the detector, because those do
-  change what is found.
-
-## v2.76.51-rc.10 — 24 Sep 2026
-
-### Fixed
-
-- **An empty red alert appeared above the detection preview.** The panel's
-  warning box used `visible: prof && prof.warning && prof.warning.length > 0`,
-  which evaluates to `undefined` before the first profile is taken. QML does not
-  fail loudly on that: it drops the binding and the property keeps its DEFAULT,
-  and for `visible` the default is TRUE — so the box appeared with nothing in
-  it. Wrapped in `!!`, and a test now asserts Qt reports no
-  "Unable to assign [undefined] to bool" while the ROI editor is exercised.
-- **The brush and eraser were unreachable unless the ROI mode was already
-  "Manual polygon".** That is the mode you get to BY drawing, so a file set to
-  "None" — the usual state — showed no drawing tools and no hint that they
-  existed. The tool row is now shown whenever an image is loaded, and picking
-  Polygon, Brush or Eraser switches the mode itself.
-
-## v2.76.51-rc.9 — 23 Sep 2026
-
-### Fixed
-
-- **The CZI shim crashed on machines without `czifile`.** Its error path named
-  the module directly, but `czifile` is an optional dependency imported behind
-  `HAS_CZIFILE`, so on any install without it the branch raised `NameError`
-  instead of the intended message. Introduced in rc.7 and caught by the no-Qt
-  CI job, which does not install it.
-- **The Qt test suite no longer segfaults intermittently.** Two independent
-  leaks, both of the same shape — something outliving the controller it calls
-  back into, then firing during a LATER test's `processEvents()` loop, so the
-  fault was attributed to whichever test happened to be running:
-  - controller QTimers (250ms-1s) left active after their window was gone. The
-    shared QML fixture only stopped timers held as a direct attribute; timers
-    reached through a list, dict or helper object survived. Teardown now also
-    walks `findChildren(QTimer)`, and any still-active timer is stopped after
-    every test.
-  - worker threads (`FIREFLY-CondLoad`, `FIREFLY-ExtAnalyse`, the figure/report
-    jobs) still writing into a controller being destroyed. Individual test files
-    waited for them, but their helpers are imported across files without those
-    waits, so the drain now happens once for every test.
-  Update checks additionally track their background threads so teardown can wait
-  for them rather than racing a daemon thread. Verified over eight consecutive
-  full runs, against roughly one failure in two before.
-
-## v2.76.51-rc.8 — 23 Sep 2026
-
-### Added
-
 - **Paint ROIs with a brush.** Preview & ROI gains a Polygon / Brush / Eraser
   tool selector, a brush-size slider with a true-scale cursor, undo-per-stroke
   and erase-all — for branching neurites, where clicking a polygon vertex by
@@ -571,145 +114,6 @@
   at its own value; the shared sidebar threshold and every other file are left
   alone, and auto-minmass is disabled for that file only. Runs record
   `minmass_per_file`.
-
-### Fixed
-
-- Compare now warns when one group's runs mix detection thresholds (reading
-  `resolved_minmass`, so auto-picked variation counts). Mass is file-relative,
-  so a mixed group changes what counts as a spot between replicates — the exact
-  route by which a detection difference gets mistaken for a biological one.
-
-### Changed
-
-- The noise-floor marker is shown only when the sample supports one. Measured on
-  real recordings the valley estimate moved between ~0.27 and ~0.47 depending
-  only on which frames were sampled, identically at 16, 48 and 96 frames — so
-  more data does not settle it. The halves of the sample must now agree before a
-  floor is drawn; otherwise the panel reports the values it oscillated between
-  and draws no line, rather than offering a number to aim at.
-
-## v2.76.51-rc.7 — 23 Sep 2026
-
-### Fixed
-
-- **The parallel CZI decoder works again.** czifile moved subblock decoding off
-  the directory entry — `entry.data_segment()` up to 2024.5.22,
-  `entry.read_segment_data(czi)` since — and all three call sites sat inside
-  `except Exception`, so on a current czifile the decoder raised AttributeError
-  on its first subblock and every file silently fell back to the
-  single-threaded read. One "Parallel decode failed (…)" line in the log was
-  the only symptom. Loading a 16,000-frame Elyra recording drops from ~3 min to
-  **21 s** (955 vs 81 frames/s, 11.8×); decoded frames are byte-identical to
-  aicspylibczi's bulk read, which the decoder's own spot-check already enforced.
-  Both czifile spellings are now supported, and a third rename will raise
-  loudly instead of quietly disabling the fast path.
-
-## v2.76.51-rc.6 — 23 Sep 2026
-
-### Fixed
-
-- **The ensemble MSD is now a mean over displacement pairs, not over tracks.**
-  Each track used to count equally whether it contributed one pair or twenty.
-  Pair counts fall with lag at a rate set by each track's own length and gaps,
-  so the weighting drifted with lag and bent the curve: every MB543B recording,
-  in both conditions, showed the ensemble MSD going DOWN from lag 4 to lag 5 —
-  a step that reads as confinement that isn't there. All 14 are monotonic under
-  the new estimator, with roughly half the curvature. This is the standard
-  estimator (what `trackpy.emsd` computes). It changes the MSD panel and
-  `auc_msd` (both drop 15–35%, in both conditions); per-track D, α and the other
-  per-track metrics are fitted separately and are unaffected. Re-run to update
-  existing outputs — saved `_ensemble_msd.csv` files keep the old curve.
-- **A non-positive MSD slope no longer deletes the track from the mobile
-  fraction.** Roughly half of a genuinely immobile population produces a
-  negative finite-sample slope, and those rows carry no D, so every
-  `isfinite(D) & (D > 0)` filter silently dropped them from the denominator —
-  ~10% of real tracks, inflating the mobile fraction from 69% to 79% (control)
-  and 72% to 81% (1-AMA). They now count as immobile, via one shared rule
-  (`fa_diffusion.mobility_masks`) used by the headline number, the
-  mobile-fraction panel and the mob/immob ratio so the three cannot disagree.
-- **Separate ordinary diffusion D from anomalous Kα.** D now comes from a
-  signed-intercept linear MSD fit in µm²/s; Kα and α are separate diagnostics.
-  Negative estimates remain in D_linear_raw, with physical D unavailable.
-- A ballistic α near 2 no longer implies immobility. A track whose MSD never
-  rises above its own static floor is still classified Immobile by its
-  displacement, which needs no exponent — there is no track-length gate on the
-  motion classes (a blanket "fewer than 20 observations → Unknown" rule left
-  ~80% of real tracks, median length 12, unclassified).
-- Suppress duplicate converged Torch peaks consistently in exports and previews.
-  The Trackpy iterator now preserves empty frames and filtered DataFrame indices.
-- Drift smoothing preserves linear trends, including at acquisition endpoints.
-- Requested ROI failures stop analysis instead of silently falling back to a
-  different mask or the whole image.
-
-### Changed
-
-- Manual minmass preview now calls the production detector on raw frames,
-  honours the selected backend/CZI channel, and distinguishes contrast/ROI
-  rejections with inspectable masses and reasons. Old overlays are invalidated
-  on edits; exact numeric threshold entry and scrollable controls were added.
-  Unsupported ROI predictions and final track retention are explicitly labelled.
-- Drift correction now uses quality-weighted subpixel RCC, adaptive windows,
-  rejection of weak/ambiguous peaks and a graph check that excludes disconnected
-  or single-bridge support. Unsupported corrections can be skipped or stop a run.
-- Added a separate rectangular drift-reference region, reference CSV input and
-  stationary-fiducial mode. Exports include drift plots, segment/pair diagnostics,
-  reference provenance and QC status. See `docs/drift_correction.md`.
-- Metrics schema 3 prevents pooling the changed estimators with older outputs.
-- Both built-in presets explicitly set all scientific sidebar controls, so
-  nothing is inherited from the previous run. The Drosophila preset uses a fixed
-  minmass of 0.45 with density matching off, ten MSD lags and four fit lags.
-  This is a starting point requiring validation, not an established optimum.
-- Raw contrast/noise filtering is available and records its exclusions in the
-  run parameters, preserving raw_cnr per localisation. It ships **off** in both
-  presets: at a threshold of 3 it removes roughly half of low-density
-  detections and ~99% of high-density ones, and discards every candidate within
-  `diameter` px of the frame edge, so the cutoff is a per-experiment choice.
-  Original raw data and previous output folders are not migrated or rewritten.
-- The JDD keeps subtracting the MSD fit's static offset by default, so its D's
-  stay comparable with the MSD D. That intercept also absorbs motion blur, so it
-  is not a calibrated noise variance; the output labels itself accordingly.
-
-## v2.76.51-rc.5 — 8 Sep 2026
-
-### Fixed
-
-- **With several runs open in Visualise, only the first could have its region
-  edited.** Overlaying runs is routine there — that is what the run colours in
-  the Layers panel are for — and each is a separate analysis with its own
-  region, so each now gets its own entry in the Region of interest panel.
-
-- **Two runs could offer identically-labelled buttons.** A run is labelled by
-  the name of its trajectories file, which is not unique: a run and the
-  post-processed copy this feature creates share one, as do two recordings
-  analysed from identically-named files in different folders. Where names
-  collide the folder name is shown instead, since that is what actually tells
-  the runs apart.
-
-## v2.76.51-rc.4 — 8 Sep 2026
-
-### Fixed
-
-- **The new Region of interest panel showed a Stop button when nothing was
-  running, and its heading had no icon.** The controller behind the panel was
-  being discarded as soon as the window finished building, so the interface had
-  nothing to ask whether a re-analysis was in progress — and a control whose
-  visibility cannot be determined is shown rather than hidden. The panel's icon
-  was simply a name with no artwork behind it.
-
-- **Three buttons elsewhere in FIREFLY have been rendering without their
-  icons**: "Remove" in Preferences, "Add files" in Import, and "Clear" in
-  Visualise. All three asked for artwork that does not exist. Found by a new
-  check that every icon named anywhere in the interface actually exists — a
-  missing one is invisible rather than an error, so it can sit unnoticed
-  indefinitely.
-
-- The Region of interest panel now says where to open a run when none is open,
-  rather than only that one is needed.
-
-## v2.76.51-rc.3 — 7 Sep 2026
-
-### Added
-
 - **Regions of interest can now be drawn and edited AFTER an analysis has run.**
   Until now an ROI had to be decided before processing, over the raw movie, in
   the Import tab — before you had seen a single track. Open a run in Visualise,
@@ -739,59 +143,188 @@
   Runs are also now recorded with their ROI's actual outline rather than only a
   rasterised mask, which is what makes an existing region editable at all. Runs
   analysed before this release open with an empty region.
+- **Two new graphs on every single-file analysis: Track Length and Total
+  Tracks.** They are the sampling behind every per-track number in the figure —
+  D, the anomalous exponent and the MSS slope are each a curve fitted to one
+  track's handful of points, so how many points there were, and how many tracks
+  there are to average over, decide how much weight the rest of the figure can
+  carry.
 
-### Fixed
+  **Track Length** is a box plot of every trajectory in the recording, with the
+  mean marked alongside the median. A box rather than a mean bar because the
+  quantity is heavily right-skewed: on real recordings the mean runs 1.5–2× the
+  median, pulled up by a handful of stuck or aggregated emitters that stay lit
+  for thousands of frames. The box shows what a typical trajectory actually
+  carried, and the distance between the median line and the mean marker is the
+  skew, made visible instead of hidden inside one number. Outlier markers are
+  not drawn — with thousands of tracks they pile into a solid vertical streak
+  that reads as a line of individual samples — but nothing is trimmed from the
+  data the box is computed from, and the longest track is stated in the corner,
+  since a trajectory persisting for thousands of frames is the tell for a stuck
+  or aggregated emitter.
 
-- **The sample-drift QC number was never produced.** The calculation referred to
-  numpy by a name this file does not use, so it failed instantly on every run and
-  a catch-all replaced the failure with "no value". Nothing was wrong with your
-  data — drift correction itself ran normally — but the readout telling you how
-  far the sample drifted has always been blank.
+  **Total Tracks** is a plain bar giving the number of trajectories, stated
+  large enough to read straight off for a slide or a table. Note it is a raw
+  count, so it is not comparable between recordings with different ROI sizes
+  without dividing by area first.
 
-- **Every exported super-resolution image was cropped to the molecules.** The
-  reconstruction should be drawn on a canvas the size of the camera's field of
-  view; instead it asked the raw image stack for its dimensions after that stack
-  had already been freed from memory, and the same kind of catch-all turned the
-  failure into "no field size". The renderer then fell back to a tight box around
-  wherever localisations happened to be. On a 512-pixel field that is a 815×895
-  image where it should be 2560×2560. The molecules were always drawn in the
-  right places — only the framing was wrong, so images from different recordings
-  could not be compared at a common scale or lined up with the trajectory and
-  density panels. Re-process a recording to get a correctly framed one.
-
-- Post-processed runs are named after the original recording rather than after
-  the temporary file used to feed the pipeline.
-
-## v2.76.51-rc.2 — 4 Sep 2026
-
-### Fixed
-
-- **The MSD-AUC comparison graph was silently dropping replicates.** A recording
-  whose ensemble-MSD curve has an unpopulated lag — no track long enough to
-  reach it, which is ordinary and expected at the longest lags — had its AUC
-  computed as "no value at all" rather than as the area under the part of the
-  curve that exists. That replicate then vanished from the AUC panel while every
-  other panel kept it, so a condition with four folders could render as two, and
-  the statistics beneath it degraded to "n<3 replicates — underpowered, not
-  interpretable" and reported no significant difference.
-
-  Nothing else was affected: the MSD panel, the medians and every other
-  comparison were correct throughout. Only the AUC panel, and only for
-  recordings with an unpopulated lag. If you have run a comparison where the AUC
-  graph showed fewer points than the others, or called a difference
-  non-significant that the other panels showed clearly, that comparison is worth
-  re-running.
-
-  The area is now integrated over the lags that have data. Curves with no
-  missing lags give exactly the number they always did.
-
-- The same quantity had **two separate implementations** — the analysis core's
-  and the Analysis tab's own copy — and they disagreed on precisely this case,
-  so the live AUC card showed a value the exported panel had already discarded.
-  The tab now uses the core's integrator, so the two cannot drift apart again.
+  Both appear in the exported figure, in the per-panel PNGs, and as two more
+  choices in the Analysis tab's All-panels gallery, where they pool across a
+  condition's replicates. Runs analysed before this release need re-processing
+  to gain them.
 
 ### Changed
 
+- **The overlaid MSD graph has error bars.** "Group overlaid" drew only each
+  condition's mean curve. It now shows mean ± the Analysis tab's Error setting
+  (SD / SEM / 95% CI) between recordings, as the faceted style does — choose
+  SEM to match the lab's published figures. Each condition's bars sit slightly
+  to one side of the time point so they do not hide one another.
+- **One style for all comparison graphs.** Preferences → Graph styles had
+  fifteen identical Box + points / Violin + points / Bar rows, one per graph.
+  One "Comparison graphs" setting now draws them all; any single graph can
+  still be set apart under "Customise individual graphs". Graphs you had
+  already changed keep their style.
+
+- **Trajectory length** can be drawn as a cumulative curve (the default, as
+  before) or as overlaid densities with a dashed line at the minimum
+  trajectory length.
+
+- **MSD-AUC's paired-lines and Δ-box options say they need timepoints**;
+  without them the graph is drawn as box + points.
+- **Dragging the detection threshold is live.** The slider no longer saves the
+  setting on every step (each save redrew the whole parameter sidebar);
+  detection runs in the background, the previous overlay stays up until the
+  new one is ready, and thresholds you have already visited show at once. The
+  setting is saved when you let go, click an arrow or type a value. The preview
+  finds exactly the spots a run finds at that threshold.
+- **Comparison figure layout.** Each panel gets the shape that suits it —
+  distribution curves and MSD facets wide, box/bar comparisons near square, the
+  polar plot square — panels of one shape share rows, and the most important
+  measures come first (MSD, D distribution, AUC, mobile fraction, diffusive
+  states), with trajectory bookkeeping and QC last.
+
+- **Motion classes moved down the figure.** On simulated trajectories of fly
+  length (~10 points) the per-trajectory α classes call a Brownian trajectory
+  "Brownian" only 5% of the time; the diffusive states above are the reliable
+  measure. The panel is still exported.
+
+- **Motion-class colours on light figures** are redone so neighbouring classes
+  are clearly distinct, including for colour-blind readers, and the
+  colour-blind set's Confined is now yellow. The key sits beside the bars and
+  the panel widens with the number of groups.
+
+- **Analysis-tab graph names** follow the figure wording: Diffusion
+  coefficient, Trajectory length, Trajectory duration, Trajectory count.
+- **The comparison shows the mobile fraction** (mobile ÷ all, 0–1) instead of
+  the mobile/immobile ratio, which is unbounded and undefined for a recording
+  with no immobile trajectory. The ratio is still in the summary CSV.
+
+- **Distribution curves weight every recording equally** — log D, trajectory
+  length, dwell time and turning angles show the mean of the recordings' curves
+  with the SEM shaded, as in the van Swinderen lab's figures. Pooling every
+  trajectory let the recordings with the most trajectories set a group's curve.
+  Pooling is still available (Preferences → Figures → Distribution curves).
+
+- **Titles and axis labels use the van Swinderen lab's wording**: MSD (µm²)
+  against Time (s), AUC (µm²s), Log₁₀ diffusion coefficient (µm²/s), Relative
+  frequency (fractions), "Slow/immobile fraction" and "Fast/mobile fraction",
+  trajectories rather than tracks, sentence case. The density curves' axis reads
+  "Probability density (per log₁₀ unit)".
+
+- **Minimal figures** also drop panel titles and mark comparisons with stars
+  (* p < 0.05, ** p < 0.01, *** p < 0.001, n.s.) instead of p-values.
+
+- **Median lines and error bars are neutral**, not red, which read as
+  "significant".
+
+- **The colour-blind option recolours motion classes everywhere**: the
+  comparison report, the Analysis tab and each run's figure, not only the
+  Visualise viewer.
+- **Comparison graphs show a p-value for every pair of groups**, each on a
+  bracket above the data, and nothing else: the test, effect sizes and
+  correction are in the statistics CSV. With up to four groups every testable
+  pair is bracketed; with more, only the significant pairs. A group with a
+  single replicate cannot be tested, so it gets no bracket.
+
+- **Replicate dots are drawn in their group's colour**, and slightly smaller.
+- **About 3,000 lines of unused code removed.** The retired pre-QML viewer and
+  ROI editor, napari-era interface helpers, an unused GPU refinement path in the
+  PyTorch detector, an abandoned "CUDA declined" setting, interface properties no
+  screen used, and unused imports. Nothing you use changes; the code that runs
+  your analyses is now easier to follow and to check.
+- **The wavelet detector now reproduces PALMTracer's.** The à trous wavelet
+  engine is replaced by **Wavelet — palmTRACER-style (CPU)**, a reconstruction
+  of PALMTracer's wavelet detection. It works on the raw frames and takes
+  PALMTracer's own wavelet threshold, so a value from a PALMTracer analysis
+  carries over unchanged. On the 2015 PC12 recordings analysed in PALMTracer it
+  finds the same spots (98–99.9%), the same tracks (94–99.5%) and the same
+  median D in every region, where the old engine shared 28–53% of tracks. On
+  two datasets never used to build it, every spot matched. Tracking is close but
+  not identical: FIREFLY links with its own linker, so a long track through a
+  close encounter between molecules can split differently. Settings and run
+  manifests that name the old engine now use the new one. Set the threshold in
+  the sidebar (**Wavelet threshold (palmTRACER)**) or the Threshold panel;
+  minmass and auto-minmass do not apply to this detector.
+- **Median D now counts the molecules that did not move.** A track whose MSD
+  does not rise gets a non-positive slope and no measurable D. The mobile
+  fraction has counted those tracks as immobile since rc.6, but median D skipped
+  them, so it described only the molecules that moved and read high — 0.128 vs
+  0.088 µm²/s on a PC12 recording also analysed in PALMTracer, the largest
+  single reason the two programs' medians disagreed. They now count at
+  1e-5 µm²/s, the floor PALMTracer uses, everywhere median D is reported: the
+  run summary, the comparison report and PALMTracer imports. Tracks with too few
+  lags or below resolution stay out, as they do in the mobile fraction.
+  **Median D will be lower than before** for any recording with non-moving
+  tracks; re-run comparisons to pick it up.
+- **Drawing an ROI and choosing a detection threshold are now two screens, with
+  a button each.** They shared one modal reached by one button, so picking a
+  threshold meant opening something labelled "ROI" and scrolling past the
+  polygon tools, and tracing a region meant scrolling past the mass histogram.
+  Every row in the batch queue now offers **ROI** and **Threshold** separately,
+  and so does the single-file preview card. Same viewer, same file, same saved
+  settings — it just opens on the screen you asked for, and the title says which
+  one you are on.
+
+- **The detection threshold has arrows.** A 0–50 slider and a text box were the
+  only ways to move a number that matters at the second decimal place: one
+  slider pixel is a large fraction of a working minmass of ~0.45, and trying
+  0.46 meant retyping the whole value. The exact field now has **−** and **+**
+  either side of it — hold to repeat, or use ↑/↓ in the field — and a **Nudge
+  by** row picks the increment (0.001 / 0.01 / 0.1 / 1). One fixed increment
+  could not serve every case: mass is in the selected detector's own units, so a
+  sensible step on trackpy is the wrong order of magnitude elsewhere.
+- The noise-floor marker is shown only when the sample supports one. Measured on
+  real recordings the valley estimate moved between ~0.27 and ~0.47 depending
+  only on which frames were sampled, identically at 16, 48 and 96 frames — so
+  more data does not settle it. The halves of the sample must now agree before a
+  floor is drawn; otherwise the panel reports the values it oscillated between
+  and draws no line, rather than offering a number to aim at.
+- Manual minmass preview now calls the production detector on raw frames,
+  honours the selected backend/CZI channel, and distinguishes contrast/ROI
+  rejections with inspectable masses and reasons. Old overlays are invalidated
+  on edits; exact numeric threshold entry and scrollable controls were added.
+  Unsupported ROI predictions and final track retention are explicitly labelled.
+- Drift correction now uses quality-weighted subpixel RCC, adaptive windows,
+  rejection of weak/ambiguous peaks and a graph check that excludes disconnected
+  or single-bridge support. Unsupported corrections can be skipped or stop a run.
+- Added a separate rectangular drift-reference region, reference CSV input and
+  stationary-fiducial mode. Exports include drift plots, segment/pair diagnostics,
+  reference provenance and QC status. See `docs/drift_correction.md`.
+- Metrics schema 3 prevents pooling the changed estimators with older outputs.
+- Both built-in presets explicitly set all scientific sidebar controls, so
+  nothing is inherited from the previous run. The Drosophila preset uses a fixed
+  minmass of 0.45 with density matching off, ten MSD lags and four fit lags.
+  This is a starting point requiring validation, not an established optimum.
+- Raw contrast/noise filtering is available and records its exclusions in the
+  run parameters, preserving raw_cnr per localisation. It ships **off** in both
+  presets: at a threshold of 3 it removes roughly half of low-density
+  detections and ~99% of high-density ones, and discards every candidate within
+  `diameter` px of the frame edge, so the cutoff is a per-experiment choice.
+  Original raw data and previous output folders are not migrated or rewritten.
+- The JDD keeps subtracting the MSD fit's static offset by default, so its D's
+  stay comparable with the MSD D. That intercept also absorbs motion blur, so it
+  is not a calibrated noise variance; the output labels itself accordingly.
 - **Every comparison graph you can browse is now exported by the report.** The
   scroller offers 24 panels; Generate report was writing 21. Track count,
   Observed-link distance and Observed-link speed were held out of the default
@@ -827,6 +360,341 @@
 
 ### Fixed
 
+- **Motion classes are now corrected with every other measure.** With
+  "correct across metrics" on, the per-recording Immobile, Confined, Brownian
+  and Directed fractions were tested but left out of the correction, so the
+  statistics files reported them with an uncorrected p-value. They are now in
+  the same correction as the other measures, whether or not the motion-class
+  graph is drawn.
+- **The trajectory-duration graph no longer collapses.** It plotted each
+  recording's median trajectory duration, but trajectories last whole frames,
+  so every recording came out as one of a few values (0.18 s, 0.20 s, …) and
+  the boxes flattened onto a line. It now shows each recording's mean
+  trajectory duration.
+- **Corrected p-values no longer depend on which graphs are drawn.** With
+  "correct across metrics" on, only the measures whose graphs were in the
+  figure were corrected together, so the same comparison gave different
+  corrected p-values (and stars) for the full figure, a selection of graphs
+  and each graph exported on its own. Every measure is now always in the
+  correction, whichever graphs are drawn, so the statistics files, the full
+  figure and each exported graph agree.
+- **Correcting across metrics now includes the diffusive states.** With
+  "correct across metrics" switched on, the three state occupancies and the
+  three within-state diffusion coefficients were left out of the correction,
+  so the state graphs kept uncorrected stars beside corrected ones on every
+  other graph. They are now corrected with the rest, in the statistics files
+  and on the graphs.
+- **The trajectory length style did nothing.** It offered Density / Box, but
+  the graph was always a cumulative curve and never read the setting.
+
+- **Minimal figures kept the overlaid MSD graph's legend**, in exports and in
+  the Analysis tab. Every legend is now removed.
+
+- **Minimal figures left empty space beside the motion-class and diffusive-
+  state bars** where their colour key had been. The bars now fill the panel.
+
+- **The batch queue said "None" for a file with an ROI** when its ROI was
+  painted with the brush still selected from the previous file and it then
+  got its own threshold. The run did use the ROI; the badge now says
+  "Polygon" for any file with one.
+- **A brush-painted ROI followed you to the next file.** After painting an ROI
+  with the brush and opening another recording, the previous file's region
+  stayed drawn over the new one, and the first stroke on the new file was added
+  to it — so the second file's ROI came out as the first file's region plus
+  the new strokes (and the same in reverse on going back). Each file now starts
+  from its own saved ROI. **Check ROIs painted with the brush since rc.8**
+  (when the brush arrived) before running them. Polygon ROIs were not
+  affected.
+- **Running FIREFLY's test suite on a Mac no longer changes the app's saved
+  settings.** The tests read and wrote the live preferences there (on other
+  systems they were already kept apart).
+- **The Analysis tab's export named graphs without a stats metric after D**,
+  so exporting several of them overwrote one file.
+
+- **The per-condition view's "Export panel (PDF)" and "Export all (PDF)"**
+  both saved the same single PNG. They are now "Export panel (PNG)" and
+  "Export all (PNG)", and do that.
+
+- **A "Comparison suppressed" notice could break the figure's layout**,
+  overlapping panels. It now spans its own row.
+- **Anomalous-exponent fits that stop at their limits are no longer
+  classified.** At the track lengths typical of fly recordings (about 10
+  points), many α fits ended on the edge of the fit's range (α = 0 or 2) and
+  were counted as Immobile or Directed; on simulated Brownian tracks 45% came out
+  "Directed". Those fits are now unclassified. A genuinely ballistic track keeps
+  α = 2. D is unchanged. **Motion-class percentages will differ from earlier
+  runs** — re-run to update them.
+
+- **The Analysis tab's mobile % now counts the same trajectories as the
+  report.** Trajectories whose MSD slope came out non-positive are immobile in
+  both; the tab used to leave them out.
+
+- **A group with a single recording was drawn as a flat box.** It is now drawn
+  as its dot.
+
+- **In the Analysis tab, replicate dots inside a box were hidden** by the box's
+  solid group colour. Boxes are now a pale tint with a coloured outline, as in
+  the report.
+- **JDD population fits no longer stick to their limits.** The jump-distance
+  fit was given the median MSD intercept as its localisation-error offset. That
+  intercept also holds the plateau of confined tracks and motion blur, and on
+  fly recordings it was larger than most jumps, so every fit ended on its bounds
+  (D = 10⁻⁶ and 100 µm²/s) and the comparison panel plotted those as
+  populations. The offset now comes only from per-localisation precision when
+  the detector provides it; otherwise the JDD reports apparent D, labelled as
+  such. A fit that still ends on a limit is marked and never plotted, including
+  in runs saved by older versions — re-run those to refit. **JDD values will
+  differ from earlier runs.**
+
+- **The Analysis tab's quick graphs ran their own Kruskal–Wallis test**, so one
+  comparison could carry two different p-values. They now use the same
+  statistics as the report and the stats cards.
+
+- **A p-value too small to compute showed as "p = 0.00e+00".** It now reads
+  "p < 1e-300".
+- **The CUDA installer now says why it couldn't reach the PyTorch index.** A
+  failed index fetch was meant to be reported under "Last probe error", but the
+  message was dropped on the way, so the failure appeared with no reason given.
+- **Reopening a file that has its own threshold showed the shared one.** The
+  Threshold panel re-read the sidebar's minmass on open, so the file's own value
+  was replaced on screen, and the next Save wrote the sidebar's value over it.
+  Present since rc.8.
+
+- **A change to the shared minmass replaced the open file's own threshold.**
+  While the Threshold panel was open on a file with its own value, any change to
+  the sidebar minmass was copied into it.
+- **The PALMTracer-format D files wrote non-moving tracks blank.** PALMTracer
+  pins them at D = 1e-5 and LogD = −5 and keeps the row; FIREFLY left both
+  columns empty (the LogD clamp leaves NaN as NaN, despite the exporter's own
+  comment that immobile tracks "pile at the floor"), so anything reading the
+  file the PALMTracer way lost about 15% of tracks, all immobile. They are now
+  written as PALMTracer writes them. The file's Mobile/Immobile ratio is
+  unchanged: it follows PALMTracer's rule, which leaves those tracks out.
+- **A batch could write one folder's results into another folder.** Picking a
+  folder while the previous one was still being scanned — easy on an external
+  drive — skipped the new scan entirely. The old folder's recordings filled the
+  queue while the Source row named the new one, and with the default output
+  (`<source>/batch_results`) their results were written into the wrong folder.
+  Every scan now records which folder it was for; a superseded result is
+  discarded and the folder you actually chose is scanned.
+
+- **The Analysis tab ignored the Log-D clip range.** The setting is entered as
+  log₁₀D and runs have honoured it, but the Analysis tab still read the retired
+  linear keys, which nothing writes. It always clamped at 10⁻⁵…10 µm²/s whatever
+  the sidebar said, and changing the range never redrew it. It now reads the
+  same keys, converted the same way, as the runs.
+
+- **Stopping a HYPER-FLY batch reported the files it never started as failed.**
+  Stop a 12-file run after 3 and the status read "12 / 12 done · 9 failed",
+  nine queue rows turned red and nine dashboard tiles said "Failed" with no
+  reason. Files that never started are no longer counted as failures; the log
+  says how many were not started instead. A worker failure whose message is
+  empty — a MemoryError on a large recording, say — now names its cause rather
+  than showing a blank.
+
+- **Two script errors on every visit to the Import and Process tabs.** A badge
+  and the run-result card read a property of their own from inside their slide
+  transform, where it is not in scope, so the lookup threw and the slide-in never
+  played.
+- **The detection threshold panel stalled on every interaction.** Each change —
+  moving the slider, typing a value, flipping "Use for this file only" — refitted
+  the noise floor from scratch: three GaussianMixture fits on the GUI thread,
+  measured at ~15 ms and ~100% of the cost of rebuilding the panel. The floor
+  describes the harvested candidates, not the threshold you are choosing, so it
+  is now fitted once per recording and cached alongside them. Rebuilding the
+  panel went from 14.2 ms to 0.3 ms, and the per-file toggle from ~16 ms to
+  ~0.6 ms. Pressing **Profile** still re-harvests and refits, because that is
+  what it is for.
+
+- **The mass histogram never followed the threshold.** Three handlers called
+  `guide.rescore()`, which was never defined. QML abandons the rest of a handler
+  when one throws, so the TypeError took the whole thing with it: the histogram
+  and the kept-count readouts never re-scored against the new threshold, and the
+  detection overlay was never re-run either. Both are the reason that panel
+  exists, and neither failed visibly — the error went to the Qt log and the UI
+  simply did nothing. Introduced in rc.8, present until now.
+- **The detection threshold screen opens on raw frames.** Detection runs on
+  acquired frames, so the overlay draws nothing over a max projection — it posts
+  "Select Raw frames" instead. Opening the threshold screen on the projection
+  therefore showed the overlay switched on, no dots, and a nag, which is the
+  opposite of its purpose. It now opens on frame 1 with the spots already drawn.
+  The ROI screen still opens on the projection, which is the right canvas for
+  tracing a region.
+
+- **A typed number stopped following what it displays.** The numeric field
+  assigned its own value on commit, which destroyed the binding to its source.
+  So after typing a detection threshold, dragging the slider no longer moved the
+  number in the box: it sat frozen at what had been typed while the real
+  threshold changed underneath it. The field now only reports the new value and
+  lets its owner write back, exactly as the sliders already did. This affects
+  every numeric field in the app, not only this one.
+
+- **A folder-loading thread could emit into a destroyed controller.** The
+  Analysis tab's loaders run on plain threads and signal back into the
+  controller that started them. If that controller was destroyed while a load
+  was still in flight, the queued signal was delivered into freed memory and
+  crashed inside whatever event loop happened to be running — far from the
+  cause. The loaders are now tracked and the emit checks the object is still
+  alive first. This removes one known contributor to the intermittent crash; it
+  is not a claim that every cause is now gone.
+- **Drawing an ROI blanked the detection dots.** Every polygon edit — a brush
+  stroke, a vertex drag — discarded the whole detection overlay and marked it
+  "outdated", so the spots vanished exactly while you were using them to judge
+  where to draw, and did not return until a refresh. An ROI edit does not change
+  what was DETECTED, only which candidates fall inside it, so the cached
+  candidates are now re-labelled in place: the dots stay on screen and their
+  green/red classification updates as you draw. Changing the threshold, frame,
+  diameter, background or backend still re-runs the detector, because those do
+  change what is found.
+- **An empty red alert appeared above the detection preview.** The panel's
+  warning box used `visible: prof && prof.warning && prof.warning.length > 0`,
+  which evaluates to `undefined` before the first profile is taken. QML does not
+  fail loudly on that: it drops the binding and the property keeps its DEFAULT,
+  and for `visible` the default is TRUE — so the box appeared with nothing in
+  it. Wrapped in `!!`, and a test now asserts Qt reports no
+  "Unable to assign [undefined] to bool" while the ROI editor is exercised.
+- **The brush and eraser were unreachable unless the ROI mode was already
+  "Manual polygon".** That is the mode you get to BY drawing, so a file set to
+  "None" — the usual state — showed no drawing tools and no hint that they
+  existed. The tool row is now shown whenever an image is loaded, and picking
+  Polygon, Brush or Eraser switches the mode itself.
+- **The CZI shim crashed on machines without `czifile`.** Its error path named
+  the module directly, but `czifile` is an optional dependency imported behind
+  `HAS_CZIFILE`, so on any install without it the branch raised `NameError`
+  instead of the intended message. Introduced in rc.7 and caught by the no-Qt
+  CI job, which does not install it.
+- **The Qt test suite no longer segfaults intermittently.** Two independent
+  leaks, both of the same shape — something outliving the controller it calls
+  back into, then firing during a LATER test's `processEvents()` loop, so the
+  fault was attributed to whichever test happened to be running:
+  - controller QTimers (250ms-1s) left active after their window was gone. The
+    shared QML fixture only stopped timers held as a direct attribute; timers
+    reached through a list, dict or helper object survived. Teardown now also
+    walks `findChildren(QTimer)`, and any still-active timer is stopped after
+    every test.
+  - worker threads (`FIREFLY-CondLoad`, `FIREFLY-ExtAnalyse`, the figure/report
+    jobs) still writing into a controller being destroyed. Individual test files
+    waited for them, but their helpers are imported across files without those
+    waits, so the drain now happens once for every test.
+  Update checks additionally track their background threads so teardown can wait
+  for them rather than racing a daemon thread. Verified over eight consecutive
+  full runs, against roughly one failure in two before.
+- Compare now warns when one group's runs mix detection thresholds (reading
+  `resolved_minmass`, so auto-picked variation counts). Mass is file-relative,
+  so a mixed group changes what counts as a spot between replicates — the exact
+  route by which a detection difference gets mistaken for a biological one.
+- **The parallel CZI decoder works again.** czifile moved subblock decoding off
+  the directory entry — `entry.data_segment()` up to 2024.5.22,
+  `entry.read_segment_data(czi)` since — and all three call sites sat inside
+  `except Exception`, so on a current czifile the decoder raised AttributeError
+  on its first subblock and every file silently fell back to the
+  single-threaded read. One "Parallel decode failed (…)" line in the log was
+  the only symptom. Loading a 16,000-frame Elyra recording drops from ~3 min to
+  **21 s** (955 vs 81 frames/s, 11.8×); decoded frames are byte-identical to
+  aicspylibczi's bulk read, which the decoder's own spot-check already enforced.
+  Both czifile spellings are now supported, and a third rename will raise
+  loudly instead of quietly disabling the fast path.
+- **The ensemble MSD is now a mean over displacement pairs, not over tracks.**
+  Each track used to count equally whether it contributed one pair or twenty.
+  Pair counts fall with lag at a rate set by each track's own length and gaps,
+  so the weighting drifted with lag and bent the curve: every recording of a
+  real fly dataset, in both conditions, showed the ensemble MSD going DOWN from
+  lag 4 to lag 5 — a step that reads as confinement that isn't there. All are
+  monotonic under the new estimator, with roughly half the curvature. This is the standard
+  estimator (what `trackpy.emsd` computes). It changes the MSD panel and
+  `auc_msd` (both drop 15–35%, in both conditions); per-track D, α and the other
+  per-track metrics are fitted separately and are unaffected. Re-run to update
+  existing outputs — saved `_ensemble_msd.csv` files keep the old curve.
+- **A non-positive MSD slope no longer deletes the track from the mobile
+  fraction.** Roughly half of a genuinely immobile population produces a
+  negative finite-sample slope, and those rows carry no D, so every
+  `isfinite(D) & (D > 0)` filter silently dropped them from the denominator —
+  ~10% of real tracks, inflating the mobile fraction by about ten percentage
+  points. They now count as immobile, via one shared rule
+  (`fa_diffusion.mobility_masks`) used by the headline number, the
+  mobile-fraction panel and the mob/immob ratio so the three cannot disagree.
+- **Separate ordinary diffusion D from anomalous Kα.** D now comes from a
+  signed-intercept linear MSD fit in µm²/s; Kα and α are separate diagnostics.
+  Negative estimates remain in D_linear_raw, with physical D unavailable.
+- A ballistic α near 2 no longer implies immobility. A track whose MSD never
+  rises above its own static floor is still classified Immobile by its
+  displacement, which needs no exponent — there is no track-length gate on the
+  motion classes (a blanket "fewer than 20 observations → Unknown" rule left
+  ~80% of real tracks, median length 12, unclassified).
+- Suppress duplicate converged Torch peaks consistently in exports and previews.
+  The Trackpy iterator now preserves empty frames and filtered DataFrame indices.
+- Drift smoothing preserves linear trends, including at acquisition endpoints.
+- Requested ROI failures stop analysis instead of silently falling back to a
+  different mask or the whole image.
+- **With several runs open in Visualise, only the first could have its region
+  edited.** Overlaying runs is routine there — that is what the run colours in
+  the Layers panel are for — and each is a separate analysis with its own
+  region, so each now gets its own entry in the Region of interest panel.
+
+- **Two runs could offer identically-labelled buttons.** A run is labelled by
+  the name of its trajectories file, which is not unique: a run and the
+  post-processed copy this feature creates share one, as do two recordings
+  analysed from identically-named files in different folders. Where names
+  collide the folder name is shown instead, since that is what actually tells
+  the runs apart.
+- **The new Region of interest panel showed a Stop button when nothing was
+  running, and its heading had no icon.** The controller behind the panel was
+  being discarded as soon as the window finished building, so the interface had
+  nothing to ask whether a re-analysis was in progress — and a control whose
+  visibility cannot be determined is shown rather than hidden. The panel's icon
+  was simply a name with no artwork behind it.
+
+- **Three buttons elsewhere in FIREFLY have been rendering without their
+  icons**: "Remove" in Preferences, "Add files" in Import, and "Clear" in
+  Visualise. All three asked for artwork that does not exist. Found by a new
+  check that every icon named anywhere in the interface actually exists — a
+  missing one is invisible rather than an error, so it can sit unnoticed
+  indefinitely.
+
+- The Region of interest panel now says where to open a run when none is open,
+  rather than only that one is needed.
+- **The sample-drift QC number was never produced.** The calculation referred to
+  numpy by a name this file does not use, so it failed instantly on every run and
+  a catch-all replaced the failure with "no value". Nothing was wrong with your
+  data — drift correction itself ran normally — but the readout telling you how
+  far the sample drifted has always been blank.
+
+- **Every exported super-resolution image was cropped to the molecules.** The
+  reconstruction should be drawn on a canvas the size of the camera's field of
+  view; instead it asked the raw image stack for its dimensions after that stack
+  had already been freed from memory, and the same kind of catch-all turned the
+  failure into "no field size". The renderer then fell back to a tight box around
+  wherever localisations happened to be. On a 512-pixel field that is a 815×895
+  image where it should be 2560×2560. The molecules were always drawn in the
+  right places — only the framing was wrong, so images from different recordings
+  could not be compared at a common scale or lined up with the trajectory and
+  density panels. Re-process a recording to get a correctly framed one.
+
+- Post-processed runs are named after the original recording rather than after
+  the temporary file used to feed the pipeline.
+- **The MSD-AUC comparison graph was silently dropping replicates.** A recording
+  whose ensemble-MSD curve has an unpopulated lag — no track long enough to
+  reach it, which is ordinary and expected at the longest lags — had its AUC
+  computed as "no value at all" rather than as the area under the part of the
+  curve that exists. That replicate then vanished from the AUC panel while every
+  other panel kept it, so a condition with four folders could render as two, and
+  the statistics beneath it degraded to "n<3 replicates — underpowered, not
+  interpretable" and reported no significant difference.
+
+  Nothing else was affected: the MSD panel, the medians and every other
+  comparison were correct throughout. Only the AUC panel, and only for
+  recordings with an unpopulated lag. If you have run a comparison where the AUC
+  graph showed fewer points than the others, or called a difference
+  non-significant that the other panels showed clearly, that comparison is worth
+  re-running.
+
+  The area is now integrated over the lags that have data. Curves with no
+  missing lags give exactly the number they always did.
+
+- The same quantity had **two separate implementations** — the analysis core's
+  and the Analysis tab's own copy — and they disagreed on precisely this case,
+  so the live AUC card showed a value the exported panel had already discarded.
+  The tab now uses the core's integrator, so the two cannot drift apart again.
 - **An untestable pair no longer reports a null result it never measured.**
   Where the engine returns no Cliff's δ, the significance table was coercing it
   to zero and rendering "δ 0.00 · negligible" — stating a negligible effect for
@@ -838,39 +706,20 @@
   untested pair in its denominator; and the replicate recommendation no longer
   advises picking a non-parametric test when no test can run at all.
 
-## v2.76.51-rc.1 — 24 Aug 2026
+### Known issues
 
-### Added
+- Pressing **Profile** blocks the window for ~1.5 s while it detects across 16
+  frames at threshold zero. That is real work and it is button-initiated, but it
+  runs on the GUI thread and should not.
 
-- **Two new graphs on every single-file analysis: Track Length and Total
-  Tracks.** They are the sampling behind every per-track number in the figure —
-  D, the anomalous exponent and the MSS slope are each a curve fitted to one
-  track's handful of points, so how many points there were, and how many tracks
-  there are to average over, decide how much weight the rest of the figure can
-  carry.
+### Tests
 
-  **Track Length** is a box plot of every trajectory in the recording, with the
-  mean marked alongside the median. A box rather than a mean bar because the
-  quantity is heavily right-skewed: on real recordings the mean runs 1.5–2× the
-  median, pulled up by a handful of stuck or aggregated emitters that stay lit
-  for thousands of frames. The box shows what a typical trajectory actually
-  carried, and the distance between the median line and the mean marker is the
-  skew, made visible instead of hidden inside one number. Outlier markers are
-  not drawn — with thousands of tracks they pile into a solid vertical streak
-  that reads as a line of individual samples — but nothing is trimmed from the
-  data the box is computed from, and the longest track is stated in the corner,
-  since a trajectory persisting for thousands of frames is the tell for a stuck
-  or aggregated emitter.
-
-  **Total Tracks** is a plain bar giving the number of trajectories, stated
-  large enough to read straight off for a slide or a table. Note it is a raw
-  count, so it is not comparable between recordings with different ROI sizes
-  without dividing by area first.
-
-  Both appear in the exported figure, in the per-panel PNGs, and as two more
-  choices in the Analysis tab's All-panels gallery, where they pool across a
-  condition's replicates. Runs analysed before this release need re-processing
-  to gain them.
+- New permanent checks that fail if QML references a controller member, or a
+  member of a QML id, that does not exist; if code reads a settings key nothing
+  defines; or if any tab raises a script error while rendering. Each was
+  confirmed to fail against the real bug it guards — the id check catches the
+  `guide.rescore()` fault that disabled the threshold histogram from rc.8 to
+  rc.12.
 
 ## v2.76.50 — 21 Aug 2026
 

@@ -4,7 +4,7 @@
 would choose for the open recording:
 
 * palmTRACER-style detector — 4.4 × the recording's noise on the detection
-  image (the second wavelet plane), the rule the MB112C analysis used;
+  image (the second wavelet plane), a rule fixed in advance;
 * every other detector — exactly the minmass an Auto-threshold run picks
   (the worker's own call, shared rather than re-implemented).
 

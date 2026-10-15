@@ -108,7 +108,7 @@ def test_a_single_panel_render_is_that_panel_s_shape(tmp_path, panel, inches):
 
 
 def test_leftover_panels_share_a_row_instead_of_standing_alone():
-    """MB112C's default panels used to end in a lone trajectory-length row and a
+    """A real dataset's default panels used to end in a lone trajectory-length row and a
     lone fluorescence row."""
     keys = [k for k in ALL if k not in ("track_count", "linkstep", "linkspeed",
                                         "states_occupancy", "states_d")]

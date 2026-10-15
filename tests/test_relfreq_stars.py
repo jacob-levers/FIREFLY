@@ -153,7 +153,7 @@ def _relfreq_axis(cells):
 
 def test_the_axis_spans_where_the_trajectories_are():
     """Not a stretch of the panel flat at zero: the axis starts at the whole
-    log unit below the last bin holding ≥ 1% of the peak (on MB112C, −4)."""
+    log unit below the last bin holding ≥ 1% of the peak (on real fly data, −4)."""
     rng = np.random.default_rng(0)
     cells = [np.clip(rng.normal(-1.1, 0.6, 3000), -5, 1) for _ in range(3)]
     fig, ax = _relfreq_axis(cells)

@@ -34,7 +34,7 @@ def test_is_analysis_output_dir_keeps_raw_and_ordinary():
     assert not is_analysis_output_dir("Syntaxin1a")
     assert not is_analysis_output_dir("Ciprofol")
     assert not is_analysis_output_dir("Cell1")
-    assert not is_analysis_output_dir("1-AMA")
+    assert not is_analysis_output_dir("1-ABC")
     assert not is_analysis_output_dir("Propofol reversal")
     # a `.pt` substring that isn't the suffix stays put
     assert not is_analysis_output_dir("ptychography")

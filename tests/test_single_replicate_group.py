@@ -2,7 +2,7 @@
 
 A box of one value has zero height: the box, the whiskers and the median all
 collapse onto one flat line across the slot, which reads as a rendering
-glitch.  (Propofol + Aniline, n = 1, in the MB112C comparison.)
+glitch.  (A drug group with n = 1 in a real comparison.)
 """
 import matplotlib
 matplotlib.use("Agg")

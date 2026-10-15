@@ -3,8 +3,8 @@
 The unweighted per-track mean this replaced gave a one-pair track the same
 weight as a twenty-pair one.  Because the pair count per track falls with lag
 at a rate set by that track's own length and gaps, the effective weighting
-drifted with lag and deformed the CURVE'S SHAPE: every MB543B recording, in
-both conditions, showed the ensemble MSD going DOWN from lag 4 to lag 5 — a
+drifted with lag and deformed the CURVE'S SHAPE: every recording of a fly
+dataset, in both conditions, showed the ensemble MSD going DOWN from lag 4 to lag 5 — a
 step that reads as confinement and that propagates into `_msd_auc` and the
 comparison's MSD panel.  Nothing raised; the curve was simply the wrong shape.
 """

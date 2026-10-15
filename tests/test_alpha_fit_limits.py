@@ -1,6 +1,6 @@
 """Anomalous-exponent fits that stop on a bound are not α estimates.
 
-On the MB112C fly recordings (median track ≈ 10 points, α fitted from 4 MSD
+On real fly recordings (median track ≈ 10 points, α fitted from 4 MSD
 points with K, α and an offset free, α ∈ [0, 2]) 31% of finite α sat at
 α ≥ 1.999 and 29% at 0.001–0.01 — the optimiser's edges, not molecules.  Those
 fits were classified Directed / Immobile; simulated purely Brownian tracks came

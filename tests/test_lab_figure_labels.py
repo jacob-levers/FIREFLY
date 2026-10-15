@@ -2,7 +2,7 @@
 
 Taken from the lab's sptPALM figures — Hines & van Swinderen 2021 eNeuro
 (Figs 1–4), Hines et al. 2024 J Neurosci
-(bioRxiv 2023.02.27.530184, Figs 3, 4, 8; MB543B and MB112C lines):
+(bioRxiv 2023.02.27.530184, Figs 3, 4, 8):
 "MSD (µm²)" against "Time (s)"; "AUC (µm²s)"; "Log₁₀ diffusion coefficient";
 "Relative frequency (fractions)"; "Slow/immobile fraction" | "Fast/mobile
 fraction"; trajectories, not tracks; sentence case.

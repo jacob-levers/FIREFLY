@@ -22,7 +22,7 @@ _DETECTION_CACHE_SIZE = 64
 
 # The overlay also marks, in red, what the threshold excludes: spots the same
 # detector finds at this fraction of the threshold but not at the threshold —
-# the near misses.  Measured on MB112C frames at the recommended threshold, ¾
+# the near misses.  Measured on real fly frames at the recommended threshold, ¾
 # gives about 1–5 red per detected spot; ½ gave 3–40, nearly all noise, which
 # buried the frame.
 _EXCLUDED_FRACTION = 0.75
@@ -425,7 +425,7 @@ class RoiController(QObject):
         frames, cached.  Returns ``(masses, n_frames)``.
 
         Pooled deliberately: on ONE frame the noise and signal modes are not
-        separable (0.16-0.18 dex on real MB543B data, against the 0.5 the valley
+        separable (0.16-0.18 dex on real fly data, against the 0.5 the valley
         finder needs), so the noise-floor marker — the single most useful thing
         on the panel — never appears.  Sampling across the recording also makes
         the per-frame numbers an average rather than one arbitrary frame's.

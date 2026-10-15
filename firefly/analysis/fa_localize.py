@@ -1000,7 +1000,7 @@ def estimate_noise_floor(per_frame_masses, cap=120, agree_dex=0.15):
     Returns ``(floor_or_None, status)``.
 
     Two things make a naive call untrustworthy here, both measured on real
-    MB543B recordings:
+    fly recordings:
 
       * it depends on the harvest.  Over every candidate the low-mass flood
         merges into the real mode (0.25 dex separation, below the 0.5 the valley
@@ -1588,8 +1588,8 @@ def _static_minmass(masses, sensitivity, diag, log_fn):
 
 # The palmTRACER-style detector's threshold, in units of the recording's noise
 # on the detection image: the median threshold-to-noise ratio of hand-set
-# palmTRACER thresholds over 11 PC12 recordings (range 2.0–4.8).  Fixed before
-# the MB112C analysis and used for every file in it.
+# palmTRACER thresholds over 11 PC12 recordings (range 2.0–4.8).  Fixed in
+# advance, not tuned on the data it is applied to.
 WAVELET_NOISE_FACTOR = 4.4
 
 

@@ -877,7 +877,7 @@ def _palmtracer_cache_is_stale(folder: str, extras_dir: str, stem: str) -> bool:
 
 # ── experiment naming convention → condition / animal / side ────────────────
 # Acquisition folders are named like
-#     "N=2 MB543B-Sx1A-mEos3.2_CrimsonVenus 31July Propofol"
+#     "N=2 MB001A-Sx1A-mEos3.2_CrimsonVenus 31July Propofol"
 # and the recordings inside like
 #     "Fly-1-16k Frames-LSide.czi"
 # The DRUG is whatever trails the date in an ancestor folder; a bare date means

@@ -89,10 +89,10 @@ class ReportData:
 _TL = threading.local()
 
 # The across-metric correction family: the pairwise comparisons of the canonical
-# per-recording SCALAR metrics (omnibus rows and per-class motion fractions
-# excluded).  Every member is tested whether or not its graph is drawn, so the
-# family — and every corrected p-value and star — is the same for the full
-# figure, a subset of graphs and each exported single panel.
+# per-recording metrics (omnibus rows excluded).  Every member is tested whether
+# or not its graph is drawn, so the family — and every corrected p-value and
+# star — is the same for the full figure, a subset of graphs and each exported
+# single panel.
 ACROSS_FAMILY = frozenset({
     "auc_msd", "spot_intensity", "mobile_fraction", "median_D", "median_alpha",
     "radius_of_gyration", "net_displacement", "path_length", "step_distance",
@@ -102,7 +102,24 @@ ACROSS_FAMILY = frozenset({
     # the diffusive-state model's six per-recording scalars are tested and
     # starred like the rest
     "state_occupancy_immobile", "state_occupancy_slow", "state_occupancy_fast",
-    "state_D_immobile", "state_D_slow", "state_D_fast"})
+    "state_D_immobile", "state_D_slow", "state_D_fast",
+    # ...and so are the four per-recording motion-class fractions
+    *(f"motion_frac_{c}" for c in MOTION_CLASS_ORDER)})
+
+
+def _motion_class_rows(summaries):
+    """Each replicate's four named motion-class fractions, renormalised to sum
+    to 1 (the dropped mass is the unclassified share); replicates with no
+    classifiable track are skipped.  Shape (n_replicates, 4)."""
+    classes = list(MOTION_CLASS_ORDER)
+    rows = []
+    for s in summaries:
+        f = _motion_fractions(s["diffusion"])
+        named = np.array([f.get(c, 0.0) for c in classes], dtype=float)
+        tot = named.sum()
+        if tot > 0:
+            rows.append(named / tot)
+    return np.array(rows) if rows else np.zeros((0, len(classes)))
 
 
 def _arr_key(arrs):
@@ -1027,9 +1044,10 @@ def _render_logd_relfreq(ax, per_card, thr, pal, mobile_d_threshold, xlim=(-5.0,
     ax.axvline(thr, color=pal.get("MUT", pal["GRD"]), ls="--", lw=1.0,
                label=f"D = {mobile_d_threshold:g} µm²/s")
     # x range: where the trajectories are, to whole log units (the lab's run
-    # −4 or −5 to 1).  Tail bins under 1% of the peak (a few pixels; on MB112C
-    # the 0.12% of trajectories below −4) are left off; a real pile of clipped
-    # trajectories at the floor is far above that and keeps the floor in view.
+    # −4 or −5 to 1).  Tail bins under 1% of the peak (a few pixels; on real
+    # fly data about 0.1% of trajectories fall below −4) are left off; a real
+    # pile of clipped trajectories at the floor is far above that and keeps the
+    # floor in view.
     lo, hi = xlim
     peak = max((float(np.nanmax(y + (sem if sem is not None else 0)))
                 for _l, _c, y, sem in curves), default=0.0)
@@ -2277,18 +2295,9 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         # "Unknown" share — tracks too short to fit a D/α (common on dense
         # palmTRACER data) — which is surfaced honestly in the x-axis labels
         # below, never silently hidden.
-        def _fracs(summaries):
-            rows = []
-            for s in summaries:
-                f = _motion_fractions(s["diffusion"])
-                named = np.array([f.get(c, 0.0) for c in classes], dtype=float)
-                tot = named.sum()
-                if tot > 0:                 # skip replicates with no classifiable track
-                    rows.append(named / tot)
-            return np.array(rows) if rows else np.zeros((0, len(classes)))
         per_group, unclassified, below_resolution = [], [], []
         for ss in all_summaries:
-            per_group.append(_fracs(ss))
+            per_group.append(_motion_class_rows(ss))
             uncl, below = [], []
             for s in ss:
                 f = _motion_fractions(s["diffusion"])
@@ -2528,7 +2537,10 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             ("linkspeed", "link_speed", "Observed-link speed (µm/s)",
              "Observed-link speed"),
             ("dir",     "directionality",   "Directionality ratio",  "Directionality ratio"),
-            ("dur",     "track_duration",   "Trajectory duration (s)", "Trajectory duration"),
+            # mean, not the median: durations are whole frames, so a recording's
+            # median is one of a few frame multiples and every box collapses
+            ("dur",     "mean_track_duration_s", "Mean trajectory duration (s)",
+             "Trajectory duration"),
             ("nlocs",   "n_localisations",  "Localisations (n)",     "Localisations")):
         if _pkey not in panels:
             continue
@@ -2915,7 +2927,7 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
             if strip:
                 lo, hi = ax.get_xlim()
                 ax.set_xlim(lo, hi - strip)
-        # …and no titles either: in a thesis figure they go in the caption too.
+        # …and no titles either: in a publication figure they go in the caption too.
         for ax in fig.axes:
             for _loc in ("center", "left", "right"):
                 ax.set_title("", loc=_loc)
@@ -3072,6 +3084,14 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         if "link" in compatibility_warnings or rd.legacy_only:
             _suppressed |= {"link_displacement", "link_speed"}
         hidden_metrics += sorted(ACROSS_FAMILY - set(hidden_metrics) - _suppressed)
+        if ("diffusion" not in compatibility_warnings
+                and not any(f"motion_frac_{c}" in stats_records for c in MOTION_CLASS_ORDER)):
+            _mc_rows = [_motion_class_rows(ss) for ss in all_summaries]
+            for ci, cname in enumerate(MOTION_CLASS_ORDER):
+                arrs = [fr[:, ci] for fr in _mc_rows]
+                if sum(len(a) for a in arrs) >= 2:
+                    omn, pw = _STN(arrs, labels, cfg)
+                    stats_records[f"motion_frac_{cname}"] = {"omnibus": omn, "pairwise": pw}
         for _m in hidden_metrics:
             if _m in summary_df.columns and _m not in stats_records:
                 arrs = [summary_df.loc[summary_df["group"] == lbl, _m]
@@ -3088,8 +3108,8 @@ def _draw_report(rd, *, output_dir=None, output_stem="comparison",
         correct_pvalues, stars_for, correction_display)
     _alpha, _method = cfg["alpha"], cfg["correction"]
     # The across-metric family is the pairwise comparisons of the canonical
-    # SCALAR metrics (omnibus rows and per-class motion fractions excluded), so
-    # the family size is reproducible and matches the "scalar metrics" framing.
+    # per-recording metrics (omnibus rows excluded), so the family size is
+    # reproducible whatever is drawn.
     _ACROSS_FAMILY = ACROSS_FAMILY
     across_pw = []
     for metric, rec in stats_records.items():

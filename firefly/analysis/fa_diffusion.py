@@ -553,7 +553,7 @@ def compute_msd_and_fit(tracks, pixel_size, frame_interval,
     # that depends on the track's own length and gaps, so the effective
     # weighting DRIFTS WITH LAG and deforms the curve's shape.  On real
     # recordings it produced a reproducible step at lag 5 — MSD that went DOWN
-    # from lag 4 to lag 5 in every MB543B movie, in both conditions — which
+    # from lag 4 to lag 5 in every movie of a fly dataset, in both conditions — which
     # reads as confinement that isn't there, and feeds `_msd_auc` and the
     # comparison's MSD panel.  Pair weighting is the standard estimator (what
     # `trackpy.emsd` computes) and is the minimum-variance one for <r²(tau)>.
@@ -1332,8 +1332,8 @@ def mobility_masks(diff_df, d_threshold=MOBILE_D_THRESHOLD_DEFAULT):
     immobile population, not a failure.  Dropping those rows (they carry
     ``D = NaN``, so every ``isfinite(D) & (D > 0)`` filter silently did) deletes
     immobile molecules from the DENOMINATOR and inflates the mobile fraction:
-    on real MB543B recordings ~10% of tracks land here and the mobile fraction
-    jumped 69%→79% (control) and 72%→81% (1-AMA).  They have no usable D, but
+    on real fly recordings ~10% of tracks land here, and dropping them inflated
+    the mobile fraction by about ten percentage points.  They have no usable D, but
     "no measurable displacement" is exactly the evidence for immobility.
 
     Genuinely unmeasurable rows — below-resolution, failed or too-short fits —

@@ -1,6 +1,6 @@
 """JDD fits stuck at a parameter limit, and where the static offset comes from.
 
-On the MB112C fly recordings every run's JDD fit sat on its bounds (D = 1e-6 and
+On real fly recordings every run's JDD fit sat on its bounds (D = 1e-6 and
 100 µm²/s, fractions 0.99 / 0.01) and the comparison panel drew those as
 populations.  The worker had passed the median MSD intercept as the "known static
 offset" — compute_jdd's own docstring says not to, since that intercept carries
