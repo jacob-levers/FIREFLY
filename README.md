@@ -218,7 +218,7 @@ Both programs were then compared inside the same cell outline:
 | Mobile fraction per recording | within **0.14 percentage points** |
 | Change in median D between paired recordings (8 pairs) | within **0.004** for every pair |
 
-![FIREFLY and PALMTracer give the same diffusion coefficients, trajectory by trajectory](docs/images/accuracy-palmtracer.png)
+![FIREFLY and PALMTracer give the same diffusion coefficients, trajectory by trajectory](docs/images/accuracy-vs-palmtracer.png)
 
 <sub>All 16 recordings pooled: trajectories of at least 8 points inside
 PALMTracer's cell outline.
