@@ -218,15 +218,16 @@ Both programs were then compared inside the same cell outline:
 | Mobile fraction per recording | within **0.14 percentage points** |
 | Change in median D between paired recordings (8 pairs) | within **0.004** for every pair |
 
-![FIREFLY against PALMTracer on 16 recordings](docs/images/accuracy-palmtracer.png)
+![FIREFLY and PALMTracer give the same diffusion coefficients, trajectory by trajectory](docs/images/accuracy-palmtracer.png)
 
-<sub>Left to right:
-median D per recording (log scale);
-mobile fraction per recording (D ≥ 0.02 µm² s⁻¹; tracks with D ≤ 0 counted
-at the 1×10⁻⁵ µm² s⁻¹ floor in both programs);
-the share of PALMTracer's spots and trajectories FIREFLY reproduces, per
-recording.
-Dashed lines: identity.</sub>
+<sub>All 16 recordings pooled: trajectories of at least 8 points inside
+PALMTracer's cell outline.
+Left: every trajectory's diffusion coefficient, PALMTracer filled and FIREFLY
+dashed. Trajectories that did not move (D ≤ 0) sit at PALMTracer's
+1×10⁻⁵ µm² s⁻¹ floor in both programs, off the left of the axis.
+Middle: each trajectory's D in FIREFLY against PALMTracer, for every trajectory
+both programs found (dashed: identity).
+Right: pooled agreement.</sub>
 
 Detection matches (at least 99.8% of spots identical in every recording). The
 remaining ~1% of trajectories differ in linking only: FIREFLY links with its own Crocker–Grier linker rather than
