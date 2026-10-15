@@ -13,8 +13,9 @@ multi-page PDF report.
 
 FIREFLY offers **five detection engines** — trackpy and PyTorch (both
 Crocker-Grier-family centroid localisers, calibrated to agree to within the
-experiment's noise floor), an **à trous wavelet** detector for faint spots in
-low-SNR / structured backgrounds, and two alternative GPU sub-pixel refiners,
+experiment's noise floor), a **palmTRACER-style wavelet** detector that
+reproduces PALMTracer's detection spot for spot ([accuracy below](#accuracy-against-palmtracer)),
+and two alternative GPU sub-pixel refiners,
 **Gaussian MLE** (maximum-likelihood 2-D Gaussian fit) and **radial symmetry**
 (Parthasarathy 2012, closed-form) — which re-fit each spot's centre and match the
 centroid localisers closely on isolated spots, with small gains at low SNR.
@@ -43,17 +44,18 @@ By Jacob Levers · Apple-Silicon macOS and Windows
    - [Standalone app (recommended)](#standalone-app-recommended)
    - [From source (advanced)](#from-source-advanced)
 2. [Quick tour](#quick-tour)
-3. [Features](#features)
-4. [Workflow](#workflow)
+3. [Accuracy against PALMTracer](#accuracy-against-palmtracer)
+4. [Features](#features)
+5. [Workflow](#workflow)
    - [Analyse a sample](#analyse-a-sample)
    - [Analyse external localisations](#analyse-external-localisations)
    - [Batch a folder](#batch-a-folder)
    - [Compare groups](#compare-groups)
    - [Visualise tracks](#visualise-tracks)
-5. [Outputs](#outputs)
-6. [Performance notes](#performance-notes)
-7. [Troubleshooting](#troubleshooting)
-8. [Acknowledgements](#acknowledgements)
+6. [Outputs](#outputs)
+7. [Performance notes](#performance-notes)
+8. [Troubleshooting](#troubleshooting)
+9. [Acknowledgements](#acknowledgements)
 
 ---
 
@@ -189,14 +191,62 @@ processes, each shown as a live tile with its own preview and progress.
 
 ---
 
+## Accuracy against PALMTracer
+
+FIREFLY's **Wavelet — palmTRACER-style** detector is a reconstruction of
+PALMTracer's wavelet detection. It works on the raw frames and takes
+PALMTracer's own wavelet threshold, so a threshold from a PALMTracer analysis
+carries over unchanged.
+
+It was tested on **16 PC12 sptPALM recordings** (512 × 512 px, 16,000 frames
+each) that had been analysed in PALMTracer and were **never used to build or
+tune FIREFLY**. FIREFLY was given:
+
+- each file's PALMTracer threshold;
+- the same linking limits (3 px search range, no gap closing, trajectories of at
+  least 8 points);
+- PALMTracer's calibration (0.106 µm, 20 ms).
+
+Both programs were then compared inside the same cell outline:
+
+| Range over the 16 recordings (median) | Agreement |
+|---|---|
+| PALMTracer's localisations FIREFLY finds at the identical position | **99.8–100%** (99.95%) |
+| PALMTracer's trajectories (≥ 8 points) FIREFLY reproduces exactly | **98.5–99.8%** (99.4%) |
+| Per-trajectory D, where both have the trajectory | **99.5–100%** within 1% |
+| Median D per recording | **−0.1% to +1.7%** (+0.1%); r = 0.99999 |
+| Mobile fraction per recording | within **0.14 percentage points** |
+| Change in median D between paired recordings (8 pairs) | within **0.004** for every pair |
+
+![FIREFLY against PALMTracer on 16 recordings](docs/images/accuracy-palmtracer.png)
+
+<sub>Left to right:
+median D per recording (log scale);
+mobile fraction per recording (D ≥ 0.02 µm² s⁻¹; tracks with D ≤ 0 counted
+at the 1×10⁻⁵ µm² s⁻¹ floor in both programs);
+the share of PALMTracer's spots and trajectories FIREFLY reproduces, per
+recording.
+Dashed lines: identity.</sub>
+
+Detection matches (at least 99.8% of spots identical in every recording). The
+remaining ~1% of trajectories differ in linking only: FIREFLY links with its own Crocker–Grier linker rather than
+PALMTracer's tracker, so a long track through a close encounter between two
+molecules can be split or joined differently. The detector was developed
+against a separate set of 2015 PC12 recordings analysed in PALMTracer. On two
+further datasets never used to build it, a simulated sptPALM movie and a
+subset of the EPFL SMLM 2016 high-density challenge, every spot also matched.
+
+---
+
 ## Features
 
 ### Detection & tracking
 
 - **Five detection engines** — **trackpy** (CPU) and **PyTorch (GPU)**, both
   Crocker-Grier-family centroid localisers calibrated to agree to within ~5 nm;
-  an **à trous wavelet** detector that finds faint spots in low-SNR / structured
-  backgrounds; and two alternative GPU sub-pixel refiners that share the same
+  a **palmTRACER-style wavelet** detector (CPU) that takes PALMTracer's own
+  threshold and reproduces its spots ([accuracy](#accuracy-against-palmtracer));
+  and two alternative GPU sub-pixel refiners that share the same
   Crocker-Grier detection but re-fit each spot's centre — **Gaussian MLE** (a
   maximum-likelihood 2-D Gaussian fit on the raw pixels; Smith et al. 2010) and
   **radial symmetry** (Parthasarathy 2012, closed-form / fit-free). All four GPU
