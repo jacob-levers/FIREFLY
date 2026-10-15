@@ -95,6 +95,7 @@ class HyperflyController(QObject):
         self._reason = ""
         self._slots = []            # list[dict] — one per worker slot
         self._file_slot = {}        # file index → slot index
+        self._finished = set()      # file indices that are done / failed / stopped
         self._frames = {}           # slot → QImage
         self._total = 0
         self._done = 0
@@ -151,6 +152,7 @@ class HyperflyController(QObject):
         self._n = 0
         self._slots = []
         self._file_slot = {}
+        self._finished = set()
         self._frames = {}
         self._stem_paths = dict(stem_paths or {})
         self._proj_cache = {}
@@ -195,16 +197,29 @@ class HyperflyController(QObject):
         if f is None:
             return
         f = int(f)
-        slot = self._slot_for_file(f, claim=True)
-        if slot is None:
-            return
-        d = self._slots[slot]
         state = payload.get("state")
+        if state == "running":
+            self._finished.discard(f)       # re-run after a Stop / abort / crash
         # Throttled pct/stage tiles travel a different (async) queue than the
         # terminal done/failed tile, with no ordering guarantee — so a stale
-        # progress tile can land AFTER completion.  Don't let it regress a
-        # finished tile's bar back below 100 %.
-        was_terminal = d["state"] in ("done", "failed") and not state
+        # progress tile can land AFTER completion, even after another file has
+        # taken over that tile.  It must neither claim a tile of its own (a
+        # ghost "running" tile for a finished file, held until the run ends)
+        # nor regress a finished tile's bar back below 100 %.
+        if state == "cancelled":
+            claim = False                   # nothing to show if it has no tile
+        elif state in ("running", "done", "failed"):
+            claim = True
+        else:
+            claim = f not in self._finished
+        slot = self._slot_for_file(f, claim=claim)
+        if slot is None:
+            if state in ("done", "failed", "cancelled"):
+                self._finished.add(f)
+            return
+        d = self._slots[slot]
+        was_terminal = (not state
+                        and (d["state"] in ("done", "failed") or f in self._finished))
         if state == "running":
             d["state"] = "running"; d["pct"] = 0; d["stage"] = ""; d["locs"] = 0
         elif state == "done":
@@ -214,6 +229,12 @@ class HyperflyController(QObject):
         elif state == "failed":
             d["state"] = "failed"
             d["error"] = str(payload.get("error") or "")[:8000]
+        elif state == "cancelled":
+            # Stopped mid-run (Stop, a watchdog abort, or a crash beside it) —
+            # no verdict yet, so free the tile; a re-run claims a fresh one.
+            d["state"] = "idle"; d["pct"] = 0; d["stage"] = ""
+        if state in ("done", "failed", "cancelled"):
+            self._finished.add(f)
         # Apply progress BEFORE the projection decision so the stage gate in
         # _maybe_load_projection sees this tile's CURRENT phase (the "running"
         # branch above just reset d["stage"]).
@@ -297,13 +318,16 @@ class HyperflyController(QObject):
         if cached is not None:
             self._apply_projection(slot, stem, cached)
             return
-        # Don't read the file while the worker is still DECODING it (the Loading
-        # phase) — that double-reads the same multi-GB recording over the network
-        # drive, contending with the worker's gated load.  onTile re-invokes us
-        # ~5 Hz with the live stage, so we retry once the worker is past loading
-        # (file now warm in the OS page cache); by then a live preview frame has
-        # usually streamed and pre-empted us entirely.
-        if "load" in str(d.get("stage", "")).lower():
+        # Don't read the file until the worker has finished READING it — that
+        # double-reads the same multi-GB recording over the network drive,
+        # contending with the worker's gated load.  So no read while the tile
+        # has no stage yet (the file was only just claimed: it may still be
+        # queued for its load slot), while it waits for that slot, or while it
+        # loads.  onTile re-invokes us ~5 Hz with the live stage, so we retry
+        # once the worker is past loading (file now warm in the OS page cache);
+        # by then a live preview frame has usually streamed and pre-empted us.
+        stage = str(d.get("stage", "")).lower()
+        if not stage or "load" in stage:
             return
         path = self._stem_paths.get(stem)
         if not path or stem in self._proj_inflight:

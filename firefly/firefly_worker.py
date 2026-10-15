@@ -754,6 +754,11 @@ def _start_memory_watchdog(cancel_event, msg_queue,
     distinguish "Python hasn't GC'd the last chunk yet" from "we're
     truly OOM".
 
+    After an abort it stands by while ``cancel_event`` is set, and re-arms
+    once the caller clears it to carry on — a batch that skips a file (or
+    shrinks a HYPER-FLY wave) after a trip needs the protection for every file
+    that follows, not just the first.
+
     Returns a `stop` Event the caller `.set()`s in a `finally` block
     to shut the watchdog down at the end of the run.
     """
@@ -788,6 +793,11 @@ def _start_memory_watchdog(cancel_event, msg_queue,
         warned = False
         low_streak = 0
         while not stop.wait(poll_s):
+            if cancel_event is not None and cancel_event.is_set():
+                # The run is already aborting (our own trip, a Stop, the disk
+                # watchdog): stand by until the batch clears it to carry on.
+                low_streak = 0
+                continue
             try:
                 free_gb = _psutil.virtual_memory().available / 1e9
             except Exception:
@@ -818,7 +828,11 @@ def _start_memory_watchdog(cancel_event, msg_queue,
                             f"apps or set FIREFLY_MEM_ABORT_GB to "
                             f"override."))
                     except Exception: pass
-                return
+                if cancel_event is None:
+                    return                # nothing to signal — just stop
+                low_streak = 0            # re-arm once the batch carries on
+                warned = False
+                continue
             else:
                 # RAM recovered — reset the streak counter and the
                 # one-shot warn flag so future dips are flagged again.
@@ -1480,7 +1494,6 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
     if not external_csv:
         # ── Load ──────────────────────────────────────────────────────────
         _log(f"\n── Load ──────────────────────────")
-        _prog(5, "Loading stack…")
         # HYPER-FLY load stagger: only a few files load at once (so RAM ramps
         # up gradually instead of all K preallocating their stacks at once),
         # and while a file holds a load slot it may decode on a BIGGER core
@@ -1490,11 +1503,15 @@ def _run_one_analysis(params: dict, msg_queue, cancel_event,
         _load_gate = _HF_LOAD_SEM
         _prev_budget = None
         if _load_gate is not None:
+            # Queued behind other files' loads — say so, instead of showing
+            # "Loading stack…" for the whole wait.
+            _prog(5, "Waiting for a load slot…")
             _load_gate.acquire()
             if _HF_LOAD_BUDGET:
                 _prev_budget = os.environ.get("FIREFLY_CPU_CORE_BUDGET")
                 os.environ["FIREFLY_CPU_CORE_BUDGET"] = str(int(_HF_LOAD_BUDGET))
         try:
+            _prog(5, "Loading stack…")
             stack, meta_px, meta_fi = load_file(
                 fpath, channel=int(p.get("channel", 0)),
                 stop_event=cancel_event,
@@ -4297,6 +4314,28 @@ def _file_worker_init(fan_q, mgr_cancel, per_file_workers, gpu_sem=None,
     os.environ["FIREFLY_CPU_CORE_BUDGET"] = str(int(per_file_workers))
 
 
+def _hf_release_file_resources():
+    """After each file in a HYPER-FLY worker, do what the serial batch loop
+    does between files.  Pool workers live for the whole batch, so without this
+    a stack that spilled to a disk memmap keeps its multi-GB temp file (written
+    beside the output folder) until the batch ends, and the CUDA cache holds on
+    to the last file's blocks.  Never raises."""
+    try:
+        import gc as _gc
+        _gc.collect()
+        from firefly.analysis.fa_memory import cleanup_temp_stack_paths
+        cleanup_temp_stack_paths()
+    except Exception:
+        pass
+    try:
+        _torch = sys.modules.get("torch")        # never import torch just for this
+        if _torch is not None and _torch.cuda.is_initialized():
+            _torch.cuda.synchronize()
+            _torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
     """Run ONE file's pipeline inside a HYPERFLY worker process.
 
@@ -4363,15 +4402,18 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
         # advancing through the pipeline (Loading → Preprocessing → Localising →
         # Linking …) without the per-chunk firehose.
         norm = _hf_norm_stage(s)
-        if norm and norm != _prog_state["stage"]:
+        stage_changed = bool(norm) and norm != _prog_state["stage"]
+        if stage_changed:
             _prog_state["stage"] = norm
             try:    fan_q.put((MsgKind.LOG, f"  [{stem}] {norm}"))
             except Exception: pass
-        # Dashboard tile: throttled stage/percent.
+        # Dashboard tile: throttled percent, but a stage CHANGE always goes
+        # through — dropping it would leave the tile showing a stage the file
+        # has already left (e.g. "Waiting for a load slot" for a whole load).
         try:
             import time as _t
             now = _t.monotonic()
-            if now - _prog_state["t"] < 0.2:        # ~5 Hz per file
+            if not stage_changed and now - _prog_state["t"] < 0.2:   # ~5 Hz
                 return
             _prog_state["t"] = now
             fan_q.put((MsgKind.HF_TILE, {"file": index, "stem": stem,
@@ -4398,51 +4440,99 @@ def _file_worker_run(index: int, n_total: int, params: dict) -> dict:
         return out
     except BaseException as exc:
         if type(exc).__name__ in ("_Cancelled", "_Stopped"):
-            return {"ok": False, "error": "cancelled", "stem": stem}
+            # Stop / a watchdog abort reached this file mid-run: no verdict on
+            # the file itself — the batch decides whether to re-run it.
+            return {"ok": False, "cancelled": True, "error": "cancelled",
+                    "stem": stem}
         return {"ok": False, "error": str(exc),
                 "tb": traceback.format_exc(), "stem": stem}
+    finally:
+        _hf_release_file_resources()
 
 
 def _hf_future_outcome(fut):
     """Classify one finished HYPER-FLY future: ``(kind, payload)``.
 
-    ``kind`` is ``"ok"``, ``"failed"`` or ``"cancelled"``.  Cancelled means Stop
-    reached this file before it started: it is not a failure and has no payload.
-    Checking ``cancelled()`` first matters, because ``result()`` on a cancelled
-    future raises ``CancelledError`` — an ``Exception`` whose ``str()`` is empty,
-    so a generic handler reports every unstarted file as FAILED with no reason.
+    ``kind`` is one of:
+
+    * ``"ok"`` / ``"failed"`` — the worker's verdict on the file.
+    * ``"cancelled"`` — Stop (or a watchdog abort) reached this file, either
+      before it started (no payload) or mid-run (the worker says so).  Not a
+      failure: the batch decides whether to re-run it.  Checking
+      ``cancelled()`` first matters, because ``result()`` on a cancelled future
+      raises ``CancelledError`` — an ``Exception`` whose ``str()`` is empty, so a
+      generic handler reports every unstarted file as FAILED with no reason.
+    * ``"crashed"`` — the pool broke: some worker process died outright (a
+      native crash), and ProcessPoolExecutor then fails EVERY in-flight and
+      queued future with ``BrokenProcessPool``.  That is no verdict on this
+      particular file, so the batch re-runs it instead of reporting it.
     """
+    from concurrent.futures.process import BrokenProcessPool
     if fut.cancelled():
         return "cancelled", None
     try:
         payload = fut.result()
+    except BrokenProcessPool:
+        return "crashed", None
     except Exception as exc:
         # str() is '' for MemoryError() and friends; never report a blank reason
         return "failed", {"ok": False,
                           "error": str(exc) or type(exc).__name__,
                           "tb": traceback.format_exc()}
+    if payload.get("cancelled"):
+        return "cancelled", payload
     return ("ok" if payload.get("ok") else "failed"), payload
 
 
-def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan):
-    """Parallel multi-file engine.  Returns the `results` list, or None on a
-    setup failure so the caller falls back to the serial loop.
+# Reported for a file whose worker process dies even when it runs on its own.
+# A native crash leaves no Python traceback — the process is simply gone.
+_HF_CRASH_ERROR = ("the worker process crashed (a native crash, e.g. a GPU/driver "
+                   "fault or running out of memory)")
+
+
+def _run_batch_hyperfly(items, n_total, msg_queue, cancel_event, _log, _prog,
+                        plan, done_before=0):
+    """Parallel multi-file engine over ``items`` — ``[(index, params), …]`` with
+    1-based batch indices out of ``n_total`` (``done_before`` of which already
+    finished in an earlier wave, for the running tally).
+
+    Returns ``{"results": {index: row}, "unfinished": [(index, params), …],
+    "engine_error": bool}``; every item lands in exactly one of the two.
+    ``results`` holds files with a verdict (ok or failed).  ``unfinished`` holds
+    files a Stop / watchdog abort cancelled (before or mid-run) and, after an
+    ``engine_error``, any file whose outcome is unknown — the caller decides
+    whether to re-run them.
 
     Files are independent (each writes its own per-stem subfolder), so the only
     difference from serial is scheduling — per-file results are identical.
+
+    Crash containment: if a worker process dies outright, ProcessPoolExecutor
+    declares the pool broken and fails every in-flight AND queued future, so one
+    bad file used to take the whole batch down with it.  Instead, files that
+    never started go into a fresh pool, and the files that were running beside
+    the crash (one of them is the culprit) are re-run one at a time, each in its
+    own process, so a repeat crash fails only the file that causes it.
     """
     import multiprocessing as _mp
     import threading as _threading
+    import time as _time
     from concurrent.futures import ProcessPoolExecutor, as_completed
     from firefly.analysis.fa_constants import safe_process_workers
 
-    n = len(params_list)
+    items = sorted(items, key=lambda it: it[0])
+    _plist = [p for _, p in items]
+    n = max(1, int(n_total))
     K = max(1, int(plan["n_concurrent"]))
     per_file_workers = max(1, int(plan["per_file_workers"]))
 
+    results = {}        # index → result row (a verdict: ok or failed)
+    unfinished = {}     # index → params cancelled by Stop / a watchdog abort
+    started = set()     # indices whose worker announced itself (current pool)
+    tally = {"done": int(done_before)}
+    engine_error = False
+
     mgr = None
     forwarder = None
-    mirror = None
     stop_threads = _threading.Event()
     try:
         mgr = _mp.Manager()
@@ -4465,10 +4555,9 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         if _gpu_slots <= 0:
             _gpu_slots = 1
         _gpu_slots = max(1, min(int(_gpu_slots), K))   # never more GPU slots than files
-        gpu_sem = mgr.Semaphore(int(_gpu_slots))
         try:
             from firefly.analysis.fa_localize import backend_uses_gpu as _buse
-            if params_list and _buse(params_list[0].get("backend")):
+            if _plist and _buse(_plist[0].get("backend")):
                 msg_queue.put((MsgKind.LOG,
                     f"  HYPER-FLY: GPU detected — gating GPU detection to "
                     f"{_gpu_slots} file(s) at a time (CPU stages stay "
@@ -4523,7 +4612,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
             # (disk-speed loads DO scale with concurrency) or on a high-latency
             # link (needs parallel streams to fill the bandwidth-delay product).
             _any_compressed = False
-            for _p in params_list:
+            for _p in _plist:
                 for _f in (_p.get("series_files") or [_p.get("file")]):
                     if _f and os.path.splitext(str(_f))[1].lower() == ".czi":
                         _any_compressed = True
@@ -4532,7 +4621,6 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     break
             _load_slots = 2 if _any_compressed else 1
         _load_slots = max(1, min(int(_load_slots), K))
-        load_sem = mgr.Semaphore(_load_slots)
         # Core budget a loading file may use while it holds a load slot.
         load_core_budget = max(per_file_workers, total_cores // _load_slots)
         # NB: staggering bounds concurrent LOADS, not concurrent RESIDENT stacks
@@ -4552,6 +4640,11 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
             except Exception:
                 pass
 
+        def _new_gates():
+            # A fresh pair per pool: a worker that dies holding a slot never
+            # releases it, so gates shared with the next pool would deadlock it.
+            return mgr.Semaphore(int(_gpu_slots)), mgr.Semaphore(int(_load_slots))
+
         # Mirror the real cancel_event → the Manager event so workers see Stop.
         def _mirror_cancel():
             while not stop_threads.wait(0.2):
@@ -4559,8 +4652,7 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
                     try:    mgr_cancel.set()
                     except Exception: pass
                     return
-        mirror = _threading.Thread(target=_mirror_cancel, daemon=True)
-        mirror.start()
+        _threading.Thread(target=_mirror_cancel, daemon=True).start()
 
         # Forwarder: drain the fan-in queue → the real GUI queue.
         # Kinds the forwarder MUST deliver (per-file completion / terminal).
@@ -4572,6 +4664,15 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
 
         def _forward_one(item):
             kind = item[0] if isinstance(item, tuple) and item else None
+            if kind == MsgKind.HF_TILE:
+                # A worker's first tile says it has STARTED its file — after a
+                # pool crash, that separates the files that were running (one
+                # is the culprit) from the ones still queued.
+                try:
+                    if item[1].get("state") == "running":
+                        started.add(int(item[1].get("file")))
+                except Exception:
+                    pass
             if kind in _critical:
                 # Deliver, but with a bounded timeout so a wedged GUI can't block
                 # the forwarder forever (which would back up the UNBOUNDED Manager
@@ -4599,101 +4700,161 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
         forwarder = _threading.Thread(target=_forward, daemon=True)
         forwarder.start()
 
+        def _settle_forwarder(timeout=5.0):
+            """Let the forwarder drain the fan-in queue so ``started`` holds
+            every worker that announced itself before the pool broke."""
+            t_end = _time.monotonic() + timeout
+            while _time.monotonic() < t_end:
+                try:
+                    if fan_q.qsize() == 0:
+                        break
+                except Exception:
+                    break
+                _time.sleep(0.05)
+            _time.sleep(0.3)          # the item the forwarder is handling now
+
         # Heartbeat: a periodic "still working" line so a long early stage
         # (e.g. 11 files each loading 25 GB into RAM) doesn't look frozen on the
         # console between per-file stage lines.
-        import time as _time
         _hb_t0 = _time.monotonic()
-        _hb_state = {"done": 0}
 
         def _heartbeat():
             while not stop_threads.wait(25.0):
-                d = _hb_state["done"]
+                d = tally["done"]
                 if d >= n:
                     return
                 el = _time.monotonic() - _hb_t0
-                try:
-                    msg_queue.put((MsgKind.LOG,
-                        f"  HYPER-FLY working… {d}/{n} done · "
-                        f"{min(K, n - d)} running  ({el:.0f}s)"))
-                except Exception:
-                    pass
+                _safe_put(msg_queue, (MsgKind.LOG,
+                    f"  HYPER-FLY working… {d}/{n} done · "
+                    f"{min(K, n - d)} running  ({el:.0f}s)"))
         _threading.Thread(target=_heartbeat, daemon=True).start()
 
-        results = [None] * n
-        done = 0
-        cancelled = False
-        not_started = 0
+        def _stem_of(params, payload=None):
+            return ((payload or {}).get("stem") or params.get("stem_override")
+                    or os.path.splitext(os.path.basename(params["file"]))[0])
+
+        def _record(i, params, kind, payload):
+            """Report one file's verdict (ok / failed) — exactly once."""
+            _stem = _stem_of(params, payload)
+            tally["done"] += 1
+            done = tally["done"]
+            if kind == "ok":
+                results[i] = {"index": i, "ok": True, "file": params["file"],
+                              **payload}
+                _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
+                    "index": i, "total": n,
+                    "stem":     payload.get("stem"),
+                    "out_dir":  payload.get("out_dir"),
+                    "n_tracks": payload.get("n_tracks", 0),
+                    "n_locs":   payload.get("n_locs", 0),
+                }))
+                # Clean per-file ledger line (the readable HYPERFLY console).
+                _put_reliable(msg_queue, (MsgKind.LOG,
+                    f"  ✓ [{_stem}] {int(payload.get('n_locs', 0)):,} locs · "
+                    f"{int(payload.get('n_tracks', 0)):,} tracks   "
+                    f"({done}/{n})"), timeout=5.0)
+                # Mark this file's dashboard tile done (frees its lane).
+                _put_reliable(msg_queue, (MsgKind.HF_TILE, {
+                    "file": i, "stem": _stem, "state": "done",
+                    "n_locs": payload.get("n_locs", 0),
+                    "n_tracks": payload.get("n_tracks", 0)}), timeout=5.0)
+            else:
+                results[i] = {"index": i, "ok": False, "file": params["file"],
+                              "error": payload.get("error", "")}
+                _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
+                    "index": i, "total": n, "file": params["file"],
+                    "tb": payload.get("tb", payload.get("error", "")),
+                }))
+                _put_reliable(msg_queue, (MsgKind.LOG,
+                    f"  ✗ [{_stem}] failed: {payload.get('error', '')}   "
+                    f"({done}/{n})"), timeout=5.0)
+                _put_reliable(msg_queue, (MsgKind.HF_TILE, {
+                    "file": i, "stem": _stem, "state": "failed",
+                    "error": payload.get("error", "")}), timeout=5.0)
+            _prog(int(100 * done / n), f"HYPER-FLY: {done}/{n} files done")
+
+        def _free_tile(i, params, payload=None):
+            # Stopped mid-run, or orphaned by a crash: no verdict yet — free its
+            # dashboard tile (and series row) until it runs again.
+            _put_reliable(msg_queue, (MsgKind.HF_TILE, {
+                "file": i, "stem": _stem_of(params, payload),
+                "state": "cancelled"}), timeout=5.0)
+
         ctx = _mp.get_context("spawn")
-        with ProcessPoolExecutor(
-                max_workers=safe_process_workers(K), mp_context=ctx,
-                initializer=_file_worker_init,
-                initargs=(fan_q, mgr_cancel, per_file_workers, gpu_sem,
-                          load_sem, load_core_budget)) as ex:
-            fut_to_meta = {
-                ex.submit(_file_worker_run, i, n, p): (i, p)
-                for i, p in enumerate(params_list, 1)
-            }
-            for fut in as_completed(fut_to_meta):
-                i, params = fut_to_meta[fut]
-                kind, payload = _hf_future_outcome(fut)
-                if kind == "cancelled":
-                    # Stopped before it started: no error to report, no tile to
-                    # paint red, and not counted as done.
-                    not_started += 1
-                    continue
-                _stem = (payload.get("stem")
-                         or os.path.splitext(os.path.basename(params["file"]))[0])
-                done += 1
-                _hb_state["done"] = done       # feed the heartbeat
-                if payload.get("ok"):
-                    results[i - 1] = {"index": i, "ok": True,
-                                      "file": params["file"], **payload}
-                    _put_reliable(msg_queue, (MsgKind.FILE_DONE, {
-                        "index": i, "total": n,
-                        "stem":     payload.get("stem"),
-                        "out_dir":  payload.get("out_dir"),
-                        "n_tracks": payload.get("n_tracks", 0),
-                        "n_locs":   payload.get("n_locs", 0),
-                    }))
-                    # Clean per-file ledger line (the readable HYPERFLY console).
-                    msg_queue.put((MsgKind.LOG,
-                        f"  ✓ [{_stem}] {int(payload.get('n_locs', 0)):,} locs · "
-                        f"{int(payload.get('n_tracks', 0)):,} tracks   "
-                        f"({done}/{n})"))
-                    # Mark this file's dashboard tile done (frees its lane).
-                    msg_queue.put((MsgKind.HF_TILE, {
-                        "file": i, "stem": _stem, "state": "done",
-                        "n_locs": payload.get("n_locs", 0),
-                        "n_tracks": payload.get("n_tracks", 0)}))
-                else:
-                    results[i - 1] = {"index": i, "ok": False,
-                                      "file": params["file"],
-                                      "error": payload.get("error", "")}
-                    _put_reliable(msg_queue, (MsgKind.FILE_ERROR, {
-                        "index": i, "total": n, "file": params["file"],
-                        "tb": payload.get("tb", payload.get("error", "")),
-                    }))
-                    msg_queue.put((MsgKind.LOG,
-                        f"  ✗ [{_stem}] failed: {payload.get('error', '')}   "
-                        f"({done}/{n})"))
-                    msg_queue.put((MsgKind.HF_TILE, {
-                        "file": i, "stem": _stem, "state": "failed",
-                        "error": payload.get("error", "")}))
-                _prog(int(100 * done / max(1, n)),
-                      f"HYPER-FLY: {done}/{n} files done")
-                if cancel_event.is_set():
-                    cancelled = True
-                    for f in fut_to_meta:          # stop un-started files
-                        f.cancel()
-        if cancelled and not_started:
-            msg_queue.put((MsgKind.LOG,
-                f"  Stopped — {not_started} file(s) not started "
-                f"({done} of {n} processed)"))
-        return [r for r in results if r is not None]
+
+        def _pool_round(round_items, workers_per_file, max_workers, gated):
+            """Run ``round_items`` through one process pool.  Returns the items
+            a broken pool left without an outcome ([] if it didn't break)."""
+            started.clear()
+            gpu_sem, load_sem = _new_gates() if gated else (None, None)
+            orphaned = []
+            with ProcessPoolExecutor(
+                    max_workers=safe_process_workers(max_workers), mp_context=ctx,
+                    initializer=_file_worker_init,
+                    initargs=(fan_q, mgr_cancel, workers_per_file, gpu_sem,
+                              load_sem, load_core_budget if gated else None)) as ex:
+                fut_to_meta = {
+                    ex.submit(_file_worker_run, i, n, p): (i, p)
+                    for i, p in round_items
+                }
+                for fut in as_completed(fut_to_meta):
+                    i, params = fut_to_meta[fut]
+                    kind, payload = _hf_future_outcome(fut)
+                    if kind == "crashed":
+                        orphaned.append((i, params))
+                    elif kind == "cancelled":
+                        # Stopped: not a failure, and not done.  The caller
+                        # re-runs it after a watchdog abort.
+                        unfinished[i] = params
+                        if payload is not None:        # it had started
+                            _free_tile(i, params, payload)
+                    else:
+                        _record(i, params, kind, payload)
+                    if cancel_event.is_set():
+                        for f in fut_to_meta:          # stop un-started files
+                            f.cancel()
+            return sorted(orphaned, key=lambda it: it[0])
+
+        queue_items = list(items)
+        suspects = []
+        while queue_items and not cancel_event.is_set():
+            orphaned = _pool_round(queue_items, per_file_workers,
+                                   min(K, len(queue_items)), gated=True)
+            if not orphaned:
+                break
+            _settle_forwarder()
+            ran = [it for it in orphaned if it[0] in started]
+            queued = [it for it in orphaned if it[0] not in started]
+            if not ran:
+                # Can't tell which files were running — isolate them all.
+                ran, queued = orphaned, []
+            for i, p in ran:
+                _free_tile(i, p)
+            suspects.extend(ran)
+            _put_reliable(msg_queue, (MsgKind.LOG,
+                f"\n  ⚠ HYPER-FLY: a worker process crashed, which also stops "
+                f"the files running beside it.  Re-running those {len(ran)} "
+                f"file(s) one at a time, each in its own process"
+                + (f"; the {len(queued)} file(s) that hadn't started carry on "
+                   f"in parallel." if queued else ".")))
+            queue_items = queued
+
+        # Crash isolation: each file that was running beside a crash gets a
+        # fresh process of its own and the whole core budget.  One at a time, so
+        # no load / GPU gates are needed — and a dead process can't strand one.
+        for i, p in sorted(suspects, key=lambda it: it[0]):
+            if cancel_event.is_set():
+                break
+            _put_reliable(msg_queue, (MsgKind.LOG,
+                f"  HYPER-FLY: re-running [{_stem_of(p)}] on its own "
+                f"(crash isolation)"), timeout=5.0)
+            if _pool_round([(i, p)], total_cores, 1, gated=False):
+                _record(i, p, "failed", {"ok": False, "stem": _stem_of(p),
+                                         "error": _HF_CRASH_ERROR,
+                                         "tb": _HF_CRASH_ERROR})
     except Exception:
+        engine_error = True
         _log("  HYPER-FLY engine error:\n" + traceback.format_exc())
-        return None
     finally:
         stop_threads.set()
         try:
@@ -4704,6 +4865,16 @@ def _run_batch_hyperfly(params_list, msg_queue, cancel_event, _log, _prog, plan)
             if mgr is not None:
                 mgr.shutdown()
         except Exception: pass
+
+    # Every file without a verdict — cancelled, never reached, or cut short by
+    # an engine error — is unfinished: never dropped, never silently "failed".
+    for i, p in items:
+        if i not in results:
+            unfinished.setdefault(i, p)
+    return {"results": results,
+            "unfinished": sorted(((i, p) for i, p in unfinished.items()
+                                  if i not in results), key=lambda it: it[0]),
+            "engine_error": engine_error}
 
 
 # Kept alive for the whole batch-subprocess lifetime: the Windows Job Object whose
@@ -4884,66 +5055,82 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
     try:
         n = len(params_list)
         _log(f"── Batch worker subprocess started — {n} file(s) ──")
-        results = []
-
         # ── HYPERFLY: parallel multi-file engine on big machines ──
-        # Try it first; on any failure (or inactive / single file) drop back to
-        # the serial loop below, which stays the canonical, always-available path.
-        _hf_results = None
+        # Try it first.  Whatever it can't finish — after an engine failure, or
+        # once a memory-watchdog abort has shrunk the wave to one file — drops
+        # to the serial loop below, the canonical, always-available path.
+        done_by_index = {}                      # batch index → result row
+        pending = list(enumerate(params_list, 1))
         try:
             from firefly.analysis.fa_hyperfly import plan_concurrency
             _plan = plan_concurrency(params_list)
         except Exception:
             _plan = {"active": False}
         if _plan.get("active"):
-            msg_queue.put((MsgKind.HYPERFLY_STATUS, {
-                "active": True,
-                "n_concurrent": _plan.get("n_concurrent"),
-                "per_file_workers": _plan.get("per_file_workers"),
-                "reason": _plan.get("reason", ""),
-            }))
-            _log(f"\n  HYPER-FLY engaged — {_plan.get('reason', '')}")
-            try:
-                _hf_results = _run_batch_hyperfly(
-                    params_list, msg_queue, cancel_event, _log, _prog, _plan)
-            except Exception:
-                _log("  HYPER-FLY error; falling back to serial:\n"
-                     + traceback.format_exc())
-                _hf_results = None
-            if _hf_results is None:
-                _log("  HYPER-FLY unavailable — running the standard serial "
-                     "batch instead.")
-
-        if _hf_results is not None:
-            # HYPERFLY ran the whole batch.  Distinguish a memory-watchdog abort
-            # from a real user Stop the SAME way the serial loop does (below).
-            # The shared watchdog sets mem_abort BEFORE cancel_event, so a
-            # transient RAM dip during the K-file load surge (the exact spike the
-            # load-stagger + debounce are meant to ride out) must NOT be reported
-            # as "stopped by user" nor discard the files that already completed in
-            # the wave — clear the events, keep the partial results, and fall
-            # through to the normal batch_done summary.
-            if cancel_event.is_set() and mem_abort.is_set():
-                _log("\n  ⚠ HYPER-FLY wave aborted by the memory watchdog "
-                     "(insufficient free RAM) — completed files are kept; "
-                     "unfinished files in the wave were cancelled.")
+            K = max(1, int(_plan.get("n_concurrent") or 1))
+            _core_budget = max(1, int(_plan.get("per_file_workers") or 1)) * K
+            _first_wave = True
+            while pending and K >= 2:
+                _wave = dict(_plan, n_concurrent=K,
+                             per_file_workers=max(1, _core_budget // K))
+                if not _first_wave:
+                    _wave["reason"] = (f"re-running {len(pending)} file(s): {K} at "
+                                       f"a time × {_wave['per_file_workers']} cores")
+                _put_reliable(msg_queue, (MsgKind.HYPERFLY_STATUS, {
+                    "active": True,
+                    "n_concurrent": K,
+                    "per_file_workers": _wave["per_file_workers"],
+                    "reason": _wave.get("reason", ""),
+                }), timeout=5.0)
+                if _first_wave:
+                    _log(f"\n  HYPER-FLY engaged — {_plan.get('reason', '')}")
+                _first_wave = False
+                try:
+                    _wave_out = _run_batch_hyperfly(
+                        pending, n, msg_queue, cancel_event, _log, _prog, _wave,
+                        done_before=len(done_by_index))
+                except Exception:
+                    _log("  HYPER-FLY error:\n" + traceback.format_exc())
+                    _wave_out = {"results": {}, "unfinished": pending,
+                                 "engine_error": True}
+                done_by_index.update(_wave_out["results"])
+                pending = list(_wave_out["unfinished"])
+                if _wave_out.get("engine_error"):
+                    if pending:
+                        _log(f"  HYPER-FLY unavailable — running the {len(pending)} "
+                             f"remaining file(s) one at a time instead.")
+                    break
+                if not cancel_event.is_set():
+                    break                       # the wave finished every file
+                if not mem_abort.is_set():
+                    # A real Stop (or the disk watchdog) ends the batch here.
+                    if pending:
+                        _log(f"\n  Stopped — {len(pending)} file(s) not processed "
+                             f"({len(done_by_index)} of {n} done)")
+                    _log("\n── Batch stopped by user ──")
+                    _put_reliable(msg_queue, (MsgKind.STOPPED, None))
+                    return
+                # Memory-watchdog abort.  The shared watchdog sets mem_abort
+                # BEFORE cancel_event, and only after SUSTAINED low RAM (its
+                # debounce rides out a transient dip in the load surge), so this
+                # wave was genuinely too wide.  Keep the finished files, halve the
+                # concurrency and re-run the unfinished ones — never drop them.
+                # At one file per wave the serial loop takes over, and it skips
+                # any single file that still doesn't fit.
                 mem_abort.clear()
                 cancel_event.clear()
                 try:
                     import gc as _gc
                     _gc.collect()
                 except Exception: pass
-                results = _hf_results
-                _serial_iter = []
-            elif cancel_event.is_set():
-                _log("\n── Batch stopped by user ──")
-                _put_reliable(msg_queue, (MsgKind.STOPPED, None))
-                return
-            else:
-                results = _hf_results
-                _serial_iter = []
-        else:
-            _serial_iter = list(enumerate(params_list, 1))
+                K = min(K // 2, len(pending))
+                _log(f"\n  ⚠ HYPER-FLY wave aborted by the memory watchdog "
+                     f"(insufficient free RAM) — {len(done_by_index)} finished "
+                     f"file(s) are kept; re-running the {len(pending)} unfinished "
+                     f"file(s) " + (f"{K} at a time." if K >= 2 else
+                                    "one at a time."))
+        results = [done_by_index[i] for i in sorted(done_by_index)]
+        _serial_iter = pending
 
         for i, params in _serial_iter:
             if cancel_event.is_set():
@@ -5091,6 +5278,7 @@ def run_batch_analysis(params_list: list, msg_queue, cancel_event):
                 except Exception: pass
 
         # All done
+        results.sort(key=lambda r: r.get("index", 0))
         n_ok   = sum(1 for r in results if r.get("ok"))
         n_fail = n - n_ok
         _log("")

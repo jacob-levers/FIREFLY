@@ -157,10 +157,13 @@ def plan_concurrency(params_list: list) -> dict:
     ram_for_files = max(0.0, ram_budget_gb - gpu_detect_overhead_gb)
 
     k_ram = int(ram_for_files // per_file_gb) if per_file_gb > 0 else n_files
-    k_cores = max(1, N_CPUS // MIN_CORES_PER_FILE)
     max_files = _env_int("FIREFLY_HYPERFLY_MAX_FILES")    # 0 = auto
     max_cores = _env_int("FIREFLY_HYPERFLY_MAX_CORES")    # 0 = auto
-    budget_cores = max_cores if max_cores > 0 else N_CPUS
+    budget_cores = min(max_cores, N_CPUS) if max_cores > 0 else N_CPUS
+    # Width is bounded by the core BUDGET, not the machine: sizing it from all
+    # cores let a capped run go K files × 1 core, over the cap and below the
+    # per-file floor.
+    k_cores = max(1, budget_cores // MIN_CORES_PER_FILE)
 
     k = min(n_files, max(1, k_ram), k_cores)
     if max_files > 0:
@@ -170,6 +173,17 @@ def plan_concurrency(params_list: list) -> dict:
     per_file_workers = max(1, budget_cores // k)
     active = k >= 2
     _ram_note = (f"≤{max_ram} GB cap" if max_ram > 0 else f"free {free_gb:.0f} GB")
+    if active:
+        _why = (f"{k} files × {per_file_workers} cores "
+                f"({_ram_note}, ~{per_file_gb:.0f} GB/file)")
+    elif k_cores < 2:
+        _why = (f"core cap of {budget_cores} is too small to split "
+                f"(≥{2 * MIN_CORES_PER_FILE} cores needed)")
+    elif max_files == 1:
+        _why = "HF max files is 1"
+    else:
+        _why = (f"only one file fits in RAM ({_ram_note}, "
+                f"~{per_file_gb:.0f} GB/file)")
     return {
         "active": active,
         "n_concurrent": k if active else 1,
@@ -177,9 +191,5 @@ def plan_concurrency(params_list: list) -> dict:
         "free_gb": round(free_gb, 1),
         "per_file_gb": round(per_file_gb, 1),
         "ram_budget_gb": round(ram_budget_gb, 1),
-        "reason": (f"{k} files × {per_file_workers} cores "
-                   f"({_ram_note}, ~{per_file_gb:.0f} GB/file)"
-                   if active else
-                   f"only one file fits in RAM ({_ram_note}, "
-                   f"~{per_file_gb:.0f} GB/file)"),
+        "reason": _why,
     }

@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.76.52-rc.1 — 15 Oct 2026
+
+### Fixed
+
+- **One crashing file no longer fails a whole HYPER-FLY batch.** If a worker
+  process died outright (for example a GPU driver fault), every file that was
+  running or still queued was reported as failed, so one bad file could turn a
+  64-file batch into "0 succeeded". Files that hadn't started now carry on in
+  parallel, and the files that were running beside the crash are re-run one at
+  a time, each in its own process, so only the file that actually crashes is
+  reported as failed.
+- **A memory-watchdog abort no longer drops files from a HYPER-FLY batch.**
+  When free RAM ran critically low, the finished files were kept but every
+  unfinished file was silently skipped and counted as "failed" with no reason
+  given. HYPER-FLY now halves the number of files it runs at once and re-runs
+  the unfinished ones, down to one file at a time if it has to.
+- **The memory watchdog keeps watching after its first abort.** It switched
+  itself off after aborting once, leaving the rest of the batch without
+  low-RAM protection. This affected one-file-at-a-time batches too.
+- **"HF max cores" is honoured.** HYPER-FLY split the cap between as many files
+  as the whole machine could run, so a 16-core cap on a 128-core machine ran
+  32 files on 1 core each, twice the cap. It now runs 4 files on 4 cores each.
+- **Stopping a HYPER-FLY batch no longer marks the files it was running as
+  failed.** They go back to queued instead of turning red.
+- **The Batch list follows a HYPER-FLY run.** Series rows stayed "queued" for
+  the whole parallel run and failed series never turned red; rows now show
+  running, done and error as each file goes. Rows also no longer show the
+  wrong series' status when a checked series is skipped at launch.
+- **HYPER-FLY dashboard tiles.** A finished file no longer comes back as a
+  "running" tile stuck at the end of the run. Files waiting their turn to load
+  now say "Waiting for a load slot…" instead of "Loading stack…". The
+  dashboard no longer reads every file's preview over the network the moment
+  the run starts, competing with the paced file loads.
+- **Temporary stack files are deleted after each file in HYPER-FLY.** A file
+  too big to hold in RAM spills to a temporary file beside the output folder;
+  these piled up until the whole batch ended.
+
 ## v2.76.51 — 15 Oct 2026
 
 Consolidates the 2.76.51-rc.1 … rc.27 pre-release series. Newest first within each section.

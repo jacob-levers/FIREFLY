@@ -128,6 +128,7 @@ class BatchController(QObject):
         self._files_failed = 0
         self._series_status = {}          # series key → queued/running/done/error
         self._run_order = []              # checked series keys, in run order
+        self._index_keys = []             # batch file index - 1 → series key
         self._cur_index = -1              # index into _run_order of the live series
         self._cur_progress = 0            # running series' progress %
         self._session = RunSession(self)
@@ -843,9 +844,13 @@ class BatchController(QObject):
         self._files_done = 0
         self._files_failed = 0
         self._progress = 0
-        # Per-series queue state: the checked series, in scan order, all queued.
-        self._run_order = [s["key"] for s in self._series
-                           if self._checked_files.get(s["key"])]
+        # Per-series queue state: the series actually launched, in run order,
+        # all queued.  Worker messages name a file by its 1-based batch index;
+        # map it straight to its series key (HYPER-FLY finishes files out of
+        # order and never sends FILE_STARTING, so a single "current" row can't
+        # say which series a FILE_DONE is about).
+        self._index_keys = [p.get("stem_override") for p in params_list]
+        self._run_order = list(dict.fromkeys(k for k in self._index_keys if k))
         self._series_status = {k: "queued" for k in self._run_order}
         self._cur_index = -1
         self._cur_progress = 0
@@ -945,6 +950,29 @@ class BatchController(QObject):
         if 0 <= self._cur_index < len(self._run_order):
             self._series_status[self._run_order[self._cur_index]] = status
 
+    def _key_at(self, index):
+        """Series key for a worker message's 1-based batch file index."""
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            return None
+        if 1 <= i <= len(self._index_keys):
+            return self._index_keys[i - 1]
+        return None
+
+    def _mark_file(self, index, status, fallback=True):
+        """Set the status of the series batch file ``index`` belongs to.  With
+        no usable index, fall back to the serial run's current row."""
+        key = self._key_at(index)
+        if key is None:
+            if fallback:
+                self._mark(status)
+            return
+        self._series_status[key] = status
+        row = self._index_of(key)
+        if row >= 0:
+            self._model.rowChanged(row)
+
     def _refresh_running_row(self):
         if 0 <= self._cur_index < len(self._run_order):
             self._model.rowChanged(self._index_of(self._run_order[self._cur_index]))
@@ -954,7 +982,9 @@ class BatchController(QObject):
         i = (payload or {}).get("index", 0)
         total = (payload or {}).get("total", self._files_total)
         self._files_total = total or self._files_total
-        self._cur_index = i - 1
+        key = self._key_at(i)
+        self._cur_index = (self._run_order.index(key) if key in self._run_order
+                           else i - 1)
         self._cur_progress = 0
         self._mark("running")
         self._status = f"Batch: {max(0, i - 1)} / {self._files_total} done"
@@ -965,14 +995,14 @@ class BatchController(QObject):
             self._cockpit.resetStepper()      # rewind the per-file stepper
 
     def _on_file_done(self, payload):
-        self._mark("done")
+        self._mark_file((payload or {}).get("index"), "done")
         self._files_done += 1
         self._cur_progress = 0
         self._bump_file_progress()
         self._refresh_running_row()
 
     def _on_file_error(self, payload):
-        self._mark("error")
+        self._mark_file((payload or {}).get("index"), "error")
         self._files_failed += 1
         self._files_done += 1
         self._cur_progress = 0
@@ -993,6 +1023,16 @@ class BatchController(QObject):
     def _on_hf_tile(self, payload):
         if self._hf:
             self._hf.onTile(payload)
+        # HYPER-FLY runs several series at once and sends no FILE_STARTING, so
+        # the queue rows follow each file's tile: running when its worker picks
+        # it up, back to queued if Stop / an abort / a crash beside it set it
+        # aside for a re-run.  (done / error come from FILE_DONE / FILE_ERROR.)
+        state = (payload or {}).get("state")
+        if state in ("running", "cancelled"):
+            self._mark_file((payload or {}).get("file"),
+                            "running" if state == "running" else "queued",
+                            fallback=False)
+            self.seriesChanged.emit()
 
     def _on_hf_preview(self, payload):
         if self._hf:

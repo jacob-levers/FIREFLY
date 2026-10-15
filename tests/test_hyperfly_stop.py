@@ -46,3 +46,21 @@ def test_a_crash_with_an_empty_message_still_says_what_happened():
     assert kind == "failed"
     assert payload["error"], "a failure with no reason is not actionable"
     assert "MemoryError" in payload["error"]
+
+
+def test_a_file_stopped_mid_run_is_not_a_failure():
+    """Stop / a watchdog abort reaching a RUNNING file: the worker says so, and
+    the batch sets it aside (or re-runs it) instead of painting it red."""
+    kind, payload = _hf_future_outcome(
+        _done({"ok": False, "cancelled": True, "error": "cancelled", "stem": "a"}))
+    assert kind == "cancelled"
+    assert payload["stem"] == "a"
+
+
+def test_a_broken_pool_is_no_verdict_on_the_file():
+    """One worker process dying outright fails EVERY in-flight and queued
+    future with BrokenProcessPool — that says nothing about this file."""
+    from concurrent.futures.process import BrokenProcessPool
+    kind, payload = _hf_future_outcome(_done(exc=BrokenProcessPool("boom")))
+    assert kind == "crashed"
+    assert payload is None
