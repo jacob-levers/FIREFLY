@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.76.53 — 23 Oct 2026
+
+### Changed
+
+- **A new stage bar on the Process tab.** It shows one stage at a time, large:
+  a step counter, the stage name rolling into place with what that stage does
+  underneath, and a slim six-part step bar whose running part shimmers. When a
+  run ends it says how: Complete (with the run's headline, such as the number
+  of trajectories), Finished when no trajectories were produced, Stopped, or
+  Failed, naming the stage it stopped or failed in. Reduced motion turns its
+  animations off.
+- **Drift now comes before Link in the stage list**, the order the analysis
+  actually runs them: drift is corrected on the localisations before they are
+  linked.
+
+### Fixed
+
+- **The stage bar no longer shows Drift while linking is still running.** With
+  drift correction on, the bar jumped to Drift when drift was estimated and
+  then stayed there for the whole of linking.
+
 ## v2.76.52 — 23 Oct 2026
 
 Consolidates the 2.76.52-rc.1 … rc.2 pre-release series. Newest first within each section.

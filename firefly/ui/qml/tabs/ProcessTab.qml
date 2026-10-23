@@ -68,98 +68,18 @@ Flickable {
             }
         }
 
-        // ── connected pipeline stepper ───────────────────────────────────
+        // ── pipeline: the current stage, large, over a slim step bar ──────
         Card {
             Layout.fillWidth: true
             Layout.preferredHeight: 88
-            RowLayout {
-                id: stepper
+            StageFocus {
                 anchors.fill: parent
-                anchors.leftMargin: sc.sp8
-                anchors.rightMargin: sc.sp8
-                spacing: 0
-                Repeater {
-                    model: Process.stages
-                    delegate: RowLayout {
-                        id: node
-                        required property int index
-                        required property string modelData
-                        readonly property bool done: Process.complete || index < Process.stage
-                        readonly property bool active: index === Process.stage && !Process.complete
-                        Layout.fillWidth: index > 0
-                        spacing: 0
-
-                        // connector to the previous node — pinned to the circle's
-                        // centre-line (the circle is a 30px item at the TOP of the
-                        // node column, so its centre is 15px down), NOT the vertical
-                        // centre of the circle+label column below it.
-                        Rectangle {
-                            visible: index > 0
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 2
-                            Layout.alignment: Qt.AlignTop
-                            Layout.topMargin: 14        // (30 − 2) / 2 → centre at y = 15
-                            radius: 1
-                            color: (Process.complete || index <= Process.stage) ? pal.SUCCESS
-                                 : pal.BORDER
-                        }
-
-                        // node + label
-                        ColumnLayout {
-                            spacing: sc.sp2
-                            Layout.alignment: Qt.AlignVCenter
-                            Item {
-                                Layout.alignment: Qt.AlignHCenter
-                                implicitWidth: 30; implicitHeight: 30
-                                // pulsing ring on the active node
-                                Rectangle {
-                                    anchors.centerIn: parent
-                                    width: 30; height: 30; radius: 15
-                                    color: "transparent"
-                                    border.width: 2; border.color: pal.ACC
-                                    visible: node.active
-                                    opacity: 0.0
-                                    SequentialAnimation on opacity {
-                                        running: node.active && Process.running && !Theme.reducedMotion
-                                        loops: Animation.Infinite
-                                        NumberAnimation { from: 0.6; to: 0.0; duration: 1100; easing.type: Easing.OutQuad }
-                                    }
-                                    SequentialAnimation on scale {
-                                        running: node.active && Process.running && !Theme.reducedMotion
-                                        loops: Animation.Infinite
-                                        NumberAnimation { from: 1.0; to: 1.7; duration: 1100; easing.type: Easing.OutQuad }
-                                    }
-                                }
-                                Rectangle {
-                                    anchors.centerIn: parent
-                                    width: 28; height: 28; radius: 14
-                                    color: node.done ? pal.SUCCESS : node.active ? pal.ACC : pal.PANEL_ALT
-                                    border.width: 1
-                                    border.color: node.done ? pal.SUCCESS : node.active ? pal.ACC : pal.BORDER
-                                    Icon {
-                                        anchors.centerIn: parent
-                                        visible: node.done
-                                        name: "check"; size: 16; color: pal.ACC_FG
-                                    }
-                                    Text {
-                                        anchors.centerIn: parent
-                                        visible: !node.done
-                                        text: node.index + 1
-                                        color: node.active ? pal.ACC_FG : pal.TXT_MUTED
-                                        font.pixelSize: sc.textSm; font.bold: node.active
-                                    }
-                                }
-                            }
-                            Text {
-                                Layout.alignment: Qt.AlignHCenter
-                                text: node.modelData
-                                color: node.done || node.active ? pal.TXT : pal.TXT_MUTED
-                                font.pixelSize: sc.textXs
-                                font.bold: node.active
-                            }
-                        }
-                    }
-                }
+                stages: Process.stages
+                stage: Process.stage
+                complete: Process.complete
+                running: Process.running
+                severity: Process.resultSeverity
+                headline: Process.resultHeadline
             }
         }
 

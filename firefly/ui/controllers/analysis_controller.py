@@ -30,14 +30,16 @@ from firefly.analysis.fa_enums import MsgKind
 from firefly.ui.controllers.params import params_builder
 from firefly.ui.controllers.providers.live_frame_provider import render_frame
 
-# Connected-stepper stages — mirror ui_widgets._PipelineDiagram._STAGES so the
-# QML stepper lights up identically.
-STAGES = ["Preprocess", "Detect", "Link", "Drift", "Diffuse", "Classify"]
+# Pipeline stages in the order the worker runs them.  Drift is estimated from
+# the localisations and applied BEFORE linking, so it comes before Link: with
+# Link first, "Estimating drift…" advanced the (forward-only) stepper to Drift
+# and the linking that followed could not bring it back.
+STAGES = ["Preprocess", "Detect", "Drift", "Link", "Diffuse", "Classify"]
 
 
 def _index_for_msg(msg):
-    """('complete', None) / ('idx', i) / (None, None) for a progress message —
-    ported verbatim from _PipelineDiagram._index_for_msg (most-specific first)."""
+    """('complete', None) / ('idx', i) / (None, None) for a progress message,
+    i indexing STAGES (most-specific first)."""
     m = (msg or "").lower()
     if any(k in m for k in ("complete", "all done", "batch complete")):
         return ("complete", None)
@@ -45,9 +47,9 @@ def _index_for_msg(msg):
         return ("idx", 5)
     if any(k in m for k in ("msd", "fits", "diffus")):
         return ("idx", 4)
-    if "drift" in m:
-        return ("idx", 3)
     if any(k in m for k in ("linking", "pre-linked", "link")):
+        return ("idx", 3)
+    if "drift" in m:
         return ("idx", 2)
     if any(k in m for k in ("localising", "detect")):
         return ("idx", 1)

@@ -53,6 +53,24 @@ def cockpit(monkeypatch):
     _app.processEvents()
 
 
+def test_the_stepper_follows_the_worker_through_drift_then_linking(cockpit):
+    # The single-file worker's progress messages, in the order it sends them:
+    # drift is estimated BEFORE linking.  With Link listed before Drift, the
+    # forward-only stepper sat on Drift for the whole of linking.
+    from firefly.ui.controllers.analysis_controller import STAGES
+    c = cockpit
+    assert c.beginExternalRun() is True
+    shown = []
+    for msg in ("Loading stack…", "Localising…",
+                "Estimating drift and checking reference support…",
+                "Linking 120,000 localisations…", "Linking… 40 %",
+                "Computing MSD + fits…", "Secondary analyses…", "Saving outputs…"):
+        c.feedProgress(50, msg)
+        shown.append(STAGES[c.stage])
+    assert shown == ["Preprocess", "Detect", "Drift", "Link", "Link",
+                     "Diffuse", "Classify", "Classify"]
+
+
 def test_external_run_lifecycle_drives_cockpit_state(cockpit):
     c = cockpit
     assert not c.running and not c._external
