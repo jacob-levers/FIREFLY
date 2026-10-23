@@ -304,6 +304,17 @@ class AnalysisController(QObject):
         self._sample_resources()       # immediate refresh on run start
 
     @Slot()
+    def openResultFolder(self):
+        """Open the last run's output folder in Finder / Explorer.  Built with
+        QUrl.fromLocalFile: "file://" + path is not a valid URL for a Windows
+        path (the drive letter parses as a host) or for a path holding # or %."""
+        if not self._out_dir:
+            return
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self._out_dir))
+
+    @Slot()
     def stop(self):
         """Cooperative cancel; the poller escalates to SIGTERM→SIGKILL."""
         if self._external:

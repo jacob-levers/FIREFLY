@@ -13,6 +13,8 @@ Item {
 
     readonly property var pal: Theme.palette
     readonly property var sc: Theme.scale
+    // How shortcut hints read on this OS: Qt maps "Ctrl" to ⌘ on macOS only.
+    readonly property string modKey: Qt.platform.os === "osx" ? "⌘" : "Ctrl+"
 
     // Quietly check GitHub for a newer release shortly after launch (honours the
     // Preferences ▸ "Check for updates on launch" toggle).  This is what surfaces
@@ -105,7 +107,7 @@ Item {
                         HoverHandler { id: upPillHov; cursorShape: Qt.PointingHandCursor }
                         TapHandler { onTapped: prefs.open("updates") }   // jump to Updates
                     }
-                    IconButton { icon: "settings"; tip: "Preferences (⌘,)"; size: 28
+                    IconButton { icon: "settings"; tip: "Preferences (" + root.modKey + ",)"; size: 28
                                  onClicked: prefs.open() }
                     // Home affordance (only in the main UI)
                     Text {
@@ -150,12 +152,13 @@ Item {
         sourceComponent: Component { RoiOverlay {} }
     }
 
-    // Preferences modal + ⌘, shortcut.
+    // Preferences modal + ⌘, / Ctrl+, shortcut.  Not StandardKey.Preferences:
+    // Qt binds no key to it on Windows, so the shortcut did nothing there.
     PreferencesDialog { id: prefs }
-    Shortcut { sequence: StandardKey.Preferences; onActivated: prefs.open() }
+    Shortcut { sequence: "Ctrl+,"; onActivated: prefs.open() }
 
     // ── global keyboard shortcuts ────────────────────────────────────────
-    // ⌘1…⌘5 jump to a tab; ⌘↵ starts/stops a run (Qt maps "Ctrl" → ⌘ on macOS).
+    // Ctrl+1…5 jump to a tab; Ctrl+Enter starts/stops a run (⌘ on macOS: Qt maps "Ctrl" → ⌘).
     // Gated to the main UI with no full-window modal (Preferences / ROI editor) up.
     readonly property bool shortcutsLive: App.page === "main" && !prefs.opened && !Roi.editing
     Shortcut { sequence: "Ctrl+1"; enabled: root.shortcutsLive; onActivated: App.setTab(0) }
@@ -399,7 +402,7 @@ Item {
                     HoverHandler { id: lupHov; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: prefs.open("updates") }
                 }
-                IconButton { icon: "settings"; tip: "Preferences (⌘,)"; size: 28
+                IconButton { icon: "settings"; tip: "Preferences (" + root.modKey + ",)"; size: 28
                              onClicked: prefs.open() }
             }
         }
@@ -490,7 +493,7 @@ Item {
                                     }
                                     TapHandler { onTapped: App.setTab(index) }
                                     HoverHandler { id: tabHov; cursorShape: Qt.PointingHandCursor }
-                                    QQC.ToolTip.text: "⌘" + (index + 1)
+                                    QQC.ToolTip.text: root.modKey + (index + 1)
                                     QQC.ToolTip.delay: 600
                                     QQC.ToolTip.visible: tabHov.hovered
                                 }

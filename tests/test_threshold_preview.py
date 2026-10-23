@@ -288,3 +288,64 @@ def test_the_panel_offers_the_recommendation():
                             "RoiOverlay.qml"), encoding="utf-8").read()
     assert "Roi.recommendThreshold()" in qml and "Set to recommended" in qml
     assert "Roi.recommendNote" in qml
+
+
+# ── scrubbing ──────────────────────────────────────────────────────────────
+@pytest.fixture
+def scrub_viewer(tmp_path, monkeypatch):
+    """A viewer over an 8-frame TIFF that counts file opens and plane reads."""
+    import tifffile
+    from firefly.ui.controllers.params import preview_loader
+    from firefly.ui.controllers.roi_controller import RoiController
+    from firefly.ui.controllers.roi_store import RoiOverrideStore, RoiStore
+    path = str(tmp_path / "scrub.tif")
+    raw = _frames(n=8).astype(np.uint16)
+    tifffile.imwrite(path, raw, photometric="minisblack")
+    counts = {"opens": 0, "reads": 0}
+    real_open, real_plane = preview_loader._TiffPlanes.__init__, preview_loader._TiffPlanes.plane
+    def counted_open(self, p):
+        counts["opens"] += 1; real_open(self, p)
+    def counted_plane(self, i):
+        counts["reads"] += 1; return real_plane(self, i)
+    monkeypatch.setattr(preview_loader._TiffPlanes, "__init__", counted_open)
+    monkeypatch.setattr(preview_loader._TiffPlanes, "plane", counted_plane)
+    s = _Settings({"analysis/backend": PT_LABEL, "analysis/wavelet_threshold": 100.0,
+                   "analysis/diameter": 7, "analysis/bg_radius": 10, "analysis/roi_mode": "None"})
+    c = RoiController(store=RoiStore(), settings=s, override_store=RoiOverrideStore())
+    c.editDetection(path)
+    c.setViewMode("Raw frames")
+    yield c, path, raw, counts
+    c.dispose(); c.deleteLater(); _app.processEvents()
+
+
+def test_scrubbing_reads_through_one_open_file(scrub_viewer):
+    # Reopening the recording on every slider step re-read its whole page index
+    # (35 ms a step on a 4,000-page TIFF); the viewer now keeps it open.
+    c, _path, raw, counts = scrub_viewer
+    opens = counts["opens"]
+    for i in (1, 2, 3, 4, 5, 6, 7):
+        c.setFrame(i)
+        np.testing.assert_array_equal(c._raw_frame, raw[i].astype(np.float32))
+    assert counts["opens"] - opens <= 1
+
+
+def test_scrubbing_back_reuses_recent_frames(scrub_viewer):
+    c, _path, raw, counts = scrub_viewer
+    for i in (1, 2, 3):
+        c.setFrame(i)
+    reads = counts["reads"]
+    for i in (2, 1, 2, 3):
+        c.setFrame(i)
+        np.testing.assert_array_equal(c._raw_frame, raw[i].astype(np.float32))
+    assert counts["reads"] == reads
+    assert not c._raw_frame.flags.writeable          # shared with the cache
+
+
+@pytest.mark.parametrize("close", ["cancel", "commit"])
+def test_closing_the_viewer_releases_the_recording(scrub_viewer, close):
+    # Windows refuses to rename or delete a file something still has open.
+    c, path, _raw, _counts = scrub_viewer
+    c.setFrame(3)
+    getattr(c, close)()
+    assert c._frames is None and not c._frame_cache
+    os.replace(path, path + ".moved")

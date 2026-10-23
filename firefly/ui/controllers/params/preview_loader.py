@@ -156,6 +156,14 @@ class _CziPlanes:
         ch = min(int(channel), self._n_c - 1)  # same clamp as load_czi
         return np.squeeze(self._czi.read_image(T=int(idx), C=ch)[0])
 
+    def close(self):
+        # CziFile reads through a plain Python file object, which on Windows
+        # keeps the recording from being renamed or deleted until it closes.
+        try:
+            self._czi._bytes.close()
+        except Exception:
+            pass
+
 
 class _TiffPlanes:
     """An open planar YX/TYX TIFF.  Opening one and resolving its series walks
@@ -232,8 +240,8 @@ class DetectionFrames:
     estimators that sample a few frames or windows (the auto threshold, the
     wavelet noise) without loading a multi-GB recording.  Every plane is
     exactly :func:`detection_frame`'s; a CZI or TIFF is opened once, not per
-    plane.  ``close()`` (or a ``with`` block) releases the TIFF handle, which
-    otherwise keeps the recording locked on Windows until garbage collection.
+    plane.  ``close()`` (or a ``with`` block) releases the file, which an open
+    handle otherwise keeps locked on Windows until garbage collection.
     """
     ndim = 3
 
@@ -257,9 +265,10 @@ class DetectionFrames:
                                czi=self._czi, tiff=self._tiff)
 
     def close(self):
-        if self._tiff is not None:
-            self._tiff.close()
-            self._tiff = None
+        for h in (self._tiff, self._czi):
+            if h is not None:
+                h.close()
+        self._tiff = self._czi = None
 
     def __enter__(self):
         return self

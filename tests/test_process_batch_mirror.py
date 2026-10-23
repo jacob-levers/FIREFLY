@@ -53,6 +53,19 @@ def cockpit(monkeypatch):
     _app.processEvents()
 
 
+@pytest.mark.parametrize("out_dir", [r"C:\Users\lab\runs\fly #2 50%", "/Users/lab/runs/fly #2 50%"])
+def test_open_folder_opens_the_run_folder_on_any_os(cockpit, monkeypatch, out_dir):
+    # "file://" + path was an invalid URL for a Windows path (C: read as a
+    # host) and cut a path at "#" on any OS.
+    from PySide6.QtGui import QDesktopServices
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    cockpit._out_dir = out_dir
+    cockpit.openResultFolder()
+    assert len(opened) == 1 and opened[0].isValid()
+    assert opened[0].toLocalFile() == out_dir.replace("\\", "/")
+
+
 def test_the_stepper_follows_the_worker_through_drift_then_linking(cockpit):
     # The single-file worker's progress messages, in the order it sends them:
     # drift is estimated BEFORE linking.  With Link listed before Drift, the

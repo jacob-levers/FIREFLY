@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.76.54 — 24 Oct 2026
+
+### Changed
+
+- **Scrubbing through raw frames in Preview & ROI keeps up with the slider.**
+  The viewer reopened the recording for every frame; it now keeps it open
+  while the viewer is up and remembers recent frames. A step on a 4,000-frame
+  TIFF went from 33 ms to about 1 ms, and scrubbing back over frames already
+  seen costs nothing. The file is released as soon as the viewer closes, so it
+  can be moved or renamed straight away.
+
+### Fixed
+
+- **"Open folder" on the Process tab opens the run's folder on Windows.** It
+  did nothing there, and on any system it failed for a folder whose name
+  contains # or %.
+- **The Preferences shortcut works on Windows: Ctrl+,** (⌘, on macOS). It did
+  nothing on Windows, and the shortcut hints in tooltips now show Ctrl+ there
+  instead of ⌘.
+- **Numbers no longer shift as they change on Windows and Linux.** Timers,
+  counters, threshold readouts and paths are set in a monospace font; off macOS
+  they fell back to one whose digits are different widths.
+- **No console window flashes up during an analysis on Windows** on computers
+  with Git installed.
+
 ## v2.76.53 — 23 Oct 2026
 
 ### Changed

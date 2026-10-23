@@ -611,9 +611,12 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
     def _git_sha() -> str:
         try:
             here = os.path.dirname(os.path.abspath(__file__))
+            # CREATE_NO_WINDOW: the Windows build is a windowed app, so a
+            # console program started from it flashes up its own console.
             out = subprocess.check_output(
                 ["git", "-C", here, "rev-parse", "HEAD"],
-                stderr=subprocess.DEVNULL, timeout=2)
+                stderr=subprocess.DEVNULL, timeout=2,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             return out.decode().strip()
         except Exception:
             return ""

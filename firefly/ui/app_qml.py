@@ -56,7 +56,7 @@ except Exception:
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import QUrl, Qt, QEvent, QObject, QTimer, Signal, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtQuickControls2 import QQuickStyle
 
@@ -159,6 +159,15 @@ def roi_state_paths():
     from firefly.ui.ui_theme import app_data_dir
     d = app_data_dir()
     return os.path.join(d, "roi_polygons.json"), os.path.join(d, "roi_overrides.json")
+
+
+def install_font_fallbacks() -> None:
+    """The QML sets numbers, timers and paths in "Menlo", macOS's monospace.
+    Elsewhere Qt fell back to a proportional font (Tahoma on Windows), so
+    digits shifted as they changed; map it to the platform's monospace."""
+    if sys.platform != "darwin":
+        QFont.insertSubstitutions("Menlo", ["Consolas", "DejaVu Sans Mono",
+                                            "Liberation Mono", "Courier New"])
 
 
 def build_main_window(app: QtWidgets.QApplication):
@@ -424,6 +433,7 @@ def main() -> int:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     app.setApplicationName("FIREFLY")
     app.setOrganizationName("jacoblevers")   # must match the Widgets app for QSettings
+    install_font_fallbacks()
     win, qw = build_main_window(app)
     win.show()
 

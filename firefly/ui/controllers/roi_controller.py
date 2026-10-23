@@ -117,6 +117,10 @@ class RoiController(QObject):
         self._mask_proj = None          # projection used for the mask (per mask mode)
         self._mask_proj_mode = ""
         self._raw_frame = None          # cached raw frame (display in raw view)
+        self._frames = None             # open DetectionFrames for (file, channel)
+        self._frames_key = None
+        self._frame_cache = OrderedDict()   # (file, channel, i) -> read-only plane
+        self._frame_cache_bytes = 0
         self._img_w = 0
         self._img_h = 0
         self._img_token = 0
@@ -440,7 +444,6 @@ class RoiController(QObject):
             return None, 0
         try:
             from firefly.analysis.fa_detection_preview import preview_detections
-            from firefly.ui.controllers.params.preview_loader import DetectionFrames
             from firefly.ui.controllers.params.params_builder import (
                 BG_METHOD_MAP, BACKEND_LABEL_TO_VALUE)
             g = self._s
@@ -463,19 +466,17 @@ class RoiController(QObject):
             else:
                 idx = np.array([int(self._frame_idx)])
             pooled, capped, used = [], [], 0
-            with DetectionFrames(self._file, max(total, int(self._frame_idx) + 1),
-                                 channel) as frames:
-                for i in idx:
-                    frame = (self._raw_frame if (int(i) == int(self._frame_idx)
-                                                 and self._raw_frame is not None)
-                             else frames[int(i)])
-                    if frame is None:
-                        continue
-                    rows, _ = preview_detections(frame, **opts)
-                    mm = np.asarray(rows["mass"].to_numpy(), dtype=float)
-                    pooled.append(mm)
-                    capped.append(mm)  # per-frame; estimate_noise_floor applies the cap
-                    used += 1
+            for i in idx:
+                frame = (self._raw_frame if (int(i) == int(self._frame_idx)
+                                             and self._raw_frame is not None)
+                         else self._read_frame(int(i), channel))
+                if frame is None:
+                    continue
+                rows, _ = preview_detections(frame, **opts)
+                mm = np.asarray(rows["mass"].to_numpy(), dtype=float)
+                pooled.append(mm)
+                capped.append(mm)      # per-frame; estimate_noise_floor applies the cap
+                used += 1
             if not used:
                 raise ValueError("no frames could be read for the profile")
             self._cand_masses = np.concatenate(pooled) if pooled else np.array([])
@@ -889,6 +890,7 @@ class RoiController(QObject):
         self._open(path, "detect", detect=True)
 
     def _open(self, path, panel, detect=None):
+        self._release_frames()
         self._file = path or ""
         self._rec_note = ""
         self.recommendChanged.emit()
@@ -971,6 +973,7 @@ class RoiController(QObject):
             self.statusMessage.emit("That run folder is not available.")
             return False
 
+        self._release_frames()
         self._run_scoped = True
         self._run_dir = run_dir
         self._file = run_dir                      # store key + header caption
@@ -1109,6 +1112,7 @@ class RoiController(QObject):
         self._run_scoped = False
         self._run_dir = ""
         self._editing = False
+        self._release_frames()
         self.editingChanged.emit()
 
     def _load_background(self, path):
@@ -1224,11 +1228,53 @@ class RoiController(QObject):
 
     def _load_frame(self, i):
         try:
-            from firefly.ui.controllers.params.preview_loader import detection_frame
             channel = int(round(self._s.get_float("analysis/channel", 0))) if self._s else 0
-            self._raw_frame = detection_frame(self._file, i, channel)
+            self._raw_frame = self._read_frame(i, channel)
         except Exception:
             self._raw_frame = None
+
+    # Scrubbing reads one plane per slider step on the GUI thread.  Reopening
+    # the recording each time cost ~35 ms for a 4,000-page TIFF (its page index
+    # is re-read on every open) and ~30 ms for a 16k-frame CZI, against 0.1 ms
+    # and 8 ms through a handle kept open while the viewer is up.  Recent planes
+    # are also kept, so scrubbing back over them costs nothing.
+    _FRAME_CACHE_BYTES = 64 * 1024 * 1024
+
+    def _read_frame(self, i, channel):
+        """Plane ``i`` of the open file, exactly :func:`detection_frame`'s.
+        GUI thread only.  The array is shared with the cache, so it is
+        read-only; anything that needs to change it must copy it first."""
+        key = (self._file, int(channel), int(i))
+        hit = self._frame_cache.get(key)
+        if hit is not None:
+            self._frame_cache.move_to_end(key)
+            return hit
+        if self._frames is None or self._frames_key != key[:2]:
+            from firefly.ui.controllers.params.preview_loader import DetectionFrames
+            self._release_frames()
+            self._frames = DetectionFrames(self._file, max(1, int(self._n_frames or 0),
+                                                           int(i) + 1), channel)
+            self._frames_key = key[:2]
+        frame = self._frames[int(i)]
+        frame.setflags(write=False)
+        self._frame_cache[key] = frame
+        self._frame_cache_bytes += frame.nbytes
+        while self._frame_cache_bytes > self._FRAME_CACHE_BYTES and len(self._frame_cache) > 1:
+            _k, old = self._frame_cache.popitem(last=False)
+            self._frame_cache_bytes -= old.nbytes
+        return frame
+
+    def _release_frames(self):
+        """Close the open recording (Windows locks it while open) and drop the
+        cached planes."""
+        if self._frames is not None:
+            try:
+                self._frames.close()
+            except Exception:
+                pass
+        self._frames = self._frames_key = None
+        self._frame_cache.clear()
+        self._frame_cache_bytes = 0
 
     # ── companion "green" image view ──────────────────────────────────────
     # Some recordings ship a companion widefield/marker image (…_green.tif)
@@ -1842,6 +1888,7 @@ class RoiController(QObject):
         for th in (self._det_thread, self._rec_thread):
             if th is not None:
                 th.join(timeout=10)
+        self._release_frames()
 
     @Property(int, notify=spotsChanged)
     def spotToken(self):
@@ -2131,6 +2178,7 @@ class RoiController(QObject):
             else:
                 self._ovr.clear(self._file)
         self._editing = False
+        self._release_frames()
         self._run_scoped = False        # never leak run scope into the next edit
         self._run_dir = ""
         self.editingChanged.emit()
@@ -2148,6 +2196,7 @@ class RoiController(QObject):
         spec = (self._ovr.get(self._file) if self._ovr else None) or self._default_spec()
         self._apply_spec(spec)
         self._editing = False
+        self._release_frames()
         self._run_scoped = False        # never leak run scope into the next edit
         self._run_dir = ""
         self.roiSettingsChanged.emit()

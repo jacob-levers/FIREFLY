@@ -512,7 +512,7 @@ Flickable {
                     }
                     Button {
                         variant: "secondary"; text: "Open folder"; icon: "folder-open"
-                        onClicked: Qt.openUrlExternally("file://" + Process.resultOutDir)
+                        onClicked: Process.openResultFolder()
                     }
                 }
             }
