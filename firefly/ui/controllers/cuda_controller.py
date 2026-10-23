@@ -185,11 +185,32 @@ class CudaController(QObject):
     def restartNow(self):
         """Best-effort relaunch: stage a fresh instance, then ask the app to
         quit so the new process picks up the CUDA torch sidecar.  Falls back to
-        a plain quit if the relaunch can't be staged."""
+        a plain quit if the relaunch can't be staged.
+
+        The Windows build is a PyInstaller ONEFILE exe, and a child spawned by
+        it inherits ``_MEIPASS2`` / ``_PYI_*`` — the bootloader's "skip
+        extraction, use THIS _MEI dir" handshake.  The new instance then loads
+        from our _MEI dir, which this process deletes as it quits → an error
+        dialog on restart, while a manual relaunch works.  Same cause and fix
+        as the updater's relaunch (see ``updater.apply_update``)."""
+        import os
         import sys
         from PySide6 import QtCore
         try:
-            QtCore.QProcess.startDetached(sys.executable, sys.argv[1:])
+            # Frozen: argv[0] is the exe itself.  From source: sys.executable
+            # is python, so the script path (argv[0]) must be passed too.
+            args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+            env = QtCore.QProcessEnvironment()
+            for k, v in os.environ.items():
+                if k not in ("_MEIPASS2", "_MEIPASS") and not k.startswith("_PYI"):
+                    env.insert(k, v)
+            # PyInstaller ≥ 6.9: treat the child as a new, independent instance.
+            env.insert("PYINSTALLER_RESET_ENVIRONMENT", "1")
+            proc = QtCore.QProcess()
+            proc.setProgram(sys.executable)
+            proc.setArguments([str(a) for a in args])
+            proc.setProcessEnvironment(env)
+            proc.startDetached()
         except Exception:
             pass
         self.quitForRestart.emit()

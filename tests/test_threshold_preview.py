@@ -260,6 +260,22 @@ def test_recommended_minmass_is_the_runs_auto_threshold(movie, monkeypatch):
         c.dispose(); c.deleteLater(); _app.processEvents()
 
 
+def test_a_repeat_recommendation_is_reused_until_the_file_changes(viewer, monkeypatch):
+    from firefly.analysis import fa_localize
+    c, s, movie = viewer
+    real, calls = fa_localize.recommend_wavelet_threshold, []
+    monkeypatch.setattr(fa_localize, "recommend_wavelet_threshold",
+                        lambda st: calls.append(1) or real(st))
+    c.recommendThreshold(); _until_recommended(c)
+    want = c.waveletThreshold
+    c.commitThreshold(want + 50)
+    c.recommendThreshold()                       # cached: no worker, applied at once
+    assert not c.recommending and c.waveletThreshold == want and len(calls) == 1
+    os.utime(movie, ns=(time.time_ns(), time.time_ns() + 10**9))   # re-exported
+    c.recommendThreshold(); _until_recommended(c)
+    assert len(calls) == 2
+
+
 def test_a_recommendation_for_a_file_no_longer_open_is_dropped(viewer):
     c, _s, movie = viewer
     before = c.waveletThreshold

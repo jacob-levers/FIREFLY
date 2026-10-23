@@ -169,6 +169,7 @@ class RoiController(QObject):
         self._rec_busy = False
         self._rec_note = ""
         self._rec_thread = None
+        self._rec_cache = OrderedDict()  # _recommend_key → (value, note), newest last
         # Candidate masses from a minmass=0 detection on the displayed frame,
         # cached against the settings that change them.  Re-thresholding this
         # array is instant, so the histogram and the consequence readouts can
@@ -439,7 +440,7 @@ class RoiController(QObject):
             return None, 0
         try:
             from firefly.analysis.fa_detection_preview import preview_detections
-            from firefly.ui.controllers.params.preview_loader import detection_frame
+            from firefly.ui.controllers.params.preview_loader import DetectionFrames
             from firefly.ui.controllers.params.params_builder import (
                 BG_METHOD_MAP, BACKEND_LABEL_TO_VALUE)
             g = self._s
@@ -462,17 +463,19 @@ class RoiController(QObject):
             else:
                 idx = np.array([int(self._frame_idx)])
             pooled, capped, used = [], [], 0
-            for i in idx:
-                frame = (self._raw_frame if (int(i) == int(self._frame_idx)
-                                             and self._raw_frame is not None)
-                         else detection_frame(self._file, int(i), channel))
-                if frame is None:
-                    continue
-                rows, _ = preview_detections(frame, **opts)
-                mm = np.asarray(rows["mass"].to_numpy(), dtype=float)
-                pooled.append(mm)
-                capped.append(mm)      # per-frame; estimate_noise_floor applies the cap
-                used += 1
+            with DetectionFrames(self._file, max(total, int(self._frame_idx) + 1),
+                                 channel) as frames:
+                for i in idx:
+                    frame = (self._raw_frame if (int(i) == int(self._frame_idx)
+                                                 and self._raw_frame is not None)
+                             else frames[int(i)])
+                    if frame is None:
+                        continue
+                    rows, _ = preview_detections(frame, **opts)
+                    mm = np.asarray(rows["mass"].to_numpy(), dtype=float)
+                    pooled.append(mm)
+                    capped.append(mm)  # per-frame; estimate_noise_floor applies the cap
+                    used += 1
             if not used:
                 raise ValueError("no frames could be read for the profile")
             self._cand_masses = np.concatenate(pooled) if pooled else np.array([])
@@ -500,6 +503,12 @@ class RoiController(QObject):
         """Histogram + markers + the cost of the current threshold, for the
         guidance panel.  Safe to call on every slider move."""
         from firefly.analysis.fa_localize import threshold_guidance
+        if self._is_palmtracer_detector():
+            # The panel is hidden for the palmTRACER-style detector, but QML's
+            # onDetectChanged still calls in.  Without this, every wavelet
+            # commit (which invalidates the cache) re-harvested 16 frames
+            # synchronously on the GUI thread for a histogram nobody sees.
+            return {"n_candidates": 0, "edges": [], "counts": []}
         masses, n_frames = self._candidate_masses()
         if masses is None or not len(masses):
             return {"n_candidates": 0, "edges": [], "counts": [],
@@ -1634,6 +1643,11 @@ class RoiController(QObject):
                 self._rec_note = f"No recommendation: {exc}"
                 self.recommendChanged.emit()
                 return
+        req["key"] = self._recommend_key(req)
+        hit = self._rec_cache.get(req["key"]) if req["key"] else None
+        if hit is not None:                       # same file + inputs: same answer
+            self._on_recommended(req, hit)
+            return
         self._rec_busy = True
         self._rec_note = "Working out the recommended threshold…"
         self.recommendChanged.emit()
@@ -1641,17 +1655,42 @@ class RoiController(QObject):
                                             daemon=True, name="FIREFLY-RecommendThreshold")
         self._rec_thread.start()
 
+    # The params estimate_minmass_for_run reads, minus `workers` (parallelism
+    # only — the harvest and sweep are identical either way).
+    _REC_PARAM_KEYS = ("diameter", "backend", "minmass_sensitivity", "minmass_mode",
+                       "minmass_target_density", "bg_radius", "bg_method", "search_range",
+                       "memory", "min_track_len", "minmass_max_false_track_rate")
+    _REC_CACHE_SIZE = 32
+
+    def _recommend_key(self, req):
+        """What the recommendation depends on, or None (then it is not cached).
+        Size + mtime stand in for the file's content, so a re-exported
+        recording under the same name is worked out afresh."""
+        import os
+        try:
+            st = os.stat(req["file"])
+        except OSError:
+            return None
+        p = req["params"]
+        inputs = (None if p is None else
+                  tuple((k, repr(p.get(k))) for k in self._REC_PARAM_KEYS))
+        return (req["file"], st.st_size, st.st_mtime_ns, req["n"], req["channel"],
+                req["wavelet"], inputs)
+
     def _recommend_worker(self, req):
         try:
             from firefly.analysis import fa_localize as fl
             from firefly.ui.controllers.params.preview_loader import DetectionFrames
-            stack = DetectionFrames(req["file"], req["n"], req["channel"])
+            with DetectionFrames(req["file"], req["n"], req["channel"]) as stack:
+                if req["wavelet"]:
+                    t, info = fl.recommend_wavelet_threshold(stack)
+                else:
+                    t, diag = fl.estimate_minmass_for_run(stack, req["params"],
+                                                          log_cb=lambda _m: None)
             if req["wavelet"]:
-                t, info = fl.recommend_wavelet_threshold(stack)
                 note = (f"Recommended {t:g}: {info['factor']:g} × this recording's wavelet "
                         f"noise (σ = {info['sigma']:.1f} counts, {info['n_frames']} frames).")
             else:
-                t, diag = fl.estimate_minmass_for_run(stack, req["params"], log_cb=lambda _m: None)
                 method = str((diag or {}).get("method") or "")
                 note = (f"Recommended {t:.3g}: the minmass an Auto-threshold run picks for "
                         f"this recording"
@@ -1668,6 +1707,11 @@ class RoiController(QObject):
         elif isinstance(result, Exception):
             self._rec_note = f"No recommendation: {result}"
         else:
+            if req.get("key"):
+                self._rec_cache[req["key"]] = result
+                self._rec_cache.move_to_end(req["key"])
+                while len(self._rec_cache) > self._REC_CACHE_SIZE:
+                    self._rec_cache.popitem(last=False)
             value, self._rec_note = result
             self.commitThreshold(value)
         self.recommendChanged.emit()

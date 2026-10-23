@@ -791,8 +791,17 @@ Item {
                                 visible: !Roi.runScoped
                                 Layout.fillWidth: true; spacing: sc.sp2; Layout.topMargin: sc.sp2
                                 RowLayout {
-                                    Layout.fillWidth: true
+                                    Layout.fillWidth: true; spacing: sc.sp2
                                     PanelLabel { text: "DETECTION THRESHOLD" }
+                                    InfoTip {
+                                        text: thrSection.wav
+                                              ? "Wavelet threshold, in palmTRACER's units — raw camera counts on the " +
+                                                "second wavelet plane. It is absolute: the same value means the same " +
+                                                "brightness in every recording, and a palmTRACER value carries over unchanged."
+                                              : "Minmass, in the selected detector's own units. Mass is file-relative — " +
+                                                "a value from another backend or recording does not carry over. " +
+                                                "Setting it here turns Auto minmass off."
+                                    }
                                     Item { Layout.fillWidth: true }
                                     Text {
                                         text: thrSection.wav
@@ -800,13 +809,6 @@ Item {
                                               : Roi.detectMinmass.toLocaleString(Qt.locale(), "f", 2)
                                         color: pal.ACC; font.pixelSize: sc.textXs; font.family: "Menlo"
                                     }
-                                }
-                                Text {
-                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    visible: thrSection.wav
-                                    text: "Wavelet threshold, in palmTRACER's units — raw camera counts on the " +
-                                          "second wavelet plane. A palmTRACER value carries over unchanged."
-                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
                                 Slider {
                                     Layout.fillWidth: true
@@ -871,18 +873,20 @@ Item {
                                     text: Roi.recommendNote
                                     color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
                                 }
+                                // One line: label + hover help + switch.  The how-it-works
+                                // copy lives in the tip; only the warning stays visible,
+                                // and only while per-file is on.
                                 RowLayout {
-                                    Layout.fillWidth: true; spacing: sc.sp3
-                                    ColumnLayout {
-                                        Layout.fillWidth: true; spacing: 1
-                                        Text { text: "Use for this file only"; color: pal.TXT
-                                               font.pixelSize: sc.textSm }
-                                        Text { Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                               text: "Saves the threshold with this file's ROI, so a batch can " +
-                                                     "run one recording at a different value. Off, the slider sets " +
-                                                     "the shared sidebar threshold every file uses."
-                                               color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3 }
+                                    Layout.fillWidth: true; spacing: sc.sp2
+                                    Text { text: "Use for this file only"; color: pal.TXT
+                                           font.pixelSize: sc.textSm }
+                                    InfoTip {
+                                        text: "On: the threshold is saved with this file's ROI, so a batch can run " +
+                                              "this recording at its own value.\n\nOff: the slider sets the shared " +
+                                              "sidebar " + (thrSection.wav ? "Wavelet threshold" : "Threshold (minmass)") +
+                                              " that every file uses."
                                     }
+                                    Item { Layout.fillWidth: true }
                                     Switch {
                                         checked: Roi.thresholdPerFile
                                         onToggled: (c) => Roi.setThresholdPerFile(c)
@@ -892,22 +896,8 @@ Item {
                                     Layout.fillWidth: true
                                     visible: Roi.thresholdPerFile
                                     severity: "warn"
-                                    text: (thrSection.wav
-                                           ? "A per-file threshold changes what counts as a spot between recordings: "
-                                           : "Per-file thresholds are not comparable by default: mass is file-relative, and ") +
-                                          "tuning each recording until the counts agree is how a detection difference " +
-                                          "gets manufactured. Use a stated rule, apply it to every condition, and report " +
-                                          "it — the comparison report warns when conditions end up on different thresholds."
-                                }
-                                Text {
-                                    Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                    text: thrSection.wav
-                                          ? "Sets the sidebar's Wavelet threshold. It is absolute — the same value " +
-                                            "means the same brightness in every recording."
-                                          : "Sets the sidebar's Threshold (minmass) and turns Auto minmass off. " +
-                                            "Mass is in the selected detector's own units and is file-relative — " +
-                                            "a value from another backend or recording does not carry over."
-                                    color: pal.TXT_MUTED; font.pixelSize: sc.textXs; lineHeight: 1.3
+                                    text: "Tuning each recording until counts agree manufactures a difference. Use " +
+                                          "one stated rule for every condition — the comparison report flags mixed thresholds."
                                 }
                             // ── threshold guidance ──────────────────
                             // Detect once at minmass 0, then re-score any
@@ -922,6 +912,7 @@ Item {
                                 Layout.fillWidth: true; spacing: sc.sp1
                                 property var prof: ({})
                                 function refresh() { prof = Roi.massProfile(); massHist.requestPaint() }
+                                onVisibleChanged: if (visible && Roi.detectEnabled) refresh()
 
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: sc.sp2
@@ -1028,7 +1019,7 @@ Item {
 
                                 Connections {
                                     target: Roi
-                                    function onDetectChanged() { if (Roi.detectEnabled) guide.refresh() }
+                                    function onDetectChanged() { if (Roi.detectEnabled && guide.visible) guide.refresh() }
                                 }
                             }
                             }

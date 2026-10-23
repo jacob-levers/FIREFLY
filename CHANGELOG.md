@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.76.52-rc.2 — 23 Oct 2026
+
+### Fixed
+
+- **"Restart now" after installing GPU acceleration works on Windows.** The
+  restarted copy tried to run from the old copy's temporary folder, which is
+  deleted as the old copy quits, so the restart showed an error even though
+  the install had worked. It now starts as a fresh copy. From a source
+  install, the restart also relaunches FIREFLY instead of a bare Python.
+- **The threshold viewer no longer freezes after each threshold change with
+  the palmTRACER-style detector.** The mass-distribution histogram, hidden for
+  that detector, still re-ran detection on 16 frames on every change.
+- **"Set to recommended" is faster, and the value it picks is unchanged.**
+  TIFF recordings stay open while frames are sampled instead of being reopened
+  for every frame, and CZI frames no longer re-scan the file's frame index on
+  each read, which halves read time on a 16,000-frame CZI. Clicking it again
+  for the same file and settings is instant.
+- **Figures whose replicates span more than one recording day draw on
+  Windows.** The date in the day key ("16 Sep") used a format code that only
+  macOS and Linux support.
+- **PALM-Tracer reference files are read as UTF-8 on every platform.** Windows
+  used its legacy code page, which can fail on non-ASCII header characters.
+
+### Changed
+
+- **Tidier threshold panel.** "Use for this file only" is a single row, the
+  explanations sit behind ⓘ hover tips, and the per-file warning is shorter
+  and shows only while per-file thresholds are on.
+
 ## v2.76.52-rc.1 — 15 Oct 2026
 
 ### Fixed

@@ -225,7 +225,8 @@ def _day_label(day, all_days):
     except ValueError:
         return str(day)
     years = {str(x)[:4] for x in all_days if x}
-    return d.strftime("%-d %b %Y" if len(years) > 1 else "%-d %b")
+    # Not "%-d": that glibc/BSD extension raises ValueError on Windows.
+    return f"{d.day} " + d.strftime("%b %Y" if len(years) > 1 else "%b")
 
 
 def _scalar_stats(arrs, labels, stats_config):

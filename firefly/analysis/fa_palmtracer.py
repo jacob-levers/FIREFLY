@@ -107,7 +107,7 @@ def _read_palmtracer_table(path, header_lines):
     reference files are parsed by ``_parse_pt_native_*`` instead, not here.)"""
     # PALM-Tracer's reference files are TSV; FIREFLY-emitted ones are CSV.
     # Sniff the separator from the first data line.
-    with open(path, "r") as fh:
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for _ in range(header_lines):
             fh.readline()
         first = fh.readline()
@@ -309,7 +309,7 @@ def load_summary_from_palmtracer(folder, use_native=False, cache=True,
     frame_interval_s = 0.02
     width = height = n_frames = 0
     try:
-        with open(loc_path, "r") as fh:
+        with open(loc_path, "r", encoding="utf-8", errors="replace") as fh:
             _hdr_names  = fh.readline().rstrip("\n").replace(",", "\t").split("\t")
             _hdr_values = fh.readline().rstrip("\n").replace(",", "\t").split("\t")
         meta = {k.strip(): v.strip() for k, v in zip(_hdr_names, _hdr_values)}

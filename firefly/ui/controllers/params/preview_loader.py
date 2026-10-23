@@ -141,43 +141,82 @@ def sampled_max_projection(path, cap: int = DEFAULT_CAP):
     return sampled_projection(path, "max", cap)
 
 
-def _czi_plane(czi, idx, channel):
-    import numpy as np
-    dims = dict(zip(czi.dims, czi.size))
-    ch = min(int(channel), int(dims.get('C', 1)) - 1)  # same clamp as load_czi
-    return np.squeeze(czi.read_image(T=int(idx), C=ch)[0])
+class _CziPlanes:
+    """An open CZI.  ``CziFile.size`` re-derives the shape from the subblock
+    directory on every access — 7 ms on a 16k-frame recording, as much as the
+    plane read itself — so the channel count is read once here, not per plane."""
+
+    def __init__(self, path):
+        from aicspylibczi import CziFile
+        self._czi = CziFile(path)
+        self._n_c = int(dict(zip(self._czi.dims, self._czi.size)).get('C', 1))
+
+    def plane(self, idx, channel):
+        import numpy as np
+        ch = min(int(channel), self._n_c - 1)  # same clamp as load_czi
+        return np.squeeze(self._czi.read_image(T=int(idx), C=ch)[0])
 
 
-def detection_frame(path, idx, channel=0, czi=None):
+class _TiffPlanes:
+    """An open planar YX/TYX TIFF.  Opening one and resolving its series walks
+    every IFD in the file — on a long multi-page recording that is most of the
+    cost of reading a plane, and far more on Windows (per-open Defender scan,
+    slower small reads) — so readers of many planes keep one of these open."""
+
+    def __init__(self, path):
+        import tifffile
+        self._path = path
+        self._tif = tifffile.TiffFile(path)
+        try:
+            series = self._tif.series[0]
+            if len(series.shape) > 3 or series.axes[-2:] != 'YX':
+                raise ValueError('Detection preview requires a planar YX/TYX TIFF; this layout is unsupported.')
+            self.n = series.shape[0] if len(series.shape) == 3 else 1
+            self._pages = series.pages if len(series.pages) == self.n else None
+        except Exception:
+            self._tif.close()
+            raise
+        self._mapped = None
+
+    def plane(self, idx):
+        import numpy as np
+        idx = int(idx)
+        if not 0 <= idx < self.n: raise ValueError('Frame outside TIFF series')
+        if self._pages is not None:
+            return self._pages[idx].asarray()
+        # Contiguous TIFF blocks may have only one physical IFD. Map them
+        # without loading the complete recording into RAM.
+        if self._mapped is None:
+            import tifffile
+            self._mapped = tifffile.memmap(self._path, series=0, mode='r')
+        return np.array(self._mapped[idx] if self._mapped.ndim == 3 else self._mapped)
+
+    def close(self):
+        self._mapped = None     # an open map locks the file on Windows
+        self._tif.close()
+
+
+def detection_frame(path, idx, channel=0, czi=None, tiff=None):
     """Read an exact raw plane for detection; never collapse unknown dimensions.
 
     Index is local to the selected file. Unsupported layouts fail explicitly
     instead of displaying a different plane as a faithful detection preview.
-    ``czi`` reuses an already-open CziFile (opening one costs as much as
-    reading two planes).
+    ``czi`` / ``tiff`` reuse an already-open :class:`_CziPlanes` /
+    :class:`_TiffPlanes` (opening either costs more than reading a plane).
     """
     import numpy as np
     ext = os.path.splitext(path)[1].lower()
     if ext == '.czi':
-        if czi is None:
-            from aicspylibczi import CziFile
-            czi = CziFile(path)
-        frame = _czi_plane(czi, idx, channel)
+        frame = (czi or _CziPlanes(path)).plane(idx, channel)
     elif ext in ('.tif', '.tiff'):
-        import tifffile
-        with tifffile.TiffFile(path) as tif:
-            series = tif.series[0]
-            if len(series.shape) > 3 or series.axes[-2:] != 'YX':
-                raise ValueError('Detection preview requires a planar YX/TYX TIFF; this layout is unsupported.')
-            n = series.shape[0] if len(series.shape) == 3 else 1
-            if not 0 <= int(idx) < n: raise ValueError('Frame outside TIFF series')
-            if len(series.pages) == n:
-                frame = series.pages[int(idx)].asarray()
-            else:
-                # Contiguous TIFF blocks may have only one physical IFD. Map
-                # them without loading the complete recording into RAM.
-                mapped = tifffile.memmap(path, series=0, mode='r')
-                frame = np.array(mapped[int(idx)] if mapped.ndim == 3 else mapped)
+        if tiff is not None:
+            frame = tiff.plane(idx)
+        else:
+            tiff = _TiffPlanes(path)
+            try:
+                frame = tiff.plane(idx)
+            finally:
+                tiff.close()
     else:
         raise ValueError('Detection preview supports raw CZI and planar TIFF files.')
     frame = np.asarray(frame, dtype=np.float32)
@@ -192,21 +231,41 @@ class DetectionFrames:
     Enough of an array — ``len``, ``shape``, integer and slice indexing — for
     estimators that sample a few frames or windows (the auto threshold, the
     wavelet noise) without loading a multi-GB recording.  Every plane is
-    exactly :func:`detection_frame`'s; a CZI is opened once, not per plane.
+    exactly :func:`detection_frame`'s; a CZI or TIFF is opened once, not per
+    plane.  ``close()`` (or a ``with`` block) releases the TIFF handle, which
+    otherwise keeps the recording locked on Windows until garbage collection.
     """
     ndim = 3
 
     def __init__(self, path, n_frames, channel=0):
         self._path, self._channel = str(path), int(channel)
-        self._czi = None
-        if os.path.splitext(self._path)[1].lower() == '.czi':
-            from aicspylibczi import CziFile
-            self._czi = CziFile(self._path)
-        first = self._plane(0)
+        self._czi = self._tiff = None
+        ext = os.path.splitext(self._path)[1].lower()
+        if ext == '.czi':
+            self._czi = _CziPlanes(self._path)
+        elif ext in ('.tif', '.tiff'):
+            self._tiff = _TiffPlanes(self._path)
+        try:
+            first = self._plane(0)
+        except Exception:
+            self.close()
+            raise
         self.shape = (int(n_frames),) + tuple(first.shape)
 
     def _plane(self, i):
-        return detection_frame(self._path, int(i), self._channel, czi=self._czi)
+        return detection_frame(self._path, int(i), self._channel,
+                               czi=self._czi, tiff=self._tiff)
+
+    def close(self):
+        if self._tiff is not None:
+            self._tiff.close()
+            self._tiff = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def __len__(self):
         return self.shape[0]
