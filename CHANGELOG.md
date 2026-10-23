@@ -1,6 +1,8 @@
 # Changelog
 
-## v2.76.52-rc.2 — 23 Oct 2026
+## v2.76.52 — 23 Oct 2026
+
+Consolidates the 2.76.52-rc.1 … rc.2 pre-release series. Newest first within each section.
 
 ### Fixed
 
@@ -22,17 +24,6 @@
   macOS and Linux support.
 - **PALM-Tracer reference files are read as UTF-8 on every platform.** Windows
   used its legacy code page, which can fail on non-ASCII header characters.
-
-### Changed
-
-- **Tidier threshold panel.** "Use for this file only" is a single row, the
-  explanations sit behind ⓘ hover tips, and the per-file warning is shorter
-  and shows only while per-file thresholds are on.
-
-## v2.76.52-rc.1 — 15 Oct 2026
-
-### Fixed
-
 - **One crashing file no longer fails a whole HYPER-FLY batch.** If a worker
   process died outright (for example a GPU driver fault), every file that was
   running or still queued was reported as failed, so one bad file could turn a
@@ -65,6 +56,12 @@
 - **Temporary stack files are deleted after each file in HYPER-FLY.** A file
   too big to hold in RAM spills to a temporary file beside the output folder;
   these piled up until the whole batch ended.
+
+### Changed
+
+- **Tidier threshold panel.** "Use for this file only" is a single row, the
+  explanations sit behind ⓘ hover tips, and the per-file warning is shorter
+  and shows only while per-file thresholds are on.
 
 ## v2.76.51 — 15 Oct 2026
 
