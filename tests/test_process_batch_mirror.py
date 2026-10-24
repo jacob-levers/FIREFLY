@@ -53,7 +53,12 @@ def cockpit(monkeypatch):
     _app.processEvents()
 
 
-@pytest.mark.parametrize("out_dir", [r"C:\Users\lab\runs\fly #2 50%", "/Users/lab/runs/fly #2 50%"])
+@pytest.mark.parametrize("out_dir", [
+    # A drive-letter path is only a path on Windows: elsewhere "\" is an
+    # ordinary filename character, which Qt rightly leaves alone.
+    pytest.param(r"C:\Users\lab\runs\fly #2 50%", marks=pytest.mark.skipif(
+        os.name != "nt", reason="Windows paths exist only on Windows")),
+    "/Users/lab/runs/fly #2 50%"])
 def test_open_folder_opens_the_run_folder_on_any_os(cockpit, monkeypatch, out_dir):
     # "file://" + path was an invalid URL for a Windows path (C: read as a
     # host) and cut a path at "#" on any OS.
