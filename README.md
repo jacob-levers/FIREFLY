@@ -165,25 +165,32 @@ launch, not on every tab switch.
 
 ### The workflow, tab by tab
 
-**Import** — configure the analysis in the parameter sidebar, drop in a recording,
-preview detection and draw a region of interest.
+**Import** — configure the analysis in the parameter sidebar, then pick one
+recording or queue a whole folder as a batch. The frame count, pixel size and
+exposure are read from the file. A max projection previews the recording: draw
+a region of interest, choose the detection threshold, or replay an earlier run
+from its manifest.
 
-![Import tab](docs/images/02-import.png)
+![Import tab](docs/images/tab-import.png)
 
-**Process** — the live run cockpit: a connected pipeline stepper, live detection
-preview, localisation-mass histogram and resource meters.
+**Process** — the live run: a stage bar steps through Preprocess, Detect,
+Drift, Link, Diffuse and Classify, with live detection on the current frame,
+the localisation-mass histogram, CPU / RAM / GPU meters and the log.
 
-![Process tab](docs/images/03-process.png)
+![Process tab](docs/images/tab-process.png)
 
-**Analysis** — drop 2–12 conditions into one live comparison; the figure,
-statistics and significance update as you add data — no "Generate" step.
+**Analysis** — drop 2–12 conditions into one live comparison. Pick a measure and
+its figure, headline numbers, group statistics, pairwise significance with
+effect sizes and a ready-to-copy methods sentence update as you add data — no
+"Generate" step. **All panels** lays out every measure as a publication figure.
 
-![Analysis tab](docs/images/04-analysis.png)
+![Analysis tab](docs/images/tab-analysis.png)
 
-**Visualise** — explore a finished run: every trajectory coloured by motion class
-over the cell, with playback, DBSCAN clusters and super-resolution reconstruction.
+**Visualise** — explore a finished run: every trajectory coloured by motion
+class, with playback, a track explorer, DBSCAN clusters and super-resolution
+reconstruction, each motion class on its own layer.
 
-![Visualise tab — trajectories coloured by motion class](docs/images/05-visualise.png)
+![Visualise tab — trajectories coloured by motion class](docs/images/tab-visualise.png)
 
 **HYPER-FLY** — on a capable workstation a folder batch fans out across worker
 processes, each shown as a live tile with its own preview and progress.
@@ -362,6 +369,17 @@ with the same validated settings; existing saved results are not rewritten.
   α-derived class is unclassified, and they are excluded from log-D and
   mobile/immobile threshold denominators. The excluded count is shown.
 - Jump-distance distribution with 1, 2, or 3 mobility populations.
+- **Diffusive states by hidden Markov model**, as in vbSPT-style sptPALM work:
+  each recording is fitted with three states — immobile, slow mobile and fast
+  mobile — using every consecutive-frame step of every trajectory (a trajectory
+  is split where the linker bridged a gap). Each state gets an apparent D
+  (localisation error not removed), an occupancy and per-frame probabilities of
+  switching to the others. The model is fitted by maximum likelihood
+  (Baum–Welch) rather than vbSPT's variational Bayes; BIC reports how many
+  states the data support, but the analysis always uses three. Results go to
+  `<stem>_diffusive_states.json`, and the comparison report draws state
+  occupancy, D by state and a state diagram per group, corrected for multiple
+  comparisons with the other measures.
 - Mean-squared displacement scaling spectrum (MSS).
 - Dwell-time survival curves with exponential τ fit.
 - Turning-angle and signed-angle radial distributions; VACF velocities carry
@@ -618,39 +636,55 @@ another tool produced — no re-detection.
 
 ## Outputs
 
-Each run produces three subfolders inside the output folder plus a
-manifest at the root:
+Each run writes a folder named after the recording, holding three subfolders
+and a manifest:
 
 ```
-<output_folder>/
-├── <stem>_run_manifest.json       # full provenance — replay with "Load run manifest…"
-├── data/                          # PALM-Tracer-compatible CSVs
+<stem>/
+├── <stem>_run_manifest.json       # full provenance — replay with "Load run manifest"
+├── data/                          # PALM-Tracer-format tables
+│   ├── <stem>_locPALMTracer.csv           # localisations
+│   ├── <stem>_trcPALMTracer.csv           # trajectories
+│   ├── <stem>_trcPALMTracer-1-D.csv       # per-trajectory D (per region / all regions)
+│   ├── <stem>_trcPALMTracer-AllROI-D.csv
+│   ├── <stem>_trcPALMTracer-1-MSD.csv     # per-trajectory MSD curves
+│   └── <stem>_trcPALMTracer-AllROI-MSD.csv
+├── firefly_extras/                # everything else
 │   ├── <stem>_localisations.csv
 │   ├── <stem>_trajectories.csv
-│   ├── <stem>_palm_tracer.csv
-│   └── ...
-├── firefly_extras/                # everything not in PALM-Tracer format
-│   ├── <stem>_diffusion_summary.csv   # D, α, fit status, geometry, duration
+│   ├── <stem>_diffusion_summary.csv   # D, α, motion class, fit status, geometry, duration
+│   ├── <stem>_diffusive_states.json   # 3-state HMM: D, occupancy, transition probabilities
 │   ├── <stem>_ensemble_msd.csv
-│   ├── <stem>_cluster_stats.csv       # one row per DBSCAN cluster
-│   ├── <stem>_jdd.json                # JDD fit (D values + fractions)
+│   ├── <stem>_mobile_fraction.csv     # sliding-window mobile fraction
+│   ├── <stem>_dwell_times.csv
+│   ├── <stem>_jdd.json                # jump-distance fit (D values + fractions)
 │   ├── <stem>_van_hove.json           # van Hove distribution + non-Gaussian α₂
 │   ├── <stem>_vacf.json               # velocity autocorrelation + persistence
-│   ├── <stem>_dwell_times.csv
 │   ├── <stem>_turning_angles.csv
-│   ├── <stem>_mobile_fraction.csv     # sliding-window mobile fraction
-│   ├── <stem>_drift.csv               # (if drift correction enabled)
-│   ├── <stem>_params.json             # parameter snapshot for Compare
-│   ├── <stem>_summary_metrics.json    # headline metrics + QC flags (1 file)
-│   └── <stem>_roi_mask.png            # ROI preview (if enabled)
+│   ├── <stem>_circular_statistics.csv # turning-angle statistics
+│   ├── <stem>_cluster_labels.csv      # DBSCAN label of every localisation
+│   ├── <stem>_cluster_stats.csv       # one row per DBSCAN cluster
+│   ├── <stem>_drift.csv               # per-frame drift (if drift correction is on)
+│   ├── <stem>_drift_segments.csv      #   segment estimates behind it
+│   ├── <stem>_drift_pairs.csv         #   segment-pair cross-correlations
+│   ├── <stem>_drift_diagnostics.json  #   quality checks
+│   ├── <stem>_params.json             # parameter snapshot for Analysis
+│   ├── <stem>_summary_metrics.json    # headline metrics + QC flags
+│   └── <stem>_roi_mask.npy            # analysis region
 └── figures/
-    ├── <stem>_sptpalm_figure.png      # combined 17-panel figure
+    ├── <stem>_sptpalm_figure.png      # combined 19-panel figure
     ├── <stem>_sptpalm_figure.pdf      # vector copy (optional)
+    ├── <stem>_superres.png            # super-resolution reconstruction
+    ├── <stem>_circular_statistics.pdf
+    ├── <stem>_drift_diagnostic.png
+    ├── <stem>_roi_mask.png
     └── panels/                        # per-panel exports (optional)
         ├── <stem>_panel_A.png
-        ├── <stem>_panel_B.png
         └── ...
 ```
+
+The manifest also records the version of every library that can change the
+results (numpy, SciPy, pandas, trackpy, PyTorch and others).
 
 **Batch mode** wraps the above per-series under
 `<input_folder>/batch_results/<stem>/` and adds a `batch_summary.csv`
