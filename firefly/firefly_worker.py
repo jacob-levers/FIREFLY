@@ -562,6 +562,36 @@ class QueueLogStream:
     def fileno(self):         raise OSError("not a real fd")
 
 
+# Libraries whose versions can change a run's numbers, as (distribution,
+# module).  A release build installs the newest versions pyproject.toml allows
+# on the day it is built, so the FIREFLY version alone does not pin them.
+_MANIFEST_LIBRARIES = (
+    ("numpy", "numpy"), ("scipy", "scipy"), ("pandas", "pandas"),
+    ("trackpy", "trackpy"), ("scikit-image", "skimage"),
+    ("scikit-learn", "sklearn"), ("torch", "torch"), ("numba", "numba"),
+    ("matplotlib", "matplotlib"), ("pingouin", "pingouin"),
+    ("statsmodels", "statsmodels"), ("tifffile", "tifffile"),
+    ("czifile", "czifile"), ("aicspylibczi", "aicspylibczi"),
+    ("imagecodecs", "imagecodecs"), ("roifile", "roifile"),
+    ("joblib", "joblib"), ("threadpoolctl", "threadpoolctl"),
+)
+
+
+def _library_versions() -> dict:
+    """The installed version of each library in _MANIFEST_LIBRARIES ("" if it
+    is not installed).  Read from package metadata, so nothing is imported;
+    falls back to an already-imported module's __version__ for a frozen build
+    that does not ship that package's .dist-info."""
+    from importlib import metadata
+    out = {}
+    for dist, mod in _MANIFEST_LIBRARIES:
+        try:
+            out[dist] = metadata.version(dist)
+        except Exception:
+            out[dist] = str(getattr(sys.modules.get(mod), "__version__", "") or "")
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE PIPELINE (shared by single-file and batch entry points)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -692,6 +722,7 @@ def _write_run_manifest(*, out_dir: str, stem: str, fpath: str,
             "platform": platform.platform(),
             "python":   platform.python_version(),
         },
+        "libraries":        _library_versions(),
         "determinism":      _determinism_info(),
         "input": {
             "path":   fpath,

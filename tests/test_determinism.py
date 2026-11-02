@@ -65,3 +65,23 @@ def test_manifest_determinism_unset(tmp_path, monkeypatch):
                                   fpath=str(f), params={})
     m = json.load(open(path, encoding="utf-8"))
     assert m["determinism"]["requested"] is False
+
+
+def test_manifest_records_library_versions(tmp_path):
+    """A release build installs the newest library versions pyproject.toml
+    allows on the day it is built, so two builds of one FIREFLY version can
+    differ.  Each run records the version of every library that can change
+    its numbers."""
+    import numpy as np
+    import scipy
+    import firefly.firefly_worker as fw
+    f = tmp_path / "stack.tif"
+    f.write_bytes(b"x")
+    m = json.load(open(fw._write_run_manifest(
+        out_dir=str(tmp_path), stem="stack", fpath=str(f), params={}),
+        encoding="utf-8"))
+    libs = m["libraries"]
+    assert set(libs) == {dist for dist, _ in fw._MANIFEST_LIBRARIES}
+    assert libs["numpy"] == np.__version__
+    assert libs["scipy"] == scipy.__version__
+    assert libs["trackpy"] and libs["pandas"]

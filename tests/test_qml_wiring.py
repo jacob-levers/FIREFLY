@@ -416,3 +416,65 @@ def test_every_member_qml_reads_off_an_id_exists(qml_window):
                     findings.append(f"{rel}:{ln} {idn}.{member}")
 
     assert not findings, f"QML reads members that do not exist on the id: {findings}"
+
+
+def _row_texts(item, out=None):
+    """The `text` of each direct child of every item, as lists — one per row."""
+    out = [] if out is None else out
+    for child in item.childItems():
+        texts = []
+        for c in child.childItems():
+            try:
+                value = c.property("text")
+            except Exception:
+                value = None
+            if isinstance(value, str):
+                texts.append(value)
+        if texts:
+            out.append(texts)
+        _row_texts(child, out)
+    return out
+
+
+def test_the_track_explorer_shows_a_dash_for_a_track_without_d(qml_window, tmp_path):
+    """A trajectory with no measurable D (non-positive MSD slope) has D = NaN in
+    the diffusion summary, and the explorer row carries it as Python None.
+
+    None inside a list of rows reaches QML as `undefined`, not `null`, so the
+    cell's `modelData.d !== null ? modelData.d.toFixed(3) : "—"` called toFixed
+    on undefined: a TypeError per row and a blank cell instead of "—"."""
+    import numpy as np
+    import pandas as pd
+    from PySide6.QtCore import qInstallMessageHandler
+
+    extras = tmp_path / "run" / "firefly_extras"
+    extras.mkdir(parents=True)
+    rows = [(pid, f, 50.0 + f * 0.3 * (pid + 1), 50.0) for pid in (0, 1) for f in range(10)]
+    pd.DataFrame(rows, columns=["particle", "frame", "x", "y"]).to_csv(
+        extras / "cell_trajectories.csv", index=False)
+    pd.DataFrame({"particle": [0, 1], "D": [0.05, np.nan], "alpha": [0.9, np.nan],
+                  "motion": ["Brownian", "Unknown"]}).to_csv(
+        extras / "cell_diffusion_summary.csv", index=False)
+
+    win, qw = qml_window
+    vis = qw.rootContext().contextProperty("Vis")
+    app_ctrl = qw.rootContext().contextProperty("App")
+    messages = []
+    previous = qInstallMessageHandler(
+        lambda mode, ctx, msg: messages.append(str(msg)))
+    try:
+        win.resize(1400, 950); win.show()
+        app_ctrl.enterMain(3)                                  # Visualise
+        vis.loadRunFolder(str(tmp_path / "run"))
+        for _ in range(6):
+            _app.processEvents()
+        cells = {r[0]: r[1] for r in _row_texts(qw.rootObject())
+                 if len(r) >= 2 and r[0] in ("#0", "#1")}
+    finally:
+        qInstallMessageHandler(previous)
+        win.hide()
+
+    assert not [m for m in messages if "toFixed" in m], (
+        f"the explorer called toFixed on a missing D: {[m for m in messages if 'toFixed' in m][:2]}")
+    assert cells.get("#0") == "0.050", cells
+    assert cells.get("#1") == "—", cells

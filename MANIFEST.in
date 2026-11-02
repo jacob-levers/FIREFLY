@@ -1,5 +1,6 @@
 include README.md
 include LICENSE.md
+include CITATION.cff
 include CHANGELOG.md
 include setup.py
 recursive-include firefly/ui/qml *.qml *.png *.svg

@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.76.56-rc.1 — 2 Nov 2026
+
+### Changed
+
+- **Every analysis records the version of each library it used.** A run's
+  `_run_manifest.json` now lists numpy, SciPy, pandas, trackpy, PyTorch and the
+  other libraries that can affect results, and each release's page lists the
+  exact libraries bundled in its Mac and Windows apps. Two builds of the same
+  FIREFLY version can bundle different library versions, so this pins down
+  exactly what produced a result.
+- **FIREFLY can be cited.** A citation file gives GitHub's "Cite this
+  repository" button the reference, and the README has a How to cite section.
+
+### Fixed
+
+- **The Track explorer shows "—" for a trajectory with no D.** The cell was
+  blank, and an error was logged for every such row.
+
 ## v2.76.55 — 2 Nov 2026
 
 ### Fixed

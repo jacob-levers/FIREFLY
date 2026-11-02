@@ -376,7 +376,10 @@ Item {
                                         Text { text: "#" + modelData.particle; color: pal.TXT
                                                font.pixelSize: sc.textXs; font.family: "Menlo"
                                                Layout.preferredWidth: 44 }
-                                        Text { text: modelData.d !== null ? modelData.d.toFixed(3) : "—"
+                                        // a track with no D arrives as undefined (Python
+                                        // None in a row map), not null
+                                        Text { text: typeof modelData.d === "number" && isFinite(modelData.d)
+                                                     ? modelData.d.toFixed(3) : "—"
                                                color: pal.TXT_MUTED; font.pixelSize: sc.textXs
                                                font.family: "Menlo"; Layout.fillWidth: true }
                                         Text { text: modelData.motion; color: pal.TXT_MUTED

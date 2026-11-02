@@ -55,7 +55,8 @@ By Jacob Levers · Apple-Silicon macOS and Windows
 6. [Outputs](#outputs)
 7. [Performance notes](#performance-notes)
 8. [Troubleshooting](#troubleshooting)
-9. [Acknowledgements](#acknowledgements)
+9. [How to cite](#how-to-cite)
+10. [Acknowledgements](#acknowledgements)
 
 ---
 
@@ -773,6 +774,23 @@ If you hit a crash, FIREFLY writes a full report to
 `~/Library/Logs/FIREFLY/crash_reports/` (macOS) or
 `%LOCALAPPDATA%/FIREFLY/crash_reports/` (Windows). Attach the report
 when reporting the issue.
+
+---
+
+## How to cite
+
+If you use FIREFLY in published work, please cite the version you used.
+GitHub's **Cite this repository** button (in the sidebar) gives the reference
+in APA and BibTeX, from [CITATION.cff](CITATION.cff). For example:
+
+> Levers, J. (2026). *FIREFLY* (Version 2.76.56-rc.1) [Computer software].
+> https://github.com/jacob-levers/FIREFLY
+
+You don't need to remember which version that was: every analysis writes a
+`_run_manifest.json` next to its results recording the FIREFLY version, the
+version of each library it used and every setting. Each release's page also
+lists the exact libraries bundled in its Mac and Windows apps
+(`FIREFLY-…-libraries.txt`).
 
 ---
 

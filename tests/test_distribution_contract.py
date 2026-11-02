@@ -159,3 +159,29 @@ def test_shared_release_helper_drives_package_ui_and_analysis_versions():
     assert re.fullmatch(r"\d+\.\d+\.\d+", release.release_base())
     assert release.release_base("9.9.9-rc.3") == "9.9.9"
     assert release.numeric_build_version("1234") == "1234"
+
+
+def test_the_citation_names_the_released_version():
+    """CITATION.cff drives GitHub's "Cite this repository" button and Zenodo's
+    archive record, so a stale version there gets cited for results the
+    current release produced."""
+    from firefly import release
+
+    cff = (_ROOT / "CITATION.cff").read_text(encoding="utf-8")
+    version = re.search(r"^version:\s*\"?([^\"\n]+)\"?\s*$", cff, re.M)
+    assert version and version.group(1) == release.__version__
+    assert re.search(r"^date-released:\s*\d{4}-\d{2}-\d{2}\s*$", cff, re.M)
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"(Version {release.__version__})" in readme
+
+
+def test_each_release_publishes_the_libraries_its_apps_bundle():
+    workflow = (_ROOT / ".github" / "workflows" / "build.yml"
+                ).read_text(encoding="utf-8")
+    for job, listing in (("build-macos:", "FIREFLY-macOS-arm64-libraries.txt"),
+                         ("build-windows:", "FIREFLY-Windows-libraries.txt")):
+        section = workflow.split(job, 1)[1]
+        upload = section.split("Upload to GitHub Release", 1)[1]
+        assert "pip freeze --all --exclude-editable" in section.split(
+            "Upload to GitHub Release", 1)[0]
+        assert listing in upload.split("prerelease:", 1)[0]

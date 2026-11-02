@@ -201,6 +201,18 @@ jobs:
           pip install -e .
           pip install "pyinstaller==6.11.1"   # pinned for reproducible Tcl/Tk bundling behaviour
 
+      - name: Record the bundled library versions
+        # The install above takes the newest versions pyproject.toml allows on
+        # the day, so two builds of one tag can bundle different libraries.
+        # Publish the exact set next to the app.
+        run: |
+          {
+            echo "# Python libraries bundled in FIREFLY ${GITHUB_REF_NAME} (macOS arm64)"
+            echo "# Python $(python -c 'import platform; print(platform.python_version())')"
+            pip freeze --all --exclude-editable
+          } > FIREFLY-macOS-arm64-libraries.txt
+          cat FIREFLY-macOS-arm64-libraries.txt
+
       - name: Inject release tag into shared release metadata
         # One shared helper keeps source metadata, the pyproject dynamic version,
         # and the macOS bundle plist aligned with the release tag.
@@ -336,7 +348,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/FIREFLY-macOS-arm64.dmg
+          files: |
+            dist/FIREFLY-macOS-arm64.dmg
+            FIREFLY-macOS-arm64-libraries.txt
           body_path: RELEASE_NOTES.md
           # A tag with a pre-release suffix (e.g. v2.76.39-rc.1) publishes a
           # GitHub *pre-release* — the Pre-release update channel installs it,
@@ -383,6 +397,15 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3"
           pip install -e .
           pip install "pyinstaller==6.11.1"   # pinned for reproducible bundling behaviour
+
+      - name: Record the bundled library versions
+        # See the macOS job: publish the exact libraries this build bundles.
+        run: |
+          $py = python -c "import platform; print(platform.python_version())"
+          $lines = @("# Python libraries bundled in FIREFLY $env:GITHUB_REF_NAME (Windows)",
+                     "# Python $py") + (pip freeze --all --exclude-editable)
+          Set-Content -Path FIREFLY-Windows-libraries.txt -Value $lines -Encoding utf8
+          Get-Content FIREFLY-Windows-libraries.txt
 
       - name: Inject release tag into shared release metadata
         # Use the same cross-platform stamping helper as the macOS build.
@@ -527,7 +550,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist\FIREFLY-Windows.exe
+          files: |
+            dist\FIREFLY-Windows.exe
+            FIREFLY-Windows-libraries.txt
           body_path: RELEASE_NOTES.md
           # See the macOS job: a hyphenated tag ships a GitHub pre-release.
           prerelease: ${{ contains(github.ref_name, '-') }}

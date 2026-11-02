@@ -202,7 +202,10 @@ for _pkg in ("numpy", "pandas", "scipy", "scikit-image", "scikit-learn",
              # pingouin (Compare-tab two-way ANOVA) + deps do runtime
              # importlib.metadata version lookups; without .dist-info the
              # frozen import raises PackageNotFoundError.
-             "pingouin", "statsmodels", "pandas_flavor", "outdated"):
+             "pingouin", "statsmodels", "pandas_flavor", "outdated",
+             # read by the run manifest's library-version record
+             "czifile", "aicspylibczi", "imagecodecs", "roifile",
+             "threadpoolctl"):
     try:
         datas += copy_metadata(_pkg)
     except Exception:

@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use FIREFLY in published work, please cite the version you used."
+type: software
+title: "FIREFLY: Fluorescence Inference & Reconstruction Engine — Framework for Localization Yields"
+abstract: >-
+  A desktop application for single-particle tracking PALM (sptPALM) analysis of
+  Zeiss .czi and TIFF image stacks: localisation, linking, MSD, diffusion and
+  motion-class analysis, a three-state hidden Markov model of diffusive states,
+  drift correction, clustering, and multi-group comparison with corrected
+  statistics.
+authors:
+  - family-names: Levers
+    given-names: Jacob
+version: 2.76.56-rc.1
+date-released: 2026-11-02
+license: MIT
+repository-code: "https://github.com/jacob-levers/FIREFLY"
+url: "https://github.com/jacob-levers/FIREFLY"
+keywords:
+  - single-particle tracking
+  - sptPALM
+  - super-resolution microscopy
+  - diffusion
+  - hidden Markov model

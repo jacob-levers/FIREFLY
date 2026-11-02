@@ -11,11 +11,11 @@
 	<key>CFBundleName</key>
 	<string>Launch FIREFLY</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.76.55</string>
+	<string>2.76.56</string>
 	<key>CFBundleVersion</key>
-	<string>2.76.55</string>
+	<string>1</string>
 	<key>FIREFLYReleaseVersion</key>
-	<string>2.76.55</string>
+	<string>2.76.56-rc.1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>
