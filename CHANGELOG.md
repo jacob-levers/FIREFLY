@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.76.55 — 2 Nov 2026
+
+### Fixed
+
+- **The "working" shimmer sweeps the whole progress bar.** While an update
+  downloaded it only crossed the left half of the bar, and on the Process tab
+  and HYPER-FLY bars it stayed in the first few percent, because it measured
+  the bar once, before the bar had reached its full width. It now follows the
+  bar's width as it changes. With reduced motion on, the bar shows a still
+  highlight in the middle instead.
+
 ## v2.76.54 — 24 Oct 2026
 
 ### Changed
