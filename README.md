@@ -783,7 +783,7 @@ If you use FIREFLY in published work, please cite the version you used.
 GitHub's **Cite this repository** button (in the sidebar) gives the reference
 in APA and BibTeX, from [CITATION.cff](CITATION.cff). For example:
 
-> Levers, J. (2026). *FIREFLY* (Version 2.76.56-rc.1) [Computer software].
+> Levers, J. (2026). *FIREFLY* (Version 2.76.56) [Computer software].
 > https://github.com/jacob-levers/FIREFLY
 
 You don't need to remember which version that was: every analysis writes a

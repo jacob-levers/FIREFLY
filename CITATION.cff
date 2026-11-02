@@ -11,7 +11,7 @@ abstract: >-
 authors:
   - family-names: Levers
     given-names: Jacob
-version: 2.76.56-rc.1
+version: 2.76.56
 date-released: 2026-11-02
 license: MIT
 repository-code: "https://github.com/jacob-levers/FIREFLY"
